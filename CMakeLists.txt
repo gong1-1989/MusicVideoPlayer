@@ -31,30 +31,24 @@ endfunction()
 # 播放/播放列表/网络/歌词/下载全部沉到 mvp_core，界面层只做装配。
 qt_add_library(mvp_core STATIC
     src/media/MediaItem.h
-
     src/util/TimeFormat.h
     src/util/TimeFormat.cpp
-
     src/net/HttpClient.h
     src/net/HttpClient.cpp
     src/net/MusicSearchService.h
     src/net/MusicSearchService.cpp
-
     src/lyrics/LrcParser.h
     src/lyrics/LrcParser.cpp
     src/lyrics/LyricsService.h
     src/lyrics/LyricsService.cpp
-
     src/download/DownloadTask.h
     src/download/DownloadTask.cpp
-
     src/stream/StreamProxy.h
     src/stream/StreamProxy.cpp
-
     src/core/PlaylistModel.h
     src/core/PlaylistModel.cpp
     src/core/PlaybackController.h
-    src/core/PlaybackController.cpp
+    src/core/PlaybackController.cpp   
 )
 
 target_include_directories(mvp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -73,13 +67,20 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
     src/ui/MainWindow.ui
-)
+    )
 
 target_link_libraries(MusicVideoPlayer PRIVATE
     mvp_core
     Qt6::MultimediaWidgets
 )
 mvp_enable_warnings(MusicVideoPlayer)
+
+# 主题样式表嵌入资源，main.cpp 从 :/style/app.qss 加载
+qt_add_resources(MusicVideoPlayer "app_styles"
+    PREFIX "/style"
+    BASE "resources"
+    FILES resources/app.qss
+)
 
 set_target_properties(MusicVideoPlayer PROPERTIES
     MACOSX_BUNDLE TRUE
