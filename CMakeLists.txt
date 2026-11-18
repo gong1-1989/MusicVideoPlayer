@@ -48,6 +48,9 @@ qt_add_library(mvp_core STATIC
     src/download/DownloadTask.h
     src/download/DownloadTask.cpp
 
+    src/stream/StreamProxy.h
+    src/stream/StreamProxy.cpp
+
     src/core/PlaylistModel.h
     src/core/PlaylistModel.cpp
     src/core/PlaybackController.h
@@ -116,5 +119,10 @@ if(BUILD_TESTING)
         target_link_libraries(tst_lrcparser PRIVATE mvp_core Qt6::Test)
         add_test(NAME tst_lrcparser COMMAND tst_lrcparser)
         mvp_enable_warnings(tst_lrcparser)
+
+        qt_add_executable(tst_streamproxy tests/tst_streamproxy.cpp)
+        target_link_libraries(tst_streamproxy PRIVATE mvp_core Qt6::Test)
+        add_test(NAME tst_streamproxy COMMAND tst_streamproxy)
+        mvp_enable_warnings(tst_streamproxy)
     endif()
 endif()

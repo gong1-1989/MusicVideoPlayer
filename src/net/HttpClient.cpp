@@ -40,10 +40,13 @@ HttpClient::HttpClient(QObject *parent)
     m_nam->setTransferTimeout(15000);
 }
 
-QNetworkReply *HttpClient::get(const QUrl &url)
+QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range)
 {
-    qCDebug(lcHttp) << "GET" << url.toString();
-    return m_nam->get(buildRequest(url, m_cookie));
+    qCDebug(lcHttp) << "GET" << url.toString() << "range" << range;
+    QNetworkRequest request = buildRequest(url, m_cookie);
+    if (!range.isEmpty())
+        request.setRawHeader("Range", range);
+    return m_nam->get(request);
 }
 
 QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body)

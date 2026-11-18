@@ -9,6 +9,7 @@
 #include <QPointer>
 
 class QAudioOutput;
+class StreamProxy;
 
 /// 播放状态机：持有 QMediaPlayer，负责"上一首/下一首/循环模式/媒体结束"，
 /// 界面只通过信号观察状态，不再自己数列表下标。
@@ -68,6 +69,7 @@ private:
 
     QMediaPlayer *m_player;
     QAudioOutput *m_audio;
+    StreamProxy *m_proxy;
     QPointer<PlaylistModel> m_playlist;
     int m_row = -1;
     Mode m_mode = Mode::ListLoop;

@@ -1,5 +1,7 @@
 #include "core/PlaybackController.h"
 
+#include "stream/StreamProxy.h"
+
 #include <QAudioOutput>
 #include <QLoggingCategory>
 #include <QRandomGenerator>
@@ -10,10 +12,14 @@ PlaybackController::PlaybackController(QObject *parent)
     : QObject(parent)
     , m_player(new QMediaPlayer(this))
     , m_audio(new QAudioOutput(this))
+    , m_proxy(new StreamProxy(this))
 {
     m_player->setAudioOutput(m_audio);
     setVolumePercent(60);
     updateLoops();
+
+    if (!m_proxy->start())
+        qCWarning(lcPlayer) << "stream proxy unavailable, online playback may fail on 403";
 
     connect(m_player, &QMediaPlayer::positionChanged,
             this, &PlaybackController::positionChanged);
@@ -67,9 +73,19 @@ void PlaybackController::playRow(int row)
     }
 
     m_row = row;
-    m_player->setSource(item.url);
+
+    // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
+    // 本地文件直接用 file:// 播放。
+    QUrl source = item.url;
+    if (item.online && m_proxy->isListening()) {
+        const QUrl proxied = m_proxy->proxyUrlFor(item.url);
+        if (proxied.isValid())
+            source = proxied;
+    }
+
+    m_player->setSource(source);
     m_player->play();
-    qCInfo(lcPlayer) << "play" << row << item.displayName();
+    qCInfo(lcPlayer) << "play" << row << item.displayName() << source.toString();
     emit currentItemChanged(item, row);
 }
 

@@ -1,6 +1,7 @@
 #ifndef HTTPCLIENT_H
 #define HTTPCLIENT_H
 
+#include <QByteArray>
 #include <QObject>
 #include <QString>
 
@@ -17,7 +18,7 @@ class HttpClient : public QObject
 public:
     explicit HttpClient(QObject *parent = nullptr);
 
-    QNetworkReply *get(const QUrl &url);
+    QNetworkReply *get(const QUrl &url, const QByteArray &range = QByteArray());
     QNetworkReply *postForm(const QUrl &url, const QByteArray &body);
 
     void setCookie(const QString &cookie);
