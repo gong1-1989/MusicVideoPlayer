@@ -8,6 +8,7 @@
 #include <QLoggingCategory>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QRandomGenerator>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -148,52 +149,80 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     }
 
     client->setProperty(kMethod, request.method);
-
-    QNetworkReply *reply = m_http->get(upstream, request.range.toUtf8());
+    const QByteArray range = request.range.toUtf8();
     qCDebug(lcProxy) << request.method << "upstream" << upstream.toString() << "range" << request.range;
 
+    // 由 HttpClient 手动跟随 302（含 https→http 降级），拿到可读的上游 reply
+    QPointer<QTcpSocket> guard(client);
+    m_http->fetch(upstream, range, [this, guard, upstream](QNetworkReply *reply) {
+        if (guard.isNull()) {
+            if (reply != nullptr) {
+                reply->abort();
+                reply->deleteLater();
+            }
+            return;
+        }
+        QTcpSocket *client = guard.data();
+        if (reply == nullptr) {
+            replyError(client, 502, QStringLiteral("Upstream redirect rejected"));
+            return;
+        }
+        if (client->state() != QAbstractSocket::ConnectedState) {
+            reply->abort();
+            reply->deleteLater();
+            return;
+        }
+        attachUpstream(client, reply, upstream);
+        flushUpstream(client, reply, upstream);
+        if (reply->isFinished()) {
+            client->disconnectFromHost();
+            reply->deleteLater();
+        }
+    });
+}
+
+void StreamProxy::attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream)
+{
     // 播放器断开（切歌、停止）时立刻掐掉上游，避免继续吃带宽
     connect(client, &QAbstractSocket::disconnected, reply, [reply] {
         if (reply->isRunning())
             reply->abort();
     });
 
-    connect(reply, &QNetworkReply::readyRead, client, [this, reply, client, upstream] {
-        if (client->state() != QAbstractSocket::ConnectedState)
-            return;
-
-        if (!client->property(kHeaderSent).toBool()) {
-            client->setProperty(kHeaderSent, true);
-            const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            client->write(buildResponseHead(reply, upstream, status));
-
-            if (client->property(kMethod).toString() == QLatin1String("HEAD")) {
-                reply->abort();
-                client->disconnectFromHost();
-                return;
-            }
-        }
-
-        const QByteArray chunk = reply->readAll();
-        if (!chunk.isEmpty())
-            client->write(chunk);
+    connect(reply, &QNetworkReply::readyRead, client, [this, client, reply, upstream] {
+        flushUpstream(client, reply, upstream);
     });
 
-    connect(reply, &QNetworkReply::finished, client, [this, reply, client, upstream] {
-        if (client->state() == QAbstractSocket::ConnectedState) {
-            if (!client->property(kHeaderSent).toBool()) {
-                client->setProperty(kHeaderSent, true);
-                const int status =
-                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                client->write(buildResponseHead(reply, upstream, status));
-            }
-            const QByteArray tail = reply->readAll();
-            if (!tail.isEmpty())
-                client->write(tail);
+    connect(reply, &QNetworkReply::finished, client, [this, client, reply, upstream] {
+        flushUpstream(client, reply, upstream);
+        if (client->state() == QAbstractSocket::ConnectedState)
             client->disconnectFromHost();
-        }
         reply->deleteLater();
     });
+}
+
+void StreamProxy::flushUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream)
+{
+    if (client->state() != QAbstractSocket::ConnectedState)
+        return;
+
+    if (!client->property(kHeaderSent).toBool()) {
+        client->setProperty(kHeaderSent, true);
+        if (reply->error() != QNetworkReply::NoError)
+            qCWarning(lcProxy) << "upstream error:" << reply->errorString();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        client->write(buildResponseHead(reply, upstream, status));
+
+        if (client->property(kMethod).toString() == QLatin1String("HEAD")) {
+            reply->abort();
+            client->disconnectFromHost();
+            return;
+        }
+    }
+
+    const QByteArray chunk = reply->readAll();
+    if (!chunk.isEmpty())
+        client->write(chunk);
 }
 
 QByteArray StreamProxy::buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const

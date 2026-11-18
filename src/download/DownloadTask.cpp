@@ -4,6 +4,7 @@
 
 #include <QLoggingCategory>
 #include <QNetworkReply>
+#include <QPointer>
 #include <QRegularExpression>
 
 Q_LOGGING_CATEGORY(lcDownload, "mvp.download")
@@ -61,11 +62,35 @@ void DownloadTask::startRequest()
         return;
     }
 
-    m_reply = m_http->get(m_url);
-    connect(m_reply, &QNetworkReply::readyRead, this, &DownloadTask::onReadyRead);
-    connect(m_reply, &QNetworkReply::finished, this, &DownloadTask::onFinished);
-    connect(m_reply, &QNetworkReply::downloadProgress, this,
-            [this](qint64 received, qint64 total) { emit progress(received, total); });
+    // 走 fetch 而不是 get：163 的下载地址会 302 到 http 的 CDN，
+    // 默认重定向策略会以 "Insecure redirect" 直接失败。
+    QPointer<DownloadTask> self(this);
+    m_http->fetch(m_url, QByteArray(), [self](QNetworkReply *reply) {
+        if (self.isNull()) {
+            if (reply != nullptr) {
+                reply->abort();
+                reply->deleteLater();
+            }
+            return;
+        }
+        if (reply == nullptr) {
+            emit self->failed(tr("重定向过多或地址不被允许"));
+            self->finish();
+            return;
+        }
+
+        self->m_reply = reply;
+        connect(reply, &QNetworkReply::readyRead, self, &DownloadTask::onReadyRead);
+        connect(reply, &QNetworkReply::finished, self, &DownloadTask::onFinished);
+        connect(reply, &QNetworkReply::downloadProgress, self,
+                [self](qint64 received, qint64 total) {
+                    if (!self.isNull())
+                        emit self->progress(received, total);
+                });
+
+        if (reply->isFinished())
+            self->onFinished();
+    });
 }
 
 void DownloadTask::onReadyRead()
@@ -83,14 +108,12 @@ void DownloadTask::onReadyRead()
 
 void DownloadTask::onFinished()
 {
-    QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
-    if (!reply)
+    QNetworkReply *reply = m_reply.data();
+    if (reply == nullptr || m_done)
         return;
-    reply->deleteLater();
 
-    if (m_done || reply != m_reply)
-        return;
     m_reply = nullptr;
+    reply->deleteLater();
 
     if (reply->error() != QNetworkReply::NoError) {
         const QString message = HttpClient::describeError(reply);

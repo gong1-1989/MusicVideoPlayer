@@ -45,6 +45,8 @@ private:
     };
 
     void handleClient(QTcpSocket *client, const QByteArray &payload);
+    void attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
+    void flushUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
     void replyError(QTcpSocket *client, int status, const QString &reason);
 
     QByteArray buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const;

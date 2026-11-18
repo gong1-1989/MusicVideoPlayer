@@ -39,6 +39,21 @@ protected:
 private:
     static void respond(QTcpSocket *socket, const QByteArray &request)
     {
+        const QByteArray firstLine = request.left(request.indexOf("\r\n"));
+        const QList<QByteArray> requestParts = firstLine.split(' ');
+        const QString path = QString::fromLatin1(requestParts.value(1));
+
+        // 302 到另一个地址，用于验证代理会跟随重定向（163 的真实行为）
+        if (path.startsWith(QStringLiteral("/redirect"))) {
+            QByteArray head = QByteArrayLiteral("HTTP/1.1 302 Found\r\n");
+            head += "Location: http://127.0.0.1:" + QByteArray::number(socket->localPort())
+                  + "/audio.mp3\r\n";
+            head += "Content-Length: 0\r\nConnection: close\r\n\r\n";
+            socket->write(head);
+            socket->disconnectFromHost();
+            return;
+        }
+
         qint64 start = 0;
         qint64 end = kPayload.size() - 1;
         bool partial = false;
@@ -104,6 +119,7 @@ private slots:
     void keepsContentTypeAndLength();
     void acceptsHead();
     void rejectsUnknownToken();
+    void followsRedirect();
 
 private:
     QUrl upstreamUrl() const;
@@ -181,6 +197,20 @@ void TestStreamProxy::rejectsUnknownToken()
     QNetworkReply *reply = waitFor(nam.get(QNetworkRequest(unknown)));
 
     QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 404);
+    reply->deleteLater();
+}
+
+void TestStreamProxy::followsRedirect()
+{
+    const QUrl upstream(QStringLiteral("http://127.0.0.1:%1/redirect")
+                            .arg(m_upstream.serverPort()));
+    const QUrl proxied = m_proxy->proxyUrlFor(upstream);
+
+    QNetworkAccessManager nam;
+    QNetworkReply *reply = waitFor(nam.get(QNetworkRequest(proxied)));
+
+    QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 200);
+    QCOMPARE(reply->readAll(), kPayload);
     reply->deleteLater();
 }
 

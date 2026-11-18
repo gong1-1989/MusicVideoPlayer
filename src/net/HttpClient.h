@@ -5,6 +5,8 @@
 #include <QObject>
 #include <QString>
 
+#include <functional>
+
 class QNetworkAccessManager;
 class QNetworkReply;
 class QUrl;
@@ -16,10 +18,16 @@ class HttpClient : public QObject
     Q_OBJECT
 
 public:
+    using ReplyHandler = std::function<void(QNetworkReply *)>;
+
     explicit HttpClient(QObject *parent = nullptr);
 
     QNetworkReply *get(const QUrl &url, const QByteArray &range = QByteArray());
     QNetworkReply *postForm(const QUrl &url, const QByteArray &body);
+
+    /// 手动跟随重定向（含 https→http 降级），把最终可读的 reply 交给 onReady。
+    /// onReady 只调用一次；重定向超限或目标协议不被允许时回调 nullptr。
+    void fetch(const QUrl &url, const QByteArray &range, const ReplyHandler &onReady);
 
     void setCookie(const QString &cookie);
 
@@ -27,6 +35,9 @@ public:
     static QString describeError(QNetworkReply *reply);
 
 private:
+    void fetchInternal(const QUrl &url, const QByteArray &range,
+                       const ReplyHandler &onReady, int hop);
+
     QNetworkAccessManager *m_nam;
     QString m_cookie;
 };
