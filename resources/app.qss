@@ -160,7 +160,7 @@ QPushButton#btn_fullscreen,
 QPushButton#btn_prev,
 QPushButton#btn_next {
     border-radius: 15px;
-    padding: 6px 14px;
+    padding: 6px 10px;
 }
 
 /* ------------------------------------------------ 列表 */

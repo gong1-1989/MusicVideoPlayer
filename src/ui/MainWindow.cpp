@@ -43,7 +43,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_searchModel(new PlaylistModel(this))
 {
     ui->setupUi(this);
-    setMinimumSize(960, 640);
 
     ui->list_search->setModel(m_searchModel);
     ui->list_music->setModel(m_musicModel);
