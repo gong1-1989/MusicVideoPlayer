@@ -27,6 +27,9 @@ public:
     void setResultLimit(int limit);
     int resultLimit() const { return m_resultLimit; }
 
+    /// 上一次搜索里被过滤掉的无声源条目数（VIP/版权限制）
+    int lastFilteredCount() const { return m_filteredCount; }
+
 signals:
     void searchStarted();
     void searchSucceeded(const QVector<MediaItem> &items);
@@ -39,6 +42,7 @@ private:
     HttpClient *m_http;
     QPointer<QNetworkReply> m_reply;
     int m_resultLimit = 20;
+    int m_filteredCount = 0;
 };
 
 #endif // MUSICSEARCHSERVICE_H

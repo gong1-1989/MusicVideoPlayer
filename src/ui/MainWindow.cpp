@@ -228,9 +228,19 @@ void MainWindow::setupConnections()
                 m_searchModel->clear();
                 for (const MediaItem &item : items)
                     m_searchModel->addItem(item);
-                ui->label_status->setText(items.isEmpty()
-                                              ? tr("未搜索到结果")
-                                              : tr("搜索完成，共 %1 首").arg(items.size()));
+                const int filtered = m_search->lastFilteredCount();
+                if (items.isEmpty()) {
+                    ui->label_status->setText(filtered > 0
+                                                  ? tr("未搜索到可播放结果（已过滤 %1 首 VIP/无音源）")
+                                                        .arg(filtered)
+                                                  : tr("未搜索到结果"));
+                } else if (filtered > 0) {
+                    ui->label_status->setText(tr("搜索完成，共 %1 首（已过滤 %2 首 VIP/无音源）")
+                                                  .arg(items.size())
+                                                  .arg(filtered));
+                } else {
+                    ui->label_status->setText(tr("搜索完成，共 %1 首").arg(items.size()));
+                }
             });
     connect(m_search, &MusicSearchService::searchFailed, this, [this](const QString &message) {
         ui->label_status->setText(tr("搜索失败：%1").arg(message));

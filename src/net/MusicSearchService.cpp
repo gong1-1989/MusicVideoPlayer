@@ -98,6 +98,7 @@ void MusicSearchService::onFinished()
 
     QVector<MediaItem> items;
     items.reserve(songs.size());
+    m_filteredCount = 0;
     for (const QJsonValue value : songs) {
         if (!value.isObject())
             continue;
@@ -105,6 +106,14 @@ void MusicSearchService::onFinished()
         const qint64 id = song.value(QStringLiteral("id")).toVariant().toLongLong();
         if (id <= 0)
             continue;
+
+        // fee==1 是 VIP 专享：匿名访问 outer/url 会被 302 到 /404，既不能播也不能下载。
+        // 在搜索阶段就剔掉，避免用户点了才看到 "播放失败"。
+        // fee 为 0（免费）和 8（付费但可试听）实测都能正常拉到 128k 音源。
+        if (song.value(QStringLiteral("fee")).toInt() == 1) {
+            ++m_filteredCount;
+            continue;
+        }
 
         MediaItem item;
         item.type = MediaType::Music;
@@ -120,7 +129,7 @@ void MusicSearchService::onFinished()
         items.append(item);
     }
 
-    qCInfo(lcSearch) << "parsed" << items.size() << "items";
+    qCInfo(lcSearch) << "parsed" << items.size() << "items, filtered" << m_filteredCount;
     emit searchSucceeded(items);
     emit searchFinished();
 }
