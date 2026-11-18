@@ -31,8 +31,20 @@ PlaybackController::PlaybackController(QObject *parent)
             this, &PlaybackController::onMediaStatusChanged);
     connect(m_player, &QMediaPlayer::errorOccurred, this,
             [this](QMediaPlayer::Error, const QString &message) {
-                qCWarning(lcPlayer) << "playback error:" << message;
-                emit errorOccurred(message);
+                // 上游没有音源时，播放器只会报 “Could not open file”，
+                // 用代理给出的真实原因替换掉，别让用户以为是自己操作错了
+                const QString text = m_unavailableReason.isEmpty() ? message : m_unavailableReason;
+                m_unavailableReason.clear();
+                qCWarning(lcPlayer) << "playback error:" << text;
+                emit errorOccurred(text);
+            });
+
+    connect(m_proxy, &StreamProxy::sourceUnavailable, this,
+            [this](const QUrl &upstream, const QString &contentType) {
+                qCWarning(lcPlayer) << "source unavailable:" << upstream.toString() << contentType;
+                m_unavailableReason =
+                    tr("这首歌网易云未返回音频（版权/付费限制），换一首试试");
+                emit errorOccurred(m_unavailableReason);
             });
 }
 
@@ -73,6 +85,7 @@ void PlaybackController::playRow(int row)
     }
 
     m_row = row;
+    m_unavailableReason.clear();
 
     // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
     // 本地文件直接用 file:// 播放。

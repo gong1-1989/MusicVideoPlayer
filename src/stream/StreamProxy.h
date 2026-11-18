@@ -32,6 +32,10 @@ public:
     /// 登记一个上游地址，返回给 QMediaPlayer 使用的本地 URL。
     QUrl proxyUrlFor(const QUrl &upstream);
 
+signals:
+    /// 上游 302 落到 /404 或返回的不是音视频，通常是版权/付费/登录限制。
+    void sourceUnavailable(const QUrl &upstream, const QString &contentType);
+
 private slots:
     void onNewConnection();
 

@@ -77,6 +77,8 @@ private:
     int m_row = -1;
     Mode m_mode = Mode::ListLoop;
     int m_volume = 60;
+    /// 代理发现上游不是音视频时记下的原因，用来替代播放器含糊的报错
+    QString m_unavailableReason;
 };
 
 #endif // PLAYBACKCONTROLLER_H

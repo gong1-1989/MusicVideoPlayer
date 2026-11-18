@@ -22,6 +22,24 @@ const char *const kHandled = "proxyHandled";
 const char *const kBuffer = "proxyRequestBuffer";
 const char *const kMethod = "proxyMethod";
 
+/// 网易云对无版权/付费歌曲不会返回错误码，而是 302 到 /404 再返回整页 HTML。
+/// 把 HTML 当音频流喂给 FFmpeg 只会得到含糊的 “Could not open file”，
+/// 所以这里先按最终 URL 和 Content-Type 拦一道。
+bool looksLikeMedia(QNetworkReply *reply)
+{
+    if (reply->url().path().endsWith(QLatin1String("/404")))
+        return false;
+
+    const QString type =
+        reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
+    if (type.isEmpty())
+        return true; // 类型未知时不武断拒绝，交给播放器自己判断
+    return type.startsWith(QLatin1String("audio/"))
+        || type.startsWith(QLatin1String("video/"))
+        || type.contains(QLatin1String("octet-stream"))
+        || type.contains(QLatin1String("mpegurl"));
+}
+
 QByteArray statusReason(int status)
 {
     switch (status) {
@@ -168,6 +186,16 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
             return;
         }
         if (client->state() != QAbstractSocket::ConnectedState) {
+            reply->abort();
+            reply->deleteLater();
+            return;
+        }
+        if (!looksLikeMedia(reply)) {
+            const QString type =
+                reply->header(QNetworkRequest::ContentTypeHeader).toString();
+            qCWarning(lcProxy) << "upstream is not media:" << reply->url() << type;
+            emit sourceUnavailable(upstream, type);
+            replyError(client, 404, QStringLiteral("no audio source"));
             reply->abort();
             reply->deleteLater();
             return;
