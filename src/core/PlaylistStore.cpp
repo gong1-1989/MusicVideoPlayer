@@ -1,5 +1,6 @@
 #include "core/PlaylistStore.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -23,23 +24,61 @@ QString keyFor(MediaType type)
     return QString::fromLatin1(type == MediaType::Video ? kVideoKey : kMusicKey);
 }
 
+/// 程序目录下的 Data/，和 log/ 同级；安装目录不可写时退回用户数据目录
+QString primaryPath()
+{
+    return QDir(QCoreApplication::applicationDirPath())
+        .filePath(QStringLiteral("Data/playlists.json"));
+}
+
+QString fallbackPath()
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return dir.isEmpty() ? QString() : dir + QStringLiteral("/playlists.json");
+}
+
+bool writeFile(const QString &path, const QByteArray &payload)
+{
+    if (path.isEmpty())
+        return false;
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return false;
+    file.write(payload);
+    if (!file.commit()) {
+        qCWarning(lcStore) << "cannot commit" << path << ":" << file.errorString();
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 namespace PlaylistStore {
 
 QString filePath()
 {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    if (dir.isEmpty())
-        return QString();
-    return dir + QStringLiteral("/playlists.json");
+    return primaryPath();
 }
 
 QVector<MediaItem> load(MediaType type)
 {
     QVector<MediaItem> items;
 
-    QFile file(filePath());
+    QString path = primaryPath();
+    if (!QFile::exists(path)) {
+        // 旧版本把列表放在 C 盘 AppData，首次运行时做一次无缝迁移读取
+        const QString legacy = fallbackPath();
+        if (!legacy.isEmpty() && QFile::exists(legacy)) {
+            qCInfo(lcStore) << "reading legacy playlists from" << legacy;
+            path = legacy;
+        }
+    }
+
+    QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return items;
 
@@ -66,12 +105,6 @@ QVector<MediaItem> load(MediaType type)
 
 void saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
 {
-    const QString path = filePath();
-    if (path.isEmpty())
-        return;
-
-    QDir().mkpath(QFileInfo(path).absolutePath());
-
     QJsonObject root;
     for (const auto &entry : {std::make_pair(MediaType::Music, &music),
                               std::make_pair(MediaType::Video, &video)}) {
@@ -81,14 +114,15 @@ void saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
         root.insert(keyFor(entry.first), array);
     }
 
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        qCWarning(lcStore) << "cannot open" << path << "for writing:" << file.errorString();
+    const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
+
+    if (writeFile(primaryPath(), payload))
         return;
-    }
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
-    if (!file.commit())
-        qCWarning(lcStore) << "cannot commit" << path << ":" << file.errorString();
+
+    // 程序目录只读（例如装进 Program Files）时退回用户数据目录，不让保存静默失败
+    const QString fallback = fallbackPath();
+    qCWarning(lcStore) << "cannot write" << primaryPath() << "falling back to" << fallback;
+    writeFile(fallback, payload);
 }
 
 void save(MediaType type, const QVector<MediaItem> &items)
