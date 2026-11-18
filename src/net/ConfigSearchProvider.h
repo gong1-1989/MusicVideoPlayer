@@ -2,6 +2,7 @@
 #define CONFIGSEARCHPROVIDER_H
 
 #include "media/MediaItem.h"
+#include "net/SearchProviderBase.h"
 #include "net/SourceConfig.h"
 
 #include <QObject>
@@ -12,7 +13,7 @@ class QNetworkReply;
 
 /// 一个由配置描述驱动的搜索源：发请求 → 取 JSON → 按路径取值 → 建 MediaItem。
 /// 所有平台差异都写在配置里，这个类本身不含任何平台知识。
-class ConfigSearchProvider : public QObject
+class ConfigSearchProvider : public SearchProviderBase
 {
     Q_OBJECT
 
@@ -21,12 +22,7 @@ public:
 
     const SourceConfig &config() const { return m_config; }
 
-    void search(const QString &keyword, int limit);
-
-signals:
-    /// error 为空表示成功；失败时 items 为空
-    void finished(const QString &sourceId, const QVector<MediaItem> &items, int filtered,
-                  const QString &error);
+    void search(const QString &keyword, int limit) override;
 
 private:
     void onReplyFinished();

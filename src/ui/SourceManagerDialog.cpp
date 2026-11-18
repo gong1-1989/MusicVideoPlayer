@@ -1,7 +1,8 @@
 #include "ui/SourceManagerDialog.h"
 
-#include "net/ConfigSearchProvider.h"
 #include "net/HttpClient.h"
+#include "net/SearchCoordinator.h"
+#include "net/SearchProviderBase.h"
 #include "net/SourceRegistry.h"
 
 #include <QComboBox>
@@ -24,6 +25,7 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QVBoxLayout>
 
@@ -159,68 +161,93 @@ void SourceManagerDialog::buildUi()
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(8);
 
-    auto *formGroup = new QGroupBox(tr("请求"), rightBox);
-    auto *form = new QFormLayout(formGroup);
+    auto *basicGroup = new QGroupBox(tr("基本信息"), rightBox);
+    auto *basicForm = new QFormLayout(basicGroup);
+    basicForm->setHorizontalSpacing(12);
+    basicForm->setVerticalSpacing(6);
+
+    m_name = new QLineEdit(basicGroup);
+    basicForm->addRow(tr("名称"), m_name);
+
+    m_type = new QComboBox(basicGroup);
+    m_type->addItem(tr("音乐"), QStringLiteral("music"));
+    m_type->addItem(tr("视频"), QStringLiteral("video"));
+    basicForm->addRow(tr("类型"), m_type);
+
+    m_kind = new QComboBox(basicGroup);
+    m_kind->addItem(tr("配置驱动（JSON 接口）"), QStringLiteral("config"));
+    m_kind->addItem(tr("内置实现（需要签名）"), QStringLiteral("builtin"));
+    m_kind->addItem(tr("外部解析器进程"), QStringLiteral("external"));
+    basicForm->addRow(tr("实现方式"), m_kind);
+
+    m_builtinRow = new QWidget(basicGroup);
+    auto *builtinLayout = new QHBoxLayout(m_builtinRow);
+    builtinLayout->setContentsMargins(0, 0, 0, 0);
+    builtinLayout->setSpacing(8);
+    m_provider = new QComboBox(m_builtinRow);
+    m_provider->addItem(tr("B站"), QStringLiteral("bilibili"));
+    builtinLayout->addWidget(m_provider, 1);
+    auto *builtinHint = new QLabel(tr("搜索走 wbi 签名，播放取单文件 mp4"), m_builtinRow);
+    builtinHint->setObjectName(QStringLiteral("label_hint"));
+    builtinLayout->addWidget(builtinHint, 2);
+    basicForm->addRow(tr("内置实现"), m_builtinRow);
+
+    rightLayout->addWidget(basicGroup);
+
+    m_requestGroup = new QGroupBox(tr("请求"), rightBox);
+    auto *form = new QFormLayout(m_requestGroup);
     form->setHorizontalSpacing(12);
     form->setVerticalSpacing(6);
 
-    m_name = new QLineEdit(formGroup);
-    form->addRow(tr("名称"), m_name);
-
-    m_type = new QComboBox(formGroup);
-    m_type->addItem(tr("音乐"), QStringLiteral("music"));
-    m_type->addItem(tr("视频"), QStringLiteral("video"));
-    form->addRow(tr("类型"), m_type);
-
-    m_method = new QComboBox(formGroup);
+    m_method = new QComboBox(m_requestGroup);
     m_method->addItem(QStringLiteral("GET"), QStringLiteral("GET"));
     m_method->addItem(QStringLiteral("POST"), QStringLiteral("POST"));
     form->addRow(tr("请求方式"), m_method);
 
-    m_url = new QLineEdit(formGroup);
+    m_url = new QLineEdit(m_requestGroup);
     m_url->setPlaceholderText(
         tr("https://example.com/search?term={keyword}&limit={limit}"));
     form->addRow(tr("搜索地址"), m_url);
 
-    m_body = new QPlainTextEdit(formGroup);
+    m_body = new QPlainTextEdit(m_requestGroup);
     m_body->setFixedHeight(36);
     m_body->setPlaceholderText(tr("POST 时的表单内容，可使用 {keyword} {limit}"));
     form->addRow(tr("请求体"), m_body);
 
-    m_headers = new QPlainTextEdit(formGroup);
+    m_headers = new QPlainTextEdit(m_requestGroup);
     m_headers->setFixedHeight(52);
     m_headers->setPlaceholderText(tr("每行一个：键: 值\nReferer: https://example.com/"));
     form->addRow(tr("请求头"), m_headers);
 
-    m_cookie = new QLineEdit(formGroup);
+    m_cookie = new QLineEdit(m_requestGroup);
     m_cookie->setPlaceholderText(tr("可选，例如 MUSIC_U=xxxx"));
     form->addRow(tr("Cookie"), m_cookie);
 
-    m_itemsPath = new QLineEdit(formGroup);
+    m_itemsPath = new QLineEdit(m_requestGroup);
     m_itemsPath->setPlaceholderText(tr("结果数组在响应里的路径，例如 result.songs；留空表示根就是数组"));
     form->addRow(tr("结果路径"), m_itemsPath);
 
-    rightLayout->addWidget(formGroup);
+    rightLayout->addWidget(m_requestGroup);
 
-    auto *fieldsGroup = new QGroupBox(tr("字段对应"), rightBox);
-    auto *fieldsForm = new QFormLayout(fieldsGroup);
+    m_fieldsGroup = new QGroupBox(tr("字段对应"), rightBox);
+    auto *fieldsForm = new QFormLayout(m_fieldsGroup);
     fieldsForm->setHorizontalSpacing(12);
     fieldsForm->setVerticalSpacing(6);
 
-    m_idField = new QLineEdit(fieldsGroup);
+    m_idField = new QLineEdit(m_fieldsGroup);
     m_idField->setPlaceholderText(tr("id（用于拼播放地址）"));
-    m_titleField = new QLineEdit(fieldsGroup);
+    m_titleField = new QLineEdit(m_fieldsGroup);
     m_titleField->setPlaceholderText(tr("歌名/视频名"));
-    m_artistField = new QLineEdit(fieldsGroup);
+    m_artistField = new QLineEdit(m_fieldsGroup);
     m_artistField->setPlaceholderText(tr("作者/歌手，可空"));
-    m_durationField = new QLineEdit(fieldsGroup);
+    m_durationField = new QLineEdit(m_fieldsGroup);
     m_durationField->setPlaceholderText(tr("时长，毫秒；可空"));
-    m_streamField = new QLineEdit(fieldsGroup);
+    m_streamField = new QLineEdit(m_fieldsGroup);
     m_streamField->setPlaceholderText(
         tr("播放直链字段；需要拼地址时写 @https://host/play?id={id}"));
-    m_lyricField = new QLineEdit(fieldsGroup);
+    m_lyricField = new QLineEdit(m_fieldsGroup);
     m_lyricField->setPlaceholderText(tr("歌词地址，可空"));
-    m_webField = new QLineEdit(fieldsGroup);
+    m_webField = new QLineEdit(m_fieldsGroup);
     m_webField->setPlaceholderText(tr("原网页地址，可空"));
 
     fieldsForm->addRow(tr("id"), m_idField);
@@ -230,11 +257,11 @@ void SourceManagerDialog::buildUi()
     fieldsForm->addRow(tr("播放地址"), m_streamField);
     fieldsForm->addRow(tr("歌词地址"), m_lyricField);
     fieldsForm->addRow(tr("网页地址"), m_webField);
-    rightLayout->addWidget(fieldsGroup);
+    rightLayout->addWidget(m_fieldsGroup);
 
-    auto *filterGroup = new QGroupBox(tr("过滤规则（可选）"), rightBox);
-    auto *filterLayout = new QVBoxLayout(filterGroup);
-    m_skipIf = new QPlainTextEdit(filterGroup);
+    m_filterGroup = new QGroupBox(tr("过滤规则（可选）"), rightBox);
+    auto *filterLayout = new QVBoxLayout(m_filterGroup);
+    m_skipIf = new QPlainTextEdit(m_filterGroup);
     m_skipIf->setFixedHeight(64);
     m_skipIf->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_skipIf->setPlaceholderText(
@@ -242,8 +269,44 @@ void SourceManagerDialog::buildUi()
            "{ \"any\": [ { \"path\": \"fee\", \"op\": \"eq\", \"value\": 1 } ] }\n"
            "op 可选 eq / ne / gt / gte / lt / lte / empty / notEmpty / contains"));
     filterLayout->addWidget(m_skipIf);
-    rightLayout->addWidget(filterGroup);
+    rightLayout->addWidget(m_filterGroup);
+
+    m_externalGroup = new QGroupBox(tr("外部解析器"), rightBox);
+    auto *externalForm = new QFormLayout(m_externalGroup);
+    externalForm->setHorizontalSpacing(12);
+    externalForm->setVerticalSpacing(6);
+
+    m_command = new QLineEdit(m_externalGroup);
+    m_command->setPlaceholderText(
+        tr("python、node，或程序目录下的脚本 / 绝对路径的 exe"));
+    externalForm->addRow(tr("命令"), m_command);
+
+    m_arguments = new QLineEdit(m_externalGroup);
+    m_arguments->setPlaceholderText(
+        tr("参数，可用 {keyword} {limit}，例如 --keyword={keyword} --limit={limit}"));
+    externalForm->addRow(tr("参数"), m_arguments);
+
+    m_timeout = new QSpinBox(m_externalGroup);
+    m_timeout->setRange(1000, 60000);
+    m_timeout->setSingleStep(500);
+    m_timeout->setSuffix(tr(" 毫秒"));
+    externalForm->addRow(tr("超时"), m_timeout);
+
+    auto *externalHint = new QLabel(
+        tr("解析器把结果以 JSON 打到 stdout：\n"
+           "[ { \"title\": \"...\", \"artist\": \"...\", \"streamUrl\": \"...\" } ]\n"
+           "也可以输出 { \"items\": [...], \"filtered\": 2 }；报错时退出码非 0 或输出 "
+           "{ \"error\": \"原因\" }。"),
+        m_externalGroup);
+    externalHint->setObjectName(QStringLiteral("label_hint"));
+    externalHint->setWordWrap(true);
+    externalForm->addRow(externalHint);
+
+    rightLayout->addWidget(m_externalGroup);
     rightLayout->addStretch(1);
+
+    connect(m_kind, &QComboBox::currentIndexChanged, this,
+            [this](int) { updateKindUi(); });
 
     auto *scroll = new QScrollArea(splitter);
     scroll->setWidgetResizable(true);
@@ -309,8 +372,7 @@ void SourceManagerDialog::reloadList(int targetRow)
     for (const SourceConfig &config : m_drafts) {
         QString text = config.name;
         text += QStringLiteral(" · ") + config.typeLabel();
-        if (config.builtin)
-            text += QStringLiteral(" · 内置");
+        text += QStringLiteral(" · ") + config.kindLabel();
         if (!config.isValid())
             text += tr(" · 配置不完整");
         auto *item = new QListWidgetItem(text, m_list);
@@ -364,6 +426,11 @@ void SourceManagerDialog::loadDraftToForm(const SourceConfig &config)
                                                  ? QStringLiteral("video")
                                                  : QStringLiteral("music")));
     m_method->setCurrentIndex(m_method->findData(config.method.toUpper()));
+    m_kind->setCurrentIndex(qMax(0, m_kind->findData(config.kind)));
+    m_provider->setCurrentIndex(qMax(0, m_provider->findData(config.provider)));
+    m_command->setText(config.command);
+    m_arguments->setText(config.arguments);
+    m_timeout->setValue(config.timeoutMs);
     m_url->setText(config.urlTemplate);
     m_body->setPlainText(config.bodyTemplate);
     m_headers->setPlainText(headersToText(config.headers));
@@ -380,7 +447,24 @@ void SourceManagerDialog::loadDraftToForm(const SourceConfig &config)
                                ? QString()
                                : QString::fromUtf8(QJsonDocument(config.skipIf).toJson(
                                      QJsonDocument::Indented)));
-    m_updating = false;
+            m_updating = false;
+    updateKindUi();
+}
+
+void SourceManagerDialog::updateKindUi()
+{
+    if (m_kind == nullptr)
+        return;
+    const QString kind = m_kind->currentData().toString();
+    const bool isConfig = kind == QLatin1String("config");
+    const bool isBuiltin = kind == QLatin1String("builtin");
+    const bool isExternal = kind == QLatin1String("external");
+
+    m_builtinRow->setVisible(isBuiltin);
+    m_requestGroup->setVisible(isConfig);
+    m_fieldsGroup->setVisible(isConfig);
+    m_filterGroup->setVisible(isConfig);
+    m_externalGroup->setVisible(isExternal);
 }
 
 SourceConfig SourceManagerDialog::readForm() const
@@ -396,6 +480,13 @@ SourceConfig SourceManagerDialog::readForm() const
     config.mediaType = m_type->currentData().toString() == QLatin1String("video")
                            ? MediaType::Video
                            : MediaType::Music;
+    config.kind = m_kind->currentData().toString();
+    config.provider = m_provider->currentData().toString();
+    if (config.kind == QLatin1String("external")) {
+        config.command = m_command->text().trimmed();
+        config.arguments = m_arguments->text();
+        config.timeoutMs = m_timeout->value();
+    }
     config.method = m_method->currentData().toString();
     config.urlTemplate = m_url->text().trimmed();
     config.bodyTemplate = m_body->toPlainText();
@@ -487,7 +578,8 @@ void SourceManagerDialog::onTest()
     const SourceConfig draft = readForm();
     if (!draft.isValid()) {
         QMessageBox::warning(this, tr("配置不完整"),
-                             tr("至少要填：搜索地址、标题字段、播放地址字段。"));
+                             tr("配置驱动源至少要填：搜索地址、标题字段、播放地址字段；"
+                                "外部解析器至少要填命令。"));
         return;
     }
     const QString keyword = m_testKeyword->text().trimmed();
@@ -501,8 +593,8 @@ void SourceManagerDialog::onTest()
     m_testList->addItem(tr("正在搜索“%1”…").arg(keyword));
     m_btnTest->setEnabled(false);
 
-    auto *provider = new ConfigSearchProvider(draft, m_http, this);
-    connect(provider, &ConfigSearchProvider::finished, this,
+    auto *provider = createSearchProvider(draft, m_http, this);
+    connect(provider, &SearchProviderBase::finished, this,
             [this, provider](const QString &, const QVector<MediaItem> &items, int filtered,
                              const QString &error) {
                 m_testList->clear();

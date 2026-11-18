@@ -1,11 +1,23 @@
 #include "net/SearchCoordinator.h"
 
+#include "net/BilibiliProvider.h"
 #include "net/ConfigSearchProvider.h"
+#include "net/ExternalSearchProvider.h"
 #include "net/SourceRegistry.h"
 
 #include <QLoggingCategory>
 
 Q_LOGGING_CATEGORY(lcSearch, "mvp.search")
+
+SearchProviderBase *createSearchProvider(const SourceConfig &config, HttpClient *http,
+                                         QObject *parent)
+{
+    if (config.kind == QLatin1String("builtin"))
+        return new BilibiliProvider(config, http, parent);
+    if (config.kind == QLatin1String("external"))
+        return new ExternalSearchProvider(config, parent);
+    return new ConfigSearchProvider(config, http, parent);
+}
 
 SearchCoordinator::SearchCoordinator(SourceRegistry *registry, HttpClient *http, QObject *parent)
     : QObject(parent)
@@ -60,9 +72,10 @@ void SearchCoordinator::startNext()
     }
 
     const SourceConfig config = m_queue.at(m_index);
-    auto *provider = new ConfigSearchProvider(config, m_http, this);
+
+    SearchProviderBase *provider = createSearchProvider(config, m_http, this);
     m_current = provider;
-    connect(provider, &ConfigSearchProvider::finished, this,
+    connect(provider, &SearchProviderBase::finished, this,
             [this](const QString &sourceId, const QVector<MediaItem> &items, int filtered,
                    const QString &error) {
                 Q_UNUSED(sourceId)

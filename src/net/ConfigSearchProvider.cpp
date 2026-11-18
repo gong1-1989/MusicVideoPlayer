@@ -147,7 +147,7 @@ QString mapString(const QJsonValue &node, const QHash<QString, QString> &fields,
 
 ConfigSearchProvider::ConfigSearchProvider(const SourceConfig &config, HttpClient *http,
                                            QObject *parent)
-    : QObject(parent)
+    : SearchProviderBase(parent)
     , m_config(config)
     , m_http(http)
 {

@@ -37,8 +37,13 @@ qt_add_library(mvp_core STATIC
     src/net/HttpClient.cpp
     src/net/SourceConfig.h
     src/net/SourceConfig.cpp
+    src/net/SearchProviderBase.h
     src/net/ConfigSearchProvider.h
     src/net/ConfigSearchProvider.cpp
+    src/net/BilibiliProvider.h
+    src/net/BilibiliProvider.cpp
+    src/net/ExternalSearchProvider.h
+    src/net/ExternalSearchProvider.cpp
     src/net/SourceRegistry.h
     src/net/SourceRegistry.cpp
     src/net/SearchCoordinator.h

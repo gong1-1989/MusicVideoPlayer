@@ -9,11 +9,13 @@
 class HttpClient;
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
 class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QPlainTextEdit;
 class QPushButton;
+class QSpinBox;
 class SourceRegistry;
 
 /// 搜索源管理：左侧源列表，右侧编辑当前源，底部可试搜、导入导出。
@@ -42,6 +44,7 @@ private:
     void loadDraftToForm(const SourceConfig &config);
     SourceConfig readForm() const;
     void updateActions();
+    void updateKindUi();
 
     void onAdd();
     void onDuplicate();
@@ -63,6 +66,16 @@ private:
     QLineEdit *m_testKeyword = nullptr;
     QLineEdit *m_name = nullptr;
     QComboBox *m_type = nullptr;
+    QComboBox *m_kind = nullptr;
+    QComboBox *m_provider = nullptr;
+    QWidget *m_builtinRow = nullptr;
+    QGroupBox *m_requestGroup = nullptr;
+    QGroupBox *m_fieldsGroup = nullptr;
+    QGroupBox *m_filterGroup = nullptr;
+    QGroupBox *m_externalGroup = nullptr;
+    QLineEdit *m_command = nullptr;
+    QLineEdit *m_arguments = nullptr;
+    QSpinBox *m_timeout = nullptr;
     QComboBox *m_method = nullptr;
     QLineEdit *m_url = nullptr;
     QPlainTextEdit *m_body = nullptr;

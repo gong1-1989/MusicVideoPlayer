@@ -1,6 +1,9 @@
 #include "net/SourceConfig.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QObject>
+#include <QUrl>
 
 namespace {
 
@@ -28,6 +31,15 @@ bool SourceConfig::isValid() const
 {
     if (id.trimmed().isEmpty() || name.trimmed().isEmpty())
         return false;
+
+    if (kind == QLatin1String("builtin"))
+        return provider == QLatin1String("bilibili");
+
+    if (kind == QLatin1String("external")) {
+        // 命令可以是绝对路径、PATH 里的程序名，或相对程序目录的脚本
+        return !command.trimmed().isEmpty();
+    }
+
     const QString scheme = QUrl(urlTemplate).scheme();
     if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
         return false;
@@ -44,6 +56,15 @@ QString SourceConfig::typeLabel() const
     return mediaType == MediaType::Video ? QObject::tr("视频") : QObject::tr("音乐");
 }
 
+QString SourceConfig::kindLabel() const
+{
+    if (kind == QLatin1String("builtin"))
+        return QObject::tr("内置");
+    if (kind == QLatin1String("external"))
+        return QObject::tr("外部解析器");
+    return QObject::tr("配置");
+}
+
 QJsonObject sourceConfigToJson(const SourceConfig &config)
 {
     QJsonObject object;
@@ -54,6 +75,14 @@ QJsonObject sourceConfigToJson(const SourceConfig &config)
     object.insert(QStringLiteral("mediaType"),
                   config.mediaType == MediaType::Video ? QStringLiteral("video")
                                                        : QStringLiteral("music"));
+    object.insert(QStringLiteral("kind"), config.kind);
+    if (!config.provider.isEmpty())
+        object.insert(QStringLiteral("provider"), config.provider);
+    if (config.kind == QLatin1String("external")) {
+        object.insert(QStringLiteral("command"), config.command);
+        object.insert(QStringLiteral("arguments"), config.arguments);
+        object.insert(QStringLiteral("timeoutMs"), config.timeoutMs);
+    }
     object.insert(QStringLiteral("method"), config.method.toUpper());
     object.insert(QStringLiteral("url"), config.urlTemplate);
     if (!config.bodyTemplate.isEmpty()) {
@@ -81,6 +110,13 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
     config.mediaType = object.value(QStringLiteral("mediaType")).toString() == QLatin1String("video")
                            ? MediaType::Video
                            : MediaType::Music;
+    config.kind = object.value(QStringLiteral("kind")).toString(QStringLiteral("config"));
+    config.provider = object.value(QStringLiteral("provider")).toString();
+    config.command = object.value(QStringLiteral("command")).toString();
+    config.arguments = object.value(QStringLiteral("arguments")).toString();
+    config.timeoutMs = object.value(QStringLiteral("timeoutMs")).toInt(8000);
+    if (config.timeoutMs < 500)
+        config.timeoutMs = 8000;
     config.method = object.value(QStringLiteral("method")).toString(QStringLiteral("GET")).toUpper();
     config.urlTemplate = object.value(QStringLiteral("url")).toString();
     config.bodyTemplate = object.value(QStringLiteral("body")).toString();

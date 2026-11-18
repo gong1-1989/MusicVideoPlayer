@@ -7,9 +7,13 @@
 #include <QObject>
 #include <QStringList>
 
-class ConfigSearchProvider;
+class SearchProviderBase;
 class HttpClient;
 class SourceRegistry;
+
+/// 按源的 kind 创建对应实现：内置 / 外部解析器 / 配置驱动
+SearchProviderBase *createSearchProvider(const SourceConfig &config, HttpClient *http,
+                                         QObject *parent);
 
 /// 依次跑所有启用源，把结果合并成一份；单个源失败不影响其它源。
 class SearchCoordinator : public QObject
@@ -46,7 +50,7 @@ private:
     int m_filtered = 0;
     QStringList m_failed;
     QVector<QString> m_queueNames;
-    ConfigSearchProvider *m_current = nullptr;
+    SearchProviderBase *m_current = nullptr;
 };
 
 #endif // SEARCHCOORDINATOR_H

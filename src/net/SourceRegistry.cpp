@@ -70,9 +70,35 @@ const char *kSeedSources = R"JSON(
       "webUrl": "trackViewUrl"
     },
     "skipIf": { "any": [ { "path": "previewUrl", "op": "empty" } ] }
+  },
+  {
+    "id": "bilibili",
+    "name": "B站（内置）",
+    "enabled": true,
+    "builtin": true,
+    "kind": "builtin",
+    "provider": "bilibili",
+    "mediaType": "video",
+    "headers": { "Referer": "https://www.bilibili.com/" }
   }
 ]
 )JSON";
+
+QVector<SourceConfig> seedSources()
+{
+    QVector<SourceConfig> configs;
+    QJsonParseError parseError{};
+    const QJsonDocument seed = QJsonDocument::fromJson(QByteArray(kSeedSources), &parseError);
+    if (parseError.error != QJsonParseError::NoError)
+        return configs;
+    for (const QJsonValue &entry : seed.array()) {
+        bool ok = false;
+        const SourceConfig config = sourceConfigFromJson(entry.toObject(), &ok);
+        if (ok)
+            configs.append(config);
+    }
+    return configs;
+}
 
 QString primaryDir()
 {
@@ -102,16 +128,7 @@ bool SourceRegistry::load()
     QFile file(storagePath());
     if (!file.exists()) {
         // 首次运行：写入预置源，之后它就是普通可编辑文件
-        QJsonParseError parseError{};
-        const QJsonDocument seed = QJsonDocument::fromJson(QByteArray(kSeedSources), &parseError);
-        if (parseError.error == QJsonParseError::NoError) {
-            for (const QJsonValue &entry : seed.array()) {
-                bool ok = false;
-                const SourceConfig config = sourceConfigFromJson(entry.toObject(), &ok);
-                if (ok)
-                    m_sources.append(config);
-            }
-        }
+        m_sources = seedSources();
         qCInfo(lcRegistry) << "seed sources written:" << m_sources.size();
         save();
         return true;
@@ -146,6 +163,27 @@ bool SourceRegistry::load()
         }
         m_sources.append(config);
     }
+    // 版本升级后新增的内置源要补进来；用户自己已有的源一律不动
+    bool dirty = false;
+    for (const SourceConfig &seed : seedSources()) {
+        if (!seed.builtin)
+            continue;
+        bool exists = false;
+        for (const SourceConfig &config : m_sources) {
+            if (config.id == seed.id) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            m_sources.append(seed);
+            dirty = true;
+            qCInfo(lcRegistry) << "added missing builtin source" << seed.id;
+        }
+    }
+    if (dirty)
+        save();
+
     qCInfo(lcRegistry) << "loaded" << m_sources.size() << "sources from" << storagePath();
     return true;
 }
