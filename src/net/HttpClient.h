@@ -2,6 +2,7 @@
 #define HTTPCLIENT_H
 
 #include <QByteArray>
+#include <QHash>
 #include <QObject>
 #include <QString>
 
@@ -22,12 +23,19 @@ public:
 
     explicit HttpClient(QObject *parent = nullptr);
 
-    QNetworkReply *get(const QUrl &url, const QByteArray &range = QByteArray());
-    QNetworkReply *postForm(const QUrl &url, const QByteArray &body);
+    /// 额外请求头（各源自定义的头、Cookie 等）会覆盖默认头
+    QNetworkReply *get(const QUrl &url, const QByteArray &range = QByteArray(),
+                       const QHash<QString, QString> &headers = {});
+    QNetworkReply *postForm(const QUrl &url, const QByteArray &body,
+                            const QHash<QString, QString> &headers = {});
+    QNetworkReply *postJson(const QUrl &url, const QByteArray &body,
+                            const QHash<QString, QString> &headers = {});
 
     /// 手动跟随重定向（含 https→http 降级），把最终可读的 reply 交给 onReady。
     /// onReady 只调用一次；重定向超限或目标协议不被允许时回调 nullptr。
     void fetch(const QUrl &url, const QByteArray &range, const ReplyHandler &onReady);
+    void fetch(const QUrl &url, const QByteArray &range,
+               const QHash<QString, QString> &headers, const ReplyHandler &onReady);
 
     void setCookie(const QString &cookie);
 
@@ -36,6 +44,7 @@ public:
 
 private:
     void fetchInternal(const QUrl &url, const QByteArray &range,
+                       const QHash<QString, QString> &headers,
                        const ReplyHandler &onReady, int hop);
 
     QNetworkAccessManager *m_nam;

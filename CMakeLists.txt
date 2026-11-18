@@ -35,8 +35,14 @@ qt_add_library(mvp_core STATIC
     src/util/TimeFormat.cpp
     src/net/HttpClient.h
     src/net/HttpClient.cpp
-    src/net/MusicSearchService.h
-    src/net/MusicSearchService.cpp
+    src/net/SourceConfig.h
+    src/net/SourceConfig.cpp
+    src/net/ConfigSearchProvider.h
+    src/net/ConfigSearchProvider.cpp
+    src/net/SourceRegistry.h
+    src/net/SourceRegistry.cpp
+    src/net/SearchCoordinator.h
+    src/net/SearchCoordinator.cpp
     src/lyrics/LrcParser.h
     src/lyrics/LrcParser.cpp
     src/lyrics/LyricsService.h
@@ -82,6 +88,8 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/LyricsView.cpp
     src/ui/SettingsDialog.h
     src/ui/SettingsDialog.cpp
+    src/ui/SourceManagerDialog.h
+    src/ui/SourceManagerDialog.cpp
     )
 
 target_link_libraries(MusicVideoPlayer PRIVATE

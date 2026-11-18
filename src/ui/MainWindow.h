@@ -12,7 +12,8 @@
 #include <QVector>
 
 class PlaylistModel;
-class MusicSearchService;
+class SearchCoordinator;
+class SourceRegistry;
 class LyricsService;
 class HttpClient;
 class DownloadTask;
@@ -82,7 +83,8 @@ private:
 
     Ui::MainWindow *ui;
     HttpClient *m_http;
-    MusicSearchService *m_search;
+    SourceRegistry *m_registry;
+    SearchCoordinator *m_coordinator;
     LyricsService *m_lyrics;
     PlaybackController *m_player;
     PlaylistModel *m_musicModel;

@@ -43,7 +43,7 @@ PlaybackController::PlaybackController(QObject *parent)
             [this](const QUrl &upstream, const QString &contentType) {
                 qCWarning(lcPlayer) << "source unavailable:" << upstream.toString() << contentType;
                 m_unavailableReason =
-                    tr("这首歌网易云未返回音频（版权/付费限制），换一首试试");
+                    tr("这个源没有返回可播放的音频/视频（版权、付费或需要登录），换一首试试");
                 emit errorOccurred(m_unavailableReason);
             });
 }
@@ -91,7 +91,7 @@ void PlaybackController::playRow(int row)
     // 本地文件直接用 file:// 播放。
     QUrl source = item.url;
     if (item.online && m_proxy->isListening()) {
-        const QUrl proxied = m_proxy->proxyUrlFor(item.url);
+        const QUrl proxied = m_proxy->proxyUrlFor(item.url, item.headers);
         if (proxied.isValid())
             source = proxied;
     }

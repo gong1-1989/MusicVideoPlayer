@@ -6,7 +6,8 @@
 #include "download/DownloadTask.h"
 #include "lyrics/LyricsService.h"
 #include "net/HttpClient.h"
-#include "net/MusicSearchService.h"
+#include "net/SearchCoordinator.h"
+#include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
 #include "settings/WindowPreset.h"
 #include "ui/SettingsDialog.h"
@@ -43,6 +44,7 @@
 #include <QSlider>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -98,7 +100,8 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_http(new HttpClient(this))
-    , m_search(new MusicSearchService(m_http, this))
+    , m_registry(new SourceRegistry(this))
+    , m_coordinator(nullptr)
     , m_lyrics(new LyricsService(m_http, this))
     , m_player(new PlaybackController(this))
     , m_musicModel(new PlaylistModel(this))
@@ -106,6 +109,9 @@ MainWindow::MainWindow(QWidget *parent)
     , m_searchModel(new PlaylistModel(this))
 {
     ui->setupUi(this);
+
+    m_registry->load();
+    m_coordinator = new SearchCoordinator(m_registry, m_http, this);
 
     ui->list_search->setModel(m_searchModel);    ui->list_music->setModel(m_musicModel);
     ui->list_video->setModel(m_videoModel);
@@ -219,33 +225,40 @@ void MainWindow::setupConnections()
         qWarning() << "lyrics failed:" << message;
     });
 
-    connect(m_search, &MusicSearchService::searchStarted, this, [this] {
+    connect(m_coordinator, &SearchCoordinator::searchStarted, this, [this] {
         ui->btn_search->setEnabled(false);
         ui->label_status->setText(tr("搜索中…"));
     });
-    connect(m_search, &MusicSearchService::searchSucceeded, this,
-            [this](const QVector<MediaItem> &items) {
+    connect(m_coordinator, &SearchCoordinator::searchSucceeded, this,
+            [this](const QVector<MediaItem> &items, int filtered, const QStringList &failed) {
                 m_searchModel->clear();
-                for (const MediaItem &item : items)
+                int musicCount = 0;
+                int videoCount = 0;
+                for (const MediaItem &item : items) {
                     m_searchModel->addItem(item);
-                const int filtered = m_search->lastFilteredCount();
-                if (items.isEmpty()) {
-                    ui->label_status->setText(filtered > 0
-                                                  ? tr("未搜索到可播放结果（已过滤 %1 首 VIP/无音源）")
-                                                        .arg(filtered)
-                                                  : tr("未搜索到结果"));
-                } else if (filtered > 0) {
-                    ui->label_status->setText(tr("搜索完成，共 %1 首（已过滤 %2 首 VIP/无音源）")
-                                                  .arg(items.size())
-                                                  .arg(filtered));
-                } else {
-                    ui->label_status->setText(tr("搜索完成，共 %1 首").arg(items.size()));
+                    if (item.type == MediaType::Video)
+                        ++videoCount;
+                    else
+                        ++musicCount;
                 }
+
+                QString text;
+                if (items.isEmpty()) {
+                    text = filtered > 0
+                               ? tr("未搜索到可播放结果（已过滤 %1 条）").arg(filtered)
+                               : tr("未搜索到结果");
+                } else {
+                    text = tr("搜索完成：音乐 %1 首，视频 %2 个")
+                               .arg(musicCount)
+                               .arg(videoCount);
+                    if (filtered > 0)
+                        text += tr("（已过滤 %1 条）").arg(filtered);
+                }
+                if (!failed.isEmpty())
+                    text += tr("；失败：%1").arg(failed.join(QStringLiteral("、")));
+                ui->label_status->setText(text);
             });
-    connect(m_search, &MusicSearchService::searchFailed, this, [this](const QString &message) {
-        ui->label_status->setText(tr("搜索失败：%1").arg(message));
-    });
-    connect(m_search, &MusicSearchService::searchFinished, this, [this] {
+    connect(m_coordinator, &SearchCoordinator::searchFinished, this, [this] {
         ui->btn_search->setEnabled(true);
     });
 
@@ -285,8 +298,6 @@ void MainWindow::restoreSettings()
 
     const int modeValue = AppSettings::playbackMode();
     m_player->setMode(static_cast<PlaybackController::Mode>(qBound(0, modeValue, 2)));
-
-    m_search->setResultLimit(AppSettings::searchLimit());
 
     // 上次会话的音乐/视频列表
     m_musicModel->setItems(playlistFromJson(AppSettings::playlist(MediaType::Music)));
@@ -347,13 +358,12 @@ void MainWindow::applySettings()
         ui->slider_volume->setValue(m_player->volumePercent());
     }
 
-    m_search->setResultLimit(AppSettings::searchLimit());
     highlightCurrentLyric();
 }
 
 void MainWindow::on_btn_settings_clicked()
 {
-    SettingsDialog dialog(this);
+    SettingsDialog dialog(m_registry, m_http, this);
     if (dialog.exec() == QDialog::Accepted)
         applySettings();
 }
@@ -524,7 +534,7 @@ void MainWindow::on_btn_search_clicked()
         ui->label_status->setText(tr("请输入搜索关键词"));
         return;
     }
-    m_search->search(keyword);
+    m_coordinator->search(keyword, AppSettings::searchLimit());
 }
 
 void MainWindow::on_btn_openMusic_clicked()
@@ -777,7 +787,7 @@ void MainWindow::downloadItem(const MediaItem &item)
 
     m_lastDir = QFileInfo(target).absolutePath();
 
-    auto *task = DownloadTask::start(m_http, item.url, target, this);
+    auto *task = DownloadTask::start(m_http, item.url, target, item.headers, this);
     m_download = task;
 
     connect(task, &DownloadTask::progress, this, [this](qint64 received, qint64 total) {

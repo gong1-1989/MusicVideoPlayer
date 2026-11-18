@@ -405,10 +405,73 @@ QToolTip {
     padding: 4px 8px;
 }
 
-QDialog#SettingsDialog {
+QDialog#SettingsDialog,
+QDialog#SourceManagerDialog {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                                 stop:0 #0a0a1e,
                                 stop:1 #101a33);
+}
+
+/* 搜索源管理里的表单控件：与主界面保持同一套玻璃质感 */
+QDialog#SourceManagerDialog QLineEdit,
+QDialog#SourceManagerDialog QPlainTextEdit,
+QDialog#SourceManagerDialog QComboBox {
+    background: rgba(255, 255, 255, 6%);
+    border: 1px solid rgba(150, 190, 255, 22%);
+    border-radius: 8px;
+    padding: 3px 8px;
+    color: #e6ecff;
+    selection-background-color: rgba(110, 92, 255, 45%);
+}
+
+QDialog#SourceManagerDialog QLineEdit:focus,
+QDialog#SourceManagerDialog QPlainTextEdit:focus,
+QDialog#SourceManagerDialog QComboBox:focus {
+    border: 1px solid rgba(150, 200, 255, 60%);
+}
+
+QDialog#SourceManagerDialog QGroupBox {
+    border: 1px solid rgba(160, 190, 255, 14%);
+    border-radius: 12px;
+    margin-top: 14px;
+    padding: 6px 8px 4px 8px;
+}
+
+QDialog#SourceManagerDialog QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: #8ef2ff;
+}
+
+QDialog#SourceManagerDialog QCheckBox {
+    color: #dfe4ff;
+}
+
+QDialog#SourceManagerDialog QLabel {
+    color: #cfd6ff;
+}
+
+/* 表单在滚动区里，滚动区本身不能带白底 */
+QDialog#SourceManagerDialog QScrollArea {
+    background: transparent;
+    border: none;
+}
+
+QDialog#SourceManagerDialog QScrollArea > QWidget > QWidget {
+    background: transparent;
+}
+
+QDialog#SourceManagerDialog QScrollArea QScrollBar:vertical {
+    background: rgba(255, 255, 255, 4%);
+    width: 8px;
+    border-radius: 4px;
+}
+
+QDialog#SourceManagerDialog QScrollArea QScrollBar::handle:vertical {
+    background: rgba(150, 190, 255, 45%);
+    border-radius: 4px;
+    min-height: 24px;
 }
 
 QLabel#label_sectionTitle {

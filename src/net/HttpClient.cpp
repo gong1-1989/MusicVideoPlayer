@@ -24,7 +24,8 @@ bool isAllowedScheme(const QUrl &url)
     return url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https");
 }
 
-QNetworkRequest buildRequest(const QUrl &url, const QString &cookie)
+QNetworkRequest buildRequest(const QUrl &url, const QString &cookie,
+                             const QHash<QString, QString> &extra)
 {
     QNetworkRequest request(url);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
@@ -44,6 +45,17 @@ QNetworkRequest buildRequest(const QUrl &url, const QString &cookie)
     }
     if (!cookie.isEmpty())
         request.setRawHeader("Cookie", cookie.toUtf8());
+
+    // 各搜索源自定义的头放在最后，允许覆盖上面的默认值
+    for (auto it = extra.cbegin(); it != extra.cend(); ++it) {
+        const QString key = it.key();
+        const QByteArray value = it.value().toUtf8();
+        if (key.compare(QLatin1String("User-Agent"), Qt::CaseInsensitive) == 0) {
+            request.setHeader(QNetworkRequest::UserAgentHeader, it.value());
+            continue;
+        }
+        request.setRawHeader(key.toUtf8(), value);
+    }
     return request;
 }
 
@@ -56,30 +68,47 @@ HttpClient::HttpClient(QObject *parent)
     m_nam->setTransferTimeout(15000);
 }
 
-QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range)
+QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
+                               const QHash<QString, QString> &headers)
 {
     qCDebug(lcHttp) << "GET" << url.toString() << "range" << range;
-    QNetworkRequest request = buildRequest(url, m_cookie);
+    QNetworkRequest request = buildRequest(url, m_cookie, headers);
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
     return m_nam->get(request);
 }
 
-QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body)
+QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body,
+                                    const QHash<QString, QString> &headers)
+{
+    return postJson(url, body, headers);
+}
+
+QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
+                                    const QHash<QString, QString> &headers)
 {
     qCDebug(lcHttp) << "POST" << url.toString() << "body" << body.size() << "bytes";
-    QNetworkRequest request = buildRequest(url, m_cookie);
-    request.setHeader(QNetworkRequest::ContentTypeHeader,
-                      QStringLiteral("application/x-www-form-urlencoded"));
+    QNetworkRequest request = buildRequest(url, m_cookie, headers);
+    const QByteArray contentType =
+        headers.value(QStringLiteral("Content-Type"),
+                      QStringLiteral("application/x-www-form-urlencoded")).toUtf8();
+    request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
     return m_nam->post(request, body);
 }
 
 void HttpClient::fetch(const QUrl &url, const QByteArray &range, const ReplyHandler &onReady)
 {
-    fetchInternal(url, range, onReady, 0);
+    fetch(url, range, QHash<QString, QString>(), onReady);
+}
+
+void HttpClient::fetch(const QUrl &url, const QByteArray &range,
+                       const QHash<QString, QString> &headers, const ReplyHandler &onReady)
+{
+    fetchInternal(url, range, headers, onReady, 0);
 }
 
 void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
+                               const QHash<QString, QString> &headers,
                                const ReplyHandler &onReady, int hop)
 {
     if (hop > kMaxRedirects || !isAllowedScheme(url)) {
@@ -88,7 +117,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
         return;
     }
 
-    QNetworkRequest request = buildRequest(url, m_cookie);
+    QNetworkRequest request = buildRequest(url, m_cookie, headers);
     // 默认的 NoLessSafeRedirectPolicy 会拒绝 https→http 的降级跳转，
     // 而 163 的 outer/url 恰好 302 到 http 的 CDN，所以这里改为手动跟随。
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
@@ -102,7 +131,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
     auto delivered = std::make_shared<bool>(false);
 
     connect(reply, &QNetworkReply::metaDataChanged, this,
-            [this, reply, url, range, onReady, hop, delivered] {
+            [this, reply, url, range, headers, onReady, hop, delivered] {
         if (*delivered)
             return;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -121,7 +150,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
             return;
         }
         qCInfo(lcHttp) << "redirect" << status << url.toString() << "->" << next.toString();
-        fetchInternal(next, range, onReady, hop + 1);
+        fetchInternal(next, range, headers, onReady, hop + 1);
     });
 
     connect(reply, &QNetworkReply::finished, this,

@@ -30,7 +30,9 @@ public:
     int port() const;
 
     /// 登记一个上游地址，返回给 QMediaPlayer 使用的本地 URL。
-    QUrl proxyUrlFor(const QUrl &upstream);
+    /// headers 是该源必需的请求头（Referer、Cookie 等），代理在拉流时补上。
+    QUrl proxyUrlFor(const QUrl &upstream,
+                     const QHash<QString, QString> &headers = QHash<QString, QString>());
 
 signals:
     /// 上游 302 落到 /404 或返回的不是音视频，通常是版权/付费/登录限制。
@@ -57,9 +59,15 @@ private:
     static Request parseRequest(const QByteArray &payload);
     static QByteArray guessContentType(const QUrl &upstream);
 
+    struct Upstream
+    {
+        QUrl url;
+        QHash<QString, QString> headers;
+    };
+
     HttpClient *m_http;
     QTcpServer *m_server;
-    QHash<QString, QUrl> m_tokens;
+    QHash<QString, Upstream> m_tokens;
 };
 
 #endif // STREAMPROXY_H

@@ -106,13 +106,16 @@ int StreamProxy::port() const
     return m_server->serverPort();
 }
 
-QUrl StreamProxy::proxyUrlFor(const QUrl &upstream)
+QUrl StreamProxy::proxyUrlFor(const QUrl &upstream, const QHash<QString, QString> &headers)
 {
     if (!isListening() && !start())
         return QUrl();
 
     const QString token = QString::number(QRandomGenerator::global()->generate64(), 16);
-    m_tokens.insert(token, upstream);
+    Upstream entry;
+    entry.url = upstream;
+    entry.headers = headers;
+    m_tokens.insert(token, entry);
     return QUrl(QStringLiteral("http://127.0.0.1:%1/stream/%2")
                     .arg(m_server->serverPort())
                     .arg(token));
@@ -159,7 +162,8 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     }
 
     const QString token = request.path.section(QLatin1Char('/'), -1);
-    const QUrl upstream = m_tokens.value(token);
+    const Upstream entry = m_tokens.value(token);
+    const QUrl upstream = entry.url;
     if (!upstream.isValid()) {
         qCWarning(lcProxy) << "unknown token" << token;
         replyError(client, 404, QStringLiteral("Not Found"));
@@ -172,7 +176,7 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
 
     // 由 HttpClient 手动跟随 302（含 https→http 降级），拿到可读的上游 reply
     QPointer<QTcpSocket> guard(client);
-    m_http->fetch(upstream, range, [this, guard, upstream](QNetworkReply *reply) {
+    m_http->fetch(upstream, range, entry.headers, [this, guard, upstream](QNetworkReply *reply) {
         if (guard.isNull()) {
             if (reply != nullptr) {
                 reply->abort();

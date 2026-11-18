@@ -1,6 +1,7 @@
 #ifndef DOWNLOADTASK_H
 #define DOWNLOADTASK_H
 
+#include <QHash>
 #include <QObject>
 #include <QPointer>
 #include <QSaveFile>
@@ -21,6 +22,12 @@ public:
                                const QUrl &url,
                                const QString &filePath,
                                QObject *parent = nullptr);
+    /// 带源请求头（Referer/Cookie）的下载，部分源缺头会直接 403
+    static DownloadTask *start(HttpClient *http,
+                               const QUrl &url,
+                               const QString &filePath,
+                               const QHash<QString, QString> &headers,
+                               QObject *parent = nullptr);
 
     /// 去掉 Windows 非法字符并补扩展名
     static QString sanitizeFileName(const QString &name, const QString &suffix);
@@ -37,6 +44,7 @@ private:
     DownloadTask(HttpClient *http,
                  const QUrl &url,
                  const QString &filePath,
+                 const QHash<QString, QString> &headers,
                  QObject *parent);
 
     void startRequest();
@@ -47,6 +55,7 @@ private:
     HttpClient *m_http;
     QUrl m_url;
     QString m_filePath;
+    QHash<QString, QString> m_headers;
     QPointer<QNetworkReply> m_reply;
     QPointer<QSaveFile> m_file;
     bool m_done = false;

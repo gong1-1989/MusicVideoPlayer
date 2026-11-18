@@ -1,6 +1,7 @@
 #ifndef MEDIAITEM_H
 #define MEDIAITEM_H
 
+#include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMetaType>
@@ -21,6 +22,9 @@ struct MediaItem
     QString artist;
     QUrl url;
     QUrl lyricUrl;
+    QUrl webUrl;                    // 原始页面，便于回看来源
+    QString sourceId;               // 来自哪个搜索源（本地文件为空）
+    QHash<QString, QString> headers; // 播放/下载要补的请求头（Referer、Cookie 等）
     bool online = false;
     qint64 durationMs = 0;
 
@@ -47,6 +51,16 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
     object.insert(QStringLiteral("url"), item.url.toString());
     if (!item.lyricUrl.isEmpty())
         object.insert(QStringLiteral("lyricUrl"), item.lyricUrl.toString());
+    if (!item.webUrl.isEmpty())
+        object.insert(QStringLiteral("webUrl"), item.webUrl.toString());
+    if (!item.sourceId.isEmpty())
+        object.insert(QStringLiteral("sourceId"), item.sourceId);
+    if (!item.headers.isEmpty()) {
+        QJsonObject headers;
+        for (auto it = item.headers.cbegin(); it != item.headers.cend(); ++it)
+            headers.insert(it.key(), it.value());
+        object.insert(QStringLiteral("headers"), headers);
+    }
     object.insert(QStringLiteral("online"), item.online);
     if (item.durationMs > 0)
         object.insert(QStringLiteral("duration"), static_cast<double>(item.durationMs));
@@ -62,6 +76,11 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
     item.artist = object.value(QStringLiteral("artist")).toString();
     item.url = QUrl(object.value(QStringLiteral("url")).toString());
     item.lyricUrl = QUrl(object.value(QStringLiteral("lyricUrl")).toString());
+    item.webUrl = QUrl(object.value(QStringLiteral("webUrl")).toString());
+    item.sourceId = object.value(QStringLiteral("sourceId")).toString();
+    const QJsonObject headers = object.value(QStringLiteral("headers")).toObject();
+    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it)
+        item.headers.insert(it.key(), it.value().toString());
     item.online = object.value(QStringLiteral("online")).toBool();
     item.durationMs = static_cast<qint64>(object.value(QStringLiteral("duration")).toDouble());
     return item;

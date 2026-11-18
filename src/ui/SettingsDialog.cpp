@@ -1,7 +1,9 @@
 #include "ui/SettingsDialog.h"
 
+#include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
 #include "settings/WindowPreset.h"
+#include "ui/SourceManagerDialog.h"
 #include "ui/ThemeManager.h"
 
 #include <QComboBox>
@@ -14,7 +16,6 @@
 #include <QSlider>
 #include <QVBoxLayout>
 #include <QWidget>
-
 namespace {
 
 QFrame *makeCard(const QString &title, QWidget *parent)
@@ -47,8 +48,10 @@ QFormLayout *cardForm(QFrame *card)
 
 } // namespace
 
-SettingsDialog::SettingsDialog(QWidget *parent)
+SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidget *parent)
     : QDialog(parent)
+    , m_registry(registry)
+    , m_http(http)
 {
     setObjectName(QStringLiteral("SettingsDialog"));
     setWindowTitle(tr("系统设置"));
@@ -134,6 +137,31 @@ void SettingsDialog::buildUi()
     behaviorForm->addRow(tr("单次搜索条数"), m_searchLimit);
 
     root->addWidget(behavior);
+
+    // ---------------------------------------------------------- 搜索源
+    QFrame *sourcesCard = makeCard(tr("搜索源"), this);
+    QFormLayout *sourcesForm = cardForm(sourcesCard);
+
+    auto *sourceRow = new QWidget(sourcesCard);
+    auto *sourceLayout = new QHBoxLayout(sourceRow);
+    sourceLayout->setContentsMargins(0, 0, 0, 0);
+    sourceLayout->setSpacing(10);
+    m_sourcesLabel = new QLabel(sourceRow);
+    m_sourcesButton = new QPushButton(tr("管理搜索源…"), sourceRow);
+    sourceLayout->addWidget(m_sourcesLabel, 1);
+    sourceLayout->addWidget(m_sourcesButton);
+    sourcesForm->addRow(QString(), sourceRow);
+
+    auto *sourcesHint = new QLabel(
+        tr("每个源是一份配置（搜索地址 + 字段对应）。可在这里新增、试搜、导入导出。"), sourcesCard);
+    sourcesHint->setObjectName(QStringLiteral("label_hint"));
+    sourcesHint->setWordWrap(true);
+    sourcesForm->addRow(QString(), sourcesHint);
+
+    connect(m_sourcesButton, &QPushButton::clicked, this,
+            &SettingsDialog::openSourceManager);
+    root->addWidget(sourcesCard);
+
     root->addStretch(1);
 
     // ---------------------------------------------------------- 按钮
@@ -148,8 +176,7 @@ void SettingsDialog::buildUi()
 }
 
 void SettingsDialog::loadValues()
-{
-    const int themeIndex = m_theme->findData(AppSettings::themeId());
+{    const int themeIndex = m_theme->findData(AppSettings::themeId());
     if (themeIndex >= 0)
         m_theme->setCurrentIndex(themeIndex);
 
@@ -163,6 +190,31 @@ void SettingsDialog::loadValues()
     const int limitIndex = m_searchLimit->findData(AppSettings::searchLimit());
     if (limitIndex >= 0)
         m_searchLimit->setCurrentIndex(limitIndex);
+
+    refreshSourcesLabel();
+}
+
+void SettingsDialog::refreshSourcesLabel()
+{
+    if (m_sourcesLabel == nullptr)
+        return;
+    if (m_registry == nullptr) {
+        m_sourcesLabel->setText(tr("未连接源仓库"));
+        m_sourcesButton->setEnabled(false);
+        return;
+    }
+    m_sourcesLabel->setText(tr("已启用 %1 个源（共 %2 个）")
+                                .arg(m_registry->enabledCount())
+                                .arg(m_registry->sources().size()));
+}
+
+void SettingsDialog::openSourceManager()
+{
+    if (m_registry == nullptr)
+        return;
+    SourceManagerDialog dialog(m_registry, m_http, this);
+    if (dialog.exec() == QDialog::Accepted)
+        refreshSourcesLabel();
 }
 
 void SettingsDialog::accept()

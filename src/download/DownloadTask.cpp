@@ -12,11 +12,13 @@ Q_LOGGING_CATEGORY(lcDownload, "mvp.download")
 DownloadTask::DownloadTask(HttpClient *http,
                            const QUrl &url,
                            const QString &filePath,
+                           const QHash<QString, QString> &headers,
                            QObject *parent)
     : QObject(parent)
     , m_http(http)
     , m_url(url)
     , m_filePath(filePath)
+    , m_headers(headers)
 {
 }
 
@@ -25,7 +27,16 @@ DownloadTask *DownloadTask::start(HttpClient *http,
                                   const QString &filePath,
                                   QObject *parent)
 {
-    auto *task = new DownloadTask(http, url, filePath, parent);
+    return start(http, url, filePath, QHash<QString, QString>(), parent);
+}
+
+DownloadTask *DownloadTask::start(HttpClient *http,
+                                  const QUrl &url,
+                                  const QString &filePath,
+                                  const QHash<QString, QString> &headers,
+                                  QObject *parent)
+{
+    auto *task = new DownloadTask(http, url, filePath, headers, parent);
     task->startRequest();
     return task;
 }
@@ -65,7 +76,7 @@ void DownloadTask::startRequest()
     // 走 fetch 而不是 get：163 的下载地址会 302 到 http 的 CDN，
     // 默认重定向策略会以 "Insecure redirect" 直接失败。
     QPointer<DownloadTask> self(this);
-    m_http->fetch(m_url, QByteArray(), [self](QNetworkReply *reply) {
+    m_http->fetch(m_url, QByteArray(), m_headers, [self](QNetworkReply *reply) {
         if (self.isNull()) {
             if (reply != nullptr) {
                 reply->abort();

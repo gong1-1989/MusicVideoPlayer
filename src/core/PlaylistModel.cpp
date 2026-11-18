@@ -20,6 +20,9 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
     const MediaItem &item = m_items.at(index.row());
     switch (role) {
     case Qt::DisplayRole:
+        // 搜索结果里音乐和视频混在一起，加前缀便于区分，避免误入另一类列表
+        if (item.online && item.type == MediaType::Video)
+            return QStringLiteral("▶ ") + item.displayName();
         return item.displayName();
     case Qt::ToolTipRole:
         return item.online ? item.url.toString() : item.url.toLocalFile();
