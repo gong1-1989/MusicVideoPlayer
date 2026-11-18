@@ -47,11 +47,15 @@ private slots:
     void on_btn_next_clicked();
     void on_btn_mode_clicked();
     void on_btn_fullscreen_clicked();
+    void on_btn_settings_clicked();
 
 private:
     void setupConnections();
     void restoreSettings();
     void saveSettings();
+    void applySettings();
+    void applyWindowPreset();
+    void highlightCurrentLyric();
 
     void addLocalFiles(MediaType type, const QStringList &files);
     void playSearchItem(const MediaItem &item);
@@ -59,6 +63,8 @@ private:
     void showSearchContextMenu(const QPoint &pos);
 
     void toggleFullScreen();
+    void enterFullScreen();
+    void exitFullScreen();
     void updateLyrics(qint64 positionMs);
     void refreshModeButton();
     void ensurePlaylist();
@@ -80,6 +86,7 @@ private:
     bool m_userSeeking = false;
     QString m_lastDir;
     QPointer<DownloadTask> m_download;
+    QWidget *m_fullScreenWindow = nullptr;
 };
 
 #endif // MAINWINDOW_H

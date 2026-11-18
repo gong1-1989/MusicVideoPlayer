@@ -48,7 +48,10 @@ qt_add_library(mvp_core STATIC
     src/core/PlaylistModel.h
     src/core/PlaylistModel.cpp
     src/core/PlaybackController.h
-    src/core/PlaybackController.cpp   
+    src/core/PlaybackController.cpp
+    src/settings/WindowPreset.h
+    src/settings/AppSettings.h
+    src/settings/AppSettings.cpp
 )
 
 target_include_directories(mvp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -67,6 +70,16 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
     src/ui/MainWindow.ui
+    src/ui/ThemeManager.h
+    src/ui/ThemeManager.cpp
+    src/ui/VideoSurface.h
+    src/ui/VideoSurface.cpp
+    src/ui/VideoStage.h
+    src/ui/VideoStage.cpp
+    src/ui/LyricsView.h
+    src/ui/LyricsView.cpp
+    src/ui/SettingsDialog.h
+    src/ui/SettingsDialog.cpp
     )
 
 target_link_libraries(MusicVideoPlayer PRIVATE
@@ -75,11 +88,11 @@ target_link_libraries(MusicVideoPlayer PRIVATE
 )
 mvp_enable_warnings(MusicVideoPlayer)
 
-# 主题样式表嵌入资源，main.cpp 从 :/style/app.qss 加载
-qt_add_resources(MusicVideoPlayer "app_styles"
-    PREFIX "/style"
-    BASE "resources"
-    FILES resources/app.qss
+# 主题样式表嵌入资源，ThemeManager 从 :/themes/<id>.qss 加载
+qt_add_resources(MusicVideoPlayer "app_themes"
+    PREFIX "/themes"
+    BASE "resources/themes"
+    FILES resources/themes/dark.qss resources/themes/light.qss
 )
 
 set_target_properties(MusicVideoPlayer PROPERTIES

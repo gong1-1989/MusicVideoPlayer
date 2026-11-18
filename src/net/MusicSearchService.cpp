@@ -36,12 +36,18 @@ void MusicSearchService::search(const QString &keyword)
     // 该接口通行的调用方式是 POST 表单，GET 容易返回 400/403
     const QByteArray body = QByteArrayLiteral("s=")
                           + trimmed.toUtf8().toPercentEncoding()
-                          + QByteArrayLiteral("&type=1&offset=0&limit=20");
+                          + QByteArrayLiteral("&type=1&offset=0&limit=")
+                          + QByteArray::number(m_resultLimit);
 
     emit searchStarted();
 
     m_reply = m_http->postForm(QUrl(QString::fromLatin1(kSearchEndpoint)), body);
     connect(m_reply, &QNetworkReply::finished, this, &MusicSearchService::onFinished);
+}
+
+void MusicSearchService::setResultLimit(int limit)
+{
+    m_resultLimit = qBound(1, limit, 100);
 }
 
 void MusicSearchService::cancel()

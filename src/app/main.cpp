@@ -1,9 +1,9 @@
 #include "ui/MainWindow.h"
+#include "ui/ThemeManager.h"
 
 #include <QApplication>
 #include <QDateTime>
 #include <QDir>
-#include <QFile>
 #include <QLocale>
 #include <QLoggingCategory>
 #include <QMutex>
@@ -80,12 +80,8 @@ int main(int argc, char *argv[])
     // Fusion 对样式表的支持最完整，Windows 原生风格会覆盖掉部分 QSS 效果
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
 
-    QFile styleFile(QStringLiteral(":/style/app.qss"));
-    if (styleFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        app.setStyleSheet(QString::fromUtf8(styleFile.readAll()));
-    } else {
-        qWarning() << "style sheet missing: :/style/app.qss";
-    }
+    // 主题来自系统设置，样式表在资源里；加载失败保留 Fusion 默认外观
+    ThemeManager::instance().applySaved();
 
     QTranslator translator;
     if (translator.load(QLocale::system(), QStringLiteral("MusicVideoPlayer"),

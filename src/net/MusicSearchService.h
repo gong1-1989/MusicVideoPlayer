@@ -23,6 +23,10 @@ public:
     void cancel();
     bool isBusy() const { return !m_reply.isNull(); }
 
+    /// 单次返回条数，来自系统设置
+    void setResultLimit(int limit);
+    int resultLimit() const { return m_resultLimit; }
+
 signals:
     void searchStarted();
     void searchSucceeded(const QVector<MediaItem> &items);
@@ -34,6 +38,7 @@ private:
 
     HttpClient *m_http;
     QPointer<QNetworkReply> m_reply;
+    int m_resultLimit = 20;
 };
 
 #endif // MUSICSEARCHSERVICE_H

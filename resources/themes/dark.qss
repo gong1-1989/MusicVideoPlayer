@@ -1,8 +1,8 @@
-/* ------------------------------------------------------------------
-   NEBULA PLAYER · 深色梦幻主题
-   思路：深空渐变底 → 半透明玻璃面板 → 青紫渐变强调色 → 大圆角与柔光
-   只使用 Qt 样式表支持的属性，避免不生效的写法
------------------------------------------------------------------- */
+/* ============================================================
+   主题：深色梦幻（dark dream）
+   深空渐变底 + 半透明玻璃面板 + 青紫渐变强调
+   只使用 Qt 样式表支持的属性
+   ============================================================ */
 
 QWidget {
     font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
@@ -44,11 +44,30 @@ QFrame#panelTransport {
     border: 1px solid rgba(160, 190, 255, 16%);
 }
 
+/* 歌词面板用实色底：渐隐遮罩必须与面板底色完全一致，否则会看出色块 */
+QFrame#panelLyrics {
+    background: #101226;
+    border: 1px solid rgba(160, 190, 255, 16%);
+    border-radius: 18px;
+}
+
 /* ------------------------------------------------ 文字层级 */
 QLabel#label_brand {
     color: #8ef2ff;
     font-size: 15px;
     font-weight: 700;
+}
+
+/* 品牌头下的渐变细线 */
+QFrame#brandLine {
+    border: none;
+    border-radius: 1px;
+    min-height: 2px;
+    max-height: 2px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0    rgba(142, 242, 255, 90%),
+                                stop:0.45 rgba(123, 91, 255, 80%),
+                                stop:1    rgba(142, 242, 255, 0%));
 }
 
 QLabel#label_searchTitle,
@@ -73,7 +92,7 @@ QLabel#label_volume {
     font-size: 12px;
 }
 
-/* ------------------------------------------------ 搜索框 */
+/* ------------------------------------------------ 输入类 */
 QLineEdit#edit_search {
     background: rgba(255, 255, 255, 6%);
     border: 1px solid rgba(140, 175, 255, 22%);
@@ -91,6 +110,38 @@ QLineEdit#edit_search:hover {
 QLineEdit#edit_search:focus {
     background: rgba(255, 255, 255, 10%);
     border: 1px solid rgba(120, 200, 255, 75%);
+}
+
+QComboBox {
+    background: rgba(255, 255, 255, 6%);
+    border: 1px solid rgba(140, 175, 255, 22%);
+    border-radius: 10px;
+    padding: 4px 10px;
+    min-height: 26px;
+    color: #e6ecff;
+}
+
+QComboBox:hover {
+    border: 1px solid rgba(150, 195, 255, 45%);
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+}
+
+QComboBox::down-arrow {
+    width: 0;
+    height: 0;
+}
+
+QComboBox QAbstractItemView {
+    background: #14122e;
+    border: 1px solid rgba(150, 190, 255, 25%);
+    border-radius: 10px;
+    padding: 4px;
+    color: #e6ecff;
+    selection-background-color: rgba(110, 92, 255, 45%);
 }
 
 /* ------------------------------------------------ 通用按钮 */
@@ -163,6 +214,12 @@ QPushButton#btn_next {
     padding: 6px 10px;
 }
 
+QPushButton#btn_settings {
+    border-radius: 15px;
+    padding: 6px 10px;
+    color: rgba(200, 220, 255, 70%);
+}
+
 /* ------------------------------------------------ 列表 */
 QListView,
 QListWidget {
@@ -193,11 +250,20 @@ QListWidget::item:selected {
 }
 
 QListWidget#list_lrc {
+    background: transparent;
+    border: none;
     font-size: 13px;
+    color: rgba(215, 225, 255, 55%);
 }
 
 QListWidget#list_lrc::item {
     padding: 6px 4px;
+    background: transparent;
+}
+
+/* ------------------------------------------------ 自绘容器 */
+QWidget#videoStage {
+    background: transparent;
 }
 
 /* ------------------------------------------------ 标签页 */
@@ -314,7 +380,7 @@ QScrollBar::handle:horizontal {
     min-width: 28px;
 }
 
-/* ------------------------------------------------ 菜单与提示 */
+/* ------------------------------------------------ 菜单 / 提示 / 对话框 */
 QMenu {
     background: #14122e;
     border: 1px solid rgba(150, 190, 255, 25%);
@@ -337,4 +403,38 @@ QToolTip {
     border: 1px solid rgba(150, 190, 255, 30%);
     border-radius: 6px;
     padding: 4px 8px;
+}
+
+QDialog#SettingsDialog {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #0a0a1e,
+                                stop:1 #101a33);
+}
+
+QLabel#label_sectionTitle {
+    color: #8ef2ff;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+QFrame#settingsCard {
+    background: rgba(255, 255, 255, 4%);
+    border: 1px solid rgba(160, 190, 255, 14%);
+    border-radius: 14px;
+}
+
+QLabel#label_hint {
+    color: rgba(205, 215, 255, 55%);
+    font-size: 12px;
+}
+
+QPushButton#btn_applyPrimary {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #6d5cff,
+                                stop:1 #22b8ff);
+    border: 1px solid rgba(180, 220, 255, 45%);
+    color: #ffffff;
+    font-weight: 600;
+    border-radius: 14px;
+    padding: 7px 22px;
 }

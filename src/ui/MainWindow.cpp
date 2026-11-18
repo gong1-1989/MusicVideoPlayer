@@ -6,6 +6,11 @@
 #include "lyrics/LyricsService.h"
 #include "net/HttpClient.h"
 #include "net/MusicSearchService.h"
+#include "settings/AppSettings.h"
+#include "settings/WindowPreset.h"
+#include "ui/SettingsDialog.h"
+#include "ui/ThemeManager.h"
+#include "ui/VideoStage.h"
 #include "util/TimeFormat.h"
 
 #include <QAbstractItemView>
@@ -18,6 +23,7 @@
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QListView>
@@ -25,11 +31,30 @@
 #include <QListWidgetItem>
 #include <QMenu>
 #include <QModelIndex>
-#include <QSettings>
+#include <QScreen>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QVBoxLayout>
+#include <QWidget>
+
+namespace {
+
+/// 预设尺寸只是目标值：屏幕装不下时按可用工作区收一收，否则布局会被挤到裁切
+QSize fitToAvailableScreen(const QSize &size)
+{
+    QSize target = size;
+    if (const QScreen *screen = QGuiApplication::primaryScreen()) {
+        const QRect available = screen->availableGeometry();
+        target.setWidth(qMin(target.width(), available.width() - 24));
+        target.setHeight(qMin(target.height(), available.height() - 32));
+    }
+    return target;
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -44,13 +69,20 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
-    ui->list_search->setModel(m_searchModel);
-    ui->list_music->setModel(m_musicModel);
+    ui->list_search->setModel(m_searchModel);    ui->list_music->setModel(m_musicModel);
     ui->list_video->setModel(m_videoModel);
     ui->list_search->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    m_player->mediaPlayer()->setVideoOutput(ui->videoWidget);
-    ui->videoWidget->installEventFilter(this);
+    m_player->mediaPlayer()->setVideoSink(ui->videoWidget->sink());
+
+    // 自绘控件的几何参数：圆角半径与歌词渐隐高度不再散落在各处
+    ui->videoStage->setCornerRadius(16.0);
+    ui->list_lrc->setFadeExtent(28);
+    connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
+            [this] { highlightCurrentLyric(); });
+
+    auto *settingsShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+,")), this);
+    connect(settingsShortcut, &QShortcut::activated, this, &MainWindow::on_btn_settings_clicked);
 
     setupConnections();
     restoreSettings();
@@ -195,31 +227,87 @@ void MainWindow::setupConnections()
 
 void MainWindow::restoreSettings()
 {
-    QSettings settings;
-    m_lastDir = settings.value(QStringLiteral("lastDir"),
-                               QStandardPaths::writableLocation(QStandardPaths::MusicLocation))
-                    .toString();
+    m_lastDir = AppSettings::lastDir();
 
-    const QByteArray geometry = settings.value(QStringLiteral("geometry")).toByteArray();
-    if (!geometry.isEmpty())
-        restoreGeometry(geometry);
-
-    m_player->setVolumePercent(settings.value(QStringLiteral("volume"), 60).toInt());
+    // 音量、播放模式、搜索条数全部来自设置，不再有散落的默认值
+    m_player->setVolumePercent(AppSettings::defaultVolume());
     ui->slider_volume->setValue(m_player->volumePercent());
 
-    const int modeValue = settings.value(QStringLiteral("mode"),
-                                         static_cast<int>(PlaybackController::Mode::ListLoop))
-                              .toInt();
+    const int modeValue = AppSettings::playbackMode();
     m_player->setMode(static_cast<PlaybackController::Mode>(qBound(0, modeValue, 2)));
+
+    m_search->setResultLimit(AppSettings::searchLimit());
+
+    applyWindowPreset();
+}
+
+void MainWindow::applyWindowPreset()
+{
+    const WindowPreset preset = AppSettings::windowPreset();
+    const QSize presetSize = AppSettings::presetWindowSize(preset);
+
+    if (preset == WindowPreset::Last || !presetSize.isValid()) {
+        const QByteArray geometry = AppSettings::savedGeometry();
+        if (!geometry.isEmpty())
+            restoreGeometry(geometry);
+        return;
+    }
+
+    // 预设只是目标值：屏幕装不下时按可用工作区收一收
+    const QSize target = fitToAvailableScreen(presetSize);
+    resize(target);
+
+    // 固定尺寸下没有历史位置可恢复，首次启动居中显示
+    if (AppSettings::savedGeometry().isEmpty()) {
+        if (const QScreen *screen = QGuiApplication::primaryScreen()) {
+            const QRect available = screen->availableGeometry();
+            move(available.center() - QPoint(target.width() / 2, target.height() / 2));
+        }
+    }
 }
 
 void MainWindow::saveSettings()
 {
-    QSettings settings;
-    settings.setValue(QStringLiteral("lastDir"), m_lastDir);
-    settings.setValue(QStringLiteral("geometry"), saveGeometry());
-    settings.setValue(QStringLiteral("volume"), m_player->volumePercent());
-    settings.setValue(QStringLiteral("mode"), static_cast<int>(m_player->mode()));
+    AppSettings::setLastDir(m_lastDir);
+    AppSettings::setDefaultVolume(m_player->volumePercent());
+    AppSettings::setPlaybackMode(static_cast<int>(m_player->mode()));
+
+    // 只有"记住上次"才写几何，固定尺寸预设下写进去会互相打架
+    if (AppSettings::windowPreset() == WindowPreset::Last)
+        AppSettings::setSavedGeometry(saveGeometry());
+}
+
+void MainWindow::applySettings()
+{
+    ThemeManager::instance().apply(AppSettings::themeId());
+
+    const QSize presetSize = AppSettings::presetWindowSize(AppSettings::windowPresetId());
+    if (presetSize.isValid())
+        resize(fitToAvailableScreen(presetSize));
+
+    m_player->setVolumePercent(AppSettings::defaultVolume());
+    {
+        QSignalBlocker blocker(ui->slider_volume);
+        ui->slider_volume->setValue(m_player->volumePercent());
+    }
+
+    m_search->setResultLimit(AppSettings::searchLimit());
+    highlightCurrentLyric();
+}
+
+void MainWindow::on_btn_settings_clicked()
+{
+    SettingsDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted)
+        applySettings();
+}
+
+void MainWindow::highlightCurrentLyric()
+{
+    if (m_lrcIndex < 0 || m_lrcIndex >= ui->list_lrc->count())
+        return;
+    if (auto *item = ui->list_lrc->item(m_lrcIndex))
+        item->setForeground(QBrush(ThemeManager::instance().current().accentColor));
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -230,10 +318,16 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == ui->videoWidget && event->type() == QEvent::KeyPress) {
-        auto *keyEvent = static_cast<QKeyEvent *>(event);
-        if (keyEvent->key() == Qt::Key_Escape && ui->videoWidget->isFullScreen()) {
-            ui->videoWidget->setFullScreen(false);
+    if (m_fullScreenWindow != nullptr && watched == m_fullScreenWindow) {
+        if (event->type() == QEvent::KeyPress) {
+            auto *keyEvent = static_cast<QKeyEvent *>(event);
+            if (keyEvent->key() == Qt::Key_Escape) {
+                exitFullScreen();
+                return true;
+            }
+        } else if (event->type() == QEvent::Close) {
+            // Alt+F4 关掉全屏窗口时，也要把视频面放回舞台
+            exitFullScreen();
             return true;
         }
     }
@@ -386,9 +480,52 @@ void MainWindow::on_btn_fullscreen_clicked()
 
 void MainWindow::toggleFullScreen()
 {
-    // 不手工 setParent(nullptr)：那会把 videoWidget 从布局里摘掉，
-    // 退出全屏后布局无法自愈。QVideoWidget 自己会处理顶层窗口切换。
-    ui->videoWidget->setFullScreen(!ui->videoWidget->isFullScreen());
+    if (m_fullScreenWindow != nullptr)
+        exitFullScreen();
+    else
+        enterFullScreen();
+}
+
+void MainWindow::enterFullScreen()
+{
+    // 视频面是自绘控件，不再走 QVideoWidget 的原生全屏；
+    // 把它临时搬进一个全屏窗口，退出时再放回舞台布局。
+    auto *window = new QWidget(nullptr, Qt::Window);
+    window->setObjectName(QStringLiteral("fullScreenWindow"));
+    window->setWindowTitle(tr("全屏播放"));
+    window->setStyleSheet(QStringLiteral("QWidget#fullScreenWindow { background: black; }"));
+
+    auto *layout = new QVBoxLayout(window);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    ui->videoWidget->setParent(window);
+    ui->videoWidget->setCornerRadius(0.0);
+    layout->addWidget(ui->videoWidget);
+    ui->videoWidget->show();
+
+    window->installEventFilter(this);
+    window->showFullScreen();
+    window->setFocus();
+
+    m_fullScreenWindow = window;
+}
+
+void MainWindow::exitFullScreen()
+{
+    if (m_fullScreenWindow == nullptr)
+        return;
+
+    QWidget *window = m_fullScreenWindow;
+    m_fullScreenWindow = nullptr;
+
+    window->removeEventFilter(this);
+    ui->layout_videoStage->addWidget(ui->videoWidget);
+    ui->videoWidget->setCornerRadius(16.0);
+    ui->videoWidget->show();
+
+    window->close();
+    window->deleteLater();
 }
 
 void MainWindow::refreshModeButton()
@@ -505,7 +642,7 @@ void MainWindow::updateLyrics(qint64 positionMs)
 
     m_lrcIndex = index;
     if (auto *current = ui->list_lrc->item(index)) {
-        current->setForeground(QBrush(QColor(0, 200, 255)));
+        current->setForeground(QBrush(ThemeManager::instance().current().accentColor));
         ui->list_lrc->scrollToItem(current, QAbstractItemView::PositionAtCenter);
     }
 }
