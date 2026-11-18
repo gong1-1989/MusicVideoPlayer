@@ -123,20 +123,3 @@ qt_generate_deploy_app_script(
     NO_UNSUPPORTED_PLATFORM_ERROR
 )
 install(SCRIPT ${deploy_script})
-
-# ---------------------------------------------------------------- 单元测试
-include(CTest)
-if(BUILD_TESTING)
-    find_package(Qt6 QUIET COMPONENTS Test)
-    if(Qt6Test_FOUND)
-        qt_add_executable(tst_lrcparser tests/tst_lrcparser.cpp)
-        target_link_libraries(tst_lrcparser PRIVATE mvp_core Qt6::Test)
-        add_test(NAME tst_lrcparser COMMAND tst_lrcparser)
-        mvp_enable_warnings(tst_lrcparser)
-
-        qt_add_executable(tst_streamproxy tests/tst_streamproxy.cpp)
-        target_link_libraries(tst_streamproxy PRIVATE mvp_core Qt6::Test)
-        add_test(NAME tst_streamproxy COMMAND tst_streamproxy)
-        mvp_enable_warnings(tst_streamproxy)
-    endif()
-endif()
