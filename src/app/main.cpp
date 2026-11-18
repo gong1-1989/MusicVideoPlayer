@@ -22,10 +22,23 @@ void messageHandler(QtMsgType type, const QMessageLogContext &context, const QSt
 
     static QFile *logFile = nullptr;
     if (logFile == nullptr) {
-        const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        QDir().mkpath(dir);
-        logFile = new QFile(dir + QStringLiteral("/MusicVideoPlayer.log"));
-        logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+        // 日志放在程序目录下的 log/，不写用户 C 盘；目录不可写时退回用户数据目录
+        const QString appDir = QCoreApplication::applicationDirPath();
+        const QString localDir = QDir(appDir).filePath(QStringLiteral("log"));
+        QDir().mkpath(localDir);
+        const QString localPath = QDir(localDir).filePath(QStringLiteral("MusicVideoPlayer.log"));
+
+        logFile = new QFile(localPath);
+        if (!logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+            delete logFile;
+            logFile = nullptr;
+
+            const QString fallbackDir =
+                QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+            QDir().mkpath(fallbackDir);
+            logFile = new QFile(QDir(fallbackDir).filePath(QStringLiteral("MusicVideoPlayer.log")));
+            logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+        }
     }
 
     const char *level = "INFO";

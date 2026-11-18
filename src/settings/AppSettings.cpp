@@ -12,6 +12,8 @@ const char kVolume[] = "playback/volume";
 const char kMode[] = "playback/mode";
 const char kSearchLimit[] = "search/limit";
 const char kLastDir[] = "paths/lastDir";
+const char kPlaylistMusic[] = "playlists/music";
+const char kPlaylistVideo[] = "playlists/video";
 
 const char kDefaultTheme[] = "dark";
 const char kDefaultWindowPreset[] = "standard";
@@ -132,6 +134,18 @@ QString lastDir()
 void setLastDir(const QString &dir)
 {
     settings().setValue(QLatin1String(kLastDir), dir);
+}
+
+QByteArray playlist(MediaType type)
+{
+    const char *key = type == MediaType::Video ? kPlaylistVideo : kPlaylistMusic;
+    return settings().value(QLatin1String(key)).toByteArray();
+}
+
+void setPlaylist(MediaType type, const QByteArray &json)
+{
+    const char *key = type == MediaType::Video ? kPlaylistVideo : kPlaylistMusic;
+    settings().setValue(QLatin1String(key), json);
 }
 
 } // namespace AppSettings

@@ -182,6 +182,22 @@ void PlaybackController::setVolumePercent(int percent)
     emit volumePercentChanged(m_volume);
 }
 
+void PlaybackController::onPlaylistRowRemoved(int row)
+{
+    if (row < 0)
+        return;
+
+    if (m_row == row) {
+        // 正在播的就是被删掉的那首，直接停，避免继续指向已失效的下标
+        m_player->stop();
+        m_player->setSource(QUrl());
+        m_row = -1;
+        return;
+    }
+    if (m_row > row)
+        --m_row;
+}
+
 void PlaybackController::onMediaStatusChanged(QMediaPlayer::MediaStatus status)
 {
     if (status != QMediaPlayer::EndOfMedia)

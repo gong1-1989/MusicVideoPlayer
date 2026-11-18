@@ -62,6 +62,14 @@ private:
     void downloadItem(const MediaItem &item);
     void showSearchContextMenu(const QPoint &pos);
 
+    void restorePlaylists();
+    void savePlaylists();
+    void setupPlaylistInteractions();
+    void removePlaylistRow(MediaType type, int row);
+    void clearPlaylist(MediaType type);
+    void showPlaylistContextMenu(MediaType type, QListView *view, PlaylistModel *model,
+                                 const QPoint &pos);
+
     void toggleFullScreen();
     void enterFullScreen();
     void exitFullScreen();

@@ -37,6 +37,9 @@ public:
     void previous();
     void seek(qint64 ms);
 
+    /// 列表里删掉了一行后调用：正在播的那首被删则停下，删的是前面的行则下标前移
+    void onPlaylistRowRemoved(int row);
+
     bool hasCurrentItem() const;
     MediaItem currentItem() const;
     int currentRow() const { return m_row; }

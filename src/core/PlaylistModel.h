@@ -28,7 +28,12 @@ public:
 
     /// 按 url 去重后追加；重复返回 false。
     bool addItem(const MediaItem &item);
+    bool removeRow(int row);
     void clear();
+
+    /// 整体替换（恢复上次会话的列表用），会重置模型
+    void setItems(const QVector<MediaItem> &items);
+    QVector<MediaItem> items() const { return m_items; }
 
     MediaItem itemAt(int row) const;
     int indexOf(const QUrl &url) const;

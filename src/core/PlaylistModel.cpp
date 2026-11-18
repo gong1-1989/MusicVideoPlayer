@@ -49,12 +49,30 @@ bool PlaylistModel::addItem(const MediaItem &item)
     return true;
 }
 
+bool PlaylistModel::removeRow(int row)
+{
+    if (row < 0 || row >= m_items.size())
+        return false;
+
+    beginRemoveRows(QModelIndex(), row, row);
+    m_items.remove(row);
+    endRemoveRows();
+    return true;
+}
+
 void PlaylistModel::clear()
 {
     if (m_items.isEmpty())
         return;
     beginResetModel();
     m_items.clear();
+    endResetModel();
+}
+
+void PlaylistModel::setItems(const QVector<MediaItem> &items)
+{
+    beginResetModel();
+    m_items = items;
     endResetModel();
 }
 

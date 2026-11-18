@@ -1,6 +1,7 @@
 #ifndef APPSETTINGS_H
 #define APPSETTINGS_H
 
+#include "media/MediaItem.h"
 #include "settings/WindowPreset.h"
 
 #include <QByteArray>
@@ -37,6 +38,11 @@ void setSearchLimit(int limit);
 // ---------------------------------------------------------------- 路径
 QString lastDir();
 void setLastDir(const QString &dir);
+
+// ---------------------------------------------------------------- 播放列表
+/// 播放列表以 JSON 文本持久化，空表示没有历史记录
+QByteArray playlist(MediaType type);
+void setPlaylist(MediaType type, const QByteArray &json);
 
 } // namespace AppSettings
 
