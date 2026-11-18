@@ -107,10 +107,17 @@ void MusicSearchService::onFinished()
         if (id <= 0)
             continue;
 
-        // fee==1 是 VIP 专享：匿名访问 outer/url 会被 302 到 /404，既不能播也不能下载。
-        // 在搜索阶段就剔掉，避免用户点了才看到 "播放失败"。
-        // fee 为 0（免费）和 8（付费但可试听）实测都能正常拉到 128k 音源。
-        if (song.value(QStringLiteral("fee")).toInt() == 1) {
+        // 可用性判定（280 首实测：与 outer/url 实际 302 结果逐条比对）：
+        //   fee=1（VIP 专享）              -> 156/156 无音源
+        //   fee=4（付费专辑）且 privilege.pl=0 -> 无音源
+        //   fee=4 且 pl>0                  -> 可播
+        //   fee=0 / 8                      -> 可播（fee=8 实测能拿到完整 128k）
+        // 只按 fee 判定会漏掉 fee=4 的死歌，只按 pl 判定会误杀 3 首 fee=8 的可播歌，
+        // 所以两者组合，宁可不滤也别误伤。
+        const int fee = song.value(QStringLiteral("fee")).toInt();
+        const int playBitrate =
+            song.value(QStringLiteral("privilege")).toObject().value(QStringLiteral("pl")).toInt();
+        if (fee == 1 || (fee == 4 && playBitrate <= 0)) {
             ++m_filteredCount;
             continue;
         }
