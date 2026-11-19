@@ -5,6 +5,7 @@
 #include <QAudioOutput>
 #include <QLoggingCategory>
 #include <QRandomGenerator>
+#include <QTimer>
 
 Q_LOGGING_CATEGORY(lcPlayer, "mvp.player")
 
@@ -37,14 +38,24 @@ PlaybackController::PlaybackController(QObject *parent)
                 m_unavailableReason.clear();
                 qCWarning(lcPlayer) << "播放出错：" << text;
                 emit errorOccurred(text);
+
+                // 单曲失败不应把整个列表卡死：跳过这一首继续下一首；
+                // 连续失败达到列表长度就停下，避免所有源都坏时无限循环。
+                if (++m_consecutiveErrors < rowCount()) {
+                    QTimer::singleShot(0, this, &PlaybackController::next);
+                } else {
+                    qCWarning(lcPlayer) << "连续播放失败" << m_consecutiveErrors << "次，停止自动跳过";
+                    m_player->stop();
+                }
             });
 
     connect(m_proxy, &StreamProxy::sourceUnavailable, this,
             [this](const QUrl &upstream, const QString &contentType) {
                 qCWarning(lcPlayer) << "音源不可用：" << upstream.toString() << contentType;
+                // 只记录原因，不在这里 emit：QMediaPlayer 随后一定会发 errorOccurred，
+                // 否则同一次失败会在界面弹两次。
                 m_unavailableReason =
                     tr("这个源没有返回可播放的音频/视频（版权、付费或需要登录），换一首试试");
-                emit errorOccurred(m_unavailableReason);
             });
 }
 
@@ -54,6 +65,7 @@ void PlaybackController::setPlaylist(PlaylistModel *playlist)
         return;
     m_playlist = playlist;
     m_row = -1;
+    m_consecutiveErrors = 0;
 }
 
 bool PlaybackController::hasCurrentItem() const
@@ -75,12 +87,27 @@ int PlaybackController::rowCount() const
 
 void PlaybackController::playRow(int row)
 {
+    playRowInternal(row, false);
+}
+
+void PlaybackController::playRowInternal(int row, bool autoAdvance)
+{
     if (!m_playlist || row < 0 || row >= m_playlist->size())
         return;
+
+    // 用户主动点歌视为重新开始一轮；自动跳过则保留连续失败计数，
+    // 否则每个坏源都“加载一下再报错”会无限循环。
+    if (!autoAdvance)
+        m_consecutiveErrors = 0;
 
     const MediaItem item = m_playlist->itemAt(row);
     if (!item.isValid()) {
         emit errorOccurred(tr("媒体地址无效"));
+        m_row = row;
+        if (++m_consecutiveErrors < rowCount())
+            QTimer::singleShot(0, this, &PlaybackController::next);
+        else
+            m_player->stop();
         return;
     }
 
@@ -118,6 +145,7 @@ void PlaybackController::togglePlayPause()
 
 void PlaybackController::stop()
 {
+    m_consecutiveErrors = 0;
     m_player->stop();
 }
 
@@ -137,7 +165,7 @@ void PlaybackController::next()
     } else {
         row = (m_row + 1) % count;
     }
-    playRow(row);
+    playRowInternal(row, true);
 }
 
 void PlaybackController::previous()
@@ -215,6 +243,9 @@ void PlaybackController::onMediaStatusChanged(QMediaPlayer::MediaStatus status)
 {
     if (status != QMediaPlayer::EndOfMedia)
         return;
+
+    // 完整播完一首才算“这一轮源是好的”，清空连续失败计数。
+    m_consecutiveErrors = 0;
 
     if (m_mode == Mode::SingleLoop) {
         // 单曲循环由 QMediaPlayer::setLoops(Infinite) 负责续播，这里不再手工重播，

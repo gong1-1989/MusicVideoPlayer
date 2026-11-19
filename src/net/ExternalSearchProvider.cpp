@@ -159,9 +159,14 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
         item.sourceId = m_config.id;
         item.online = true;
         item.headers = m_config.headers;
+        if (!m_config.cookie.isEmpty())
+            item.headers.insert(QStringLiteral("Cookie"), m_config.cookie);
 
-        if (!item.title.isEmpty() || item.url.isValid())
-            result.append(item);
+        if (item.title.isEmpty() || item.url.isEmpty() || !item.url.isValid()) {
+            ++m_filtered;
+            continue;
+        }
+        result.append(item);
     }
 
     qCInfo(lcExternal) << m_config.id << "外部解析器返回" << result.size() << "条，过滤"

@@ -30,6 +30,8 @@ SearchCoordinator::SearchCoordinator(SourceRegistry *registry, HttpClient *http,
     , m_registry(registry)
     , m_http(http)
 {
+    m_sourceTimeout.setSingleShot(true);
+    connect(&m_sourceTimeout, &QTimer::timeout, this, &SearchCoordinator::onSourceTimeout);
 }
 
 void SearchCoordinator::search(const QString &keyword, int limitPerSource)
@@ -69,6 +71,7 @@ void SearchCoordinator::search(const QString &keyword, int limitPerSource)
 void SearchCoordinator::startNext()
 {
     if (m_index >= m_queue.size()) {
+        m_sourceTimeout.stop();
         m_busy = false;
         qCInfo(lcSearch) << "搜索完成：" << m_items.size() << "条，过滤" << m_filtered
                          << "条，失败源" << m_failed;
@@ -95,7 +98,28 @@ void SearchCoordinator::startNext()
                 Q_UNUSED(sourceId)
                 onProviderFinished(items, filtered, error);
             });
+    // 单源超时：慢源/挂死源不能把整次搜索拖住，超时后跳过继续下一个。
+    m_sourceTimeout.start(kSourceTimeoutMs);
     provider->search(m_keyword, m_limit);
+}
+
+void SearchCoordinator::onSourceTimeout()
+{
+    if (!m_busy || m_current == nullptr)
+        return;
+
+    const QString name = m_index < m_queue.size() ? m_queue.at(m_index).name
+                                                  : QStringLiteral("unknown");
+    m_failed.append(QStringLiteral("%1（单源超过 %2 秒，已跳过）")
+                        .arg(name)
+                        .arg(kSourceTimeoutMs / 1000));
+
+    disconnect(m_current, nullptr, this, nullptr);
+    m_current->deleteLater();
+    m_current = nullptr;
+
+    ++m_index;
+    startNext();
 }
 
 void SearchCoordinator::onProviderFinished(const QVector<MediaItem> &items, int filtered,
@@ -103,6 +127,8 @@ void SearchCoordinator::onProviderFinished(const QVector<MediaItem> &items, int 
 {
     if (!m_busy)
         return;
+
+    m_sourceTimeout.stop();
 
     if (!error.isEmpty()) {
         const QString name = m_index < m_queue.size() ? m_queue.at(m_index).name
@@ -119,11 +145,13 @@ void SearchCoordinator::onProviderFinished(const QVector<MediaItem> &items, int 
     }
 
     ++m_index;
+    emit searchPartial(m_items, m_filtered, m_index, m_queue.size());
     startNext();
 }
 
 void SearchCoordinator::cancel()
 {
+    m_sourceTimeout.stop();
     if (m_current != nullptr) {
         disconnect(m_current, nullptr, this, nullptr);
         m_current->deleteLater();
@@ -132,4 +160,5 @@ void SearchCoordinator::cancel()
     m_busy = false;
     m_queue.clear();
     m_index = 0;
+    emit searchFinished();
 }

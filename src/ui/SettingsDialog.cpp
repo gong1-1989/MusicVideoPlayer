@@ -7,9 +7,11 @@
 #include "ui/ThemeManager.h"
 #include "ui_SettingsDialog.h"
 
+#include <QGuiApplication>
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QPushButton>
+#include <QScreen>
 #include <QSlider>
 
 Q_LOGGING_CATEGORY(lcSettings, "mvp.settings")
@@ -23,7 +25,11 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
     ui->setupUi(this);
     setWindowTitle(tr("系统设置"));
     setModal(true);
-    setMinimumWidth(760);
+    setMinimumWidth(720);
+
+    const QRect available = screen() != nullptr ? screen()->availableGeometry()
+                                                : QRect(0, 0, 1280, 800);
+    resize(qMin(820, available.width() - 40), qMin(620, available.height() - 60));
 
     bindUi();
     loadValues();
@@ -86,6 +92,8 @@ void SettingsDialog::bindUi()
     m_volume->setRange(0, 100);
     for (int limit : {10, 20, 30, 50})
         m_searchLimit->addItem(tr("%1 条").arg(limit), limit);
+    m_searchLimit->setToolTip(
+        tr("网页型影视源单次最多抓取 6 条；内置/配置型音频源按这里的条数返回。"));
 
     connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
         m_volumeValue->setText(QStringLiteral("%1%").arg(value));
@@ -130,6 +138,8 @@ void SettingsDialog::refreshSourcesLabel()
     m_sourcesLabel->setText(tr("已启用 %1 个源（共 %2 个）")
                                 .arg(m_registry->enabledCount())
                                 .arg(m_registry->sources().size()));
+    m_sourcesButton->setToolTip(
+        tr("源管理里的“保存”会立即写入 sources.json；即使本页点“取消”也不会回滚源改动。"));
 }
 
 void SettingsDialog::openSourceManager()

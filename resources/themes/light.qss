@@ -134,11 +134,6 @@ QComboBox::drop-down {
     width: 22px;
 }
 
-QComboBox::down-arrow {
-    width: 0;
-    height: 0;
-}
-
 QComboBox QAbstractItemView {
     background: #ffffff;
     border: 1px solid rgba(140, 130, 220, 35%);
@@ -481,6 +476,24 @@ QDialog#SourceProbeDialog QGroupBox::title {
 QDialog#SourceManagerDialog QCheckBox,
 QDialog#SourceProbeDialog QCheckBox {
     color: #2b2b45;
+}
+
+QCheckBox {
+    color: #2b2b45;
+    spacing: 6px;
+}
+
+QSpinBox {
+    background: rgba(255, 255, 255, 80%);
+    border: 1px solid rgba(40, 70, 130, 22%);
+    border-radius: 10px;
+    padding: 3px 8px;
+    min-height: 26px;
+    color: #1f2937;
+}
+
+QSpinBox:hover {
+    border: 1px solid rgba(40, 90, 180, 45%);
 }
 
 QDialog#SourceManagerDialog QLabel,

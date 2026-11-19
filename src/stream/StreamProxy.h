@@ -1,6 +1,7 @@
 #ifndef STREAMPROXY_H
 #define STREAMPROXY_H
 
+#include <QByteArray>
 #include <QHash>
 #include <QObject>
 #include <QString>
@@ -52,8 +53,16 @@ private:
 
     void handleClient(QTcpSocket *client, const QByteArray &payload);
     void attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
+    void attachPlaylist(QTcpSocket *client, QNetworkReply *reply, const QUrl &playlistUrl,
+                        const QHash<QString, QString> &headers);
     void flushUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
     void replyError(QTcpSocket *client, int status, const QString &reason);
+
+    /// 把 m3u8 里的相对/绝对分片、子播放列表、key、init 段改写成代理地址，
+    /// 否则绝对地址会绕过代理，丢掉 Referer/Cookie，相对地址则会丢 token。
+    QByteArray rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
+                               const QHash<QString, QString> &headers);
+    void pruneTokens();
 
     QByteArray buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const;
     static Request parseRequest(const QByteArray &payload);
@@ -63,6 +72,7 @@ private:
     {
         QUrl url;
         QHash<QString, QString> headers;
+        qint64 createdAtMs = 0;
     };
 
     HttpClient *m_http;

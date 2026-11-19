@@ -37,6 +37,11 @@ public:
     void fetch(const QUrl &url, const QByteArray &range,
                const QHash<QString, QString> &headers, const ReplyHandler &onReady);
 
+    /// 与 fetch 相同，但在最终响应头到达时立即回调，正文仍可继续 readyRead。
+    /// 用于流式代理/下载；调用方负责连接 readyRead、finished 并 deleteLater。
+    void stream(const QUrl &url, const QByteArray &range,
+                const QHash<QString, QString> &headers, const ReplyHandler &onReady);
+
     void setCookie(const QString &cookie);
 
     static bool isHttpSuccess(QNetworkReply *reply);
@@ -45,7 +50,7 @@ public:
 private:
     void fetchInternal(const QUrl &url, const QByteArray &range,
                        const QHash<QString, QString> &headers,
-                       const ReplyHandler &onReady, int hop);
+                       const ReplyHandler &onReady, int hop, bool deliverOnHeaders);
 
     QNetworkAccessManager *m_nam;
     QString m_cookie;

@@ -71,6 +71,8 @@ double toNumber(const QJsonValue &value)
 {
     if (value.isDouble())
         return value.toDouble();
+    if (value.isBool())
+        return value.toBool() ? 1.0 : 0.0;
     if (value.isString())
         return value.toString().toDouble();
     return 0.0;
@@ -112,10 +114,16 @@ bool ruleMatches(const QJsonValue &item, const QJsonObject &rule)
 
     if (op == QLatin1String("eq") || op == QLatin1String("ne")) {
         bool equal = false;
-        if (expected.isDouble() || expected.isBool() || actual.isDouble() || actual.isBool())
+        // bool 不能和数字混算：true == false == 0 会把 audius 的
+        // “is_streamable eq false” 误判成全部命中，20 条结果全被过滤。
+        if (expected.isBool() || actual.isBool()) {
+            equal = expected.isBool() && actual.isBool()
+                    && expected.toBool() == actual.toBool();
+        } else if (expected.isDouble() || actual.isDouble()) {
             equal = toNumber(actual) == toNumber(expected);
-        else
+        } else {
             equal = actual.toString() == expected.toString();
+        }
         return op == QLatin1String("eq") ? equal : !equal;
     }
     if (op == QLatin1String("gt"))
@@ -351,6 +359,8 @@ void ConfigSearchProvider::onReplyFinished()
         base.webUrl = QUrl(mapString(node, m_config.fields, QStringLiteral("webUrl"), vars));
         base.sourceId = m_config.id;
         base.headers = m_config.headers;
+        if (!m_config.cookie.isEmpty())
+            base.headers.insert(QStringLiteral("Cookie"), m_config.cookie);
         base.online = true;
         // 影片展示字段：没有对应配置就留空，列表会自动跳过
         base.posterUrl = normalizeUrl(mapString(node, m_config.fields,
@@ -406,6 +416,10 @@ void ConfigSearchProvider::appendItem(const MediaItem &base, const QString &stre
                 item.title = QStringLiteral("%1 · %2").arg(base.title, part.name);
             if (item.title.isEmpty())
                 item.title = item.url.fileName();
+            if (item.url.isEmpty() || !item.url.isValid()) {
+                ++m_filtered;
+                continue;
+            }
             m_result.append(item);
         }
         return;
@@ -415,6 +429,10 @@ void ConfigSearchProvider::appendItem(const MediaItem &base, const QString &stre
     item.url = QUrl(stream.trimmed());
     if (item.title.isEmpty())
         item.title = item.url.fileName();
+    if (item.url.isEmpty() || !item.url.isValid()) {
+        ++m_filtered;
+        return;
+    }
     m_result.append(item);
 }
 

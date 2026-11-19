@@ -1,8 +1,10 @@
 #include "net/SourceRegistry.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -163,6 +165,19 @@ QString primaryDir()
     return QCoreApplication::applicationDirPath() + QStringLiteral("/Data");
 }
 
+/// 损坏的源配置先改名备份，绝不能直接补种子覆盖用户原文件。
+QString backupCorruptFile(const QString &path)
+{
+    if (!QFile::exists(path))
+        return QString();
+    const QString backup =
+        path + QStringLiteral(".corrupt-")
+        + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddHHmmss"));
+    if (QFile::copy(path, backup))
+        return backup;
+    return QString();
+}
+
 } // namespace
 
 SourceRegistry::SourceRegistry(QObject *parent)
@@ -178,6 +193,7 @@ QString SourceRegistry::storagePath() const
 bool SourceRegistry::load()
 {
     m_sources.clear();
+    m_lastError.clear();
 
     QDir dir;
     if (!dir.exists(primaryDir()))
@@ -188,24 +204,41 @@ bool SourceRegistry::load()
         // 首次运行：写入预置源，之后它就是普通可编辑文件
         m_sources = seedSources();
         qCInfo(lcRegistry) << "已写入预置源：" << m_sources.size() << "个";
-        save();
-        return true;
+        return save();
     }
 
     if (!file.open(QIODevice::ReadOnly)) {
-        qCWarning(lcRegistry) << "无法打开" << storagePath() << file.errorString();
+        m_lastError = tr("无法读取源配置：%1").arg(file.errorString());
+        qCWarning(lcRegistry) << m_lastError << storagePath();
         return false;
     }
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
     file.close();
-    if (parseError.error != QJsonParseError::NoError) {
-        qCWarning(lcRegistry) << "sources.json 解析失败：" << parseError.errorString();
-        return false;
+    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+        const QString reason = parseError.error != QJsonParseError::NoError
+                                   ? parseError.errorString()
+                                   : tr("根节点不是数组");
+        const QString backup = backupCorruptFile(storagePath());
+        if (backup.isEmpty()) {
+            m_lastError = tr("源配置已损坏（%1），且无法备份原文件；未覆盖原文件。").arg(reason);
+            qCWarning(lcRegistry) << m_lastError;
+            return false;
+        }
+        m_lastError = tr("源配置已损坏（%1），原文件已备份为 %2，已恢复预置源。")
+                          .arg(reason)
+                          .arg(QFileInfo(backup).fileName());
+        qCWarning(lcRegistry) << m_lastError;
+        const QString corruptMessage = m_lastError;
+        m_sources = seedSources();
+        if (!save()) {
+            m_lastError = corruptMessage + tr(" 预置源写入失败：%1").arg(m_lastError);
+            return false;
+        }
+        return true;
     }
 
-    const QJsonArray array = document.isArray() ? document.array()
-                                                : QJsonArray();
+    const QJsonArray array = document.array();
     bool dirty = false;
     for (const QJsonValue &entry : array) {
         if (!entry.isObject())
@@ -246,8 +279,8 @@ bool SourceRegistry::load()
             qCInfo(lcRegistry) << "补入缺失的内置源：" << seed.id;
         }
     }
-    if (dirty)
-        save();
+    if (dirty && !save())
+        return false;
 
     qCInfo(lcRegistry) << "已加载" << m_sources.size() << "个搜索源，来自" << storagePath();
     return true;
@@ -255,6 +288,7 @@ bool SourceRegistry::load()
 
 bool SourceRegistry::save()
 {
+    m_lastError.clear();
     QDir dir;
     if (!dir.exists(primaryDir()))
         dir.mkpath(primaryDir());
@@ -265,12 +299,14 @@ bool SourceRegistry::save()
 
     QSaveFile file(storagePath());
     if (!file.open(QIODevice::WriteOnly)) {
-        qCWarning(lcRegistry) << "无法写入" << storagePath() << file.errorString();
+        m_lastError = tr("无法写入源配置：%1").arg(file.errorString());
+        qCWarning(lcRegistry) << m_lastError << storagePath();
         return false;
     }
     file.write(QJsonDocument(array).toJson(QJsonDocument::Indented));
     if (!file.commit()) {
-        qCWarning(lcRegistry) << "保存失败" << storagePath();
+        m_lastError = tr("源配置保存失败：%1").arg(file.errorString());
+        qCWarning(lcRegistry) << m_lastError << storagePath();
         return false;
     }
     return true;
@@ -297,16 +333,22 @@ SourceConfig SourceRegistry::sourceById(const QString &id) const
 
 bool SourceRegistry::upsert(const SourceConfig &config)
 {
+    const QVector<SourceConfig> old = m_sources;
+    bool found = false;
     for (SourceConfig &existing : m_sources) {
         if (existing.id == config.id) {
             existing = config;
-            save();
-            emit changed();
-            return true;
+            found = true;
+            break;
         }
     }
-    m_sources.append(config);
-    save();
+    if (!found)
+        m_sources.append(config);
+
+    if (!save()) {
+        m_sources = old;
+        return false;
+    }
     emit changed();
     return true;
 }
@@ -320,8 +362,12 @@ bool SourceRegistry::remove(const QString &id)
             qCWarning(lcRegistry) << "内置源不可删除：" << id;
             return false;
         }
+        const QVector<SourceConfig> old = m_sources;
         m_sources.removeAt(i);
-        save();
+        if (!save()) {
+            m_sources = old;
+            return false;
+        }
         emit changed();
         return true;
     }
@@ -333,12 +379,30 @@ bool SourceRegistry::setEnabled(const QString &id, bool enabled)
     for (SourceConfig &config : m_sources) {
         if (config.id != id)
             continue;
+        if (config.enabled == enabled)
+            return true;
+        const QVector<SourceConfig> old = m_sources;
         config.enabled = enabled;
-        save();
+        if (!save()) {
+            m_sources = old;
+            return false;
+        }
         emit changed();
         return true;
     }
     return false;
+}
+
+bool SourceRegistry::replaceAll(const QVector<SourceConfig> &sources)
+{
+    const QVector<SourceConfig> old = m_sources;
+    m_sources = sources;
+    if (!save()) {
+        m_sources = old;
+        return false;
+    }
+    emit changed();
+    return true;
 }
 
 int SourceRegistry::enabledCount() const

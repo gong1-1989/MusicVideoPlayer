@@ -60,6 +60,11 @@ void setLastDir(const QString &dir);
 QByteArray playlist(MediaType type);
 void setPlaylist(MediaType type, const QByteArray &json);
 
+/// 旧版把播放列表存在 QSettings；迁移到 Data/playlists.json 后只读一次并清掉旧键
+bool playlistsMigrated();
+void setPlaylistsMigrated(bool migrated);
+void clearLegacyPlaylists();
+
 } // namespace AppSettings
 
 #endif // APPSETTINGS_H

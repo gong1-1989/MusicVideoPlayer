@@ -42,6 +42,7 @@
 #include <QListWidgetItem>
 #include <QLoggingCategory>
 #include <QMenu>
+#include <QMessageBox>
 #include <QModelIndex>
 #include <QMouseEvent>
 #include <QPainter>
@@ -386,15 +387,6 @@ QVector<MediaItem> playlistFromJson(const QByteArray &payload)
     return items;
 }
 
-QByteArray playlistToJson(const PlaylistModel *model)
-{
-    QJsonArray array;
-    const QVector<MediaItem> items = model->items();
-    for (const MediaItem &item : items)
-        array.append(mediaItemToJson(item));
-    return QJsonDocument(array).toJson(QJsonDocument::Compact);
-}
-
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -411,7 +403,12 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
 
-    m_registry->load();
+    if (!m_registry->load() || !m_registry->lastError().isEmpty()) {
+        const QString message = m_registry->lastError().isEmpty()
+                                    ? tr("搜索源配置读取失败，已使用空配置启动。")
+                                    : m_registry->lastError();
+        QMessageBox::warning(this, tr("搜索源配置"), message);
+    }
     m_coordinator = new SearchCoordinator(m_registry, m_http, this);
 
     ui->list_search->setModel(m_searchModel);    ui->list_music->setModel(m_musicModel);
@@ -479,6 +476,15 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // QVideoSink 属于 ui->videoWidget；先摘掉 sink 再删 ui，
+    // 否则播放器析构时仍可能回调已释放的 surface。
+    if (m_player != nullptr) {
+        m_player->stop();
+        if (m_player->mediaPlayer() != nullptr)
+            m_player->mediaPlayer()->setVideoSink(nullptr);
+    }
+    if (m_fullScreenWindow != nullptr)
+        exitFullScreen();
     delete ui;
 }
 
@@ -578,11 +584,24 @@ void MainWindow::setupConnections()
     });
 
     connect(m_coordinator, &SearchCoordinator::searchStarted, this, [this] {
-        ui->btn_search->setEnabled(false);
+        ui->btn_search->setEnabled(true);
+        ui->btn_search->setText(tr("取消"));
         ui->label_status->setText(tr("搜索中…"));
         // 一发起搜索就把折叠着的搜索列表放出来
         setSearchAreaVisible(true);
     });
+    connect(m_coordinator, &SearchCoordinator::searchPartial, this,
+            [this](const QVector<MediaItem> &items, int filtered, int done, int total) {
+                m_searchResults = items;
+                setSearchAreaVisible(true);
+                applySearchPage();
+                ui->label_status->setText(
+                    tr("搜索中… 已完成 %1/%2 个源，当前 %3 条%4")
+                        .arg(done)
+                        .arg(total)
+                        .arg(items.size())
+                        .arg(filtered > 0 ? tr("（已过滤 %1 条）").arg(filtered) : QString()));
+            });
     connect(m_coordinator, &SearchCoordinator::searchSucceeded, this,
             [this](const QVector<MediaItem> &items, int filtered, const QStringList &failed) {
                 showSearchResults(items);
@@ -609,12 +628,24 @@ void MainWindow::setupConnections()
                     if (filtered > 0)
                         text += tr("（已过滤 %1 条）").arg(filtered);
                 }
-                if (!failed.isEmpty())
-                    text += tr("；失败：%1").arg(failed.join(QStringLiteral("、")));
+                if (!failed.isEmpty()) {
+                    // 状态栏只放前两条，且单条过长时截断，避免把整串技术失败原因铺满
+                    QStringList shown;
+                    for (int i = 0; i < failed.size() && i < 2; ++i) {
+                        QString detail = failed.at(i);
+                        if (detail.size() > 90)
+                            detail = detail.left(90) + QStringLiteral("…");
+                        shown.append(detail);
+                    }
+                    text += tr("；失败：%1").arg(shown.join(QStringLiteral("、")));
+                    if (failed.size() > shown.size())
+                        text += tr(" 等 %1 个源").arg(failed.size());
+                }
                 ui->label_status->setText(text);
             });
     connect(m_coordinator, &SearchCoordinator::searchFinished, this, [this] {
         ui->btn_search->setEnabled(true);
+        ui->btn_search->setText(tr("搜索"));
     });
 
     // ---------------------------------------------------------- 搜索结果分页
@@ -678,10 +709,6 @@ void MainWindow::restoreSettings()
     const int modeValue = AppSettings::playbackMode();
     m_player->setMode(static_cast<PlaybackController::Mode>(qBound(0, modeValue, 2)));
 
-    // 上次会话的音乐/视频列表
-    m_musicModel->setItems(playlistFromJson(AppSettings::playlist(MediaType::Music)));
-    m_videoModel->setItems(playlistFromJson(AppSettings::playlist(MediaType::Video)));
-
     applyWindowPreset();
 }
 
@@ -720,8 +747,7 @@ void MainWindow::saveSettings()
     AppSettings::setLastDir(m_lastDir);
     AppSettings::setDefaultVolume(m_player->volumePercent());
     AppSettings::setPlaybackMode(static_cast<int>(m_player->mode()));
-    AppSettings::setPlaylist(MediaType::Music, playlistToJson(m_musicModel));
-    AppSettings::setPlaylist(MediaType::Video, playlistToJson(m_videoModel));
+    // 播放列表现只写 Data/playlists.json；QSettings 双写会让删除后的列表“复活”。
 
     // 只有"记住上次"才写几何，固定尺寸预设下写进去会互相打架
     if (AppSettings::windowPreset() == WindowPreset::Last)
@@ -771,6 +797,10 @@ void MainWindow::highlightCurrentLyric()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // 全屏是独立顶层窗；不先退出，主窗关闭后进程可能被它拉住不退出。
+    if (m_fullScreenWindow != nullptr)
+        exitFullScreen();
+    m_player->stop();
     savePlaylists();
     saveSettings();
     QMainWindow::closeEvent(event);
@@ -786,8 +816,43 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
 void MainWindow::restorePlaylists()
 {
-    const QVector<MediaItem> music = PlaylistStore::load(MediaType::Music);
-    const QVector<MediaItem> video = PlaylistStore::load(MediaType::Video);
+    QVector<MediaItem> music = PlaylistStore::load(MediaType::Music);
+    QVector<MediaItem> video = PlaylistStore::load(MediaType::Video);
+
+    // 只迁移一次：旧版 QSettings 里的列表写入 Data/playlists.json 后清键。
+    // 迁移标记防止“用户清空列表”后下次启动又被旧键复活。
+    if (!AppSettings::playlistsMigrated()) {
+        bool canMarkMigrated = true;
+        bool imported = false;
+        if (music.isEmpty()) {
+            const QVector<MediaItem> legacyMusic =
+                playlistFromJson(AppSettings::playlist(MediaType::Music));
+            if (!legacyMusic.isEmpty()) {
+                music = legacyMusic;
+                imported = true;
+            }
+        }
+        if (video.isEmpty()) {
+            const QVector<MediaItem> legacyVideo =
+                playlistFromJson(AppSettings::playlist(MediaType::Video));
+            if (!legacyVideo.isEmpty()) {
+                video = legacyVideo;
+                imported = true;
+            }
+        }
+        if (imported) {
+            canMarkMigrated = PlaylistStore::saveAll(music, video);
+            if (canMarkMigrated)
+                qCInfo(lcWindow) << "已把旧 QSettings 播放列表迁移到 Data/playlists.json";
+            else
+                qCWarning(lcWindow) << "播放列表迁移失败，保留旧 QSettings 数据待下次重试";
+        }
+        if (canMarkMigrated) {
+            AppSettings::setPlaylistsMigrated(true);
+            AppSettings::clearLegacyPlaylists();
+        }
+    }
+
     m_musicModel->setItems(music);
     m_videoModel->setItems(video);
 
@@ -800,7 +865,11 @@ void MainWindow::restorePlaylists()
 
 void MainWindow::savePlaylists()
 {
-    PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items());
+    if (!PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
+        qCWarning(lcWindow) << "播放列表保存失败";
+        if (ui != nullptr && ui->label_status != nullptr)
+            ui->label_status->setText(tr("播放列表保存失败：Data 目录不可写"));
+    }
 }
 
 void MainWindow::setupPlaylistInteractions()
@@ -940,6 +1009,12 @@ void MainWindow::ensurePlaylist()
 
 void MainWindow::on_btn_search_clicked()
 {
+    if (m_coordinator->isBusy()) {
+        m_coordinator->cancel();
+        ui->label_status->setText(tr("搜索已取消"));
+        return;
+    }
+
     const QString keyword = ui->edit_search->text().trimmed();
     if (keyword.isEmpty()) {
         ui->label_status->setText(tr("请输入搜索关键词"));
@@ -1379,19 +1454,32 @@ void MainWindow::downloadItem(const MediaItem &item)
         return;
     }
 
-    const QString suffix = item.type == MediaType::Video ? QStringLiteral("mp4")
-                                                        : QStringLiteral("mp3");
+    const bool hls = DownloadTask::looksLikeHls(item.url);
+    const QString suffix = hls ? QStringLiteral("ts")
+                               : (item.type == MediaType::Video ? QStringLiteral("mp4")
+                                                                : QStringLiteral("mp3"));
+    const QString filter = hls ? tr("视频文件 (*.ts *.mp4)")
+                               : tr("媒体文件 (*.%1)").arg(suffix);
     const QString suggested =
         QDir(m_lastDir).filePath(DownloadTask::sanitizeFileName(item.displayName(), suffix));
-    const QString target = QFileDialog::getSaveFileName(
-        this, tr("保存文件"), suggested, tr("媒体文件 (*.%1)").arg(suffix));
+    const QString target = QFileDialog::getSaveFileName(this, tr("保存文件"), suggested, filter);
     if (target.isEmpty())
         return;
 
     m_lastDir = QFileInfo(target).absolutePath();
+    QString finalTarget = target;
+    if (hls) {
+        if (!finalTarget.endsWith(QLatin1String(".ts"), Qt::CaseInsensitive)
+            && !finalTarget.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive)) {
+            finalTarget += QLatin1String(".ts");
+        }
+    } else if (!finalTarget.endsWith(QStringLiteral(".") + suffix, Qt::CaseInsensitive)) {
+        finalTarget += QStringLiteral(".") + suffix;
+    }
 
-    qCInfo(lcWindow) << "开始下载" << item.displayName() << "到" << target;
-    auto *task = DownloadTask::start(m_http, item.url, target, item.headers, this);
+    qCInfo(lcWindow) << "开始下载" << item.displayName() << "到" << finalTarget
+                     << (hls ? "（HLS 分片合并）" : "");
+    auto *task = DownloadTask::start(m_http, item.url, finalTarget, item.headers, this);
     m_download = task;
 
     connect(task, &DownloadTask::progress, this, [this](qint64 received, qint64 total) {

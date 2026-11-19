@@ -66,6 +66,7 @@ signals:
     void errorOccurred(const QString &message);
 
 private:
+    void playRowInternal(int row, bool autoAdvance);
     int rowCount() const;
     void onMediaStatusChanged(QMediaPlayer::MediaStatus status);
     void updateLoops();
@@ -79,6 +80,7 @@ private:
     int m_volume = 60;
     /// 代理发现上游不是音视频时记下的原因，用来替代播放器含糊的报错
     QString m_unavailableReason;
+    int m_consecutiveErrors = 0;
 };
 
 #endif // PLAYBACKCONTROLLER_H

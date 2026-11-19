@@ -211,4 +211,23 @@ void setPlaylist(MediaType type, const QByteArray &json)
     settings().setValue(QLatin1String(key), json);
 }
 
+bool playlistsMigrated()
+{
+    return settings().value(QStringLiteral("playlists/migrated"), false).toBool();
+}
+
+void setPlaylistsMigrated(bool migrated)
+{
+    settings().setValue(QStringLiteral("playlists/migrated"), migrated);
+    settings().sync();
+}
+
+void clearLegacyPlaylists()
+{
+    QSettings store = settings();
+    store.remove(QLatin1String(kPlaylistMusic));
+    store.remove(QLatin1String(kPlaylistVideo));
+    store.sync();
+}
+
 } // namespace AppSettings

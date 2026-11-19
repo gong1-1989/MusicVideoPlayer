@@ -65,7 +65,7 @@ private:
     void onTest();
     void onImport();
     void onExport();
-    void saveAll();
+    bool saveAll();
 
     Ui::SourceManagerDialog *ui;
     SourceRegistry *m_registry;

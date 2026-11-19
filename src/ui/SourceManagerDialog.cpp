@@ -520,12 +520,18 @@ void SourceManagerDialog::onAddFromSite()
         return;
 
     SourceConfig probed = dialog.probedConfig();
-    if (!probed.isValid())
+    if (!probed.isValid()) {
+        QMessageBox::warning(this, tr("探测结果不完整"),
+                             tr("没有拿到完整的标题/播放地址字段，请改用“配置源”手工填写字段映射。"));
         return;
+    }
     probed.id = makeUniqueId(probed.id.isEmpty() ? QStringLiteral("site") : probed.id, m_drafts);
     probed.builtin = false;
+    probed.enabled = true;
     m_drafts.append(probed);
     reloadList(m_drafts.size() - 1);
+    QMessageBox::information(this, tr("源已添加"),
+                             tr("“%1”已自动启用；点“保存”后立即参与搜索。").arg(probed.name));
 }
 
 void SourceManagerDialog::onRefreshSelected()
@@ -697,9 +703,9 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
                         if (redirected && row >= 0 && row < self->m_drafts.size()) {
                             // 跳转后的地址验真通过，写回草稿（点“保存”才落盘）
                             self->m_drafts[row].urlTemplate = currentBase;
-                            if (!self->m_drafts[row].headers.contains(QStringLiteral("Referer")))
-                                self->m_drafts[row].headers.insert(QStringLiteral("Referer"),
-                                                                   currentBase);
+                            // 域名已变，旧 Referer 必须覆盖；否则会带着旧站点的头去请求新站
+                            self->m_drafts[row].headers.insert(QStringLiteral("Referer"),
+                                                               currentBase);
                             self->m_siteUrl->setText(currentBase);
                             self->m_url->setText(currentBase);
                             lines.append(self->tr("地址已更新为 %1（保存后生效）").arg(currentBase));
@@ -774,6 +780,16 @@ void SourceManagerDialog::onTest()
     }
 
     commitFormToDraft();
+    if (draft.kind == QLatin1String("external")) {
+        const QMessageBox::StandardButton choice = QMessageBox::warning(
+            this, tr("外部解析器会执行本机命令"),
+            tr("试搜会直接启动本机程序：\n\n%1 %2\n\n只在你信任这个命令时继续。")
+                .arg(draft.command)
+                .arg(draft.arguments),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (choice != QMessageBox::Yes)
+            return;
+    }
     m_testList->clear();
     m_testList->addItem(tr("正在搜索“%1”…").arg(keyword));
     m_btnTest->setEnabled(false);
@@ -817,6 +833,29 @@ void SourceManagerDialog::onImport()
         return;
     }
 
+    // 外部解析器会在本机执行命令；导入时把完整命令行摆给用户看，默认不继续。
+    QStringList externalLines;
+    for (const SourceConfig &config : imported) {
+        if (config.kind == QLatin1String("external")) {
+            externalLines.append(QStringLiteral("%1: %2 %3")
+                                     .arg(config.name.isEmpty() ? config.id : config.name)
+                                     .arg(config.command)
+                                     .arg(config.arguments));
+        }
+    }
+    if (!externalLines.isEmpty()) {
+        const QString detail = externalLines.mid(0, 5).join(QLatin1Char('\n'));
+        const QMessageBox::StandardButton choice = QMessageBox::warning(
+            this, tr("外部解析器会执行本机命令"),
+            tr("导入的配置包含 %1 个外部解析器，搜索时会直接启动本机程序：\n\n%2\n\n"
+               "只导入你信任的配置。是否继续？")
+                .arg(externalLines.size())
+                .arg(detail),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (choice != QMessageBox::Yes)
+            return;
+    }
+
     commitFormToDraft();
     int replaced = 0;
     for (const SourceConfig &config : imported) {
@@ -849,28 +888,38 @@ void SourceManagerDialog::onExport()
         QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件"));
 }
 
-void SourceManagerDialog::saveAll()
+bool SourceManagerDialog::saveAll()
 {
     commitFormToDraft();
     if (m_registry == nullptr)
-        return;
+        return false;
 
-    for (const SourceConfig &config : m_drafts)
-        m_registry->upsert(config);
+    QVector<SourceConfig> finalSources = m_drafts;
 
-    // 删掉草稿里已经不存在的源
-    const QVector<SourceConfig> existing = m_registry->sources();
-    for (const SourceConfig &config : existing) {
+    // 草稿里没有的内置源不能被“保存”误删；内置源只能停用。
+    for (const SourceConfig &config : m_registry->sources()) {
+        if (!config.builtin)
+            continue;
         bool kept = false;
-        for (const SourceConfig &draft : m_drafts) {
+        for (const SourceConfig &draft : finalSources) {
             if (draft.id == config.id) {
                 kept = true;
                 break;
             }
         }
-        if (!kept && !config.builtin)
-            m_registry->remove(config.id);
+        if (!kept)
+            finalSources.append(config);
     }
+
+    // 一次整表提交：要么全部写成功，要么保持原文件；不会出现删到一半/写一半。
+    if (!m_registry->replaceAll(finalSources)) {
+        QMessageBox::warning(this, tr("保存失败"),
+                             m_registry->lastError().isEmpty()
+                                 ? tr("无法写入 sources.json，请检查 Data 目录权限。")
+                                 : m_registry->lastError());
+        return false;
+    }
+    return true;
 }
 
 bool SourceManagerDialog::writeSourcesToFile(const QVector<SourceConfig> &sources,
@@ -928,6 +977,7 @@ bool SourceManagerDialog::readSourcesFromFile(QVector<SourceConfig> *sources, co
 
 void SourceManagerDialog::accept()
 {
-    saveAll();
+    if (!saveAll())
+        return; // 写盘失败时保留对话框，用户可改权限/重试，不假装保存成功
     QDialog::accept();
 }

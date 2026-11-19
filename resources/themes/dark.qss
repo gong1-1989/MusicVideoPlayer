@@ -135,11 +135,6 @@ QComboBox::drop-down {
     width: 22px;
 }
 
-QComboBox::down-arrow {
-    width: 0;
-    height: 0;
-}
-
 QComboBox QAbstractItemView {
     background: #14122e;
     border: 1px solid rgba(150, 190, 255, 25%);
@@ -476,6 +471,25 @@ QDialog#SourceProbeDialog QGroupBox::title {
 QDialog#SourceManagerDialog QCheckBox,
 QDialog#SourceProbeDialog QCheckBox {
     color: #dfe4ff;
+}
+
+/* 设置页的复选框、所有数值框也要跟主题，不能退回系统默认浅色 */
+QCheckBox {
+    color: #dfe4ff;
+    spacing: 6px;
+}
+
+QSpinBox {
+    background: rgba(255, 255, 255, 6%);
+    border: 1px solid rgba(140, 175, 255, 22%);
+    border-radius: 10px;
+    padding: 3px 8px;
+    min-height: 26px;
+    color: #e6ecff;
+}
+
+QSpinBox:hover {
+    border: 1px solid rgba(150, 195, 255, 45%);
 }
 
 QDialog#SourceManagerDialog QLabel,

@@ -6,6 +6,7 @@
 
 #include <QObject>
 #include <QStringList>
+#include <QTimer>
 
 class SearchProviderBase;
 class HttpClient;
@@ -29,6 +30,8 @@ public:
 
 signals:
     void searchStarted();
+    /// 每完成一个源就增量刷新，慢源不会把首屏拖到全部结束才出现
+    void searchPartial(const QVector<MediaItem> &items, int filtered, int done, int total);
     void searchSucceeded(const QVector<MediaItem> &items, int filtered,
                          const QStringList &failedSources);
     void searchFinished();
@@ -36,6 +39,7 @@ signals:
 private:
     void startNext();
     void onProviderFinished(const QVector<MediaItem> &items, int filtered, const QString &error);
+    void onSourceTimeout();
 
     SourceRegistry *m_registry;
     HttpClient *m_http;
@@ -51,6 +55,8 @@ private:
     QStringList m_failed;
     QVector<QString> m_queueNames;
     SearchProviderBase *m_current = nullptr;
+    QTimer m_sourceTimeout;
+    static constexpr int kSourceTimeoutMs = 20000;
 };
 
 #endif // SEARCHCOORDINATOR_H

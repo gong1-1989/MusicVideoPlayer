@@ -8,11 +8,13 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
 #include <QUrl>
 
 namespace {
@@ -65,7 +67,9 @@ SourceProbeDialog::SourceProbeDialog(HttpClient *http, MediaType type, const QSt
     ui->setupUi(this);
     setModal(true);
     setWindowTitle(titleText);
-    setMinimumSize(1020, 640);
+    const QRect available = screen() != nullptr ? screen()->availableGeometry()
+                                                : QRect(0, 0, 1280, 800);
+    resize(qMin(900, available.width() - 40), qMin(600, available.height() - 60));
 
     // 必须在 bindUi() 之后才能碰成员指针：m_type 等在这里才被赋值
     bindUi();

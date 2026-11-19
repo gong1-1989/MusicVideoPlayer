@@ -1,6 +1,7 @@
 #include "core/PlaylistStore.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -82,9 +83,19 @@ QVector<MediaItem> load(MediaType type)
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return items;
 
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    if (!doc.isObject()) {
-        qCWarning(lcStore) << "playlists.json 根节点不是对象";
+    const QByteArray payload = file.readAll();
+    file.close();
+    QJsonParseError parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        // 损坏的播放列表先备份，再按空列表启动；避免下一次保存把原文件彻底覆盖。
+        const QString backup =
+            path + QStringLiteral(".corrupt-")
+            + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddHHmmss"));
+        if (QFile::copy(path, backup))
+            qCWarning(lcStore) << "playlists.json 已损坏，原文件备份为" << backup;
+        else
+            qCWarning(lcStore) << "playlists.json 已损坏，且无法备份原文件：" << path;
         return items;
     }
 
@@ -103,7 +114,7 @@ QVector<MediaItem> load(MediaType type)
     return items;
 }
 
-void saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
+bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
 {
     QJsonObject root;
     for (const auto &entry : {std::make_pair(MediaType::Music, &music),
@@ -119,21 +130,24 @@ void saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
     if (writeFile(primaryPath(), payload)) {
         qCInfo(lcStore) << "播放列表已保存（音乐" << music.size() << "条、视频" << video.size()
                         << "条）到" << primaryPath();
-        return;
+        return true;
     }
 
     // 程序目录只读（例如装进 Program Files）时退回用户数据目录，不让保存静默失败
     const QString fallback = fallbackPath();
     qCWarning(lcStore) << "无法写入" << primaryPath() << "，改用备用路径" << fallback;
-    writeFile(fallback, payload);
+    if (writeFile(fallback, payload))
+        return true;
+
+    qCWarning(lcStore) << "播放列表保存失败，主路径和备用路径均不可写";
+    return false;
 }
 
-void save(MediaType type, const QVector<MediaItem> &items)
+bool save(MediaType type, const QVector<MediaItem> &items)
 {
     if (type == MediaType::Music)
-        saveAll(items, load(MediaType::Video));
-    else
-        saveAll(load(MediaType::Music), items);
+        return saveAll(items, load(MediaType::Video));
+    return saveAll(load(MediaType::Music), items);
 }
 
 } // namespace PlaylistStore

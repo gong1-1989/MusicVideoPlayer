@@ -549,7 +549,7 @@ void Prober::probeNextCandidate()
         SourceConfig config;
         config.id = QStringLiteral("site_") + m_origin.host().replace(QLatin1Char('.'), QLatin1Char('_'));
         config.name = m_siteName.isEmpty() ? m_origin.host() : m_siteName;
-        config.enabled = false;
+        config.enabled = true;
         config.kind = QStringLiteral("config");
         config.method = QStringLiteral("GET");
         config.mediaType = detected;

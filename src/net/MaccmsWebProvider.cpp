@@ -287,8 +287,10 @@ void MaccmsWebProvider::search(const QString &keyword, int limit)
 QHash<QString, QString> MaccmsWebProvider::requestHeaders() const
 {
     QHash<QString, QString> headers = m_config.headers;
-    if (!headers.contains(QStringLiteral("Referer")))
-        headers.insert(QStringLiteral("Referer"), m_root);
+    // 站点根地址在“一键更新”后可能变了，旧 Referer 不能继续沿用
+    headers.insert(QStringLiteral("Referer"), m_root);
+    if (!m_config.cookie.isEmpty())
+        headers.insert(QStringLiteral("Cookie"), m_config.cookie);
     if (!headers.contains(QStringLiteral("Accept")))
         headers.insert(QStringLiteral("Accept"),
                        QStringLiteral("text/html,application/xhtml+xml,*/*;q=0.8"));
@@ -300,6 +302,8 @@ QHash<QString, QString> MaccmsWebProvider::mediaHeaders() const
     // 播放/下载要按源补 Referer：dmxq 的 m3u8 不带 Referer 直接 403
     QHash<QString, QString> headers = m_config.headers;
     headers.insert(QStringLiteral("Referer"), m_root);
+    if (!m_config.cookie.isEmpty())
+        headers.insert(QStringLiteral("Cookie"), m_config.cookie);
     return headers;
 }
 

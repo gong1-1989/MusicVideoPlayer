@@ -4,6 +4,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSet>
 #include <QUrl>
 
 #include <memory>
@@ -22,6 +23,26 @@ bool isRedirectStatus(int status)
 bool isAllowedScheme(const QUrl &url)
 {
     return url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https");
+}
+
+/// 跨 host 重定向时剥离鉴权头，避免 Cookie/Authorization 被带到第三方 CDN。
+QHash<QString, QString> headersForRedirect(const QHash<QString, QString> &headers,
+                                           const QUrl &from, const QUrl &to)
+{
+    if (from.host().compare(to.host(), Qt::CaseInsensitive) == 0)
+        return headers;
+
+    static const QSet<QString> sensitive = {
+        QStringLiteral("cookie"),
+        QStringLiteral("authorization"),
+        QStringLiteral("proxy-authorization"),
+        QStringLiteral("x-api-key")};
+    QHash<QString, QString> safe;
+    for (auto it = headers.cbegin(); it != headers.cend(); ++it) {
+        if (!sensitive.contains(it.key().toLower()))
+            safe.insert(it.key(), it.value());
+    }
+    return safe;
 }
 
 QNetworkRequest buildRequest(const QUrl &url, const QString &cookie,
@@ -104,12 +125,18 @@ void HttpClient::fetch(const QUrl &url, const QByteArray &range, const ReplyHand
 void HttpClient::fetch(const QUrl &url, const QByteArray &range,
                        const QHash<QString, QString> &headers, const ReplyHandler &onReady)
 {
-    fetchInternal(url, range, headers, onReady, 0);
+    fetchInternal(url, range, headers, onReady, 0, false);
+}
+
+void HttpClient::stream(const QUrl &url, const QByteArray &range,
+                        const QHash<QString, QString> &headers, const ReplyHandler &onReady)
+{
+    fetchInternal(url, range, headers, onReady, 0, true);
 }
 
 void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
                                const QHash<QString, QString> &headers,
-                               const ReplyHandler &onReady, int hop)
+                               const ReplyHandler &onReady, int hop, bool deliverOnHeaders)
 {
     if (hop > kMaxRedirects || !isAllowedScheme(url)) {
         qCWarning(lcHttp) << "重定向链被拒绝：" << url.toString() << "第" << hop << "跳";
@@ -131,12 +158,19 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
     auto delivered = std::make_shared<bool>(false);
 
     connect(reply, &QNetworkReply::metaDataChanged, this,
-            [this, reply, url, range, headers, onReady, hop, delivered] {
+            [this, reply, url, range, headers, onReady, hop, delivered, deliverOnHeaders] {
         if (*delivered)
             return;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (!isRedirectStatus(status))
-            return; // 正常响应，等 finished 分支统一下发
+        if (!isRedirectStatus(status)) {
+            // 流式场景：响应头一到就把 running reply 交给调用方，
+            // 否则整段音视频会先被 QNetworkReply 缓冲完才“开始播放/下载”。
+            if (deliverOnHeaders && status > 0) {
+                *delivered = true;
+                onReady(reply);
+            }
+            return; // 普通 fetch、以及还没有状态码的响应，等 finished 统一下发
+        }
 
         const QUrl target = reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl();
         const QUrl next = target.isRelative() ? url.resolved(target) : target;
@@ -150,7 +184,8 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
             return;
         }
         qCInfo(lcHttp) << "重定向" << status << url.toString() << "->" << next.toString();
-        fetchInternal(next, range, headers, onReady, hop + 1);
+        const QHash<QString, QString> nextHeaders = headersForRedirect(headers, url, next);
+        fetchInternal(next, range, nextHeaders, onReady, hop + 1, deliverOnHeaders);
     });
 
     connect(reply, &QNetworkReply::finished, this,

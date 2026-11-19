@@ -36,7 +36,7 @@ struct MediaItem
     QString genre;                  // 类型，如 "剧情 / 悬疑"
     QString description;            // 简介
 
-    bool isValid() const { return url.isValid(); }
+    bool isValid() const { return !url.isEmpty() && url.isValid(); }
 
     QString displayName() const
     {

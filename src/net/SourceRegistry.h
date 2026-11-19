@@ -25,16 +25,21 @@ public:
     bool upsert(const SourceConfig &config);
     bool remove(const QString &id);
     bool setEnabled(const QString &id, bool enabled);
+    /// 整表替换：源管理对话框一次提交所有草稿，避免每个源写一次盘、失败到一半。
+    bool replaceAll(const QVector<SourceConfig> &sources);
 
     int enabledCount() const;
 
     QString storagePath() const;
+    /// 最近一次 load/save 的错误；load 会把损坏文件先备份为 .corrupt-<时间>
+    QString lastError() const { return m_lastError; }
 
 signals:
     void changed();
 
 private:
     QVector<SourceConfig> m_sources;
+    QString m_lastError;
 };
 
 #endif // SOURCEREGISTRY_H
