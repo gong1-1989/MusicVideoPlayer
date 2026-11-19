@@ -14,6 +14,8 @@
 #include <QStringDecoder>
 #include <QUrlQuery>
 
+#include <algorithm>
+
 Q_LOGGING_CATEGORY(lcWeb, "mvp.net.webvideo")
 
 namespace {
@@ -256,6 +258,7 @@ void MaccmsWebProvider::search(const QString &keyword, int limit)
     m_keywordEncoded = QString::fromLatin1(QUrl::toPercentEncoding(m_keyword));
     m_done = false;
     m_candidates.clear();
+    m_slots.clear();
     m_items.clear();
     m_searchErrors.clear();
     m_firstFailure.clear();
@@ -642,7 +645,7 @@ void MaccmsWebProvider::startWorkers()
     // 这里最多 4 条同时抓，既让设置里的 10/20/30/50 生效，也不把请求数放大成串行等待。
     static constexpr int kConcurrency = 4;
     while (m_active < kConcurrency && m_nextCursor < m_candidates.size()
-           && m_items.size() < m_limit) {
+           && m_slots.size() < m_limit) {
         auto job = QSharedPointer<Job>::create();
         job->index = m_nextCursor++;
         job->candidate = m_candidates.at(job->index);
@@ -651,19 +654,20 @@ void MaccmsWebProvider::startWorkers()
     }
 
     if (m_active == 0
-        && (m_nextCursor >= m_candidates.size() || m_items.size() >= m_limit)) {
+        && (m_nextCursor >= m_candidates.size() || m_slots.size() >= m_limit)) {
         // suggest 给了 id 但详情页全打不开：说明这个站不是 /voddetail/<id>.html 这套路径，
         // 退回 HTML 搜索链再试一遍（只看详情路径，不代表站点没有内容）
-        if (m_items.isEmpty() && m_suggestUsed && !m_htmlSearchTried) {
+        if (m_slots.isEmpty() && m_suggestUsed && !m_htmlSearchTried) {
             m_suggestUsed = false;
             m_candidates.clear();
+            m_slots.clear();
             m_nextCursor = 0;
             m_active = 0;
             m_firstFailure.clear();
             trySearch(0);
             return;
         }
-        if (m_items.isEmpty() && !m_firstFailure.isEmpty())
+        if (m_slots.isEmpty() && !m_firstFailure.isEmpty())
             finish(m_firstFailure);
         else
             finish(QString());
@@ -889,8 +893,8 @@ void MaccmsWebProvider::finishJob(const QSharedPointer<Job> &job, bool ok, const
         --m_active;
 
     if (ok) {
-        if (m_items.size() < m_limit)
-            m_items.append(item);
+        if (m_slots.size() < m_limit)
+            m_slots.append(qMakePair(job->index, item));
     } else {
         ++m_filtered;
         if (m_firstFailure.isEmpty())
@@ -905,6 +909,17 @@ void MaccmsWebProvider::finish(const QString &error)
     if (m_done)
         return;
     m_done = true;
+
+    // 并发完成顺序不等于搜索页顺序；按候选序号排回搜索页原始顺序。
+    std::sort(m_slots.begin(), m_slots.end(),
+              [](const QPair<int, MediaItem> &left, const QPair<int, MediaItem> &right) {
+                  return left.first < right.first;
+              });
+    m_items.clear();
+    m_items.reserve(m_slots.size());
+    for (const QPair<int, MediaItem> &slot : m_slots)
+        m_items.append(slot.second);
+
     qCInfo(lcWeb) << "网页源" << m_config.id << "结果" << m_items.size() << "条，跳过"
                   << m_filtered << "条" << (error.isEmpty() ? QStringLiteral("成功") : error);
     emit finished(m_config.id, m_items, m_filtered, error);

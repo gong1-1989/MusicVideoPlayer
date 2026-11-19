@@ -81,6 +81,8 @@ private:
 
     QStringList m_searchErrors; // 每个搜索策略的失败原因，整源无结果时汇总上报
     QVector<Candidate> m_candidates;
+    /// 并发抓取时按候选序号暂存，最后统一排序，避免结果顺序由“谁先抓完”决定
+    QVector<QPair<int, MediaItem>> m_slots;
     QVector<MediaItem> m_items;
     QString m_firstFailure; // 第一条条目的失败原因，用于整源提示
 
