@@ -232,9 +232,28 @@ void SourceManagerDialog::bindUi()
         if (m_updating || item == nullptr)
             return;
         const QString id = item->data(Qt::UserRole).toString();
+        const bool wantsEnabled = item->checkState() == Qt::Checked;
         for (SourceConfig &config : m_drafts) {
-            if (config.id == id)
-                config.enabled = item->checkState() == Qt::Checked;
+            if (config.id != id)
+                continue;
+            // 外部解析器启用即执行本机命令，必须在勾选当场确认；
+            // 否则“保存”会静默把任意命令带进下一次搜索。
+            if (wantsEnabled && config.kind == QLatin1String("external")) {
+                const QMessageBox::StandardButton choice = QMessageBox::warning(
+                    this, tr("启用外部解析器"),
+                    tr("启用后搜索会直接启动本机程序：\n\n%1 %2\n\n只在你信任这个命令时启用。")
+                        .arg(config.command, config.arguments),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (choice != QMessageBox::Yes) {
+                    m_updating = true;
+                    item->setCheckState(Qt::Unchecked);
+                    m_updating = false;
+                    config.enabled = false;
+                    updateActions();
+                    return;
+                }
+            }
+            config.enabled = wantsEnabled;
         }
         updateActions();
     });
@@ -371,6 +390,23 @@ void SourceManagerDialog::updateKindUi()
     m_externalGroup->setVisible(isExternal);
     if (m_detailGroup != nullptr)
         m_detailGroup->setVisible(isConfig);
+
+    // 从其他类型切到外部解析器时，列表里的勾选状态同步为停用，
+    // 避免界面上看起来已启用、保存后却悄悄变成停用的错位。
+    if (isExternal && m_currentRow >= 0 && m_currentRow < m_drafts.size()
+        && m_drafts.at(m_currentRow).kind != QLatin1String("external")) {
+        m_drafts[m_currentRow].enabled = false;
+        const QString id = m_drafts.at(m_currentRow).id;
+        for (int i = 0; i < m_list->count(); ++i) {
+            QListWidgetItem *item = m_list->item(i);
+            if (item != nullptr && item->data(Qt::UserRole).toString() == id) {
+                m_updating = true;
+                item->setCheckState(Qt::Unchecked);
+                m_updating = false;
+                break;
+            }
+        }
+    }
 }
 
 SourceConfig SourceManagerDialog::readForm() const
@@ -386,8 +422,12 @@ SourceConfig SourceManagerDialog::readForm() const
     config.mediaType = m_type->currentData().toString() == QLatin1String("video")
                            ? MediaType::Video
                            : MediaType::Music;
+    const bool wasExternal = config.kind == QLatin1String("external");
     config.kind = m_kind->currentData().toString();
     config.provider = m_provider->currentData().toString();
+    // 新改成外部解析器的源默认停用，必须到列表里勾选并确认命令后才能参与搜索。
+    if (config.kind == QLatin1String("external") && !wasExternal)
+        config.enabled = false;
     if (config.kind == QLatin1String("external")) {
         config.command = m_command->text().trimmed();
         config.arguments = m_arguments->text();
@@ -858,7 +898,14 @@ void SourceManagerDialog::onImport()
 
     commitFormToDraft();
     int replaced = 0;
-    for (const SourceConfig &config : imported) {
+    int externalDisabled = 0;
+    for (SourceConfig &config : imported) {
+        // 导入配置不等于授权执行命令：外部解析器一律先停用，
+        // 用户之后在列表里勾选时还会再看到一次完整命令行确认。
+        if (config.kind == QLatin1String("external")) {
+            config.enabled = false;
+            ++externalDisabled;
+        }
         bool merged = false;
         for (SourceConfig &existing : m_drafts) {
             if (existing.id == config.id) {
@@ -872,8 +919,13 @@ void SourceManagerDialog::onImport()
             m_drafts.append(config);
     }
     reloadList(0);
-    QMessageBox::information(this, tr("导入完成"),
-                             tr("新增/更新 %1 个源，覆盖同名 %2 个。").arg(imported.size()).arg(replaced));
+    QString detail = tr("新增/更新 %1 个源，覆盖同名 %2 个。").arg(imported.size()).arg(replaced);
+    if (externalDisabled > 0) {
+        detail += tr("\n\n其中 %1 个外部解析器已默认停用；"
+                     "在列表里勾选时才会再确认命令。")
+                      .arg(externalDisabled);
+    }
+    QMessageBox::information(this, tr("导入完成"), detail);
 }
 
 void SourceManagerDialog::onExport()

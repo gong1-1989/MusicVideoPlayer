@@ -42,10 +42,7 @@ public:
     void stream(const QUrl &url, const QByteArray &range,
                 const QHash<QString, QString> &headers, const ReplyHandler &onReady);
 
-    void setCookie(const QString &cookie);
-
-    static bool isHttpSuccess(QNetworkReply *reply);
-    static QString describeError(QNetworkReply *reply);
+    static bool isHttpSuccess(QNetworkReply *reply);    static QString describeError(QNetworkReply *reply);
 
 private:
     void fetchInternal(const QUrl &url, const QByteArray &range,
@@ -53,7 +50,6 @@ private:
                        const ReplyHandler &onReady, int hop, bool deliverOnHeaders);
 
     QNetworkAccessManager *m_nam;
-    QString m_cookie;
 };
 
 #endif // HTTPCLIENT_H

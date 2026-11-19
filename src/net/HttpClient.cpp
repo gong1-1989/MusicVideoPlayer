@@ -2,6 +2,7 @@
 
 #include <QLoggingCategory>
 #include <QNetworkAccessManager>
+#include <QNetworkCookieJar>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QSet>
@@ -45,8 +46,7 @@ QHash<QString, QString> headersForRedirect(const QHash<QString, QString> &header
     return safe;
 }
 
-QNetworkRequest buildRequest(const QUrl &url, const QString &cookie,
-                             const QHash<QString, QString> &extra)
+QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &extra)
 {
     QNetworkRequest request(url);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
@@ -64,10 +64,10 @@ QNetworkRequest buildRequest(const QUrl &url, const QString &cookie,
         request.setRawHeader("Referer", "https://music.163.com/");
         request.setRawHeader("Origin", "https://music.163.com");
     }
-    if (!cookie.isEmpty())
-        request.setRawHeader("Cookie", cookie.toUtf8());
 
-    // 各搜索源自定义的头放在最后，允许覆盖上面的默认值
+    // 各搜索源自定义的头放在最后，允许覆盖上面的默认值。
+    // Cookie 统一交给 QNetworkCookieJar：它只按域名/路径回传，不会像全局 Cookie
+    // 头那样在跨 host 重定向时被带到第三方 CDN。
     for (auto it = extra.cbegin(); it != extra.cend(); ++it) {
         const QString key = it.key();
         const QByteArray value = it.value().toUtf8();
@@ -87,13 +87,16 @@ HttpClient::HttpClient(QObject *parent)
     , m_nam(new QNetworkAccessManager(this))
 {
     m_nam->setTransferTimeout(15000);
+    // 每个 HttpClient 一份独立会话：保留站点 Set-Cookie（登录态、验证码等），
+    // 回传时由 Qt 按域名/路径匹配，不再手工把 Cookie 塞给所有请求。
+    m_nam->setCookieJar(new QNetworkCookieJar(m_nam));
 }
 
 QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
                                const QHash<QString, QString> &headers)
 {
     qCDebug(lcHttp) << "GET" << url.toString() << "分段" << range;
-    QNetworkRequest request = buildRequest(url, m_cookie, headers);
+    QNetworkRequest request = buildRequest(url, headers);
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
     return m_nam->get(request);
@@ -109,7 +112,7 @@ QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
                                     const QHash<QString, QString> &headers)
 {
     qCDebug(lcHttp) << "POST" << url.toString() << "请求体" << body.size() << "字节";
-    QNetworkRequest request = buildRequest(url, m_cookie, headers);
+    QNetworkRequest request = buildRequest(url, headers);
     const QByteArray contentType =
         headers.value(QStringLiteral("Content-Type"),
                       QStringLiteral("application/x-www-form-urlencoded")).toUtf8();
@@ -144,7 +147,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
         return;
     }
 
-    QNetworkRequest request = buildRequest(url, m_cookie, headers);
+    QNetworkRequest request = buildRequest(url, headers);
     // 默认的 NoLessSafeRedirectPolicy 会拒绝 https→http 的降级跳转，
     // 而 163 的 outer/url 恰好 302 到 http 的 CDN，所以这里改为手动跟随。
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
@@ -197,11 +200,6 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
     });
 }
 
-
-void HttpClient::setCookie(const QString &cookie)
-{
-    m_cookie = cookie;
-}
 
 bool HttpClient::isHttpSuccess(QNetworkReply *reply)
 {
