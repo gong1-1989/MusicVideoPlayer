@@ -4,6 +4,7 @@
 #include "net/SourceConfig.h"
 
 #include <QDialog>
+#include <QHash>
 #include <QVector>
 
 class HttpClient;
@@ -18,14 +19,21 @@ class QPushButton;
 class QSpinBox;
 class SourceRegistry;
 
+QT_BEGIN_NAMESPACE
+namespace Ui {
+class SourceManagerDialog;
+}
+QT_END_NAMESPACE
+
 /// 搜索源管理：左侧源列表，右侧编辑当前源，底部可试搜、导入导出。
-/// 改动先留在草稿里，点“保存”才写回 registry。
+/// 改动先留在草稿里，点“保存”才写回 registry。界面由 SourceManagerDialog.ui 描述。
 class SourceManagerDialog : public QDialog
 {
     Q_OBJECT
 
 public:
     SourceManagerDialog(SourceRegistry *registry, HttpClient *http, QWidget *parent = nullptr);
+    ~SourceManagerDialog() override;
 
 protected:
     void accept() override;
@@ -37,7 +45,7 @@ public:
                                     QString *error);
 
 private:
-    void buildUi();
+    void bindUi();
     void reloadList(int targetRow);
     void selectRow(int row);
     void commitFormToDraft();
@@ -47,6 +55,11 @@ private:
     void updateKindUi();
 
     void onAdd();
+    void onAddExample();
+    void onAddFromSite();
+    void onRefreshSelected();
+    /// 内置网页型影视源的“一键更新”：探测地址跳转 + 试搜验真，不写死字段映射
+    void refreshWebSource(const SourceConfig &draft, const QString &previousUrl);
     void onDuplicate();
     void onRemove();
     void onTest();
@@ -54,12 +67,17 @@ private:
     void onExport();
     void saveAll();
 
+    Ui::SourceManagerDialog *ui;
     SourceRegistry *m_registry;
     HttpClient *m_http;
 
     QVector<SourceConfig> m_drafts;
     int m_currentRow = -1;
     bool m_updating = false;
+    bool m_probeBusy = false;
+    /// 站点体检失败的原因（按源 id 存），列表里据此标红并做悬停提示；
+    /// 只反映本次运行期的检查结果，不写进 sources.json
+    QHash<QString, QString> m_healthIssues;
 
     QListWidget *m_list = nullptr;
     QListWidget *m_testList = nullptr;
@@ -69,6 +87,8 @@ private:
     QComboBox *m_kind = nullptr;
     QComboBox *m_provider = nullptr;
     QWidget *m_builtinRow = nullptr;
+    QWidget *m_siteUrlRow = nullptr;
+    QLineEdit *m_siteUrl = nullptr;
     QGroupBox *m_requestGroup = nullptr;
     QGroupBox *m_fieldsGroup = nullptr;
     QGroupBox *m_filterGroup = nullptr;
@@ -89,7 +109,18 @@ private:
     QLineEdit *m_streamField = nullptr;
     QLineEdit *m_lyricField = nullptr;
     QLineEdit *m_webField = nullptr;
+    QLineEdit *m_posterField = nullptr;
+    QLineEdit *m_yearField = nullptr;
+    QLineEdit *m_areaField = nullptr;
+    QLineEdit *m_genreField = nullptr;
+    QLineEdit *m_descriptionField = nullptr;
+    QComboBox *m_streamKind = nullptr;
     QPlainTextEdit *m_skipIf = nullptr;
+    // 二次解析：搜索无直链时再请求详情换直链
+    QGroupBox *m_detailGroup = nullptr;
+    QLineEdit *m_detailUrl = nullptr;
+    QLineEdit *m_detailItemsPath = nullptr;
+    QLineEdit *m_detailStreamField = nullptr;
     QPushButton *m_btnRemove = nullptr;
     QPushButton *m_btnDuplicate = nullptr;
     QPushButton *m_btnTest = nullptr;

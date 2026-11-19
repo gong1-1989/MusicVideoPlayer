@@ -1,8 +1,11 @@
 #include "ui/ThemeManager.h"
 
+#include "ui/WindowChrome.h"
+
 #include <QApplication>
 #include <QFile>
 #include <QLoggingCategory>
+#include <QWidget>
 
 Q_LOGGING_CATEGORY(lcTheme, "mvp.ui.theme")
 
@@ -45,7 +48,7 @@ bool ThemeManager::apply(const QString &id)
 
     QFile file(theme.qssPath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qCWarning(lcTheme) << "theme file missing:" << theme.qssPath;
+        qCWarning(lcTheme) << "主题样式文件缺失：" << theme.qssPath;
         return false;
     }
 
@@ -54,7 +57,7 @@ bool ThemeManager::apply(const QString &id)
         qApp->setStyleSheet(styleSheet);
 
     m_currentId = theme.id;
-    qCInfo(lcTheme) << "theme applied:" << theme.id;
+    qCInfo(lcTheme) << "已应用主题：" << theme.id;
     emit themeChanged(theme);
     return true;
 }
@@ -62,4 +65,13 @@ bool ThemeManager::apply(const QString &id)
 bool ThemeManager::applySaved()
 {
     return apply(AppSettings::themeId());
+}
+
+void ThemeManager::applyWindowChrome(QWidget *window) const
+{
+    const ThemeInfo theme = current();
+    const bool dark = theme.fadeColor.lightness() < 128;
+    // 标题栏底色跟面板底色一致，标题文字用与主题正文接近的浅/深色
+    const QColor text = dark ? QColor(0xdd, 0xe4, 0xff) : QColor(0x33, 0x33, 0x4f);
+    WindowChrome::apply(window, dark, theme.fadeColor, text);
 }

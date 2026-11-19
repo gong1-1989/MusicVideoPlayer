@@ -1,0 +1,932 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SourceManagerDialog</class>
+ <widget class="QDialog" name="SourceManagerDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>900</width>
+    <height>640</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>搜索源管理</string>
+  </property>
+  <layout class="QVBoxLayout" name="layout_root">
+   <property name="spacing">
+    <number>10</number>
+   </property>
+   <property name="leftMargin">
+    <number>18</number>
+   </property>
+   <property name="topMargin">
+    <number>16</number>
+   </property>
+   <property name="rightMargin">
+    <number>18</number>
+   </property>
+   <property name="bottomMargin">
+    <number>14</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="label_title">
+     <property name="objectName">
+      <string>label_sectionTitle</string>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size:16px;</string>
+     </property>
+     <property name="text">
+      <string>搜索源</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="label_hintTop">
+     <property name="objectName">
+      <string>label_hint</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="text">
+      <string>每个源是一份配置：搜索地址 + 结果路径 + 字段对应，填好后用“试搜”确认。需要签名的站点（B站、QQ音乐等）无法用配置描述。</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="layout_body">
+     <property name="spacing">
+      <number>12</number>
+     </property>
+     <item>
+      <widget class="QWidget" name="leftBox" native="true">
+       <property name="minimumSize">
+        <size>
+         <width>240</width>
+         <height>0</height>
+        </size>
+       </property>
+       <layout class="QVBoxLayout" name="layout_left">
+        <property name="spacing">
+         <number>8</number>
+        </property>
+        <property name="leftMargin">
+         <number>0</number>
+        </property>
+        <property name="topMargin">
+         <number>0</number>
+        </property>
+        <property name="rightMargin">
+         <number>0</number>
+        </property>
+        <property name="bottomMargin">
+         <number>0</number>
+        </property>
+        <item>
+         <widget class="QListWidget" name="list_sources"/>
+        </item>
+        <item>
+         <layout class="QGridLayout" name="layout_listButtons">
+          <property name="horizontalSpacing">
+           <number>8</number>
+          </property>
+          <property name="verticalSpacing">
+           <number>6</number>
+          </property>
+          <item row="0" column="0">
+           <widget class="QPushButton" name="btn_add">
+            <property name="text">
+             <string>新增</string>
+            </property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QPushButton" name="btn_duplicate">
+            <property name="text">
+             <string>复制</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QPushButton" name="btn_remove">
+            <property name="text">
+             <string>删除</string>
+            </property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QPushButton" name="btn_addSite">
+            <property name="text">
+             <string>添加网站</string>
+            </property>
+            <property name="toolTip">
+             <string>只填网址，自动探测接口并推断字段</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="0">
+           <widget class="QPushButton" name="btn_import">
+            <property name="text">
+             <string>导入</string>
+            </property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QPushButton" name="btn_export">
+            <property name="text">
+             <string>导出</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="0">
+           <widget class="QPushButton" name="btn_example">
+            <property name="text">
+             <string>影视示例</string>
+            </property>
+            <property name="toolTip">
+             <string>插入一份影视采集接口的空白模板，填上自己的接口地址即可</string>
+            </property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QPushButton" name="btn_refresh">
+            <property name="text">
+             <string>一键更新</string>
+            </property>
+            <property name="toolTip">
+             <string>对当前选中的源重新探测，成功后再确认写入</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QScrollArea" name="scroll_form">
+       <property name="frameShape">
+        <enum>QFrame::NoFrame</enum>
+       </property>
+       <property name="widgetResizable">
+        <bool>true</bool>
+       </property>
+       <property name="horizontalScrollBarPolicy">
+        <enum>Qt::ScrollBarAlwaysOff</enum>
+       </property>
+       <widget class="QWidget" name="rightBox">
+        <property name="geometry">
+         <rect>
+          <x>0</x>
+          <y>0</y>
+          <width>620</width>
+          <height>700</height>
+         </rect>
+        </property>
+        <layout class="QVBoxLayout" name="layout_right">
+         <property name="spacing">
+          <number>8</number>
+         </property>
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <item>
+          <widget class="QGroupBox" name="group_basic">
+           <property name="title">
+            <string>基本信息</string>
+           </property>
+           <layout class="QVBoxLayout" name="layout_basic">
+            <property name="spacing">
+             <number>6</number>
+            </property>
+            <item>
+             <layout class="QGridLayout" name="grid_basic">
+              <property name="horizontalSpacing">
+               <number>12</number>
+              </property>
+              <property name="verticalSpacing">
+               <number>6</number>
+              </property>
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_captionName">
+                <property name="text">
+                 <string>名称</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QLineEdit" name="edit_name"/>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_captionType">
+                <property name="text">
+                 <string>类型</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QComboBox" name="combo_type"/>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_captionKind">
+                <property name="text">
+                 <string>实现方式</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QComboBox" name="combo_kind"/>
+              </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="label_captionProvider">
+                <property name="text">
+                 <string>内置实现</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="QWidget" name="builtinRow" native="true">
+                <layout class="QHBoxLayout" name="layout_builtin">
+                 <property name="leftMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="topMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="rightMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="bottomMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="spacing">
+                  <number>8</number>
+                 </property>
+                 <item>
+                  <widget class="QComboBox" name="combo_provider"/>
+                 </item>
+                 <item>
+                  <widget class="QLabel" name="label_builtinHint">
+                   <property name="objectName">
+                    <string>label_hint</string>
+                   </property>
+                   <property name="text">
+                    <string>搜索走 wbi 签名；影视仅免费集可直链</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </widget>
+              </item>
+              <item row="4" column="0" colspan="2">
+               <widget class="QWidget" name="siteUrlRow" native="true">
+                <layout class="QHBoxLayout" name="layout_siteUrl">
+                 <property name="leftMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="topMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="rightMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="bottomMargin">
+                  <number>0</number>
+                 </property>
+                 <property name="spacing">
+                  <number>8</number>
+                 </property>
+                 <item>
+                  <widget class="QLabel" name="label_captionSiteUrl">
+                   <property name="text">
+                    <string>站点地址</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QLineEdit" name="edit_siteUrl">
+                   <property name="placeholderText">
+                    <string>https://站点首页/</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </widget>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QGroupBox" name="group_request">
+           <property name="title">
+            <string>请求</string>
+           </property>
+           <layout class="QVBoxLayout" name="layout_request">
+            <property name="spacing">
+             <number>6</number>
+            </property>
+            <item>
+             <layout class="QGridLayout" name="grid_request">
+              <property name="horizontalSpacing">
+               <number>12</number>
+              </property>
+              <property name="verticalSpacing">
+               <number>6</number>
+              </property>
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_captionMethod">
+                <property name="text">
+                 <string>请求方式</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QComboBox" name="combo_method"/>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_captionUrl">
+                <property name="text">
+                 <string>搜索地址</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QLineEdit" name="edit_url">
+                <property name="placeholderText">
+                 <string>https://example.com/search?term={keyword}&amp;limit={limit}</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_captionBody">
+                <property name="text">
+                 <string>请求体</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QPlainTextEdit" name="text_body">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>16777215</width>
+                  <height>36</height>
+                 </size>
+                </property>
+                <property name="placeholderText">
+                 <string>POST 时的表单内容，可使用 {keyword} {limit}</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="label_captionHeaders">
+                <property name="text">
+                 <string>请求头</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="QPlainTextEdit" name="text_headers">
+                <property name="minimumSize">
+                 <size>
+                  <width>0</width>
+                  <height>52</height>
+                 </size>
+                </property>
+                <property name="maximumSize">
+                 <size>
+                  <width>16777215</width>
+                  <height>52</height>
+                 </size>
+                </property>
+                <property name="placeholderText">
+                 <string>每行一个：键: 值
+Referer: https://example.com/</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="label_captionCookie">
+                <property name="text">
+                 <string>Cookie</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="1">
+               <widget class="QLineEdit" name="edit_cookie">
+                <property name="placeholderText">
+                 <string>可选，例如 MUSIC_U=xxxx</string>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="0">
+               <widget class="QLabel" name="label_captionItems">
+                <property name="text">
+                 <string>结果路径</string>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="1">
+               <widget class="QLineEdit" name="edit_itemsPath">
+                <property name="placeholderText">
+                 <string>结果数组在响应里的路径，例如 result.songs；留空表示根就是数组</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QGroupBox" name="group_fields">
+           <property name="title">
+            <string>字段对应</string>
+           </property>
+           <layout class="QVBoxLayout" name="layout_fields">
+            <property name="spacing">
+             <number>6</number>
+            </property>
+            <item>
+             <layout class="QGridLayout" name="grid_fields">
+              <property name="horizontalSpacing">
+               <number>12</number>
+              </property>
+              <property name="verticalSpacing">
+               <number>6</number>
+              </property>
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_captionId">
+                <property name="text">
+                 <string>id</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QLineEdit" name="edit_idField">
+                <property name="placeholderText">
+                 <string>id（用于拼播放地址）</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_captionTitle">
+                <property name="text">
+                 <string>标题</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QLineEdit" name="edit_titleField">
+                <property name="placeholderText">
+                 <string>歌名/视频名</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_captionArtist">
+                <property name="text">
+                 <string>作者</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QLineEdit" name="edit_artistField">
+                <property name="placeholderText">
+                 <string>作者/歌手，可空</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="label_captionDuration">
+                <property name="text">
+                 <string>时长</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="QLineEdit" name="edit_durationField">
+                <property name="placeholderText">
+                 <string>时长，毫秒；可空</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="label_captionStream">
+                <property name="text">
+                 <string>播放地址</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="1">
+               <widget class="QLineEdit" name="edit_streamField">
+                <property name="placeholderText">
+                 <string>播放直链字段；需要拼地址时写 @https://host/play?id={id}</string>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="0">
+               <widget class="QLabel" name="label_captionStreamKind">
+                <property name="text">
+                 <string>地址形态</string>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="1">
+               <widget class="QComboBox" name="combo_streamKind"/>
+              </item>
+              <item row="6" column="0">
+               <widget class="QLabel" name="label_captionLyric">
+                <property name="text">
+                 <string>歌词地址</string>
+                </property>
+               </widget>
+              </item>
+              <item row="6" column="1">
+               <widget class="QLineEdit" name="edit_lyricField">
+                <property name="placeholderText">
+                 <string>歌词地址，可空</string>
+                </property>
+               </widget>
+              </item>
+              <item row="7" column="0">
+               <widget class="QLabel" name="label_captionWeb">
+                <property name="text">
+                 <string>网页地址</string>
+                </property>
+               </widget>
+              </item>
+              <item row="7" column="1">
+               <widget class="QLineEdit" name="edit_webField">
+                <property name="placeholderText">
+                 <string>原网页地址，可空</string>
+                </property>
+               </widget>
+              </item>
+              <item row="8" column="0">
+               <widget class="QLabel" name="label_captionPoster">
+                <property name="text">
+                 <string>海报</string>
+                </property>
+               </widget>
+              </item>
+              <item row="8" column="1">
+               <widget class="QLineEdit" name="edit_posterField">
+                <property name="placeholderText">
+                 <string>海报/封面地址，可空</string>
+                </property>
+               </widget>
+              </item>
+              <item row="9" column="0">
+               <widget class="QLabel" name="label_captionYear">
+                <property name="text">
+                 <string>年份</string>
+                </property>
+               </widget>
+              </item>
+              <item row="9" column="1">
+               <widget class="QLineEdit" name="edit_yearField">
+                <property name="placeholderText">
+                 <string>上映年份，可空</string>
+                </property>
+               </widget>
+              </item>
+              <item row="10" column="0">
+               <widget class="QLabel" name="label_captionArea">
+                <property name="text">
+                 <string>地区</string>
+                </property>
+               </widget>
+              </item>
+              <item row="10" column="1">
+               <widget class="QLineEdit" name="edit_areaField">
+                <property name="placeholderText">
+                 <string>地区，可空</string>
+                </property>
+               </widget>
+              </item>
+              <item row="11" column="0">
+               <widget class="QLabel" name="label_captionGenre">
+                <property name="text">
+                 <string>类型</string>
+                </property>
+               </widget>
+              </item>
+              <item row="11" column="1">
+               <widget class="QLineEdit" name="edit_genreField">
+                <property name="placeholderText">
+                 <string>类型/题材，可空</string>
+                </property>
+               </widget>
+              </item>
+              <item row="12" column="0">
+               <widget class="QLabel" name="label_captionDesc">
+                <property name="text">
+                 <string>简介</string>
+                </property>
+               </widget>
+              </item>
+              <item row="12" column="1">
+               <widget class="QLineEdit" name="edit_descriptionField">
+                <property name="placeholderText">
+                 <string>简介，可空</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QGroupBox" name="group_detail">
+           <property name="title">
+            <string>二次解析（可选：搜索里没直链时，用 id 再请求一次详情换直链）</string>
+           </property>
+           <layout class="QFormLayout" name="layout_detail">
+            <item row="0" column="0">
+             <widget class="QLabel" name="label_captionDetailUrl">
+              <property name="text">
+               <string>详情地址模板</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QLineEdit" name="edit_detailUrl">
+              <property name="placeholderText">
+               <string>例：https://api.audius.co/v1/tracks/{id}?app_name=MVP</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="label_captionDetailPath">
+              <property name="text">
+               <string>详情结果路径</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QLineEdit" name="edit_detailItemsPath">
+              <property name="placeholderText">
+               <string>例：data（空表示根）</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="0">
+             <widget class="QLabel" name="label_captionDetailStream">
+              <property name="text">
+               <string>详情直链字段</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QLineEdit" name="edit_detailStreamField">
+              <property name="placeholderText">
+               <string>例：stream.url</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QGroupBox" name="group_filter">
+           <property name="title">
+            <string>过滤规则（可选）</string>
+           </property>
+           <layout class="QVBoxLayout" name="layout_filter">
+            <item>
+             <widget class="QPlainTextEdit" name="text_skipIf">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>64</height>
+               </size>
+              </property>
+              <property name="maximumSize">
+               <size>
+                <width>16777215</width>
+                <height>64</height>
+               </size>
+              </property>
+              <property name="placeholderText">
+               <string>命中规则的条目会被跳过，例如：
+{ "any": [ { "path": "fee", "op": "eq", "value": 1 } ] }
+op 可选 eq / ne / gt / gte / lt / lte / empty / notEmpty / contains</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <widget class="QGroupBox" name="group_external">
+           <property name="title">
+            <string>外部解析器</string>
+           </property>
+           <layout class="QVBoxLayout" name="layout_external">
+            <property name="spacing">
+             <number>6</number>
+            </property>
+            <item>
+             <layout class="QGridLayout" name="grid_external">
+              <property name="horizontalSpacing">
+               <number>12</number>
+              </property>
+              <property name="verticalSpacing">
+               <number>6</number>
+              </property>
+              <item row="0" column="0">
+               <widget class="QLabel" name="label_captionCommand">
+                <property name="text">
+                 <string>命令</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QLineEdit" name="edit_command">
+                <property name="placeholderText">
+                 <string>python、node，或程序目录下的脚本 / 绝对路径的 exe</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="label_captionArguments">
+                <property name="text">
+                 <string>参数</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QLineEdit" name="edit_arguments">
+                <property name="placeholderText">
+                 <string>参数，可用 {keyword} {limit}，例如 --keyword={keyword} --limit={limit}</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="label_captionTimeout">
+                <property name="text">
+                 <string>超时</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QSpinBox" name="spin_timeout">
+                <property name="minimum">
+                 <number>1000</number>
+                </property>
+                <property name="maximum">
+                 <number>60000</number>
+                </property>
+                <property name="singleStep">
+                 <number>500</number>
+                </property>
+                <property name="suffix">
+                 <string> 毫秒</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="0" colspan="2">
+               <widget class="QLabel" name="label_externalHint">
+                <property name="objectName">
+                 <string>label_hint</string>
+                </property>
+                <property name="wordWrap">
+                 <bool>true</bool>
+                </property>
+                <property name="text">
+                 <string>解析器把结果以 JSON 打到 stdout：
+[ { "title": "...", "artist": "...", "streamUrl": "..." } ]
+也可以输出 { "items": [...], "filtered": 2 }；报错时退出码非 0 或输出 { "error": "原因" }。</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <spacer name="spacer_right">
+           <property name="orientation">
+            <enum>Qt::Vertical</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>40</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="layout_testRow">
+     <property name="spacing">
+      <number>8</number>
+     </property>
+     <item>
+      <widget class="QLabel" name="label_testCaption">
+       <property name="text">
+        <string>试搜</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="edit_testKeyword">
+       <property name="placeholderText">
+        <string>试搜关键词</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_test">
+       <property name="text">
+        <string>试搜当前源</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QListWidget" name="list_test">
+     <property name="minimumSize">
+      <size>
+       <width>0</width>
+       <height>56</height>
+      </size>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>16777215</width>
+       <height>84</height>
+      </size>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="layout_buttons">
+     <item>
+      <spacer name="spacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_cancel">
+       <property name="text">
+        <string>取消</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_save">
+       <property name="objectName">
+        <string>btn_applyPrimary</string>
+       </property>
+       <property name="text">
+        <string>保存</string>
+       </property>
+       <property name="default">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -4,16 +4,17 @@
 #include "net/SearchCoordinator.h"
 #include "net/SearchProviderBase.h"
 #include "net/SourceRegistry.h"
+#include "ui/SourceProbeDialog.h"
+#include "ui/ThemeManager.h"
+#include "ui_SourceManagerDialog.h"
 
 #include <QComboBox>
-#include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFontDatabase>
-#include <QFormLayout>
 #include <QGuiApplication>
 #include <QGroupBox>
-#include <QHBoxLayout>
+#include <QGridLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -21,13 +22,14 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QScreen>
-#include <QScrollArea>
 #include <QSpinBox>
-#include <QSplitter>
-#include <QVBoxLayout>
+#include <QUrl>
 
 namespace {
 
@@ -85,10 +87,11 @@ QString makeUniqueId(const QString &seed, const QVector<SourceConfig> &existing)
 SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *http,
                                          QWidget *parent)
     : QDialog(parent)
+    , ui(new Ui::SourceManagerDialog)
     , m_registry(registry)
     , m_http(http)
 {
-    setObjectName(QStringLiteral("SourceManagerDialog"));
+    ui->setupUi(this);
     setWindowTitle(tr("搜索源管理"));
     setModal(true);
 
@@ -101,255 +104,127 @@ SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *h
     if (m_registry != nullptr)
         m_drafts = m_registry->sources();
 
-    buildUi();
+    bindUi();
     reloadList(m_drafts.isEmpty() ? -1 : 0);
+
+    // 原生标题栏跟着主题走
+    ThemeManager::instance().applyWindowChrome(this);
 }
 
-void SourceManagerDialog::buildUi()
+SourceManagerDialog::~SourceManagerDialog()
 {
-    auto *root = new QVBoxLayout(this);
-    root->setContentsMargins(18, 16, 18, 14);
-    root->setSpacing(10);
+    delete ui;
+}
 
-    auto *title = new QLabel(tr("搜索源"), this);
-    title->setObjectName(QStringLiteral("label_sectionTitle"));
-    title->setStyleSheet(QStringLiteral("font-size:16px;"));
-    root->addWidget(title);
+void SourceManagerDialog::bindUi()
+{
+    m_list = ui->list_sources;
+    m_list->setMinimumHeight(180);
+    ui->layout_body->setStretch(0, 0);
+    ui->layout_body->setStretch(1, 1);
+    ui->leftBox->setMinimumWidth(240);
+    ui->leftBox->setMaximumWidth(320);
+    ui->scroll_form->setMinimumWidth(420);
+    // .ui 里给编辑区写的初始尺寸只是设计时占位，运行时必须能被滚动区压缩
+    ui->rightBox->setMinimumSize(0, 0);
 
-    auto *hint = new QLabel(
-        tr("每个源是一份配置：搜索地址 + 结果路径 + 字段对应，填好后用“试搜”确认。"
-           "需要签名的站点（B站、QQ音乐等）无法用配置描述。"),
-        this);
-    hint->setObjectName(QStringLiteral("label_hint"));
-    hint->setWordWrap(true);
-    root->addWidget(hint);
+    // 表单标签列统一宽度、左对齐，避免不同分组之间列宽跳动
+    for (QLabel *label : findChildren<QLabel *>()) {
+        if (!label->objectName().startsWith(QStringLiteral("label_caption")))
+            continue;
+        label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        label->setMinimumWidth(64);
+    }
+    for (QGridLayout *grid : {ui->grid_basic, ui->grid_request, ui->grid_fields,
+                              ui->grid_external}) {
+        grid->setColumnMinimumWidth(0, 64);
+        grid->setColumnStretch(1, 1);
+    }
+    m_testList = ui->list_test;
+    m_testKeyword = ui->edit_testKeyword;
+    m_btnTest = ui->btn_test;
+    m_name = ui->edit_name;
+    m_type = ui->combo_type;
+    m_kind = ui->combo_kind;
+    m_provider = ui->combo_provider;
+    m_builtinRow = ui->builtinRow;
+    m_siteUrlRow = ui->siteUrlRow;
+    m_siteUrl = ui->edit_siteUrl;
+    m_requestGroup = ui->group_request;
+    m_fieldsGroup = ui->group_fields;
+    m_filterGroup = ui->group_filter;
+    m_externalGroup = ui->group_external;
+    m_command = ui->edit_command;
+    m_arguments = ui->edit_arguments;
+    m_timeout = ui->spin_timeout;
+    m_method = ui->combo_method;
+    m_url = ui->edit_url;
+    m_body = ui->text_body;
+    m_headers = ui->text_headers;
+    m_cookie = ui->edit_cookie;
+    m_itemsPath = ui->edit_itemsPath;
+    m_idField = ui->edit_idField;
+    m_titleField = ui->edit_titleField;
+    m_artistField = ui->edit_artistField;
+    m_durationField = ui->edit_durationField;
+    m_streamField = ui->edit_streamField;
+    m_lyricField = ui->edit_lyricField;
+    m_webField = ui->edit_webField;
+    m_posterField = ui->edit_posterField;
+    m_yearField = ui->edit_yearField;
+    m_areaField = ui->edit_areaField;
+    m_genreField = ui->edit_genreField;
+    m_descriptionField = ui->edit_descriptionField;
+    m_streamKind = ui->combo_streamKind;
+    m_skipIf = ui->text_skipIf;
+    m_detailGroup = ui->group_detail;
+    m_detailUrl = ui->edit_detailUrl;
+    m_detailItemsPath = ui->edit_detailItemsPath;
+    m_detailStreamField = ui->edit_detailStreamField;
+    m_btnRemove = ui->btn_remove;
+    m_btnDuplicate = ui->btn_duplicate;
 
-    auto *splitter = new QSplitter(Qt::Horizontal, this);
-
-    // ---------------------------------------------------------- 左：列表
-    auto *leftBox = new QWidget(splitter);
-    auto *leftLayout = new QVBoxLayout(leftBox);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(8);
-
-    m_list = new QListWidget(leftBox);
-    m_list->setMinimumWidth(240);
-    leftLayout->addWidget(m_list, 1);
-
-    auto *listButtons = new QHBoxLayout;
-    listButtons->setSpacing(8);
-    auto *btnAdd = new QPushButton(tr("新增"), leftBox);
-    m_btnDuplicate = new QPushButton(tr("复制"), leftBox);
-    m_btnRemove = new QPushButton(tr("删除"), leftBox);
-    listButtons->addWidget(btnAdd);
-    listButtons->addWidget(m_btnDuplicate);
-    listButtons->addWidget(m_btnRemove);
-    leftLayout->addLayout(listButtons);
-
-    auto *listButtons2 = new QHBoxLayout;
-    auto *btnImport = new QPushButton(tr("导入"), leftBox);
-    auto *btnExport = new QPushButton(tr("导出"), leftBox);
-    listButtons2->addWidget(btnImport);
-    listButtons2->addWidget(btnExport);
-    leftLayout->addLayout(listButtons2);
-
-    splitter->addWidget(leftBox);
-
-    // ---------------------------------------------------------- 右：编辑
-    auto *rightBox = new QWidget(splitter);
-    auto *rightLayout = new QVBoxLayout(rightBox);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(8);
-
-    auto *basicGroup = new QGroupBox(tr("基本信息"), rightBox);
-    auto *basicForm = new QFormLayout(basicGroup);
-    basicForm->setHorizontalSpacing(12);
-    basicForm->setVerticalSpacing(6);
-
-    m_name = new QLineEdit(basicGroup);
-    basicForm->addRow(tr("名称"), m_name);
-
-    m_type = new QComboBox(basicGroup);
+    // ---------------------------------------------------------- 下拉项
     m_type->addItem(tr("音乐"), QStringLiteral("music"));
     m_type->addItem(tr("视频"), QStringLiteral("video"));
-    basicForm->addRow(tr("类型"), m_type);
 
-    m_kind = new QComboBox(basicGroup);
     m_kind->addItem(tr("配置驱动（JSON 接口）"), QStringLiteral("config"));
     m_kind->addItem(tr("内置实现（需要签名）"), QStringLiteral("builtin"));
     m_kind->addItem(tr("外部解析器进程"), QStringLiteral("external"));
-    basicForm->addRow(tr("实现方式"), m_kind);
 
-    m_builtinRow = new QWidget(basicGroup);
-    auto *builtinLayout = new QHBoxLayout(m_builtinRow);
-    builtinLayout->setContentsMargins(0, 0, 0, 0);
-    builtinLayout->setSpacing(8);
-    m_provider = new QComboBox(m_builtinRow);
-    m_provider->addItem(tr("B站"), QStringLiteral("bilibili"));
-    builtinLayout->addWidget(m_provider, 1);
-    auto *builtinHint = new QLabel(tr("搜索走 wbi 签名，播放取单文件 mp4"), m_builtinRow);
-    builtinHint->setObjectName(QStringLiteral("label_hint"));
-    builtinLayout->addWidget(builtinHint, 2);
-    basicForm->addRow(tr("内置实现"), m_builtinRow);
+    m_provider->addItem(tr("网页型影视（内置抓取）"), QStringLiteral("maccms_web"));
 
-    rightLayout->addWidget(basicGroup);
-
-    m_requestGroup = new QGroupBox(tr("请求"), rightBox);
-    auto *form = new QFormLayout(m_requestGroup);
-    form->setHorizontalSpacing(12);
-    form->setVerticalSpacing(6);
-
-    m_method = new QComboBox(m_requestGroup);
     m_method->addItem(QStringLiteral("GET"), QStringLiteral("GET"));
     m_method->addItem(QStringLiteral("POST"), QStringLiteral("POST"));
-    form->addRow(tr("请求方式"), m_method);
 
-    m_url = new QLineEdit(m_requestGroup);
-    m_url->setPlaceholderText(
-        tr("https://example.com/search?term={keyword}&limit={limit}"));
-    form->addRow(tr("搜索地址"), m_url);
+    m_streamKind->addItem(tr("单条直链"), QStringLiteral("direct"));
+    m_streamKind->addItem(tr("剧集列表（名称$地址#名称$地址）"), QStringLiteral("episodes"));
 
-    m_body = new QPlainTextEdit(m_requestGroup);
-    m_body->setFixedHeight(36);
-    m_body->setPlaceholderText(tr("POST 时的表单内容，可使用 {keyword} {limit}"));
-    form->addRow(tr("请求体"), m_body);
-
-    m_headers = new QPlainTextEdit(m_requestGroup);
-    m_headers->setFixedHeight(52);
-    m_headers->setPlaceholderText(tr("每行一个：键: 值\nReferer: https://example.com/"));
-    form->addRow(tr("请求头"), m_headers);
-
-    m_cookie = new QLineEdit(m_requestGroup);
-    m_cookie->setPlaceholderText(tr("可选，例如 MUSIC_U=xxxx"));
-    form->addRow(tr("Cookie"), m_cookie);
-
-    m_itemsPath = new QLineEdit(m_requestGroup);
-    m_itemsPath->setPlaceholderText(tr("结果数组在响应里的路径，例如 result.songs；留空表示根就是数组"));
-    form->addRow(tr("结果路径"), m_itemsPath);
-
-    rightLayout->addWidget(m_requestGroup);
-
-    m_fieldsGroup = new QGroupBox(tr("字段对应"), rightBox);
-    auto *fieldsForm = new QFormLayout(m_fieldsGroup);
-    fieldsForm->setHorizontalSpacing(12);
-    fieldsForm->setVerticalSpacing(6);
-
-    m_idField = new QLineEdit(m_fieldsGroup);
-    m_idField->setPlaceholderText(tr("id（用于拼播放地址）"));
-    m_titleField = new QLineEdit(m_fieldsGroup);
-    m_titleField->setPlaceholderText(tr("歌名/视频名"));
-    m_artistField = new QLineEdit(m_fieldsGroup);
-    m_artistField->setPlaceholderText(tr("作者/歌手，可空"));
-    m_durationField = new QLineEdit(m_fieldsGroup);
-    m_durationField->setPlaceholderText(tr("时长，毫秒；可空"));
-    m_streamField = new QLineEdit(m_fieldsGroup);
-    m_streamField->setPlaceholderText(
-        tr("播放直链字段；需要拼地址时写 @https://host/play?id={id}"));
-    m_lyricField = new QLineEdit(m_fieldsGroup);
-    m_lyricField->setPlaceholderText(tr("歌词地址，可空"));
-    m_webField = new QLineEdit(m_fieldsGroup);
-    m_webField->setPlaceholderText(tr("原网页地址，可空"));
-
-    fieldsForm->addRow(tr("id"), m_idField);
-    fieldsForm->addRow(tr("标题"), m_titleField);
-    fieldsForm->addRow(tr("作者"), m_artistField);
-    fieldsForm->addRow(tr("时长"), m_durationField);
-    fieldsForm->addRow(tr("播放地址"), m_streamField);
-    fieldsForm->addRow(tr("歌词地址"), m_lyricField);
-    fieldsForm->addRow(tr("网页地址"), m_webField);
-    rightLayout->addWidget(m_fieldsGroup);
-
-    m_filterGroup = new QGroupBox(tr("过滤规则（可选）"), rightBox);
-    auto *filterLayout = new QVBoxLayout(m_filterGroup);
-    m_skipIf = new QPlainTextEdit(m_filterGroup);
-    m_skipIf->setFixedHeight(64);
-    m_skipIf->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    m_skipIf->setPlaceholderText(
-        tr("命中规则的条目会被跳过，例如：\n"
-           "{ \"any\": [ { \"path\": \"fee\", \"op\": \"eq\", \"value\": 1 } ] }\n"
-           "op 可选 eq / ne / gt / gte / lt / lte / empty / notEmpty / contains"));
-    filterLayout->addWidget(m_skipIf);
-    rightLayout->addWidget(m_filterGroup);
-
-    m_externalGroup = new QGroupBox(tr("外部解析器"), rightBox);
-    auto *externalForm = new QFormLayout(m_externalGroup);
-    externalForm->setHorizontalSpacing(12);
-    externalForm->setVerticalSpacing(6);
-
-    m_command = new QLineEdit(m_externalGroup);
-    m_command->setPlaceholderText(
-        tr("python、node，或程序目录下的脚本 / 绝对路径的 exe"));
-    externalForm->addRow(tr("命令"), m_command);
-
-    m_arguments = new QLineEdit(m_externalGroup);
-    m_arguments->setPlaceholderText(
-        tr("参数，可用 {keyword} {limit}，例如 --keyword={keyword} --limit={limit}"));
-    externalForm->addRow(tr("参数"), m_arguments);
-
-    m_timeout = new QSpinBox(m_externalGroup);
     m_timeout->setRange(1000, 60000);
     m_timeout->setSingleStep(500);
     m_timeout->setSuffix(tr(" 毫秒"));
-    externalForm->addRow(tr("超时"), m_timeout);
 
-    auto *externalHint = new QLabel(
-        tr("解析器把结果以 JSON 打到 stdout：\n"
-           "[ { \"title\": \"...\", \"artist\": \"...\", \"streamUrl\": \"...\" } ]\n"
-           "也可以输出 { \"items\": [...], \"filtered\": 2 }；报错时退出码非 0 或输出 "
-           "{ \"error\": \"原因\" }。"),
-        m_externalGroup);
-    externalHint->setObjectName(QStringLiteral("label_hint"));
-    externalHint->setWordWrap(true);
-    externalForm->addRow(externalHint);
-
-    rightLayout->addWidget(m_externalGroup);
-    rightLayout->addStretch(1);
+    // 过滤规则是 JSON，用等宽字体看着清楚
+    m_skipIf->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
 
     connect(m_kind, &QComboBox::currentIndexChanged, this,
             [this](int) { updateKindUi(); });
+    connect(m_provider, &QComboBox::currentIndexChanged, this,
+            [this](int) { updateKindUi(); });
 
-    auto *scroll = new QScrollArea(splitter);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setWidget(rightBox);
-
-    splitter->addWidget(scroll);
-    splitter->setStretchFactor(0, 0);
-    splitter->setStretchFactor(1, 1);
-    splitter->setSizes({250, 640});
-    root->addWidget(splitter, 1);
-
-    // ---------------------------------------------------------- 试搜
-    auto *testRow = new QHBoxLayout;
-    testRow->setSpacing(8);
-    m_testKeyword = new QLineEdit(this);
-    m_testKeyword->setPlaceholderText(tr("试搜关键词"));
-    m_btnTest = new QPushButton(tr("试搜当前源"), this);
-    testRow->addWidget(new QLabel(tr("试搜"), this));
-    testRow->addWidget(m_testKeyword, 1);
-    testRow->addWidget(m_btnTest);
-    root->addLayout(testRow);
-
-    m_testList = new QListWidget(this);
-    m_testList->setMaximumHeight(84);
-    m_testList->setMinimumHeight(56);
-    root->addWidget(m_testList);
-
-    auto *buttons = new QDialogButtonBox(this);
-    auto *cancelButton = buttons->addButton(tr("取消"), QDialogButtonBox::RejectRole);
-    auto *saveButton = buttons->addButton(tr("保存"), QDialogButtonBox::AcceptRole);
-    saveButton->setObjectName(QStringLiteral("btn_applyPrimary"));
-    saveButton->setDefault(true);
-    root->addWidget(buttons);
-
-    connect(cancelButton, &QPushButton::clicked, this, &QDialog::reject);
-    connect(saveButton, &QPushButton::clicked, this, &SourceManagerDialog::accept);
-    connect(btnAdd, &QPushButton::clicked, this, &SourceManagerDialog::onAdd);
+    connect(ui->btn_cancel, &QPushButton::clicked, this, &QDialog::reject);
+    connect(ui->btn_save, &QPushButton::clicked, this, &SourceManagerDialog::accept);
+    connect(ui->btn_add, &QPushButton::clicked, this, &SourceManagerDialog::onAdd);
     connect(m_btnDuplicate, &QPushButton::clicked, this, &SourceManagerDialog::onDuplicate);
     connect(m_btnRemove, &QPushButton::clicked, this, &SourceManagerDialog::onRemove);
-    connect(btnImport, &QPushButton::clicked, this, &SourceManagerDialog::onImport);
-    connect(btnExport, &QPushButton::clicked, this, &SourceManagerDialog::onExport);
+    connect(ui->btn_import, &QPushButton::clicked, this, &SourceManagerDialog::onImport);
+    connect(ui->btn_export, &QPushButton::clicked, this, &SourceManagerDialog::onExport);
+    connect(ui->btn_example, &QPushButton::clicked, this, &SourceManagerDialog::onAddExample);
+    connect(ui->btn_addSite, &QPushButton::clicked, this, &SourceManagerDialog::onAddFromSite);
+    connect(ui->btn_refresh, &QPushButton::clicked, this,
+            &SourceManagerDialog::onRefreshSelected);
+    ui->btn_refresh->setToolTip(tr("配置源：重新探测接口与字段映射；"
+                                   "网页型影视源：体检站点地址（含跳转）并试搜验真"));
     connect(m_btnTest, &QPushButton::clicked, this, &SourceManagerDialog::onTest);
 
     connect(m_list, &QListWidget::currentRowChanged, this, &SourceManagerDialog::selectRow);
@@ -374,13 +249,24 @@ void SourceManagerDialog::reloadList(int targetRow)
         text += QStringLiteral(" · ") + config.typeLabel();
         text += QStringLiteral(" · ") + config.kindLabel();
         if (!config.isValid())
-            text += tr(" · 配置不完整");
+            text += tr(" · 失效");
         auto *item = new QListWidgetItem(text, m_list);
         item->setData(Qt::UserRole, config.id);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(config.enabled ? Qt::Checked : Qt::Unchecked);
-        if (!config.isValid())
-            item->setForeground(Qt::red);
+        const QString validationError = config.validationError();
+        if (!validationError.isEmpty()) {
+            item->setForeground(QColor(QStringLiteral("#ff6b81")));
+            item->setToolTip(tr("失效：%1").arg(validationError));
+        } else {
+            // 体检失败（运行期才暴露的问题：站点下线、地址换了、播放全加密）
+            const QString health = m_healthIssues.value(config.id);
+            if (!health.isEmpty()) {
+                item->setText(text + tr(" · 体检失败"));
+                item->setForeground(QColor(QStringLiteral("#ff6b81")));
+                item->setToolTip(tr("体检失败：%1").arg(health));
+            }
+        }
     }
     m_updating = false;
 
@@ -432,6 +318,8 @@ void SourceManagerDialog::loadDraftToForm(const SourceConfig &config)
     m_arguments->setText(config.arguments);
     m_timeout->setValue(config.timeoutMs);
     m_url->setText(config.urlTemplate);
+    if (m_siteUrl != nullptr)
+        m_siteUrl->setText(config.urlTemplate);
     m_body->setPlainText(config.bodyTemplate);
     m_headers->setPlainText(headersToText(config.headers));
     m_cookie->setText(config.cookie);
@@ -443,6 +331,16 @@ void SourceManagerDialog::loadDraftToForm(const SourceConfig &config)
     m_streamField->setText(config.fields.value(QStringLiteral("streamUrl")));
     m_lyricField->setText(config.fields.value(QStringLiteral("lyricUrl")));
     m_webField->setText(config.fields.value(QStringLiteral("webUrl")));
+    m_posterField->setText(config.fields.value(QStringLiteral("posterUrl")));
+    m_yearField->setText(config.fields.value(QStringLiteral("year")));
+    m_areaField->setText(config.fields.value(QStringLiteral("area")));
+    m_genreField->setText(config.fields.value(QStringLiteral("genre")));
+    m_descriptionField->setText(config.fields.value(QStringLiteral("description")));
+    m_streamKind->setCurrentIndex(
+        qMax(0, m_streamKind->findData(config.streamKind)));
+    m_detailUrl->setText(config.detailUrlTemplate);
+    m_detailItemsPath->setText(config.detailItemsPath);
+    m_detailStreamField->setText(config.detailFields.value(QStringLiteral("streamUrl")));
     m_skipIf->setPlainText(config.skipIf.isEmpty()
                                ? QString()
                                : QString::fromUtf8(QJsonDocument(config.skipIf).toJson(
@@ -459,12 +357,20 @@ void SourceManagerDialog::updateKindUi()
     const bool isConfig = kind == QLatin1String("config");
     const bool isBuiltin = kind == QLatin1String("builtin");
     const bool isExternal = kind == QLatin1String("external");
+    const QString provider = m_provider != nullptr ? m_provider->currentData().toString()
+                                                   : QString();
 
     m_builtinRow->setVisible(isBuiltin);
+    // 网页型影视源没有签名，只需要一个站点首页地址
+    const bool isWebSource = isBuiltin && provider == QLatin1String("maccms_web");
+    if (m_siteUrlRow != nullptr)
+        m_siteUrlRow->setVisible(isWebSource);
     m_requestGroup->setVisible(isConfig);
     m_fieldsGroup->setVisible(isConfig);
     m_filterGroup->setVisible(isConfig);
     m_externalGroup->setVisible(isExternal);
+    if (m_detailGroup != nullptr)
+        m_detailGroup->setVisible(isConfig);
 }
 
 SourceConfig SourceManagerDialog::readForm() const
@@ -489,6 +395,10 @@ SourceConfig SourceManagerDialog::readForm() const
     }
     config.method = m_method->currentData().toString();
     config.urlTemplate = m_url->text().trimmed();
+    // 内置网页源只在“站点地址”一栏里编辑，别被隐藏的 JSON 地址栏覆盖
+    if (config.kind == QLatin1String("builtin") && config.provider == QLatin1String("maccms_web")
+        && m_siteUrl != nullptr)
+        config.urlTemplate = m_siteUrl->text().trimmed();
     config.bodyTemplate = m_body->toPlainText();
     config.bodyIsJson = config.bodyTemplate.trimmed().startsWith(QLatin1Char('{'));
     config.headers = textToHeaders(m_headers->toPlainText());
@@ -507,6 +417,24 @@ SourceConfig SourceManagerDialog::readForm() const
     put(QStringLiteral("streamUrl"), m_streamField->text());
     put(QStringLiteral("lyricUrl"), m_lyricField->text());
     put(QStringLiteral("webUrl"), m_webField->text());
+    put(QStringLiteral("posterUrl"), m_posterField->text());
+    put(QStringLiteral("year"), m_yearField->text());
+    put(QStringLiteral("area"), m_areaField->text());
+    put(QStringLiteral("genre"), m_genreField->text());
+    put(QStringLiteral("description"), m_descriptionField->text());
+    config.streamKind = m_streamKind->currentData().toString();
+
+    // 二次解析：地址模板留空就当作不需要，其余两个字段一并清掉
+    config.detailUrlTemplate = m_detailUrl->text().trimmed();
+    config.detailItemsPath = config.detailUrlTemplate.isEmpty()
+                                 ? QString()
+                                 : m_detailItemsPath->text().trimmed();
+    config.detailFields.clear();
+    if (!config.detailUrlTemplate.isEmpty()) {
+        const QString detailStream = m_detailStreamField->text().trimmed();
+        if (!detailStream.isEmpty())
+            config.detailFields.insert(QStringLiteral("streamUrl"), detailStream);
+    }
 
     const QString skipText = m_skipIf->toPlainText().trimmed();
     if (skipText.isEmpty()) {
@@ -539,6 +467,263 @@ void SourceManagerDialog::onAdd()
     m_drafts.append(draft);
     reloadList(m_drafts.size() - 1);
     m_name->setFocus();
+}
+
+void SourceManagerDialog::onAddExample()
+{
+    commitFormToDraft();
+
+    // 影视采集接口的通用模板：苹果CMS/海螺那类 JSON 接口基本都是这套字段
+    SourceConfig draft;
+    draft.id = makeUniqueId(QStringLiteral("movie"), m_drafts);
+    draft.name = tr("影视采集接口（示例）");
+    draft.enabled = false;
+    draft.mediaType = MediaType::Video;
+    draft.kind = QStringLiteral("config");
+    draft.method = QStringLiteral("GET");
+    draft.urlTemplate =
+        QStringLiteral("https://example.com/api.php/provide/vod/?ac=detail&wd={keyword}");
+    draft.headers.insert(QStringLiteral("User-Agent"), QStringLiteral("Mozilla/5.0"));
+    draft.itemsPath = QStringLiteral("list");
+    draft.streamKind = QStringLiteral("episodes");
+    draft.fields.insert(QStringLiteral("id"), QStringLiteral("vod_id"));
+    draft.fields.insert(QStringLiteral("title"), QStringLiteral("vod_name"));
+    draft.fields.insert(QStringLiteral("year"), QStringLiteral("vod_year"));
+    draft.fields.insert(QStringLiteral("area"), QStringLiteral("vod_area"));
+    draft.fields.insert(QStringLiteral("genre"), QStringLiteral("vod_class"));
+    draft.fields.insert(QStringLiteral("posterUrl"), QStringLiteral("vod_pic"));
+    draft.fields.insert(QStringLiteral("description"), QStringLiteral("vod_content"));
+    draft.fields.insert(QStringLiteral("streamUrl"), QStringLiteral("vod_play_url"));
+    draft.fields.insert(QStringLiteral("webUrl"),
+                        QStringLiteral("@https://example.com/detail/{id}"));
+    draft.skipIf = QJsonObject{{QStringLiteral("any"),
+                                QJsonArray{QJsonObject{
+                                    {QStringLiteral("path"), QStringLiteral("vod_play_url")},
+                                    {QStringLiteral("op"), QStringLiteral("empty")}}}}};
+
+    m_drafts.append(draft);
+    reloadList(m_drafts.size() - 1);
+    m_url->setFocus();
+}
+
+void SourceManagerDialog::onAddFromSite()
+{
+    commitFormToDraft();
+
+    // 类型默认跟着当前选中的源，用户也可以在探测窗口里自己改
+    const MediaType type = (m_currentRow >= 0 && m_currentRow < m_drafts.size())
+                               ? m_drafts.at(m_currentRow).mediaType
+                               : MediaType::Video;
+
+    SourceProbeDialog dialog(m_http, type, QString(), tr("从网站添加搜索源"), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    SourceConfig probed = dialog.probedConfig();
+    if (!probed.isValid())
+        return;
+    probed.id = makeUniqueId(probed.id.isEmpty() ? QStringLiteral("site") : probed.id, m_drafts);
+    probed.builtin = false;
+    m_drafts.append(probed);
+    reloadList(m_drafts.size() - 1);
+}
+
+void SourceManagerDialog::onRefreshSelected()
+{
+    if (m_currentRow < 0 || m_currentRow >= m_drafts.size()) {
+        QMessageBox::information(this, tr("一键更新"), tr("先在左边列表里选中一个源。"));
+        return;
+    }
+    commitFormToDraft();
+
+    const SourceConfig draft = m_drafts.at(m_currentRow);
+    // 网页型影视源没有可探测的字段映射，一键更新改成“站点体检”
+    if (draft.kind == QLatin1String("builtin") && draft.provider == QLatin1String("maccms_web")) {
+        refreshWebSource(draft, draft.urlTemplate);
+        return;
+    }
+    if (draft.builtin) {
+        QMessageBox::information(this, tr("内置源"),
+                                 tr("内置源由程序实现，不能通过探测更新。"));
+        return;
+    }
+    if (draft.kind != QLatin1String("config")) {
+        QMessageBox::information(this, tr("外部解析器"),
+                                 tr("只有配置驱动的源支持一键更新。"));
+        return;
+    }
+
+    // urlTemplate 里带 {keyword}，探源只要域名，所以砍掉查询串
+    QString base = draft.urlTemplate;
+    const int queryPos = base.indexOf(QLatin1Char('?'));
+    if (queryPos > 0)
+        base.truncate(queryPos);
+    const QUrl url(base);
+    if (!url.isValid() || url.host().isEmpty()) {
+        QMessageBox::information(this, tr("一键更新"),
+                                 tr("这个源没有可探测的网址，没法自动更新。"));
+        return;
+    }
+
+    QUrl origin;
+    origin.setScheme(url.scheme());
+    origin.setHost(url.host());
+    origin.setPort(url.port());
+    const QString originText = origin.toString() + QLatin1Char('/');
+
+    SourceProbeDialog dialog(m_http, draft.mediaType, originText,
+                             tr("一键更新：%1").arg(draft.name), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const SourceConfig probed = dialog.probedConfig();
+    if (!probed.isValid())
+        return;
+
+    // 保留身份与开关状态，只替换探测出来的部分
+    SourceConfig merged = draft;
+    merged.mediaType = probed.mediaType;
+    merged.kind = probed.kind;
+    merged.method = probed.method;
+    merged.urlTemplate = probed.urlTemplate;
+    merged.headers = probed.headers;
+    merged.itemsPath = probed.itemsPath;
+    merged.streamKind = probed.streamKind;
+    merged.fields = probed.fields;
+    m_drafts[m_currentRow] = merged;
+    reloadList(m_currentRow);
+}
+
+void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QString &previousUrl)
+{
+    if (m_probeBusy)
+        return;
+
+    QString base = previousUrl.trimmed();
+    m_testList->clear();
+    if (base.isEmpty()) {
+        m_testList->addItem(tr("这个源还没有站点地址，先在“站点地址”里填上。"));
+        return;
+    }
+    if (!base.endsWith(QLatin1Char('/')))
+        base += QLatin1Char('/');
+    const QUrl root(base);
+    if (!root.isValid() || root.host().isEmpty()) {
+        m_testList->addItem(tr("站点地址不是有效网址：%1").arg(base));
+        return;
+    }
+
+    // 关键词复用“试搜关键词”，留空就用一个常见片名，只用来确认站点还能搜到片
+    QString keyword = m_testKeyword->text().trimmed();
+    if (keyword.isEmpty())
+        keyword = QStringLiteral("流浪地球");
+
+    m_probeBusy = true;
+    ui->btn_refresh->setEnabled(false);
+    m_testList->addItem(tr("正在体检 %1 …").arg(base));
+
+    const int row = m_currentRow;
+    QHash<QString, QString> headers = draft.headers;
+    if (!headers.contains(QStringLiteral("Referer")))
+        headers.insert(QStringLiteral("Referer"), base);
+
+    QPointer<SourceManagerDialog> self(this);
+    m_http->fetch(root, QByteArray(), headers,
+                  [self, draft, row, base, keyword](QNetworkReply *reply) {
+        if (self.isNull())
+            return;
+
+        QString currentBase = base;
+        QStringList notes;
+        if (reply == nullptr) {
+            notes.append(self->tr("首页打不开（网络错误或站点已下线）"));
+        } else {
+            const QUrl finalUrl = reply->url();
+            const int status =
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            reply->deleteLater();
+            notes.append(self->tr("首页响应 HTTP %1").arg(status));
+            const QUrl baseUrl(base);
+            if (status >= 200 && status < 400 && finalUrl.isValid() && !finalUrl.host().isEmpty()
+                && finalUrl.host().compare(baseUrl.host(), Qt::CaseInsensitive) != 0) {
+                // 发布页/换域名是这类站的常态：先记下候选新地址，验真通过才写回
+                QUrl suggested = finalUrl;
+                suggested.setQuery(QString());
+                suggested.setPath(QStringLiteral("/"));
+                currentBase = suggested.toString();
+                notes.append(self->tr("检测到跳转：%1 → %2").arg(base, currentBase));
+            }
+        }
+
+        // 用候选地址跑一次小样本搜索；成功才算体检通过
+        SourceConfig probe;
+        if (row >= 0 && row < self->m_drafts.size())
+            probe = self->m_drafts.at(row);
+        else
+            probe = draft;
+        probe.urlTemplate = currentBase;
+
+        auto *provider = createSearchProvider(probe, self->m_http, self);
+        connect(provider, &SearchProviderBase::finished, self,
+                [self, provider, probe, row, base, currentBase, notes, keyword](
+                    const QString &, const QVector<MediaItem> &items, int filtered,
+                    const QString &error) {
+                    if (self.isNull())
+                        return;
+                    provider->deleteLater();
+                    self->m_probeBusy = false;
+                    self->ui->btn_refresh->setEnabled(true);
+
+                    QStringList lines = notes;
+                    if (!error.isEmpty() && items.isEmpty()) {
+                        lines.append(self->tr("试搜失败：%1").arg(error));
+                    } else if (items.isEmpty()) {
+                        lines.append(self->tr("试搜「%1」命中 0 条可用地址（过滤 %2 条）")
+                                         .arg(keyword)
+                                         .arg(filtered));
+                    } else {
+                        lines.append(self->tr("试搜「%1」命中 %2 条可用地址（过滤 %3 条）")
+                                         .arg(keyword)
+                                         .arg(items.size())
+                                         .arg(filtered));
+                        for (int i = 0; i < qMin(items.size(), 3); ++i)
+                            lines.append(QStringLiteral("    ") + items.at(i).displayName());
+                    }
+
+                    const bool healthy = error.isEmpty() && !items.isEmpty();
+                    const bool redirected = currentBase != base;
+                    if (healthy) {
+                        self->m_healthIssues.remove(probe.id);
+                        if (redirected && row >= 0 && row < self->m_drafts.size()) {
+                            // 跳转后的地址验真通过，写回草稿（点“保存”才落盘）
+                            self->m_drafts[row].urlTemplate = currentBase;
+                            if (!self->m_drafts[row].headers.contains(QStringLiteral("Referer")))
+                                self->m_drafts[row].headers.insert(QStringLiteral("Referer"),
+                                                                   currentBase);
+                            self->m_siteUrl->setText(currentBase);
+                            self->m_url->setText(currentBase);
+                            lines.append(self->tr("地址已更新为 %1（保存后生效）").arg(currentBase));
+                        } else if (!redirected) {
+                            lines.append(self->tr("站点地址仍然有效。"));
+                        }
+                    } else {
+                        self->m_healthIssues.insert(
+                            probe.id,
+                            error.isEmpty() ? self->tr("试搜 0 条可用地址") : error);
+                        if (redirected)
+                            lines.append(self->tr("跳转后的地址不可用，保留原地址 %1。").arg(base));
+                    }
+
+                    self->m_testList->clear();
+                    for (int i = 0; i < lines.size(); ++i) {
+                        auto *item = new QListWidgetItem(lines.at(i), self->m_testList);
+                        if (!healthy && i == lines.size() - 1)
+                            item->setForeground(QColor(QStringLiteral("#ff6b81")));
+                    }
+                    self->reloadList(row >= 0 ? row : self->m_currentRow);
+                });
+        provider->search(keyword, 3);
+    });
 }
 
 void SourceManagerDialog::onDuplicate()

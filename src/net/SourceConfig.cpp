@@ -32,8 +32,12 @@ bool SourceConfig::isValid() const
     if (id.trimmed().isEmpty() || name.trimmed().isEmpty())
         return false;
 
-    if (kind == QLatin1String("builtin"))
-        return provider == QLatin1String("bilibili");
+    if (kind == QLatin1String("builtin")) {
+        // 内置实现见 createSearchProvider()：目前只剩网页型影视（内置抓取）
+        if (provider == QLatin1String("maccms_web"))
+            return !urlTemplate.trimmed().isEmpty();
+        return false;
+    }
 
     if (kind == QLatin1String("external")) {
         // 命令可以是绝对路径、PATH 里的程序名，或相对程序目录的脚本
@@ -43,12 +47,62 @@ bool SourceConfig::isValid() const
     const QString scheme = QUrl(urlTemplate).scheme();
     if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
         return false;
-    // 没有播放地址就没法用：配置里必须给出 streamUrl
-    if (fields.value(QStringLiteral("streamUrl")).trimmed().isEmpty())
+    // 没有播放地址就没法用：要么搜索结果里直接给，要么二次解析详情里给
+    const bool streamFromList = !fields.value(QStringLiteral("streamUrl")).trimmed().isEmpty();
+    const bool streamFromDetail = needsDetailFetch()
+                                  && !detailFields.value(QStringLiteral("streamUrl")).trimmed().isEmpty();
+    if (!streamFromList && !streamFromDetail)
         return false;
     if (fields.value(QStringLiteral("title")).trimmed().isEmpty())
         return false;
     return true;
+}
+
+QString SourceConfig::validationError() const
+{
+    if (id.trimmed().isEmpty())
+        return QObject::tr("缺少 id");
+    if (name.trimmed().isEmpty())
+        return QObject::tr("缺少名称");
+
+    if (kind == QLatin1String("builtin")) {
+        if (provider == QLatin1String("maccms_web")) {
+            if (urlTemplate.trimmed().isEmpty())
+                return QObject::tr("网页型影视源没填站点地址");
+            const QString scheme = QUrl(urlTemplate).scheme();
+            if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
+                return QObject::tr("站点地址不是 http/https");
+            return QString();
+        }
+        return QObject::tr("内置源类型未知：%1").arg(provider);
+    }
+
+    if (kind == QLatin1String("external")) {
+        if (command.trimmed().isEmpty())
+            return QObject::tr("外部解析器没填命令");
+        return QString();
+    }
+
+    if (urlTemplate.trimmed().isEmpty())
+        return QObject::tr("搜索地址为空");
+
+    const QString scheme = QUrl(urlTemplate).scheme();
+    if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
+        return QObject::tr("搜索地址不是 http/https");
+
+    if (fields.value(QStringLiteral("title")).trimmed().isEmpty())
+        return QObject::tr("缺少标题字段");
+    const bool streamFromList = !fields.value(QStringLiteral("streamUrl")).trimmed().isEmpty();
+    const bool streamFromDetail = needsDetailFetch()
+                                  && !detailFields.value(QStringLiteral("streamUrl")).trimmed().isEmpty();
+    if (!streamFromList && !streamFromDetail)
+        return QObject::tr("缺少播放地址字段（可直接给 streamUrl，或用二次解析从详情里取）");
+    if (needsDetailFetch()) {
+        const QString detailScheme = QUrl(detailUrlTemplate).scheme();
+        if (detailScheme != QLatin1String("http") && detailScheme != QLatin1String("https"))
+            return QObject::tr("详情地址模板不是 http/https");
+    }
+    return QString();
 }
 
 QString SourceConfig::typeLabel() const
@@ -95,8 +149,17 @@ QJsonObject sourceConfigToJson(const SourceConfig &config)
         object.insert(QStringLiteral("cookie"), config.cookie);
     object.insert(QStringLiteral("itemsPath"), config.itemsPath);
     object.insert(QStringLiteral("fields"), headersToJson(config.fields));
+    if (config.streamKind != QLatin1String("direct"))
+        object.insert(QStringLiteral("streamKind"), config.streamKind);
     if (!config.skipIf.isEmpty())
         object.insert(QStringLiteral("skipIf"), config.skipIf);
+    if (config.needsDetailFetch()) {
+        object.insert(QStringLiteral("detailUrl"), config.detailUrlTemplate);
+        if (!config.detailItemsPath.isEmpty())
+            object.insert(QStringLiteral("detailItemsPath"), config.detailItemsPath);
+        if (!config.detailFields.isEmpty())
+            object.insert(QStringLiteral("detailFields"), headersToJson(config.detailFields));
+    }
     return object;
 }
 
@@ -125,7 +188,15 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
     config.cookie = object.value(QStringLiteral("cookie")).toString();
     config.itemsPath = object.value(QStringLiteral("itemsPath")).toString();
     config.fields = headersFromJson(object.value(QStringLiteral("fields")).toObject());
+    config.streamKind = object.value(QStringLiteral("streamKind"))
+                            .toString(QStringLiteral("direct"));
+    if (config.streamKind != QLatin1String("episodes"))
+        config.streamKind = QStringLiteral("direct");
     config.skipIf = object.value(QStringLiteral("skipIf")).toObject();
+    config.detailUrlTemplate = object.value(QStringLiteral("detailUrl")).toString();
+    config.detailItemsPath = object.value(QStringLiteral("detailItemsPath")).toString();
+    config.detailFields =
+        headersFromJson(object.value(QStringLiteral("detailFields")).toObject());
 
     if (ok != nullptr)
         *ok = config.isValid();

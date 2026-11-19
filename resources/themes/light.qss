@@ -39,6 +39,11 @@ QFrame#panelStage {
     border: 1px solid rgba(140, 150, 235, 30%);
 }
 
+/* 侧栏做成浮层时压在画面上，底色要更实才看得清；回布局时保持原来的淡玻璃 */
+QFrame#panelSidebar[floating="true"] {
+    background: rgba(253, 252, 255, 92%);
+}
+
 QFrame#panelTransport {
     background: rgba(255, 255, 255, 85%);
     border: 1px solid rgba(140, 130, 220, 22%);
@@ -216,9 +221,10 @@ QPushButton#btn_next {
     padding: 6px 10px;
 }
 
+/* 侧栏底部按钮内边距收窄，避免窄侧栏下文字被裁 */
 QPushButton#btn_settings {
     border-radius: 15px;
-    padding: 6px 10px;
+    padding: 6px 8px;
     color: rgba(43, 43, 69, 65%);
 }
 
@@ -408,18 +414,37 @@ QToolTip {
     padding: 4px 8px;
 }
 
+/* 系统消息框：跟主题底色对齐，避免浅底深字/深底浅字混着来 */
+QMessageBox {
+    background: #fdfcff;
+}
+
+QMessageBox QLabel {
+    color: #33334f;
+    background: transparent;
+}
+
+QMessageBox QPushButton {
+    min-width: 76px;
+    padding: 4px 14px;
+}
+
 QDialog#SettingsDialog,
-QDialog#SourceManagerDialog {
+QDialog#SourceManagerDialog,
+QDialog#SourceProbeDialog {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                                 stop:0 #fbf9ff,
                                 stop:0.55 #f0efff,
                                 stop:1 #eaf7ff);
 }
 
-/* 搜索源管理里的表单控件 */
+/* 搜索源管理 / 探源窗口里的表单控件 */
 QDialog#SourceManagerDialog QLineEdit,
+QDialog#SourceProbeDialog QLineEdit,
 QDialog#SourceManagerDialog QPlainTextEdit,
-QDialog#SourceManagerDialog QComboBox {
+QDialog#SourceProbeDialog QPlainTextEdit,
+QDialog#SourceManagerDialog QComboBox,
+QDialog#SourceProbeDialog QComboBox {
     background: #ffffff;
     border: 1px solid rgba(140, 130, 220, 28%);
     border-radius: 8px;
@@ -429,49 +454,67 @@ QDialog#SourceManagerDialog QComboBox {
 }
 
 QDialog#SourceManagerDialog QLineEdit:focus,
+QDialog#SourceProbeDialog QLineEdit:focus,
 QDialog#SourceManagerDialog QPlainTextEdit:focus,
-QDialog#SourceManagerDialog QComboBox:focus {
+QDialog#SourceProbeDialog QPlainTextEdit:focus,
+QDialog#SourceManagerDialog QComboBox:focus,
+QDialog#SourceProbeDialog QComboBox:focus {
     border: 1px solid rgba(123, 91, 255, 65%);
 }
 
-QDialog#SourceManagerDialog QGroupBox {
+QDialog#SourceManagerDialog QGroupBox,
+QDialog#SourceProbeDialog QGroupBox {
     border: 1px solid rgba(140, 130, 220, 20%);
     border-radius: 12px;
     margin-top: 14px;
     padding: 6px 8px 4px 8px;
 }
 
-QDialog#SourceManagerDialog QGroupBox::title {
+QDialog#SourceManagerDialog QGroupBox::title,
+QDialog#SourceProbeDialog QGroupBox::title {
     subcontrol-origin: margin;
     left: 10px;
     padding: 0 4px;
     color: #6a4bff;
 }
 
-QDialog#SourceManagerDialog QCheckBox {
+QDialog#SourceManagerDialog QCheckBox,
+QDialog#SourceProbeDialog QCheckBox {
     color: #2b2b45;
 }
 
-QDialog#SourceManagerDialog QLabel {
+QDialog#SourceManagerDialog QLabel,
+QDialog#SourceProbeDialog QLabel {
     color: #3a3a58;
 }
 
-QDialog#SourceManagerDialog QScrollArea {
+QDialog#SourceProbeDialog QListWidget {
+    background: #ffffff;
+    border: 1px solid rgba(140, 130, 220, 20%);
+    border-radius: 10px;
+    color: #2b2b45;
+}
+
+QDialog#SourceManagerDialog QScrollArea,
+QDialog#SourceProbeDialog QScrollArea {
     background: transparent;
     border: none;
 }
 
-QDialog#SourceManagerDialog QScrollArea > QWidget > QWidget {
+QDialog#SourceManagerDialog QScrollArea > QWidget > QWidget,
+QDialog#SourceProbeDialog QScrollArea > QWidget > QWidget {
     background: transparent;
 }
 
-QDialog#SourceManagerDialog QScrollArea QScrollBar:vertical {
+QDialog#SourceManagerDialog QScrollArea QScrollBar:vertical,
+QDialog#SourceProbeDialog QScrollArea QScrollBar:vertical {
     background: rgba(140, 130, 220, 8%);
     width: 8px;
     border-radius: 4px;
 }
 
-QDialog#SourceManagerDialog QScrollArea QScrollBar::handle:vertical {
+QDialog#SourceManagerDialog QScrollArea QScrollBar::handle:vertical,
+QDialog#SourceProbeDialog QScrollArea QScrollBar::handle:vertical {
     background: rgba(123, 91, 255, 40%);
     border-radius: 4px;
     min-height: 24px;
@@ -491,6 +534,15 @@ QFrame#settingsCard {
 
 QLabel#label_hint {
     color: rgba(43, 43, 69, 50%);
+    font-size: 12px;
+}
+
+QLabel#label_error,
+QPlainTextEdit#label_error {
+    color: #b03040;
+    background: rgba(214, 64, 92, 8%);
+    border: 1px solid rgba(214, 64, 92, 20%);
+    border-radius: 10px;
     font-size: 12px;
 }
 

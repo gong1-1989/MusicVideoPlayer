@@ -19,7 +19,7 @@ PlaybackController::PlaybackController(QObject *parent)
     updateLoops();
 
     if (!m_proxy->start())
-        qCWarning(lcPlayer) << "stream proxy unavailable, online playback may fail on 403";
+        qCWarning(lcPlayer) << "流转服务不可用，在线播放可能因 403 失败";
 
     connect(m_player, &QMediaPlayer::positionChanged,
             this, &PlaybackController::positionChanged);
@@ -35,13 +35,13 @@ PlaybackController::PlaybackController(QObject *parent)
                 // 用代理给出的真实原因替换掉，别让用户以为是自己操作错了
                 const QString text = m_unavailableReason.isEmpty() ? message : m_unavailableReason;
                 m_unavailableReason.clear();
-                qCWarning(lcPlayer) << "playback error:" << text;
+                qCWarning(lcPlayer) << "播放出错：" << text;
                 emit errorOccurred(text);
             });
 
     connect(m_proxy, &StreamProxy::sourceUnavailable, this,
             [this](const QUrl &upstream, const QString &contentType) {
-                qCWarning(lcPlayer) << "source unavailable:" << upstream.toString() << contentType;
+                qCWarning(lcPlayer) << "音源不可用：" << upstream.toString() << contentType;
                 m_unavailableReason =
                     tr("这个源没有返回可播放的音频/视频（版权、付费或需要登录），换一首试试");
                 emit errorOccurred(m_unavailableReason);
@@ -98,7 +98,7 @@ void PlaybackController::playRow(int row)
 
     m_player->setSource(source);
     m_player->play();
-    qCInfo(lcPlayer) << "play" << row << item.displayName() << source.toString();
+    qCInfo(lcPlayer) << "开始播放" << row << item.displayName() << source.toString();
     emit currentItemChanged(item, row);
 }
 

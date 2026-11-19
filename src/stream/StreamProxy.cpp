@@ -89,10 +89,10 @@ bool StreamProxy::start()
         return true;
 
     if (!m_server->listen(QHostAddress::LocalHost, 0)) {
-        qCWarning(lcProxy) << "listen failed:" << m_server->errorString();
+        qCWarning(lcProxy) << "流转服务监听失败：" << m_server->errorString();
         return false;
     }
-    qCInfo(lcProxy) << "listening on 127.0.0.1:" << m_server->serverPort();
+    qCInfo(lcProxy) << "流转服务已启动，监听 127.0.0.1:" << m_server->serverPort();
     return true;
 }
 
@@ -165,14 +165,15 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     const Upstream entry = m_tokens.value(token);
     const QUrl upstream = entry.url;
     if (!upstream.isValid()) {
-        qCWarning(lcProxy) << "unknown token" << token;
+        qCWarning(lcProxy) << "流转令牌未知：" << token;
         replyError(client, 404, QStringLiteral("Not Found"));
         return;
     }
 
     client->setProperty(kMethod, request.method);
     const QByteArray range = request.range.toUtf8();
-    qCDebug(lcProxy) << request.method << "upstream" << upstream.toString() << "range" << request.range;
+    qCDebug(lcProxy) << "流转请求" << request.method << "上游" << upstream.toString() << "分段"
+                     << request.range;
 
     // 由 HttpClient 手动跟随 302（含 https→http 降级），拿到可读的上游 reply
     QPointer<QTcpSocket> guard(client);
@@ -197,7 +198,7 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
         if (!looksLikeMedia(reply)) {
             const QString type =
                 reply->header(QNetworkRequest::ContentTypeHeader).toString();
-            qCWarning(lcProxy) << "upstream is not media:" << reply->url() << type;
+            qCWarning(lcProxy) << "上游返回的不是音视频：" << reply->url() << type;
             emit sourceUnavailable(upstream, type);
             replyError(client, 404, QStringLiteral("no audio source"));
             reply->abort();
@@ -241,7 +242,7 @@ void StreamProxy::flushUpstream(QTcpSocket *client, QNetworkReply *reply, const 
     if (!client->property(kHeaderSent).toBool()) {
         client->setProperty(kHeaderSent, true);
         if (reply->error() != QNetworkReply::NoError)
-            qCWarning(lcProxy) << "upstream error:" << reply->errorString();
+            qCWarning(lcProxy) << "上游请求出错：" << reply->errorString();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         client->write(buildResponseHead(reply, upstream, status));
 

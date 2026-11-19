@@ -70,7 +70,7 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
     connect(m_timer, &QTimer::timeout, this, &ExternalSearchProvider::onTimeout);
     m_timer->start(qMax(1000, m_config.timeoutMs));
 
-    qCInfo(lcExternal) << "spawn" << m_config.command << arguments;
+    qCInfo(lcExternal) << "启动外部解析器" << m_config.command << arguments;
     m_process->start(resolveCommand(m_config.command), arguments);
 }
 
@@ -113,7 +113,7 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(output, &parseError);
     if (parseError.error != QJsonParseError::NoError) {
-        qCWarning(lcExternal) << "stdout is not json:" << output.left(160);
+        qCWarning(lcExternal) << "解析器输出不是 JSON：" << output.left(160);
         finish(tr("解析器输出不是 JSON"));
         return;
     }
@@ -164,8 +164,8 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
             result.append(item);
     }
 
-    qCInfo(lcExternal) << m_config.id << "external parsed" << result.size() << "items, filtered"
-                       << m_filtered;
+    qCInfo(lcExternal) << m_config.id << "外部解析器返回" << result.size() << "条，过滤"
+                       << m_filtered << "条";
     emit finished(m_config.id, result, m_filtered, QString());
     m_done = true;
 }

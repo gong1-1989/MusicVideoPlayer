@@ -11,14 +11,20 @@ const char kGeometry[] = "ui/geometry";
 const char kVolume[] = "playback/volume";
 const char kMode[] = "playback/mode";
 const char kSearchLimit[] = "search/limit";
+const char kSearchPageSize[] = "search/pageSize";
+const char kProbePathsVideo[] = "search/probePaths/video";
+const char kProbePathsMusic[] = "search/probePaths/music";
 const char kLastDir[] = "paths/lastDir";
 const char kPlaylistMusic[] = "playlists/music";
 const char kPlaylistVideo[] = "playlists/video";
+const char kSidebarAutoHide[] = "ui/sidebarAutoHide";
+const char kControlsAutoHide[] = "ui/controlsAutoHide";
 
 const char kDefaultTheme[] = "dark";
-const char kDefaultWindowPreset[] = "standard";
+const char kDefaultWindowPreset[] = "auto";
 const int kDefaultVolume = 60;
 const int kDefaultSearchLimit = 20;
+const int kDefaultSearchPageSize = 20;
 const int kDefaultMode = 0;
 
 QSettings settings()
@@ -70,7 +76,7 @@ QSize presetWindowSize(WindowPreset preset)
         if (table[i].preset == preset)
             return table[i].size;
     }
-    return QSize(1360, 840);
+    return QSize();
 }
 
 QByteArray savedGeometry()
@@ -81,6 +87,26 @@ QByteArray savedGeometry()
 void setSavedGeometry(const QByteArray &geometry)
 {
     settings().setValue(QLatin1String(kGeometry), geometry);
+}
+
+bool sidebarAutoHide()
+{
+    return settings().value(QLatin1String(kSidebarAutoHide), true).toBool();
+}
+
+void setSidebarAutoHide(bool enabled)
+{
+    settings().setValue(QLatin1String(kSidebarAutoHide), enabled);
+}
+
+bool controlsAutoHide()
+{
+    return settings().value(QLatin1String(kControlsAutoHide), true).toBool();
+}
+
+void setControlsAutoHide(bool enabled)
+{
+    settings().setValue(QLatin1String(kControlsAutoHide), enabled);
 }
 
 int defaultVolume()
@@ -121,6 +147,43 @@ int searchLimit()
 void setSearchLimit(int limit)
 {
     settings().setValue(QLatin1String(kSearchLimit), qBound(1, limit, 100));
+}
+
+int searchPageSize()
+{
+    const int value =
+        settings().value(QLatin1String(kSearchPageSize), kDefaultSearchPageSize).toInt();
+    return qBound(5, value, 200);
+}
+
+void setSearchPageSize(int size)
+{
+    settings().setValue(QLatin1String(kSearchPageSize), qBound(5, size, 200));
+}
+
+QStringList probePaths(MediaType type)
+{
+    const char *key = type == MediaType::Video ? kProbePathsVideo : kProbePathsMusic;
+    QStringList paths = settings().value(QLatin1String(key)).toStringList();
+    QStringList cleaned;
+    for (const QString &path : paths) {
+        const QString trimmed = path.trimmed();
+        if (!trimmed.isEmpty() && !cleaned.contains(trimmed))
+            cleaned.append(trimmed);
+    }
+    return cleaned;
+}
+
+void setProbePaths(MediaType type, const QStringList &paths)
+{
+    const char *key = type == MediaType::Video ? kProbePathsVideo : kProbePathsMusic;
+    QStringList cleaned;
+    for (const QString &path : paths) {
+        const QString trimmed = path.trimmed();
+        if (!trimmed.isEmpty() && !cleaned.contains(trimmed))
+            cleaned.append(trimmed);
+    }
+    settings().setValue(QLatin1String(key), cleaned);
 }
 
 QString lastDir()

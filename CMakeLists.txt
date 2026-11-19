@@ -40,8 +40,10 @@ qt_add_library(mvp_core STATIC
     src/net/SearchProviderBase.h
     src/net/ConfigSearchProvider.h
     src/net/ConfigSearchProvider.cpp
-    src/net/BilibiliProvider.h
-    src/net/BilibiliProvider.cpp
+    src/net/MaccmsWebProvider.h
+    src/net/MaccmsWebProvider.cpp
+    src/net/SourceProbe.h
+    src/net/SourceProbe.cpp
     src/net/ExternalSearchProvider.h
     src/net/ExternalSearchProvider.cpp
     src/net/SourceRegistry.h
@@ -93,8 +95,15 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/LyricsView.cpp
     src/ui/SettingsDialog.h
     src/ui/SettingsDialog.cpp
+    src/ui/SettingsDialog.ui
     src/ui/SourceManagerDialog.h
     src/ui/SourceManagerDialog.cpp
+    src/ui/SourceManagerDialog.ui
+    src/ui/SourceProbeDialog.h
+    src/ui/SourceProbeDialog.cpp
+    src/ui/SourceProbeDialog.ui
+    src/ui/WindowChrome.h
+    src/ui/WindowChrome.cpp
     )
 
 target_link_libraries(MusicVideoPlayer PRIVATE

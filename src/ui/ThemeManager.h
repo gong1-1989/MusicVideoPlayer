@@ -19,6 +19,8 @@ struct ThemeInfo {
     QColor stageBorder;   ///< 视频舞台描边
 };
 
+class QWidget;
+
 class ThemeManager : public QObject
 {
     Q_OBJECT
@@ -34,6 +36,9 @@ public:
     bool apply(const QString &id);
     /// 按设置里的主题应用
     bool applySaved();
+
+    /// 按当前主题给窗口原生标题栏上色（Windows 生效，其它平台空实现）
+    void applyWindowChrome(QWidget *window) const;
 
 signals:
     void themeChanged(const ThemeInfo &theme);

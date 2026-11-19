@@ -112,7 +112,7 @@ void DownloadTask::onReadyRead()
     if (chunk.isEmpty())
         return;
     if (!m_file->write(chunk)) {
-        qCWarning(lcDownload) << "write failed:" << m_file->errorString();
+        qCWarning(lcDownload) << "写入失败：" << m_file->errorString();
         cancel();
     }
 }
@@ -128,7 +128,7 @@ void DownloadTask::onFinished()
 
     if (reply->error() != QNetworkReply::NoError) {
         const QString message = HttpClient::describeError(reply);
-        qCWarning(lcDownload) << "download failed:" << message;
+        qCWarning(lcDownload) << "下载失败：" << message;
         if (!m_file.isNull()) {
             m_file->cancelWriting();
             m_file->deleteLater();
@@ -157,7 +157,7 @@ void DownloadTask::onFinished()
         m_file = nullptr;
     }
 
-    qCInfo(lcDownload) << "saved" << m_filePath;
+    qCInfo(lcDownload) << "下载完成，已保存到" << m_filePath;
     emit succeeded(m_filePath);
     finish();
 }

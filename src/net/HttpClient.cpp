@@ -71,7 +71,7 @@ HttpClient::HttpClient(QObject *parent)
 QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
                                const QHash<QString, QString> &headers)
 {
-    qCDebug(lcHttp) << "GET" << url.toString() << "range" << range;
+    qCDebug(lcHttp) << "GET" << url.toString() << "分段" << range;
     QNetworkRequest request = buildRequest(url, m_cookie, headers);
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
@@ -87,7 +87,7 @@ QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body,
 QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
                                     const QHash<QString, QString> &headers)
 {
-    qCDebug(lcHttp) << "POST" << url.toString() << "body" << body.size() << "bytes";
+    qCDebug(lcHttp) << "POST" << url.toString() << "请求体" << body.size() << "字节";
     QNetworkRequest request = buildRequest(url, m_cookie, headers);
     const QByteArray contentType =
         headers.value(QStringLiteral("Content-Type"),
@@ -112,7 +112,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
                                const ReplyHandler &onReady, int hop)
 {
     if (hop > kMaxRedirects || !isAllowedScheme(url)) {
-        qCWarning(lcHttp) << "redirect chain rejected at" << url.toString() << "hop" << hop;
+        qCWarning(lcHttp) << "重定向链被拒绝：" << url.toString() << "第" << hop << "跳";
         onReady(nullptr);
         return;
     }
@@ -125,7 +125,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
 
-    qCDebug(lcHttp) << "fetch" << url.toString() << "range" << range << "hop" << hop;
+    qCDebug(lcHttp) << "拉取" << url.toString() << "分段" << range << "第" << hop << "跳";
 
     QNetworkReply *reply = m_nam->get(request);
     auto delivered = std::make_shared<bool>(false);
@@ -149,7 +149,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
             onReady(nullptr);
             return;
         }
-        qCInfo(lcHttp) << "redirect" << status << url.toString() << "->" << next.toString();
+        qCInfo(lcHttp) << "重定向" << status << url.toString() << "->" << next.toString();
         fetchInternal(next, range, headers, onReady, hop + 1);
     });
 

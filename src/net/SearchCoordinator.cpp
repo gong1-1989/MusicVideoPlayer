@@ -1,8 +1,8 @@
 #include "net/SearchCoordinator.h"
 
-#include "net/BilibiliProvider.h"
 #include "net/ConfigSearchProvider.h"
 #include "net/ExternalSearchProvider.h"
+#include "net/MaccmsWebProvider.h"
 #include "net/SourceRegistry.h"
 
 #include <QLoggingCategory>
@@ -12,8 +12,14 @@ Q_LOGGING_CATEGORY(lcSearch, "mvp.search")
 SearchProviderBase *createSearchProvider(const SourceConfig &config, HttpClient *http,
                                          QObject *parent)
 {
-    if (config.kind == QLatin1String("builtin"))
-        return new BilibiliProvider(config, http, parent);
+    if (config.kind == QLatin1String("builtin")) {
+        // 内置实现在配置里用 provider 区分：网页型影视（内置抓取）/ 网易云音乐 / iTunes
+        if (config.provider == QLatin1String("maccms_web"))
+            return new MaccmsWebProvider(config, http, parent);
+        // 内置源如果是程序不认识的 provider（例如历史配置里残留的 bilibili），
+        // 返回空指针由调用方跳过，不让它把整次搜索拖崩
+        return nullptr;
+    }
     if (config.kind == QLatin1String("external"))
         return new ExternalSearchProvider(config, parent);
     return new ConfigSearchProvider(config, http, parent);
@@ -42,7 +48,7 @@ void SearchCoordinator::search(const QString &keyword, int limitPerSource)
         m_queueNames.append(config.name);
 
     if (m_queue.isEmpty()) {
-        qCWarning(lcSearch) << "no enabled sources";
+        qCWarning(lcSearch) << "没有启用的搜索源";
         emit searchSucceeded({}, 0, {tr("（没有启用任何搜索源，请到系统设置里添加）")});
         emit searchFinished();
         return;
@@ -64,8 +70,8 @@ void SearchCoordinator::startNext()
 {
     if (m_index >= m_queue.size()) {
         m_busy = false;
-        qCInfo(lcSearch) << "finished:" << m_items.size() << "items, filtered" << m_filtered
-                         << "failed" << m_failed;
+        qCInfo(lcSearch) << "搜索完成：" << m_items.size() << "条，过滤" << m_filtered
+                         << "条，失败源" << m_failed;
         emit searchSucceeded(m_items, m_filtered, m_failed);
         emit searchFinished();
         return;
@@ -74,6 +80,14 @@ void SearchCoordinator::startNext()
     const SourceConfig config = m_queue.at(m_index);
 
     SearchProviderBase *provider = createSearchProvider(config, m_http, this);
+    if (provider == nullptr) {
+        // 历史配置里残留的内置源（如已下线的 B站）没有实现类，跳过它并说明原因，
+        // 不能让整次搜索因为一个源而中断
+        m_failed.append(QStringLiteral("%1（程序已不支持该内置源，已跳过）").arg(config.name));
+        ++m_index;
+        startNext();
+        return;
+    }
     m_current = provider;
     connect(provider, &SearchProviderBase::finished, this,
             [this](const QString &sourceId, const QVector<MediaItem> &items, int filtered,

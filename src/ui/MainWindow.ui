@@ -40,7 +40,7 @@
      <widget class="QFrame" name="panelSidebar">
       <property name="minimumSize">
        <size>
-        <width>240</width>
+        <width>260</width>
         <height>0</height>
        </size>
       </property>
@@ -137,9 +137,70 @@
          <property name="minimumSize">
           <size>
            <width>0</width>
-           <height>96</height>
+           <height>72</height>
           </size>
          </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QFrame" name="frame_searchPager">
+         <property name="frameShape">
+          <enum>QFrame::NoFrame</enum>
+         </property>
+         <layout class="QHBoxLayout" name="layout_searchPager">
+          <property name="spacing">
+           <number>6</number>
+          </property>
+          <property name="leftMargin">
+           <number>0</number>
+          </property>
+          <property name="topMargin">
+           <number>0</number>
+          </property>
+          <property name="rightMargin">
+           <number>0</number>
+          </property>
+          <property name="bottomMargin">
+           <number>0</number>
+          </property>
+          <item>
+           <widget class="QPushButton" name="btn_searchPrev">
+            <property name="text">
+             <string>‹ 上一页</string>
+            </property>
+            <property name="toolTip">
+             <string>翻到上一页搜索结果</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="label_searchPage">
+            <property name="text">
+             <string>0 / 0</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btn_searchNext">
+            <property name="text">
+             <string>下一页 ›</string>
+            </property>
+            <property name="toolTip">
+             <string>翻到下一页搜索结果</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="combo_searchPageSize">
+            <property name="toolTip">
+             <string>每页显示的条数（会记住这次选择）</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </widget>
        </item>
        <item>
@@ -153,7 +214,7 @@
          <property name="minimumSize">
           <size>
            <width>0</width>
-           <height>130</height>
+           <height>96</height>
           </size>
          </property>
          <property name="currentIndex">
@@ -208,50 +269,13 @@
          </widget>
         </widget>
        </item>
-       <item>
-        <layout class="QHBoxLayout" name="layout_openFiles">
-         <property name="spacing">
-          <number>8</number>
-         </property>
-         <item>
-          <widget class="QPushButton" name="btn_openMusic">
-           <property name="text">
-            <string>本地音乐</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="btn_openVideo">
-           <property name="text">
-            <string>本地视频</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="btn_settings">
-           <property name="minimumSize">
-            <size>
-             <width>44</width>
-             <height>34</height>
-            </size>
-           </property>
-           <property name="toolTip">
-            <string>系统设置 (Ctrl+,)</string>
-           </property>
-           <property name="text">
-            <string>设置</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </item>
       </layout>
      </widget>
     </item>
     <item>
      <layout class="QVBoxLayout" name="layout_center">
       <property name="spacing">
-       <number>14</number>
+       <number>10</number>
       </property>
       <item>
        <widget class="QFrame" name="panelStage">
@@ -308,8 +332,8 @@
               </property>
               <property name="minimumSize">
                <size>
-                <width>360</width>
-                <height>200</height>
+                <width>320</width>
+                <height>160</height>
                </size>
               </property>
              </widget>
@@ -327,19 +351,19 @@
         </property>
         <layout class="QVBoxLayout" name="layout_transport">
          <property name="spacing">
-          <number>10</number>
+          <number>8</number>
          </property>
          <property name="leftMargin">
           <number>18</number>
          </property>
          <property name="topMargin">
-          <number>14</number>
+          <number>10</number>
          </property>
          <property name="rightMargin">
           <number>18</number>
          </property>
          <property name="bottomMargin">
-          <number>14</number>
+          <number>10</number>
          </property>
          <item>
           <layout class="QHBoxLayout" name="layout_status">
@@ -498,6 +522,22 @@
              </property>
              <property name="text">
               <string>全屏</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="btn_settings">
+             <property name="minimumSize">
+              <size>
+               <width>58</width>
+               <height>34</height>
+              </size>
+             </property>
+             <property name="toolTip">
+              <string>系统设置 (Ctrl+,)</string>
+             </property>
+             <property name="text">
+              <string>设置</string>
              </property>
             </widget>
            </item>

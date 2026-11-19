@@ -72,14 +72,72 @@ const char *kSeedSources = R"JSON(
     "skipIf": { "any": [ { "path": "previewUrl", "op": "empty" } ] }
   },
   {
-    "id": "bilibili",
-    "name": "B站（内置）",
+    "id": "audius",
+    "name": "Audius 音乐（二次解析示例）",
+    "enabled": true,
+    "builtin": false,
+    "mediaType": "music",
+    "method": "GET",
+    "url": "https://api.audius.co/v1/tracks/search?query={keyword}&app_name=MVP&limit={limit}",
+    "headers": { "User-Agent": "Mozilla/5.0" },
+    "itemsPath": "data",
+    "fields": {
+      "id": "id",
+      "title": "title",
+      "artist": "user.name",
+      "durationMs": "duration",
+      "webUrl": "@https://audius.co/{permalink}"
+    },
+    "skipIf": { "any": [ { "path": "is_streamable", "op": "eq", "value": false } ] },
+    "detailUrl": "https://api.audius.co/v1/tracks/{id}?app_name=MVP",
+    "detailItemsPath": "data",
+    "detailFields": { "streamUrl": "stream.url" }
+  },
+  {
+    "id": "web_dmxq",
+    "name": "网页源：大米星球（内置）",
     "enabled": true,
     "builtin": true,
     "kind": "builtin",
-    "provider": "bilibili",
+    "provider": "maccms_web",
     "mediaType": "video",
-    "headers": { "Referer": "https://www.bilibili.com/" }
+    "url": "https://dmxq.info/",
+    "headers": { "Referer": "https://dmxq.info/" }
+  },
+  {
+    "id": "web_studioslob",
+    "name": "网页源：studioslob（内置，默认停用）",
+    "enabled": false,
+    "builtin": true,
+    "kind": "builtin",
+    "provider": "maccms_web",
+    "mediaType": "video",
+    "url": "https://www.studioslob.com/",
+    "headers": { "Referer": "https://www.studioslob.com/" }
+  },
+  {
+    "id": "movie_example",
+    "name": "影视采集接口（示例，需自行填写）",
+    "enabled": false,
+    "builtin": false,
+    "mediaType": "video",
+    "streamKind": "episodes",
+    "method": "GET",
+    "url": "https://example.com/api.php/provide/vod/?ac=detail&wd={keyword}",
+    "headers": { "User-Agent": "Mozilla/5.0" },
+    "itemsPath": "list",
+    "fields": {
+      "id": "vod_id",
+      "title": "vod_name",
+      "year": "vod_year",
+      "area": "vod_area",
+      "genre": "vod_class",
+      "posterUrl": "vod_pic",
+      "description": "vod_content",
+      "streamUrl": "vod_play_url",
+      "webUrl": "@https://example.com/detail/{id}"
+    },
+    "skipIf": { "any": [ { "path": "vod_play_url", "op": "empty" } ] }
   }
 ]
 )JSON";
@@ -129,25 +187,26 @@ bool SourceRegistry::load()
     if (!file.exists()) {
         // 首次运行：写入预置源，之后它就是普通可编辑文件
         m_sources = seedSources();
-        qCInfo(lcRegistry) << "seed sources written:" << m_sources.size();
+        qCInfo(lcRegistry) << "已写入预置源：" << m_sources.size() << "个";
         save();
         return true;
     }
 
     if (!file.open(QIODevice::ReadOnly)) {
-        qCWarning(lcRegistry) << "cannot open" << storagePath() << file.errorString();
+        qCWarning(lcRegistry) << "无法打开" << storagePath() << file.errorString();
         return false;
     }
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
     file.close();
     if (parseError.error != QJsonParseError::NoError) {
-        qCWarning(lcRegistry) << "sources.json broken:" << parseError.errorString();
+        qCWarning(lcRegistry) << "sources.json 解析失败：" << parseError.errorString();
         return false;
     }
 
     const QJsonArray array = document.isArray() ? document.array()
                                                 : QJsonArray();
+    bool dirty = false;
     for (const QJsonValue &entry : array) {
         if (!entry.isObject())
             continue;
@@ -157,14 +216,20 @@ bool SourceRegistry::load()
         // 单个源写坏不影响其它源：坏源标记停用并保留，交给界面修复
         bool ok = false;
         SourceConfig config = sourceConfigFromJson(object, &ok);
+        // 已下线的内置实现（历史版 B 站源）：旧配置里残留的条目直接剔除并回写文件
+        if (config.id.startsWith(QLatin1String("bilibili"))
+            || config.provider.startsWith(QLatin1String("bilibili"))) {
+            qCInfo(lcRegistry) << "移除已下线源：" << config.id << config.name;
+            dirty = true;
+            continue;
+        }
         if (!ok) {
             config.enabled = false;
-            qCWarning(lcRegistry) << "source invalid, disabled:" << config.id << config.name;
+            qCWarning(lcRegistry) << "源配置无效，已停用：" << config.id << config.name;
         }
         m_sources.append(config);
     }
     // 版本升级后新增的内置源要补进来；用户自己已有的源一律不动
-    bool dirty = false;
     for (const SourceConfig &seed : seedSources()) {
         if (!seed.builtin)
             continue;
@@ -178,13 +243,13 @@ bool SourceRegistry::load()
         if (!exists) {
             m_sources.append(seed);
             dirty = true;
-            qCInfo(lcRegistry) << "added missing builtin source" << seed.id;
+            qCInfo(lcRegistry) << "补入缺失的内置源：" << seed.id;
         }
     }
     if (dirty)
         save();
 
-    qCInfo(lcRegistry) << "loaded" << m_sources.size() << "sources from" << storagePath();
+    qCInfo(lcRegistry) << "已加载" << m_sources.size() << "个搜索源，来自" << storagePath();
     return true;
 }
 
@@ -200,12 +265,12 @@ bool SourceRegistry::save()
 
     QSaveFile file(storagePath());
     if (!file.open(QIODevice::WriteOnly)) {
-        qCWarning(lcRegistry) << "cannot write" << storagePath() << file.errorString();
+        qCWarning(lcRegistry) << "无法写入" << storagePath() << file.errorString();
         return false;
     }
     file.write(QJsonDocument(array).toJson(QJsonDocument::Indented));
     if (!file.commit()) {
-        qCWarning(lcRegistry) << "commit failed" << storagePath();
+        qCWarning(lcRegistry) << "保存失败" << storagePath();
         return false;
     }
     return true;
@@ -252,7 +317,7 @@ bool SourceRegistry::remove(const QString &id)
         if (m_sources.at(i).id != id)
             continue;
         if (m_sources.at(i).builtin) {
-            qCWarning(lcRegistry) << "builtin source is not deletable:" << id;
+            qCWarning(lcRegistry) << "内置源不可删除：" << id;
             return false;
         }
         m_sources.removeAt(i);

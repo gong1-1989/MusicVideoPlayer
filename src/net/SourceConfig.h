@@ -22,7 +22,7 @@ struct SourceConfig
     /// builtin  = 编进程序的实现（需要签名的站点）
     /// external = 外部解析器进程（自己写脚本算签名/爬取，stdout 吐 JSON）
     QString kind = QStringLiteral("config");
-    QString provider;                       // kind=builtin 时用，例如 bilibili
+    QString provider;                       // kind=builtin 时用，例如 maccms_web
 
     QString method = QStringLiteral("GET"); // GET / POST
     QString urlTemplate;                    // 支持 {keyword} {limit}
@@ -37,11 +37,32 @@ struct SourceConfig
 
     QString itemsPath;                      // 例如 result.songs，空表示根就是数组
     // 字段映射：id / title / artist / durationMs / streamUrl / lyricUrl / webUrl
+    //          posterUrl / year / area / genre / description
     // 值是 JSON 路径；以 @ 开头表示模板（@https://host/play?id={id}）
     QHash<QString, QString> fields;
+
+    /// 播放地址的形态：
+    /// direct    = 一个字段就是一条直链
+    /// episodes  = 一个字段里装了整部剧的剧集（采集接口的 "名称$地址#名称$地址" 格式），
+    ///             会按剧集拆成多条结果
+    QString streamKind = QStringLiteral("direct");
     QJsonObject skipIf;                     // 规则树，空表示不过滤
 
+    // ---------------------------------------------------------- 二次解析
+    // 有些接口搜索结果里没有直链，要拿 id 再请求一次详情/播放接口才给流地址。
+    // 配置了 detailUrlTemplate 就走这条路：搜索命中 → 详情请求 → 取直链。
+    QString detailUrlTemplate;              // 支持 {id} {keyword} {title} {artist}
+    QString detailItemsPath;                // 详情 JSON 里流地址所在的路径，空表示根
+    QHash<QString, QString> detailFields;   // 通常只需要 streamUrl（@ 模板同 fields）
+
+    bool needsDetailFetch() const
+    {
+        return !detailUrlTemplate.trimmed().isEmpty();
+    }
+
     bool isValid() const;
+    /// 配置不完整时给出具体原因（界面标红和悬停提示用），有效则返回空
+    QString validationError() const;
     QString typeLabel() const;
     QString kindLabel() const;
 };

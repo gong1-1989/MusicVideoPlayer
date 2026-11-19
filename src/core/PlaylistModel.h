@@ -18,7 +18,16 @@ public:
         ArtistRole,
         UrlRole,
         OnlineRole,
-        DurationRole
+        DurationRole,
+        PosterRole,
+        YearRole,
+        AreaRole,
+        GenreRole,
+        DescriptionRole,
+        MetaRole,
+        /// 搜索结果分栏用：类型（MediaType）与来源（MediaItem::sourceId）
+        TypeRole,
+        SourceRole
     };
 
     explicit PlaylistModel(QObject *parent = nullptr);
@@ -26,17 +35,17 @@ public:
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
 
-    /// 按 url 去重后追加；重复返回 false。
+    /// 按 mediaIdentity 去重后追加；重复返回 false。
     bool addItem(const MediaItem &item);
     bool removeRow(int row);
     void clear();
 
-    /// 整体替换（恢复上次会话的列表用），会重置模型
+    /// 整体替换（恢复上次会话的列表用），会重置模型并顺手去掉重复条目
     void setItems(const QVector<MediaItem> &items);
     QVector<MediaItem> items() const { return m_items; }
 
     MediaItem itemAt(int row) const;
-    int indexOf(const QUrl &url) const;
+    int indexOf(const MediaItem &item) const;
     int size() const { return m_items.size(); }
     bool isEmpty() const { return m_items.isEmpty(); }
 

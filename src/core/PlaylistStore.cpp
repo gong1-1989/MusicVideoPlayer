@@ -49,7 +49,7 @@ bool writeFile(const QString &path, const QByteArray &payload)
         return false;
     file.write(payload);
     if (!file.commit()) {
-        qCWarning(lcStore) << "cannot commit" << path << ":" << file.errorString();
+        qCWarning(lcStore) << "播放列表写入失败：" << path << "：" << file.errorString();
         return false;
     }
     return true;
@@ -73,7 +73,7 @@ QVector<MediaItem> load(MediaType type)
         // 旧版本把列表放在 C 盘 AppData，首次运行时做一次无缝迁移读取
         const QString legacy = fallbackPath();
         if (!legacy.isEmpty() && QFile::exists(legacy)) {
-            qCInfo(lcStore) << "reading legacy playlists from" << legacy;
+            qCInfo(lcStore) << "从旧位置读取播放列表：" << legacy;
             path = legacy;
         }
     }
@@ -84,7 +84,7 @@ QVector<MediaItem> load(MediaType type)
 
     const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
     if (!doc.isObject()) {
-        qCWarning(lcStore) << "playlists.json is not an object";
+        qCWarning(lcStore) << "playlists.json 根节点不是对象";
         return items;
     }
 
@@ -116,12 +116,15 @@ void saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
 
     const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
 
-    if (writeFile(primaryPath(), payload))
+    if (writeFile(primaryPath(), payload)) {
+        qCInfo(lcStore) << "播放列表已保存（音乐" << music.size() << "条、视频" << video.size()
+                        << "条）到" << primaryPath();
         return;
+    }
 
     // 程序目录只读（例如装进 Program Files）时退回用户数据目录，不让保存静默失败
     const QString fallback = fallbackPath();
-    qCWarning(lcStore) << "cannot write" << primaryPath() << "falling back to" << fallback;
+    qCWarning(lcStore) << "无法写入" << primaryPath() << "，改用备用路径" << fallback;
     writeFile(fallback, payload);
 }
 

@@ -8,6 +8,7 @@
 #include <QJsonValue>
 #include <QLoggingCategory>
 #include <QNetworkReply>
+#include <QRegularExpression>
 #include <QUrl>
 
 Q_LOGGING_CATEGORY(lcProvider, "mvp.net.provider")
@@ -128,7 +129,7 @@ bool ruleMatches(const QJsonValue &item, const QJsonObject &rule)
     if (op == QLatin1String("contains"))
         return actual.toString().contains(expected.toString(), Qt::CaseInsensitive);
 
-    qCWarning(lcProvider) << "unknown rule op" << op;
+    qCWarning(lcProvider) << "未知的过滤操作符：" << op;
     return false;
 }
 
@@ -141,6 +142,72 @@ QString mapString(const QJsonValue &node, const QHash<QString, QString> &fields,
     if (spec.startsWith(QLatin1Char('@')))
         return renderTemplate(spec.mid(1), vars);
     return valueAtPath(node, spec).toVariant().toString();
+}
+
+/// 接口里的标题/简介常带 HTML 标签和实体（采集类接口尤其多），统一清一遍
+QString cleanText(const QString &raw)
+{
+    QString text = raw;
+    text.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
+    text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    return text.simplified();
+}
+
+/// 年份可能是 "2019"、"2019-02-05"、"2019年"，统一取前四位
+QString normalizeYear(const QString &raw)
+{
+    const QString text = cleanText(raw);
+    const QString head = text.left(4);
+    bool ok = false;
+    const int value = head.toInt(&ok);
+    if (ok && value >= 1888 && value <= 2999)
+        return head;
+    return text;
+}
+
+/// 协议相对地址（//i0.hdslb.com/...）补成 https
+QUrl normalizeUrl(const QString &raw)
+{
+    const QString text = raw.trimmed();
+    if (text.startsWith(QStringLiteral("//")))
+        return QUrl(QStringLiteral("https:") + text);
+    return QUrl(text);
+}
+
+struct EpisodePart
+{
+    QString name;
+    QString url;
+};
+
+/// 采集接口的播放字段形如 "第01集$https://x/1.m3u8#第02集$https://x/2.m3u8"，
+/// 多个播放源之间用 $$$ 分隔，这里只取第一组。
+QVector<EpisodePart> parseEpisodes(const QString &raw)
+{
+    QVector<EpisodePart> parts;
+    QString body = raw.trimmed();
+    const int sourceSep = body.indexOf(QStringLiteral("$$$"));
+    if (sourceSep >= 0)
+        body = body.left(sourceSep);
+
+    const QStringList groups = body.split(QLatin1Char('#'), Qt::SkipEmptyParts);
+    for (const QString &group : groups) {
+        const QString trimmed = group.trimmed();
+        if (trimmed.isEmpty())
+            continue;
+        const int dollar = trimmed.indexOf(QLatin1Char('$'));
+        const QString name = dollar > 0 ? trimmed.left(dollar).trimmed() : QString();
+        const QString url = dollar >= 0 ? trimmed.mid(dollar + 1).trimmed() : trimmed;
+        if (url.isEmpty())
+            continue;
+        parts.append(EpisodePart{name, url});
+    }
+    return parts;
 }
 
 } // namespace
@@ -183,7 +250,7 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
     if (!m_config.cookie.isEmpty())
         headers.insert(QStringLiteral("Cookie"), m_config.cookie);
 
-    qCInfo(lcProvider) << "search" << m_config.id << requestUrl.toString();
+    qCInfo(lcProvider) << "搜索" << m_config.id << requestUrl.toString();
 
     if (m_config.method == QLatin1String("POST")) {
         const QByteArray body = renderTemplate(m_config.bodyTemplate, vars).toUtf8();
@@ -221,7 +288,7 @@ void ConfigSearchProvider::onReplyFinished()
 
     if (!HttpClient::isHttpSuccess(reply)) {
         const QString error = HttpClient::describeError(reply);
-        qCWarning(lcProvider) << m_config.id << "failed:" << error;
+        qCWarning(lcProvider) << m_config.id << "搜索失败：" << error;
         emit finished(m_config.id, {}, 0, error);
         return;
     }
@@ -230,7 +297,7 @@ void ConfigSearchProvider::onReplyFinished()
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
     if (parseError.error != QJsonParseError::NoError) {
-        qCWarning(lcProvider) << m_config.id << "not json:" << parseError.errorString()
+        qCWarning(lcProvider) << m_config.id << "返回的不是 JSON：" << parseError.errorString()
                               << payload.left(120);
         emit finished(m_config.id, {}, 0, tr("响应不是 JSON 数据"));
         return;
@@ -240,24 +307,28 @@ void ConfigSearchProvider::onReplyFinished()
                                                : QJsonValue(document.object());
     const QJsonValue itemsValue = valueAtPath(root, m_config.itemsPath);
     if (!itemsValue.isArray()) {
-        qCWarning(lcProvider) << m_config.id << "items path not array:" << m_config.itemsPath;
+        qCWarning(lcProvider) << m_config.id << "结果路径不是数组：" << m_config.itemsPath;
         emit finished(m_config.id, {}, 0,
                       tr("找不到结果路径“%1”").arg(m_config.itemsPath));
         return;
     }
 
     const QJsonArray items = itemsValue.toArray();
-    QVector<MediaItem> result;
-    result.reserve(items.size());
-    int filtered = 0;
+    m_result.clear();
+    m_result.reserve(items.size());
+    m_filtered = 0;
+    m_pendingBases.clear();
+    m_pendingIds.clear();
+    m_pendingTitles.clear();
+    m_pendingArtists.clear();
 
     for (const QJsonValue &node : items) {
         if (!node.isObject()) {
-            ++filtered;
+            ++m_filtered;
             continue;
         }
         if (!m_config.skipIf.isEmpty() && ruleMatches(node, m_config.skipIf)) {
-            ++filtered;
+            ++m_filtered;
             continue;
         }
 
@@ -271,35 +342,191 @@ void ConfigSearchProvider::onReplyFinished()
                                                        QStringLiteral("artist"), vars));
 
         const QString stream = mapString(node, m_config.fields, QStringLiteral("streamUrl"), vars);
-        if (stream.trimmed().isEmpty()) {
-            ++filtered;
-            continue;
-        }
 
-        MediaItem item;
-        item.type = m_config.mediaType;
-        item.title = vars.value(QStringLiteral("title")).trimmed();
-        item.artist = vars.value(QStringLiteral("artist"));
-        item.url = QUrl(stream);
-        item.lyricUrl = QUrl(mapString(node, m_config.fields, QStringLiteral("lyricUrl"), vars));
-        item.webUrl = QUrl(mapString(node, m_config.fields, QStringLiteral("webUrl"), vars));
-        item.sourceId = m_config.id;
-        item.headers = m_config.headers;
-        item.online = true;
+        MediaItem base;
+        base.type = m_config.mediaType;
+        base.title = cleanText(vars.value(QStringLiteral("title")));
+        base.artist = cleanText(vars.value(QStringLiteral("artist")));
+        base.lyricUrl = QUrl(mapString(node, m_config.fields, QStringLiteral("lyricUrl"), vars));
+        base.webUrl = QUrl(mapString(node, m_config.fields, QStringLiteral("webUrl"), vars));
+        base.sourceId = m_config.id;
+        base.headers = m_config.headers;
+        base.online = true;
+        // 影片展示字段：没有对应配置就留空，列表会自动跳过
+        base.posterUrl = normalizeUrl(mapString(node, m_config.fields,
+                                                QStringLiteral("posterUrl"), vars));
+        base.year = normalizeYear(mapString(node, m_config.fields, QStringLiteral("year"), vars));
+        base.area = cleanText(mapString(node, m_config.fields, QStringLiteral("area"), vars));
+        base.genre = cleanText(mapString(node, m_config.fields, QStringLiteral("genre"), vars));
+        base.description = cleanText(
+            mapString(node, m_config.fields, QStringLiteral("description"), vars));
 
         const QString durationSpec = m_config.fields.value(QStringLiteral("durationMs"));
         if (!durationSpec.isEmpty() && !durationSpec.startsWith(QLatin1Char('@'))) {
             const double raw = toNumber(valueAtPath(node, durationSpec));
-            item.durationMs = static_cast<qint64>(raw);
+            base.durationMs = static_cast<qint64>(raw);
         }
 
-        if (item.title.isEmpty())
-            item.title = item.url.fileName();
+        if (!stream.trimmed().isEmpty()) {
+            appendItem(base, stream);
+            continue;
+        }
 
-        result.append(item);
+        // 列表里没有直链：配置了二次解析就拿 id 去请求详情，否则只能过滤掉
+        if (m_config.needsDetailFetch() && !vars.value(QStringLiteral("id")).isEmpty()) {
+            m_pendingBases.append(base);
+            m_pendingIds.append(vars.value(QStringLiteral("id")));
+            m_pendingTitles.append(vars.value(QStringLiteral("title")));
+            m_pendingArtists.append(vars.value(QStringLiteral("artist")));
+        } else {
+            ++m_filtered;
+        }
     }
 
-    qCInfo(lcProvider) << m_config.id << "parsed" << result.size() << "items, filtered"
-                       << filtered;
+    m_detailIndex = 0;
+    if (m_pendingIds.isEmpty())
+        finishSearch();
+    else
+        startNextDetail();
+}
+
+void ConfigSearchProvider::appendItem(const MediaItem &base, const QString &stream)
+{
+    if (m_config.streamKind == QLatin1String("episodes")) {
+        // 一个结果 = 一整部剧/片：按剧集拆成多条，标题带上集名区分
+        const QVector<EpisodePart> parts = parseEpisodes(stream);
+        if (parts.isEmpty()) {
+            ++m_filtered;
+            return;
+        }
+        for (const EpisodePart &part : parts) {
+            MediaItem item = base;
+            item.url = QUrl(part.url);
+            if (!part.name.isEmpty() && part.name != base.title)
+                item.title = QStringLiteral("%1 · %2").arg(base.title, part.name);
+            if (item.title.isEmpty())
+                item.title = item.url.fileName();
+            m_result.append(item);
+        }
+        return;
+    }
+
+    MediaItem item = base;
+    item.url = QUrl(stream.trimmed());
+    if (item.title.isEmpty())
+        item.title = item.url.fileName();
+    m_result.append(item);
+}
+
+void ConfigSearchProvider::startNextDetail()
+{
+    if (m_detailIndex >= m_pendingIds.size()) {
+        finishSearch();
+        return;
+    }
+
+    const int index = m_detailIndex;
+    if (m_http == nullptr) {
+        ++m_filtered;
+        ++m_detailIndex;
+        startNextDetail();
+        return;
+    }
+
+    QHash<QString, QString> vars;
+    vars.insert(QStringLiteral("keyword"), m_keyword);
+    vars.insert(QStringLiteral("id"), m_pendingIds.at(index));
+    vars.insert(QStringLiteral("title"), m_pendingTitles.value(index));
+    vars.insert(QStringLiteral("artist"), m_pendingArtists.value(index));
+
+    const QUrl requestUrl(renderTemplate(m_config.detailUrlTemplate, vars));
+    if (!requestUrl.isValid()) {
+        qCWarning(lcProvider) << m_config.id << "详情地址无效：" << requestUrl.toString();
+        ++m_filtered;
+        ++m_detailIndex;
+        startNextDetail();
+        return;
+    }
+
+    QHash<QString, QString> headers = m_config.headers;
+    if (!m_config.cookie.isEmpty())
+        headers.insert(QStringLiteral("Cookie"), m_config.cookie);
+
+    m_detailReply = m_http->get(requestUrl, QByteArray(), headers);
+    if (m_detailReply.isNull()) {
+        ++m_filtered;
+        ++m_detailIndex;
+        startNextDetail();
+        return;
+    }
+    connect(m_detailReply.data(), &QNetworkReply::finished, this,
+            &ConfigSearchProvider::onDetailFinished);
+}
+
+void ConfigSearchProvider::onDetailFinished()
+{
+    QNetworkReply *reply = m_detailReply.data();
+    m_detailReply = nullptr;
+
+    const int index = m_detailIndex;
+    ++m_detailIndex;
+
+    if (reply == nullptr) {
+        ++m_filtered;
+        startNextDetail();
+        return;
+    }
+    reply->deleteLater();
+
+    if (!HttpClient::isHttpSuccess(reply)) {
+        qCWarning(lcProvider) << m_config.id << "详情请求失败：" << HttpClient::describeError(reply);
+        ++m_filtered;
+        startNextDetail();
+        return;
+    }
+
+    const QByteArray payload = reply->readAll();
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        qCWarning(lcProvider) << m_config.id << "详情返回的不是 JSON：" << parseError.errorString();
+        ++m_filtered;
+        startNextDetail();
+        return;
+    }
+
+    const QJsonValue root = document.isArray() ? QJsonValue(document.array())
+                                               : QJsonValue(document.object());
+    const QJsonValue node = valueAtPath(root, m_config.detailItemsPath);
+
+    QHash<QString, QString> vars;
+    vars.insert(QStringLiteral("keyword"), m_keyword);
+    vars.insert(QStringLiteral("id"), m_pendingIds.value(index));
+    vars.insert(QStringLiteral("title"), m_pendingTitles.value(index));
+    vars.insert(QStringLiteral("artist"), m_pendingArtists.value(index));
+
+    const QString stream =
+        mapString(node, m_config.detailFields, QStringLiteral("streamUrl"), vars);
+    if (stream.trimmed().isEmpty()) {
+        ++m_filtered;
+        startNextDetail();
+        return;
+    }
+
+    appendItem(m_pendingBases.value(index), stream);
+    startNextDetail();
+}
+
+void ConfigSearchProvider::finishSearch()
+{
+    qCInfo(lcProvider) << m_config.id << "解析完成" << m_result.size() << "条，过滤"
+                       << m_filtered << "条";
+    const QVector<MediaItem> result = m_result;
+    const int filtered = m_filtered;
+    m_result.clear();
+    m_pendingBases.clear();
+    m_pendingIds.clear();
+    m_pendingTitles.clear();
+    m_pendingArtists.clear();
     emit finished(m_config.id, result, filtered, QString());
 }

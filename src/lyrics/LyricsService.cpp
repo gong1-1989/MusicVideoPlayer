@@ -65,12 +65,12 @@ void LyricsService::loadLocalFile(const QString &filePath)
 
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        qCWarning(lcLyrics) << "open lyric failed:" << filePath << file.errorString();
+        qCWarning(lcLyrics) << "打开歌词文件失败：" << filePath << file.errorString();
         emit lyricsFailed(tr("无法读取歌词文件"));
         return;
     }
     const QVector<LrcLine> lines = LrcParser::parseBytes(file.readAll());
-    qCDebug(lcLyrics) << "local lyric lines" << lines.size();
+    qCDebug(lcLyrics) << "本地歌词行数" << lines.size();
     emit lyricsReady(lines);
 }
 
@@ -97,7 +97,7 @@ void LyricsService::onFinished()
 
     if (!HttpClient::isHttpSuccess(reply)) {
         const QString message = HttpClient::describeError(reply);
-        qCWarning(lcLyrics) << "lyric request failed:" << message;
+        qCWarning(lcLyrics) << "歌词请求失败：" << message;
         emit lyricsFailed(message);
         return;
     }
@@ -118,6 +118,6 @@ void LyricsService::onFinished()
         lines = LrcParser::parseBytes(payload);
     }
 
-    qCDebug(lcLyrics) << "remote lyric lines" << lines.size();
+    qCDebug(lcLyrics) << "在线歌词行数" << lines.size();
     emit lyricsReady(lines);
 }

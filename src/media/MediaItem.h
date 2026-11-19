@@ -6,6 +6,7 @@
 #include <QJsonValue>
 #include <QMetaType>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 
 enum class MediaType {
@@ -28,6 +29,13 @@ struct MediaItem
     bool online = false;
     qint64 durationMs = 0;
 
+    // 影片信息（音乐源可能只填一部分，全部可空）
+    QUrl posterUrl;                 // 海报 / 封面
+    QString year;                   // 年份，如 "2019"
+    QString area;                   // 地区，如 "中国大陆"
+    QString genre;                  // 类型，如 "剧情 / 悬疑"
+    QString description;            // 简介
+
     bool isValid() const { return url.isValid(); }
 
     QString displayName() const
@@ -36,9 +44,61 @@ struct MediaItem
             return title;
         return QStringLiteral("%1 - %2").arg(title, artist);
     }
+
+    /// 列表行第二段信息：年份 · 地区 · 类型，没有的字段自动跳过
+    QString metaLine() const
+    {
+        QStringList parts;
+        if (!year.isEmpty())
+            parts.append(year);
+        if (!area.isEmpty())
+            parts.append(area);
+        if (!genre.isEmpty())
+            parts.append(genre);
+        return parts.join(QStringLiteral(" · "));
+    }
+
+    /// 悬停提示用的多行摘要
+    QString detailText() const
+    {
+        QStringList lines;
+        lines.append(displayName());
+        const QString meta = metaLine();
+        if (!meta.isEmpty())
+            lines.append(meta);
+        if (!description.isEmpty()) {
+            QString summary = description.simplified();
+            if (summary.size() > 260)
+                summary = summary.left(260) + QStringLiteral("…");
+            lines.append(summary);
+        }
+        if (!url.isEmpty())
+            lines.append(online ? url.toString() : url.toLocalFile());
+        return lines.join(QLatin1Char('\n'));
+    }
 };
 
 Q_DECLARE_METATYPE(MediaItem)
+
+/// 去重用的身份标识：
+/// - 本地文件看路径；
+/// - 在线条目优先看原始网页地址（稳定），再带上标题——
+///   采集接口一季剧共用同一个详情页，只有标题能区分集数；
+/// - 没有网页地址时退回去掉查询串的直链（B站等直链带过期签名，每次搜索都不一样）。
+inline QString mediaIdentity(const MediaItem &item)
+{
+    if (!item.online)
+        return QStringLiteral("file:") + item.url.toLocalFile();
+
+    if (!item.webUrl.isEmpty() && item.webUrl.isValid()) {
+        return QStringLiteral("web:") + item.webUrl.toString() + QLatin1Char('#')
+               + item.title;
+    }
+
+    QUrl bare = item.url;
+    bare.setQuery(QString());
+    return QStringLiteral("url:") + bare.toString();
+}
 
 // 持久化用：播放列表要跨会话保留，这里只做字段级序列化，不引入额外格式文件
 inline QJsonObject mediaItemToJson(const MediaItem &item)
@@ -64,6 +124,17 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
     object.insert(QStringLiteral("online"), item.online);
     if (item.durationMs > 0)
         object.insert(QStringLiteral("duration"), static_cast<double>(item.durationMs));
+    // 影片信息：只写有值的字段，旧版列表文件不受影响
+    if (!item.posterUrl.isEmpty())
+        object.insert(QStringLiteral("posterUrl"), item.posterUrl.toString());
+    if (!item.year.isEmpty())
+        object.insert(QStringLiteral("year"), item.year);
+    if (!item.area.isEmpty())
+        object.insert(QStringLiteral("area"), item.area);
+    if (!item.genre.isEmpty())
+        object.insert(QStringLiteral("genre"), item.genre);
+    if (!item.description.isEmpty())
+        object.insert(QStringLiteral("description"), item.description);
     return object;
 }
 
@@ -83,6 +154,11 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
         item.headers.insert(it.key(), it.value().toString());
     item.online = object.value(QStringLiteral("online")).toBool();
     item.durationMs = static_cast<qint64>(object.value(QStringLiteral("duration")).toDouble());
+    item.posterUrl = QUrl(object.value(QStringLiteral("posterUrl")).toString());
+    item.year = object.value(QStringLiteral("year")).toString();
+    item.area = object.value(QStringLiteral("area")).toString();
+    item.genre = object.value(QStringLiteral("genre")).toString();
+    item.description = object.value(QStringLiteral("description")).toString();
     return item;
 }
 
