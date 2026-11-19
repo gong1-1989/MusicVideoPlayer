@@ -98,8 +98,15 @@ void SearchCoordinator::startNext()
                 Q_UNUSED(sourceId)
                 onProviderFinished(items, filtered, error);
             });
+    // 网页型影视源每条结果要打详情+播放页；条数调大时给更长的单源预算，
+    // 否则 20/30/50 条会在 20 秒处被截断，用户会以为“设置没生效”。
+    const bool webVideo = config.kind == QLatin1String("builtin")
+                          && config.provider == QLatin1String("maccms_web");
+    m_sourceTimeoutMs = webVideo
+                            ? qBound(kSourceTimeoutMs, 12000 + m_limit * 400, 45000)
+                            : kSourceTimeoutMs;
     // 单源超时：慢源/挂死源不能把整次搜索拖住，超时后跳过继续下一个。
-    m_sourceTimeout.start(kSourceTimeoutMs);
+    m_sourceTimeout.start(m_sourceTimeoutMs);
     provider->search(m_keyword, m_limit);
 }
 
@@ -112,7 +119,7 @@ void SearchCoordinator::onSourceTimeout()
                                                   : QStringLiteral("unknown");
     m_failed.append(QStringLiteral("%1（单源超过 %2 秒，已跳过）")
                         .arg(name)
-                        .arg(kSourceTimeoutMs / 1000));
+                        .arg(m_sourceTimeoutMs / 1000));
 
     disconnect(m_current, nullptr, this, nullptr);
     m_current->deleteLater();

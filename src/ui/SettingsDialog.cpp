@@ -93,7 +93,7 @@ void SettingsDialog::bindUi()
     for (int limit : {10, 20, 30, 50})
         m_searchLimit->addItem(tr("%1 条").arg(limit), limit);
     m_searchLimit->setToolTip(
-        tr("网页型影视源单次最多抓取 6 条；内置/配置型音频源按这里的条数返回。"));
+        tr("网页型影视源按这里的条数抓取（最多 50 条）；条数越大，单源耗时越长。"));
 
     connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
         m_volumeValue->setText(QStringLiteral("%1%").arg(value));

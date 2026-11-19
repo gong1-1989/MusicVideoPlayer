@@ -250,8 +250,9 @@ MaccmsWebProvider::MaccmsWebProvider(const SourceConfig &config, HttpClient *htt
 void MaccmsWebProvider::search(const QString &keyword, int limit)
 {
     m_keyword = keyword.trimmed();
-    // 每条结果要打 1 次详情 + 最多 3 次播放页，条数放开会把首屏拖到几十秒
-    m_limit = qBound(1, limit, 6);
+    // 搜索页只拿候选，详情/播放页按 4 路并发抓取；上限跟设置一致，
+    // 但保留 50 条的硬上限，避免一次搜索打出几百个请求。
+    m_limit = qBound(1, limit, 50);
     m_keywordEncoded = QString::fromLatin1(QUrl::toPercentEncoding(m_keyword));
     m_done = false;
     m_candidates.clear();
@@ -259,8 +260,8 @@ void MaccmsWebProvider::search(const QString &keyword, int limit)
     m_searchErrors.clear();
     m_firstFailure.clear();
     m_filtered = 0;
-    m_cursor = 0;
-    m_lineIndex = 0;
+    m_nextCursor = 0;
+    m_active = 0;
     m_rootLength = 0;
 
     QString base = m_config.urlTemplate.trimmed();
@@ -427,9 +428,9 @@ void MaccmsWebProvider::trySuggest()
                       self->m_suggestUsed = true;
                       qCInfo(lcWeb) << "suggest 命中" << self->m_candidates.size() << "条"
                                  << self->m_root;
-                      self->m_cursor = 0;
-                      self->m_lineIndex = 0;
-                      self->resolveNext();
+                      self->m_nextCursor = 0;
+                      self->m_active = 0;
+                      self->startWorkers();
                   });
 }
 
@@ -615,9 +616,9 @@ void MaccmsWebProvider::afterSearch(const QString &html, int strategy)
     }
 
     qCInfo(lcWeb) << "网页源搜索命中" << m_candidates.size() << "条" << m_root;
-    m_cursor = 0;
-    m_lineIndex = 0;
-    resolveNext();
+    m_nextCursor = 0;
+    m_active = 0;
+    startWorkers();
 }
 
 void MaccmsWebProvider::nextStrategyOrFinish()
@@ -629,20 +630,35 @@ void MaccmsWebProvider::nextStrategyOrFinish()
         finish(tr("没有搜到结果，站点可能改版或未开放搜索%1").arg(detail));
         return;
     }
-    resolveNext();
+    startWorkers();
 }
 
-void MaccmsWebProvider::resolveNext()
+void MaccmsWebProvider::startWorkers()
 {
     if (m_done)
         return;
-    if (m_cursor >= m_candidates.size()) {
+
+    // 每个候选要打 1 次详情 + 1~3 次播放页；串行时 6 条就要七八秒。
+    // 这里最多 4 条同时抓，既让设置里的 10/20/30/50 生效，也不把请求数放大成串行等待。
+    static constexpr int kConcurrency = 4;
+    while (m_active < kConcurrency && m_nextCursor < m_candidates.size()
+           && m_items.size() < m_limit) {
+        auto job = QSharedPointer<Job>::create();
+        job->index = m_nextCursor++;
+        job->candidate = m_candidates.at(job->index);
+        ++m_active;
+        processJob(job);
+    }
+
+    if (m_active == 0
+        && (m_nextCursor >= m_candidates.size() || m_items.size() >= m_limit)) {
         // suggest 给了 id 但详情页全打不开：说明这个站不是 /voddetail/<id>.html 这套路径，
         // 退回 HTML 搜索链再试一遍（只看详情路径，不代表站点没有内容）
         if (m_items.isEmpty() && m_suggestUsed && !m_htmlSearchTried) {
             m_suggestUsed = false;
             m_candidates.clear();
-            m_cursor = 0;
+            m_nextCursor = 0;
+            m_active = 0;
             m_firstFailure.clear();
             trySearch(0);
             return;
@@ -651,39 +667,31 @@ void MaccmsWebProvider::resolveNext()
             finish(m_firstFailure);
         else
             finish(QString());
-        return;
     }
-    fetchDetail();
 }
 
-void MaccmsWebProvider::fetchDetail()
+void MaccmsWebProvider::processJob(const QSharedPointer<Job> &job)
 {
-    if (m_done)
+    if (m_done || job.isNull())
         return;
-    if (m_cursor >= m_candidates.size()) {
-        resolveNext();
-        return;
-    }
-
-    m_current = m_candidates.at(m_cursor);
-    m_lineIndex = 0;
 
     QPointer<MaccmsWebProvider> self(this);
-    requestHtml(m_current.detailUrl, [self](bool ok, const QString &html) {
+    requestHtml(job->candidate.detailUrl, [self, job](bool ok, const QString &html) {
         if (self.isNull())
             return;
         if (!ok) {
-            self->failCurrent(tr("详情页打不开"));
+            self->finishJob(job, false, MediaItem(), tr("详情页打不开"));
             return;
         }
+
         const QString pageTitle = detailTitle(html);
         if (!pageTitle.isEmpty())
-            self->m_current.title = pageTitle;
+            job->candidate.title = pageTitle;
 
         const QString poster = metaContent(html, QStringLiteral("property=\"og:image\""));
         if (!poster.isEmpty())
-            self->m_current.poster = decodeEntities(poster);
-        if (self->m_current.poster.isEmpty()) {
+            job->candidate.poster = decodeEntities(poster);
+        if (job->candidate.poster.isEmpty()) {
             // 多数模板没有 og:image，海报挂在 module-info-poster 块里
             const int posterPos = html.indexOf(QStringLiteral("module-info-poster"));
             if (posterPos >= 0) {
@@ -692,25 +700,24 @@ void MaccmsWebProvider::fetchDetail()
                 if (source.isEmpty())
                     source = firstGroup(chunk, QStringLiteral("data-original=\"([^\"]+)\""));
                 if (!source.isEmpty())
-                    self->m_current.poster = decodeEntities(source);
+                    job->candidate.poster = decodeEntities(source);
             }
         }
-        if (self->m_current.poster.isEmpty()) {
+        if (job->candidate.poster.isEmpty()) {
             const QString dataSrc =
                 firstGroup(html, QStringLiteral("<img[^>]*data-original=\"([^\"]+)\""));
             if (!dataSrc.isEmpty())
-                self->m_current.poster = decodeEntities(dataSrc);
+                job->candidate.poster = decodeEntities(dataSrc);
         }
         const QString description = metaContent(html, QStringLiteral("name=\"description\""));
         if (!description.isEmpty())
-            self->m_current.description = stripTags(description);
+            job->candidate.description = stripTags(description);
 
-        self->m_current.year =
-            firstGroup(html, QStringLiteral("年份[:：]\\s*(\\d{4})"));
-        if (self->m_current.year.isEmpty())
-            self->m_current.year = firstGroup(html, QStringLiteral(">((?:19|20)\\d{2})<"));
-        self->m_current.area = firstGroup(html, QStringLiteral("地区[:：]\\s*([^<\\s]{1,12})"));
-        self->m_current.genre = firstGroup(html, QStringLiteral("类型[:：]\\s*([^<]{1,24})"));
+        job->candidate.year = firstGroup(html, QStringLiteral("年份[:：]\\s*(\\d{4})"));
+        if (job->candidate.year.isEmpty())
+            job->candidate.year = firstGroup(html, QStringLiteral(">((?:19|20)\\d{2})<"));
+        job->candidate.area = firstGroup(html, QStringLiteral("地区[:：]\\s*([^<\\s]{1,12})"));
+        job->candidate.genre = firstGroup(html, QStringLiteral("类型[:：]\\s*([^<]{1,24})"));
 
         // 详情页里通常是整部剧的播放链接：按线路各取第一集
         const QVector<QString> plays = extractHrefs(html, kPlayPattern);
@@ -728,41 +735,47 @@ void MaccmsWebProvider::fetchDetail()
             if (sidOrder.size() >= 4)
                 break;
         }
+        job->candidate.playLines.clear();
         for (const QString &key : sidOrder)
-            self->m_current.playLines.append(bySid.value(key));
+            job->candidate.playLines.append(bySid.value(key));
 
-        if (self->m_current.playLines.isEmpty()) {
-            self->failCurrent(tr("详情页里没有播放入口"));
+        if (job->candidate.playLines.isEmpty()) {
+            self->finishJob(job, false, MediaItem(), tr("详情页里没有播放入口"));
             return;
         }
-        qCInfo(lcWeb) << "详情解析" << self->m_current.title << "线路"
-                   << self->m_current.playLines.size();
-        self->fetchPlay(0);
+        qCInfo(lcWeb) << "详情解析" << job->candidate.title << "线路"
+                   << job->candidate.playLines.size();
+        job->lineIndex = 0;
+        self->processPlay(job);
     });
 }
 
-void MaccmsWebProvider::fetchPlay(int lineIndex)
+void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
 {
-    if (m_done)
+    if (m_done || job.isNull())
         return;
-    if (lineIndex >= m_current.playLines.size() || lineIndex >= 3) {
-        failCurrent(tr("所有线路都取不到可播地址"));
+    const int lineIndex = job->lineIndex;
+    if (lineIndex >= job->candidate.playLines.size() || lineIndex >= 3) {
+        finishJob(job, false, MediaItem(),
+                  job->firstFailure.isEmpty() ? tr("所有线路都取不到可播地址")
+                                             : job->firstFailure);
         return;
     }
-    m_lineIndex = lineIndex;
 
-    const QUrl playUrl = siteUrl(m_current.playLines.at(lineIndex));
+    const QUrl playUrl = siteUrl(job->candidate.playLines.at(lineIndex));
     QPointer<MaccmsWebProvider> self(this);
-    requestHtml(playUrl, [self, lineIndex](bool ok, const QString &html) {
+    requestHtml(playUrl, [self, job, lineIndex](bool ok, const QString &html) {
         if (self.isNull())
             return;
-        auto retryOrFail = [self, lineIndex](const QString &reason) {
-            if (self.isNull())
-                return;
-            if (lineIndex + 1 < self->m_current.playLines.size() && lineIndex + 1 < 3)
-                self->fetchPlay(lineIndex + 1);
+
+        auto retryOrFail = [self, job, lineIndex](const QString &reason) {
+            if (job->firstFailure.isEmpty())
+                job->firstFailure = reason;
+            job->lineIndex = lineIndex + 1;
+            if (job->lineIndex >= job->candidate.playLines.size() || job->lineIndex >= 3)
+                self->finishJob(job, false, MediaItem(), job->firstFailure);
             else
-                self->failCurrent(reason);
+                self->processPlay(job);
         };
 
         if (!ok) {
@@ -771,7 +784,7 @@ void MaccmsWebProvider::fetchPlay(int lineIndex)
         }
         if (html.contains(QStringLiteral("weihu.html"))
             || html.contains(QStringLiteral("内容审核中"))) {
-            self->failCurrent(tr("片源已下架（站点维护或审核中）"));
+            self->finishJob(job, false, MediaItem(), tr("片源已下架（站点维护或审核中）"));
             return;
         }
 
@@ -812,15 +825,16 @@ void MaccmsWebProvider::fetchPlay(int lineIndex)
 
         if (url.isEmpty()) {
             if (html.contains(QStringLiteral("<iframe"))) {
-                self->failCurrent(tr("该线路是第三方解析（iframe），真实地址要外部解析器"));
+                self->finishJob(job, false, MediaItem(),
+                                tr("该线路是第三方解析（iframe），真实地址要外部解析器"));
                 return;
             }
-            self->failCurrent(tr("播放参数为空，片源已失效"));
+            self->finishJob(job, false, MediaItem(), tr("播放参数为空，片源已失效"));
             return;
         }
 
         if (!vodName.isEmpty())
-            self->m_current.title = stripTags(vodName);
+            job->candidate.title = stripTags(vodName);
 
         if (encrypt != 0) {
             retryOrFail(tr("播放地址已加密（encrypt=%1，线路 %2），需逆向站点播放器，暂不支持")
@@ -848,37 +862,42 @@ void MaccmsWebProvider::fetchPlay(int lineIndex)
 
         MediaItem item;
         item.type = MediaType::Video;
-        item.title = self->m_current.title;
+        item.title = job->candidate.title;
         item.url = media;
-        item.webUrl = self->m_current.detailUrl;
+        item.webUrl = job->candidate.detailUrl;
         item.sourceId = self->m_config.id;
         item.online = true;
         item.headers = self->mediaHeaders();
-        item.posterUrl = self->siteUrl(self->m_current.poster);
-        item.year = self->m_current.year;
-        item.area = self->m_current.area;
-        item.genre = self->m_current.genre;
-        item.description = self->m_current.description;
-        self->m_items.append(item);
+        item.posterUrl = self->siteUrl(job->candidate.poster);
+        item.year = job->candidate.year;
+        item.area = job->candidate.area;
+        item.genre = job->candidate.genre;
+        item.description = job->candidate.description;
 
         qCInfo(lcWeb) << "取到直链" << item.title << media.toString();
-        ++self->m_cursor;
-        self->m_lineIndex = 0;
-        self->resolveNext();
+        self->finishJob(job, true, item);
     });
 }
 
-void MaccmsWebProvider::failCurrent(const QString &reason)
+void MaccmsWebProvider::finishJob(const QSharedPointer<Job> &job, bool ok, const MediaItem &item,
+                                 const QString &reason)
 {
-    if (m_done)
+    if (m_done || job.isNull())
         return;
-    if (m_firstFailure.isEmpty())
-        m_firstFailure = reason;
-    ++m_filtered;
-    qCInfo(lcWeb) << "跳过" << m_current.title << reason;
-    ++m_cursor;
-    m_lineIndex = 0;
-    resolveNext();
+
+    if (m_active > 0)
+        --m_active;
+
+    if (ok) {
+        if (m_items.size() < m_limit)
+            m_items.append(item);
+    } else {
+        ++m_filtered;
+        if (m_firstFailure.isEmpty())
+            m_firstFailure = reason;
+        qCInfo(lcWeb) << "跳过" << job->candidate.title << reason;
+    }
+    startWorkers();
 }
 
 void MaccmsWebProvider::finish(const QString &error)

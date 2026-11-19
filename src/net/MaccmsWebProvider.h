@@ -6,6 +6,7 @@
 
 #include <QString>
 #include <QStringList>
+#include <QSharedPointer>
 #include <QUrl>
 #include <QVector>
 
@@ -42,15 +43,26 @@ private:
         QStringList playLines; // 详情页里每条线路的第一集（按线路顺序）
     };
 
+    /// 一个候选的完整抓取链：详情页 → 若干播放页 → 一条 MediaItem。
+    /// 并发抓取时每个 job 自己保存线路进度，避免共享 m_current 互相踩。
+    struct Job
+    {
+        int index = 0;
+        Candidate candidate;
+        int lineIndex = 0;
+        QString firstFailure;
+    };
+
     void fetchRoot();
     void trySuggest();
     void trySearch(int strategy);
     void afterSearch(const QString &html, int strategy);
     void nextStrategyOrFinish();
-    void resolveNext();
-    void fetchDetail();
-    void fetchPlay(int lineIndex);
-    void failCurrent(const QString &reason);
+    void startWorkers();
+    void processJob(const QSharedPointer<Job> &job);
+    void processPlay(const QSharedPointer<Job> &job);
+    void finishJob(const QSharedPointer<Job> &job, bool ok, const MediaItem &item = MediaItem(),
+                   const QString &reason = QString());
     void finish(const QString &error);
 
     QUrl siteUrl(const QString &relative) const;
@@ -63,7 +75,7 @@ private:
 
     QString m_keyword;
     QString m_keywordEncoded;
-    int m_limit = 6;
+    int m_limit = 10;
     int m_rootLength = 0;
     QString m_root; // 站点根，保证以 / 结尾
 
@@ -73,13 +85,11 @@ private:
     QString m_firstFailure; // 第一条条目的失败原因，用于整源提示
 
     int m_filtered = 0;
-    int m_cursor = 0;
-    int m_lineIndex = 0;
+    int m_nextCursor = 0;
+    int m_active = 0;
     bool m_done = false;
     bool m_suggestUsed = false;      // 本次结果来自 ajax/suggest
     bool m_htmlSearchTried = false;  // 已经试过 HTML 搜索链（防止 suggest 失败后反复回退）
-
-    Candidate m_current;
 };
 
 #endif // MACCMSWEBPROVIDER_H

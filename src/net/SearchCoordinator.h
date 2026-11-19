@@ -56,6 +56,7 @@ private:
     QVector<QString> m_queueNames;
     SearchProviderBase *m_current = nullptr;
     QTimer m_sourceTimeout;
+    int m_sourceTimeoutMs = 20000;
     static constexpr int kSourceTimeoutMs = 20000;
 };
 

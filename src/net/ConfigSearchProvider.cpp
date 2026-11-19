@@ -187,6 +187,19 @@ QUrl normalizeUrl(const QString &raw)
     return QUrl(text);
 }
 
+/// JSON 模板里的 {keyword} 必须转义引号/反斜杠，不能再做百分号编码，
+/// 否则服务端收到的是 %E6%... 而不是关键词本身。
+QString jsonEscape(const QString &raw)
+{
+    QString text = raw;
+    text.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    text.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    text.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
+    text.replace(QLatin1Char('\r'), QStringLiteral("\\r"));
+    text.replace(QLatin1Char('\t'), QStringLiteral("\\t"));
+    return text;
+}
+
 struct EpisodePart
 {
     QString name;
@@ -261,7 +274,10 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
     qCInfo(lcProvider) << "搜索" << m_config.id << requestUrl.toString();
 
     if (m_config.method == QLatin1String("POST")) {
-        const QByteArray body = renderTemplate(m_config.bodyTemplate, vars).toUtf8();
+        QHash<QString, QString> bodyVars = vars;
+        if (m_config.bodyIsJson)
+            bodyVars.insert(QStringLiteral("keyword"), jsonEscape(keyword));
+        const QByteArray body = renderTemplate(m_config.bodyTemplate, bodyVars).toUtf8();
         if (m_config.bodyIsJson) {
             headers.insert(QStringLiteral("Content-Type"), QStringLiteral("application/json"));
             m_reply = m_http->postJson(requestUrl, body, headers);
@@ -411,7 +427,7 @@ void ConfigSearchProvider::appendItem(const MediaItem &base, const QString &stre
         }
         for (const EpisodePart &part : parts) {
             MediaItem item = base;
-            item.url = QUrl(part.url);
+            item.url = normalizeUrl(part.url);
             if (!part.name.isEmpty() && part.name != base.title)
                 item.title = QStringLiteral("%1 · %2").arg(base.title, part.name);
             if (item.title.isEmpty())
@@ -426,7 +442,7 @@ void ConfigSearchProvider::appendItem(const MediaItem &base, const QString &stre
     }
 
     MediaItem item = base;
-    item.url = QUrl(stream.trimmed());
+    item.url = normalizeUrl(stream);
     if (item.title.isEmpty())
         item.title = item.url.fileName();
     if (item.url.isEmpty() || !item.url.isValid()) {
