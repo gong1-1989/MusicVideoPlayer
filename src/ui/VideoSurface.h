@@ -23,6 +23,8 @@ public:
     qreal cornerRadius() const { return m_radius; }
 
     void clearFrame();
+    /// 新视频真正开始播放后恢复收帧；clearFrame() 到 resumeFrames() 之间的迟到旧帧会被丢弃
+    void resumeFrames();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -34,6 +36,7 @@ private:
     QVideoSink *m_sink = nullptr;
     QImage m_image;
     qreal m_radius = 0.0;
+    bool m_framesBlocked = false;
 };
 
 #endif // VIDEOSURFACE_H

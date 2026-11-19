@@ -27,8 +27,15 @@ void VideoSurface::setCornerRadius(qreal radius)
 
 void VideoSurface::clearFrame()
 {
+    // 停播时 QVideoSink 仍可能排着最后一帧；只清 QImage 会被它立刻画回来
+    m_framesBlocked = true;
     m_image = QImage();
     update();
+}
+
+void VideoSurface::resumeFrames()
+{
+    m_framesBlocked = false;
 }
 
 QSize VideoSurface::sizeHint() const
@@ -38,6 +45,8 @@ QSize VideoSurface::sizeHint() const
 
 void VideoSurface::onFrame(const QVideoFrame &frame)
 {
+    if (m_framesBlocked)
+        return;
     if (!frame.isValid()) {
         return;
     }

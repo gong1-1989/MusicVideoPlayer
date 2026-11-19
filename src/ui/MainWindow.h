@@ -75,7 +75,7 @@ private:
     QHash<QString, QString> sourceDisplayNames() const;
 
     void restorePlaylists();
-    void savePlaylists();
+    bool savePlaylists();
     void setupPlaylistInteractions();    void removePlaylistRow(MediaType type, int row);
     void clearPlaylist(MediaType type);
     void showPlaylistContextMenu(MediaType type, QListView *view, PlaylistModel *model,

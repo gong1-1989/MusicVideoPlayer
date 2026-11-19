@@ -532,15 +532,22 @@ void MainWindow::setupConnections()
                 ui->btn_play->setText(state == QMediaPlayer::PlayingState ? tr("暂停") : tr("播放"));
                 // 停止后不再占着歌词栏；继续播音乐时再放出来
                 if (state == QMediaPlayer::StoppedState) {
+                    // 停止后播放器不会再送新帧；不清掉的话上一部视频的最后一帧会一直留在面板上
+                    ui->videoWidget->clearFrame();
                     ui->panelLyrics->hide();
-                } else if (m_player->hasCurrentItem()
-                           && m_player->currentItem().type == MediaType::Music) {
-                    ui->panelLyrics->show();
+                } else {
+                    // 新一次播放开始，允许视频面重新接收帧
+                    ui->videoWidget->resumeFrames();
+                    if (m_player->hasCurrentItem()
+                        && m_player->currentItem().type == MediaType::Music)
+                        ui->panelLyrics->show();
                 }
             });
     connect(m_player, &PlaybackController::modeChanged, this, [this] { refreshModeButton(); });
     connect(m_player, &PlaybackController::currentItemChanged, this,
             [this](const MediaItem &item, int row) {
+                // 视频切歌/切回音乐时先清掉上一帧，等新视频首帧到达再显示
+                ui->videoWidget->clearFrame();
                 ui->label_status->setText(tr("正在播放：%1").arg(item.displayName()));
 
                 // 歌词栏只在音乐播放时出现，视频不需要
@@ -865,13 +872,15 @@ void MainWindow::restorePlaylists()
     }
 }
 
-void MainWindow::savePlaylists()
+bool MainWindow::savePlaylists()
 {
-    if (!PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
-        qCWarning(lcWindow) << "播放列表保存失败";
-        if (ui != nullptr && ui->label_status != nullptr)
-            ui->label_status->setText(tr("播放列表保存失败：Data 目录不可写"));
-    }
+    if (PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items()))
+        return true;
+
+    qCWarning(lcWindow) << "播放列表保存失败";
+    if (ui != nullptr && ui->label_status != nullptr)
+        ui->label_status->setText(tr("播放列表保存失败：Data 目录不可写"));
+    return false;
 }
 
 void MainWindow::setupPlaylistInteractions()
@@ -908,8 +917,8 @@ void MainWindow::removePlaylistRow(MediaType type, int row)
     if (m_player->playlist() == model)
         m_player->onPlaylistRowRemoved(row);
 
-    savePlaylists();
-    ui->label_status->setText(tr("已从列表移除：%1").arg(name));
+    if (savePlaylists())
+        ui->label_status->setText(tr("已从列表移除：%1").arg(name));
 }
 
 void MainWindow::clearPlaylist(MediaType type)
@@ -927,8 +936,8 @@ void MainWindow::clearPlaylist(MediaType type)
     }
 
     model->clear();
-    savePlaylists();
-    ui->label_status->setText(tr("已清空列表"));
+    if (savePlaylists())
+        ui->label_status->setText(tr("已清空列表"));
 }
 
 void MainWindow::showPlaylistContextMenu(MediaType type, QListView *view, PlaylistModel *model,
@@ -1076,12 +1085,14 @@ void MainWindow::addLocalFiles(MediaType type, const QStringList &files)
             ++added;
     }
 
-    ui->label_status->setText(added > 0 ? tr("已添加 %1 个文件").arg(added)
-                                        : tr("列表中已存在相同文件"));
+    if (added > 0) {
+        if (savePlaylists())
+            ui->label_status->setText(tr("已添加 %1 个文件").arg(added));
+    } else {
+        ui->label_status->setText(tr("列表中已存在相同文件"));
+    }
     qCInfo(lcWindow) << "加载本地文件" << (type == MediaType::Music ? "音乐" : "视频") << "共"
                      << files.size() << "个，新增" << added << "个";
-    if (added > 0)
-        savePlaylists();
 }
 
 void MainWindow::on_btn_prev_clicked()
@@ -1434,16 +1445,22 @@ void MainWindow::showSearchContextMenu(const QPoint &pos)
         MediaItem music = item;
         music.type = MediaType::Music;
         const bool ok = m_musicModel->addItem(music);
-        ui->label_status->setText(ok ? tr("已加入音乐列表") : tr("音乐列表中已存在"));
-        if (ok)
-            savePlaylists();
+        if (ok) {
+            if (savePlaylists())
+                ui->label_status->setText(tr("已加入音乐列表"));
+        } else {
+            ui->label_status->setText(tr("音乐列表中已存在"));
+        }
     } else if (chosen == addVideoAction) {
         MediaItem video = item;
         video.type = MediaType::Video;
         const bool ok = m_videoModel->addItem(video);
-        ui->label_status->setText(ok ? tr("已加入视频列表") : tr("视频列表中已存在"));
-        if (ok)
-            savePlaylists();
+        if (ok) {
+            if (savePlaylists())
+                ui->label_status->setText(tr("已加入视频列表"));
+        } else {
+            ui->label_status->setText(tr("视频列表中已存在"));
+        }
     } else if (chosen == downloadAction) {
         downloadItem(item);
     }
