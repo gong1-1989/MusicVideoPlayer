@@ -495,6 +495,9 @@ void StreamProxy::flushUpstream(QTcpSocket *client, QNetworkReply *reply, const 
         }
     }
 
+    if (!reply->isOpen())
+        return;
+
     const QByteArray chunk = reply->readAll();
     if (!chunk.isEmpty())
         client->write(chunk);

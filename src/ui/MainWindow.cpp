@@ -804,6 +804,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
     savePlaylists();
     saveSettings();
     QMainWindow::closeEvent(event);
+    // 关闭主窗后显式结束事件循环：避免独立全屏窗或异步播放对象让进程残留在后台。
+    QCoreApplication::quit();
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
