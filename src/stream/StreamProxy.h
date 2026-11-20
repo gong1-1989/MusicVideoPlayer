@@ -10,6 +10,8 @@
 #include <QString>
 #include <QUrl>
 
+#include <atomic>
+
 class HttpClient;
 class QTcpServer;
 class QTcpSocket;
@@ -32,6 +34,10 @@ public:
     bool start();
     bool isListening() const;
     int port() const;
+
+    /// 关闭监听、终止所有上游请求并清空缓存。
+    /// 只应在代理所属线程调用；PlaybackController 用阻塞队列调用它。
+    void shutdown();
 
     /// 登记一个上游地址，返回给 QMediaPlayer 使用的本地 URL。
     /// headers 是该源必需的请求头（Referer、Cookie 等），代理在拉流时补上。
@@ -103,6 +109,8 @@ private:
     QTcpServer *m_server;
     QHash<QString, Upstream> m_tokens;
     QHash<QString, QSharedPointer<CacheEntry>> m_cache;
+    std::atomic_bool m_listening{false};
+    std::atomic<int> m_port{0};
 };
 
 #endif // STREAMPROXY_H

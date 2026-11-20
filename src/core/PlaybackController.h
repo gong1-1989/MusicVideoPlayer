@@ -9,6 +9,7 @@
 #include <QPointer>
 
 class QAudioOutput;
+class QThread;
 class StreamProxy;
 
 /// 播放状态机：持有 QMediaPlayer，负责"上一首/下一首/循环模式/媒体结束"，
@@ -26,6 +27,7 @@ public:
     Q_ENUM(Mode)
 
     explicit PlaybackController(QObject *parent = nullptr);
+    ~PlaybackController() override;
 
     void setPlaylist(PlaylistModel *playlist);
     PlaylistModel *playlist() const { return m_playlist.data(); }
@@ -74,6 +76,8 @@ private:
     QMediaPlayer *m_player;
     QAudioOutput *m_audio;
     StreamProxy *m_proxy;
+    QThread *m_proxyThread;
+    bool m_proxyReady = false;
     QPointer<PlaylistModel> m_playlist;
     int m_row = -1;
     Mode m_mode = Mode::ListLoop;

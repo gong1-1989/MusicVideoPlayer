@@ -4,7 +4,9 @@
 
 #include <QAudioOutput>
 #include <QLoggingCategory>
+#include <QMetaObject>
 #include <QRandomGenerator>
+#include <QThread>
 #include <QTimer>
 
 Q_LOGGING_CATEGORY(lcPlayer, "mvp.player")
@@ -13,14 +15,31 @@ PlaybackController::PlaybackController(QObject *parent)
     : QObject(parent)
     , m_player(new QMediaPlayer(this))
     , m_audio(new QAudioOutput(this))
-    , m_proxy(new StreamProxy(this))
+    , m_proxy(new StreamProxy())
+    , m_proxyThread(new QThread(this))
 {
+    // 代理必须独立于 GUI 线程：Qt FFmpeg 后端在停止/切源时会同步 wait
+    // Demuxer 线程，而 Demuxer 此时正阻塞在本地代理 socket 上。两者同线程
+    // 会互相等待；把代理移到工作线程后，GUI 等 Demuxer 时代理仍能继续供流。
+    m_proxyThread->setObjectName(QStringLiteral("StreamProxyThread"));
+    m_proxy->moveToThread(m_proxyThread);
+    connect(m_proxyThread, &QThread::finished, m_proxy, &QObject::deleteLater);
+    m_proxyThread->start();
+
+    bool startResult = false;
+    const bool invoked = m_proxyThread->isRunning()
+        && QMetaObject::invokeMethod(
+               m_proxy, [this, &startResult] { startResult = m_proxy->start(); },
+               Qt::BlockingQueuedConnection);
+    m_proxyReady = invoked && startResult;
+    if (!m_proxyReady)
+        qCWarning(lcPlayer) << "流转服务不可用，在线播放可能因 403 失败";
+    else
+        qCInfo(lcPlayer) << "流转代理已运行在独立线程";
+
     m_player->setAudioOutput(m_audio);
     setVolumePercent(60);
     updateLoops();
-
-    if (!m_proxy->start())
-        qCWarning(lcPlayer) << "流转服务不可用，在线播放可能因 403 失败";
 
     connect(m_player, &QMediaPlayer::positionChanged,
             this, &PlaybackController::positionChanged);
@@ -57,6 +76,24 @@ PlaybackController::PlaybackController(QObject *parent)
                 m_unavailableReason =
                     tr("这个源没有返回可播放的音频/视频（版权、付费或需要登录），换一首试试");
             });
+}
+
+PlaybackController::~PlaybackController()
+{
+    m_proxyReady = false;
+    if (m_proxyThread->isRunning()) {
+        // shutdown 必须回到代理线程执行，确保 QTcpServer 和所有 reply
+        // 在各自线程里关闭；这里不会与播放器的 Demuxer 等待互相阻塞。
+        QMetaObject::invokeMethod(m_proxy, [this] { m_proxy->shutdown(); },
+                                  Qt::BlockingQueuedConnection);
+        m_proxyThread->quit();
+        if (!m_proxyThread->wait(3000)) {
+            qCWarning(lcPlayer) << "流转代理线程未在 3 秒内退出，强制终止";
+            m_proxyThread->terminate();
+            m_proxyThread->wait(500);
+        }
+    }
+    m_proxy = nullptr;
 }
 
 void PlaybackController::setPlaylist(PlaylistModel *playlist)
@@ -117,9 +154,15 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
     // 本地文件直接用 file:// 播放。
     QUrl source = item.url;
-    if (item.online && m_proxy->isListening()) {
-        const QUrl proxied = m_proxy->proxyUrlFor(item.url, item.headers);
-        if (proxied.isValid())
+    if (item.online && m_proxyReady && m_proxyThread->isRunning()) {
+        QUrl proxied;
+        const bool invoked = QMetaObject::invokeMethod(
+            m_proxy,
+            [proxy = m_proxy, url = item.url, headers = item.headers, &proxied] {
+                proxied = proxy->proxyUrlFor(url, headers);
+            },
+            Qt::BlockingQueuedConnection);
+        if (invoked && proxied.isValid())
             source = proxied;
     }
 
