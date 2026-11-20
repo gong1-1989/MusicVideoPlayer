@@ -680,8 +680,8 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
 
     const int row = m_currentRow;
     QHash<QString, QString> headers = draft.headers;
-    if (!headers.contains(QStringLiteral("Referer")))
-        headers.insert(QStringLiteral("Referer"), base);
+    // 体检以当前填写的域名为准：草稿里可能残留旧域名的 Referer，不覆盖会直接 403
+    headers.insert(QStringLiteral("Referer"), base);
 
     QPointer<SourceManagerDialog> self(this);
     m_http->fetch(root, QByteArray(), headers,

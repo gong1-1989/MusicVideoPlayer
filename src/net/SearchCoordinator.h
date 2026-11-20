@@ -50,10 +50,12 @@ private:
 
     void startAll();
     void finishSearch();
+    void onGlobalTimeout();
     void onProviderFinished(SearchProviderBase *provider, const QVector<MediaItem> &items,
                             int filtered, const QString &error);
     void onSourceTimeout(SearchProviderBase *provider);
     int timeoutForSource(const SourceConfig &config) const;
+    int globalBudgetForLimit() const;
     QVector<MediaItem> mergedItems() const;
     int mergedFiltered() const;
     QStringList failedSources() const;
@@ -76,6 +78,7 @@ private:
     /// 正在批量启动：同步完成的源不能提前收尾，否则后面的源还没发出去
     bool m_launching = false;
     QElapsedTimer m_elapsed;
+    QTimer *m_globalTimer = nullptr;
 
     static constexpr int kSourceTimeoutMs = 20000;
 };

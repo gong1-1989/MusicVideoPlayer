@@ -201,7 +201,8 @@ void PlaylistController::addLocalFiles(MediaType type, const QStringList &files)
         const QFileInfo info(path);
         MediaItem item;
         item.type = type;
-        item.title = info.fileName();
+        // 列表标题不显示扩展名，避免 “xxx.mp3” 与在线条目的观感不一致
+        item.title = info.completeBaseName().isEmpty() ? info.fileName() : info.completeBaseName();
         item.url = QUrl::fromLocalFile(info.absoluteFilePath());
         item.online = false;
 

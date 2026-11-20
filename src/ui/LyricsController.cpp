@@ -59,16 +59,18 @@ void LyricsController::updatePosition(qint64 positionMs)
         return;
 
     const int index = LrcParser::indexAt(m_lines, positionMs);
-    if (index == m_index || index < 0)
+    if (index == m_index)
         return;
 
+    // 拖回第一句之前时 index=-1，也要清掉旧高亮，不能保留上一句的颜色
     if (m_index >= 0 && m_index < m_ui.list->count()) {
         if (auto *previous = m_ui.list->item(m_index))
             previous->setForeground(QBrush());
     }
 
     m_index = index;
-    applyHighlight();
+    if (index >= 0)
+        applyHighlight();
 }
 
 void LyricsController::showPanel()

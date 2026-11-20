@@ -178,13 +178,17 @@ QString normalizeYear(const QString &raw)
     return text;
 }
 
-/// 协议相对地址（//i0.hdslb.com/...）补成 https
-QUrl normalizeUrl(const QString &raw)
+/// 协议相对地址（//i0.hdslb.com/...）补成 https；相对地址按搜索请求的最终 URL 解析
+QUrl normalizeUrl(const QString &raw, const QUrl &base = QUrl())
 {
     const QString text = raw.trimmed();
-    if (text.startsWith(QStringLiteral("//")))
-        return QUrl(QStringLiteral("https:") + text);
-    return QUrl(text);
+    if (text.isEmpty())
+        return QUrl();
+    QUrl url = text.startsWith(QStringLiteral("//")) ? QUrl(QStringLiteral("https:") + text)
+                                                      : QUrl(text);
+    if (url.isRelative() && !url.isEmpty() && base.isValid())
+        url = base.resolved(url);
+    return url;
 }
 
 /// JSON 模板里的 {keyword} 必须转义引号/反斜杠，不能再做百分号编码，
@@ -246,6 +250,9 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
     m_keyword = keyword;
     m_limit = limit > 0 ? limit : 20;
     m_done = false;
+    m_nextDetail = 0;
+    m_activeDetails = 0;
+    m_detailBuckets.clear();
 
     if (m_http == nullptr) {
         emit finished(m_config.id, {}, 0, tr("网络模块未就绪"));
@@ -300,7 +307,6 @@ void ConfigSearchProvider::onReplyFinished()
 {
     if (m_done)
         return;
-    m_done = true;
 
     QNetworkReply *reply = m_reply.data();
     m_reply = nullptr;
@@ -308,6 +314,7 @@ void ConfigSearchProvider::onReplyFinished()
         emit finished(m_config.id, {}, 0, tr("响应丢失"));
         return;
     }
+    m_baseUrl = reply->url();
     reply->deleteLater();
 
     if (!HttpClient::isHttpSuccess(reply)) {
@@ -371,8 +378,10 @@ void ConfigSearchProvider::onReplyFinished()
         base.type = m_config.mediaType;
         base.title = cleanText(vars.value(QStringLiteral("title")));
         base.artist = cleanText(vars.value(QStringLiteral("artist")));
-        base.lyricUrl = QUrl(mapString(node, m_config.fields, QStringLiteral("lyricUrl"), vars));
-        base.webUrl = QUrl(mapString(node, m_config.fields, QStringLiteral("webUrl"), vars));
+        base.lyricUrl = normalizeUrl(mapString(node, m_config.fields,
+                                                QStringLiteral("lyricUrl"), vars), m_baseUrl);
+        base.webUrl = normalizeUrl(mapString(node, m_config.fields,
+                                              QStringLiteral("webUrl"), vars), m_baseUrl);
         base.sourceId = m_config.id;
         base.headers = m_config.headers;
         if (!m_config.cookie.isEmpty())
@@ -380,7 +389,7 @@ void ConfigSearchProvider::onReplyFinished()
         base.online = true;
         // 影片展示字段：没有对应配置就留空，列表会自动跳过
         base.posterUrl = normalizeUrl(mapString(node, m_config.fields,
-                                                QStringLiteral("posterUrl"), vars));
+                                                QStringLiteral("posterUrl"), vars), m_baseUrl);
         base.year = normalizeYear(mapString(node, m_config.fields, QStringLiteral("year"), vars));
         base.area = cleanText(mapString(node, m_config.fields, QStringLiteral("area"), vars));
         base.genre = cleanText(mapString(node, m_config.fields, QStringLiteral("genre"), vars));
@@ -394,7 +403,7 @@ void ConfigSearchProvider::onReplyFinished()
         }
 
         if (!stream.trimmed().isEmpty()) {
-            appendItem(base, stream);
+            m_result += buildItems(base, stream);
             continue;
         }
 
@@ -409,25 +418,28 @@ void ConfigSearchProvider::onReplyFinished()
         }
     }
 
-    m_detailIndex = 0;
-    if (m_pendingIds.isEmpty())
+    if (m_pendingIds.isEmpty()) {
         finishSearch();
-    else
-        startNextDetail();
+        return;
+    }
+    // 每条详情一个结果槽，完成顺序不同也不影响最终列表顺序
+    m_detailBuckets.resize(m_pendingIds.size());
+    launchDetails();
 }
 
-void ConfigSearchProvider::appendItem(const MediaItem &base, const QString &stream)
+QVector<MediaItem> ConfigSearchProvider::buildItems(const MediaItem &base, const QString &stream)
 {
+    QVector<MediaItem> items;
     if (m_config.streamKind == QLatin1String("episodes")) {
         // 一个结果 = 一整部剧/片：按剧集拆成多条，标题带上集名区分
         const QVector<EpisodePart> parts = parseEpisodes(stream);
         if (parts.isEmpty()) {
             ++m_filtered;
-            return;
+            return items;
         }
         for (const EpisodePart &part : parts) {
             MediaItem item = base;
-            item.url = normalizeUrl(part.url);
+            item.url = normalizeUrl(part.url, m_baseUrl);
             if (!part.name.isEmpty() && part.name != base.title)
                 item.title = QStringLiteral("%1 · %2").arg(base.title, part.name);
             if (item.title.isEmpty())
@@ -436,78 +448,80 @@ void ConfigSearchProvider::appendItem(const MediaItem &base, const QString &stre
                 ++m_filtered;
                 continue;
             }
-            m_result.append(item);
+            items.append(item);
         }
-        return;
+        return items;
     }
 
     MediaItem item = base;
-    item.url = normalizeUrl(stream);
+    item.url = normalizeUrl(stream, m_baseUrl);
     if (item.title.isEmpty())
         item.title = item.url.fileName();
     if (item.url.isEmpty() || !item.url.isValid()) {
         ++m_filtered;
-        return;
+        return items;
     }
-    m_result.append(item);
+    items.append(item);
+    return items;
 }
 
-void ConfigSearchProvider::startNextDetail()
+void ConfigSearchProvider::launchDetails()
 {
-    if (m_detailIndex >= m_pendingIds.size()) {
+    constexpr int kDetailConcurrency = 3;
+
+    while (m_activeDetails < kDetailConcurrency && m_nextDetail < m_pendingIds.size()) {
+        const int index = m_nextDetail++;
+        if (m_http == nullptr) {
+            ++m_filtered;
+            continue;
+        }
+
+        QHash<QString, QString> vars;
+        vars.insert(QStringLiteral("keyword"), m_keyword);
+        vars.insert(QStringLiteral("id"), m_pendingIds.at(index));
+        vars.insert(QStringLiteral("title"), m_pendingTitles.value(index));
+        vars.insert(QStringLiteral("artist"), m_pendingArtists.value(index));
+
+        const QUrl requestUrl(renderTemplate(m_config.detailUrlTemplate, vars));
+        if (!requestUrl.isValid()) {
+            qCWarning(lcProvider) << m_config.id << "详情地址无效：" << requestUrl.toString();
+            ++m_filtered;
+            continue;
+        }
+
+        QHash<QString, QString> headers = m_config.headers;
+        if (!m_config.cookie.isEmpty())
+            headers.insert(QStringLiteral("Cookie"), m_config.cookie);
+
+        QNetworkReply *reply = m_http->get(requestUrl, QByteArray(), headers);
+        if (reply == nullptr) {
+            ++m_filtered;
+            continue;
+        }
+
+        ++m_activeDetails;
+        connect(reply, &QNetworkReply::finished, this, [this, reply, index] {
+            onDetailFinished(reply, index);
+        });
+    }
+
+    if (m_nextDetail >= m_pendingIds.size() && m_activeDetails == 0)
         finishSearch();
-        return;
-    }
-
-    const int index = m_detailIndex;
-    if (m_http == nullptr) {
-        ++m_filtered;
-        ++m_detailIndex;
-        startNextDetail();
-        return;
-    }
-
-    QHash<QString, QString> vars;
-    vars.insert(QStringLiteral("keyword"), m_keyword);
-    vars.insert(QStringLiteral("id"), m_pendingIds.at(index));
-    vars.insert(QStringLiteral("title"), m_pendingTitles.value(index));
-    vars.insert(QStringLiteral("artist"), m_pendingArtists.value(index));
-
-    const QUrl requestUrl(renderTemplate(m_config.detailUrlTemplate, vars));
-    if (!requestUrl.isValid()) {
-        qCWarning(lcProvider) << m_config.id << "详情地址无效：" << requestUrl.toString();
-        ++m_filtered;
-        ++m_detailIndex;
-        startNextDetail();
-        return;
-    }
-
-    QHash<QString, QString> headers = m_config.headers;
-    if (!m_config.cookie.isEmpty())
-        headers.insert(QStringLiteral("Cookie"), m_config.cookie);
-
-    m_detailReply = m_http->get(requestUrl, QByteArray(), headers);
-    if (m_detailReply.isNull()) {
-        ++m_filtered;
-        ++m_detailIndex;
-        startNextDetail();
-        return;
-    }
-    connect(m_detailReply.data(), &QNetworkReply::finished, this,
-            &ConfigSearchProvider::onDetailFinished);
 }
 
-void ConfigSearchProvider::onDetailFinished()
+void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index)
 {
-    QNetworkReply *reply = m_detailReply.data();
-    m_detailReply = nullptr;
-
-    const int index = m_detailIndex;
-    ++m_detailIndex;
+    if (m_done) {
+        if (reply != nullptr)
+            reply->deleteLater();
+        return;
+    }
+    if (m_activeDetails > 0)
+        --m_activeDetails;
 
     if (reply == nullptr) {
         ++m_filtered;
-        startNextDetail();
+        launchDetails();
         return;
     }
     reply->deleteLater();
@@ -515,7 +529,7 @@ void ConfigSearchProvider::onDetailFinished()
     if (!HttpClient::isHttpSuccess(reply)) {
         qCWarning(lcProvider) << m_config.id << "详情请求失败：" << HttpClient::describeError(reply);
         ++m_filtered;
-        startNextDetail();
+        launchDetails();
         return;
     }
 
@@ -525,7 +539,7 @@ void ConfigSearchProvider::onDetailFinished()
     if (parseError.error != QJsonParseError::NoError) {
         qCWarning(lcProvider) << m_config.id << "详情返回的不是 JSON：" << parseError.errorString();
         ++m_filtered;
-        startNextDetail();
+        launchDetails();
         return;
     }
 
@@ -543,16 +557,27 @@ void ConfigSearchProvider::onDetailFinished()
         mapString(node, m_config.detailFields, QStringLiteral("streamUrl"), vars);
     if (stream.trimmed().isEmpty()) {
         ++m_filtered;
-        startNextDetail();
+        launchDetails();
         return;
     }
 
-    appendItem(m_pendingBases.value(index), stream);
-    startNextDetail();
+    if (index >= 0 && index < m_detailBuckets.size())
+        m_detailBuckets[index] = buildItems(m_pendingBases.value(index), stream);
+    else
+        ++m_filtered;
+    launchDetails();
 }
 
 void ConfigSearchProvider::finishSearch()
 {
+    if (m_done)
+        return;
+    m_done = true;
+
+    // 详情结果按索引顺序并回主列表，保证并发完成后顺序与搜索命中一致
+    for (const QVector<MediaItem> &bucket : m_detailBuckets)
+        m_result += bucket;
+
     qCInfo(lcProvider) << m_config.id << "解析完成" << m_result.size() << "条，过滤"
                        << m_filtered << "条";
     const QVector<MediaItem> result = m_result;
@@ -562,5 +587,8 @@ void ConfigSearchProvider::finishSearch()
     m_pendingIds.clear();
     m_pendingTitles.clear();
     m_pendingArtists.clear();
+    m_detailBuckets.clear();
+    m_nextDetail = 0;
+    m_activeDetails = 0;
     emit finished(m_config.id, result, filtered, QString());
 }

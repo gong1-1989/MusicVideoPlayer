@@ -46,6 +46,23 @@ QHash<QString, QString> headersForRedirect(const QHash<QString, QString> &header
     return safe;
 }
 
+bool isSafeHeader(const QString &name, const QByteArray &value)
+{
+    if (name.isEmpty())
+        return false;
+    // 头名只允许 HTTP token 字符，禁止中文/空格/冒号，避免拼出畸形请求
+    for (const QChar ch : name) {
+        const ushort u = ch.unicode();
+        const bool alphaNum = (u >= '0' && u <= '9') || (u >= 'a' && u <= 'z')
+                              || (u >= 'A' && u <= 'Z');
+        const bool symbol = QStringLiteral("!#$%&'*+-.^_`|~").contains(ch);
+        if (!alphaNum && !symbol)
+            return false;
+    }
+    // 头值不允许 CR/LF/NUL，否则可被配置注入额外头或截断请求
+    return !value.contains('\r') && !value.contains('\n') && !value.contains('\0');
+}
+
 QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &extra)
 {
     QNetworkRequest request(url);
@@ -71,6 +88,10 @@ QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &ext
     for (auto it = extra.cbegin(); it != extra.cend(); ++it) {
         const QString key = it.key();
         const QByteArray value = it.value().toUtf8();
+        if (!isSafeHeader(key, value)) {
+            qCWarning(lcHttp) << "忽略非法请求头：" << key;
+            continue;
+        }
         if (key.compare(QLatin1String("User-Agent"), Qt::CaseInsensitive) == 0) {
             request.setHeader(QNetworkRequest::UserAgentHeader, it.value());
             continue;

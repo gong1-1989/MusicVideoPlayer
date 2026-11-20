@@ -177,6 +177,14 @@ void PlaybackController::previous()
         playRow(0);
         return;
     }
+    // 随机模式下“上一首”也随机，和 next() 保持一致，不再退化成顺序上一首
+    if (m_mode == Mode::Random && count > 1) {
+        int row = m_row;
+        while (row == m_row)
+            row = int(QRandomGenerator::global()->bounded(count));
+        playRow(row);
+        return;
+    }
     playRow(m_row == 0 ? count - 1 : m_row - 1);
 }
 

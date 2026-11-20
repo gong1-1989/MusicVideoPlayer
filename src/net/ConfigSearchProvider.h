@@ -27,11 +27,11 @@ public:
 private:
     void onReplyFinished();
 
-    // 二次解析：搜索命中后逐条取详情换直链（串行，避免一口气打出几十个请求）
-    void startNextDetail();
-    void onDetailFinished();
+    // 二次解析：搜索命中后取详情换直链，最多 3 路并发；结果按原索引缓存保证顺序
+    void launchDetails();
+    void onDetailFinished(QNetworkReply *reply, int index);
     void finishSearch();
-    void appendItem(const MediaItem &base, const QString &stream);
+    QVector<MediaItem> buildItems(const MediaItem &base, const QString &stream);
 
     SourceConfig m_config;
     HttpClient *m_http;
@@ -39,6 +39,7 @@ private:
     QString m_keyword;
     int m_limit = 20;
     bool m_done = false;
+    QUrl m_baseUrl;
 
     QVector<MediaItem> m_result;
     int m_filtered = 0;
@@ -47,8 +48,9 @@ private:
     QVector<QString> m_pendingIds;
     QVector<QString> m_pendingTitles;
     QVector<QString> m_pendingArtists;
-    int m_detailIndex = 0;
-    QPointer<QNetworkReply> m_detailReply;
+    int m_nextDetail = 0;
+    int m_activeDetails = 0;
+    QVector<QVector<MediaItem>> m_detailBuckets;
 };
 
 #endif // CONFIGSEARCHPROVIDER_H

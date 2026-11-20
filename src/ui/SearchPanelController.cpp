@@ -232,7 +232,12 @@ void SearchPanelController::setupUi()
     if (sizeIndex >= 0)
         m_ui.pageSizeCombo->setCurrentIndex(sizeIndex);
     else
+    {
+        // 旧配置可能存了下拉里没有的条数（例如 200），回落到第一项并写回，
+        // 避免界面显示 10 条、设置里却仍是 200 的不一致
         m_pageSize = m_ui.pageSizeCombo->currentData().toInt();
+        AppSettings::setSearchPageSize(m_pageSize);
+    }
 
     // 还没搜索过：整块搜索列表先折叠起来，省下高度给播放列表
     setAreaVisible(false);

@@ -30,6 +30,9 @@ SearchCoordinator::SearchCoordinator(SourceRegistry *registry, HttpClient *http,
     , m_registry(registry)
     , m_http(http)
 {
+    m_globalTimer = new QTimer(this);
+    m_globalTimer->setSingleShot(true);
+    connect(m_globalTimer, &QTimer::timeout, this, &SearchCoordinator::onGlobalTimeout);
 }
 
 void SearchCoordinator::search(const QString &keyword, int limitPerSource)
@@ -64,7 +67,10 @@ void SearchCoordinator::search(const QString &keyword, int limitPerSource)
 
     emit searchStarted();
     m_elapsed.start();
-    qCInfo(lcSearch) << "并发搜索开始：" << m_total << "个源，关键词" << keyword;
+    const int budget = globalBudgetForLimit();
+    qCInfo(lcSearch) << "并发搜索开始：" << m_total << "个源，关键词" << keyword
+                     << "全局预算" << budget << "ms";
+    m_globalTimer->start(budget);
     startAll();
 }
 
@@ -136,6 +142,13 @@ int SearchCoordinator::timeoutForSource(const SourceConfig &config) const
                     : kSourceTimeoutMs;
 }
 
+int SearchCoordinator::globalBudgetForLimit() const
+{
+    // 总预算随条数放大：20 条约 18 秒、50 条约 33 秒。
+    // 全源并发时总耗时取决于最慢的源，这里兜住“个别源迟迟不回调”的整体收尾。
+    return qBound(12000, 8000 + m_limit * 500, 45000);
+}
+
 int SearchCoordinator::taskIndexFor(SearchProviderBase *provider) const
 {
     for (int i = 0; i < m_tasks.size(); ++i) {
@@ -175,6 +188,36 @@ void SearchCoordinator::onSourceTimeout(SearchProviderBase *provider)
 
     if (!m_launching && m_done >= m_total)
         finishSearch();
+}
+
+void SearchCoordinator::onGlobalTimeout()
+{
+    if (!m_busy)
+        return;
+
+    const QVector<SourceTask> pending = m_tasks;
+    m_tasks.clear();
+    for (const SourceTask &task : pending) {
+        if (task.sourceIndex >= 0 && task.sourceIndex < m_errors.size()
+            && m_errors.at(task.sourceIndex).isEmpty()) {
+            m_errors[task.sourceIndex] =
+                QStringLiteral("%1（整体超过 %2 秒，已跳过）")
+                    .arg(task.name)
+                    .arg(globalBudgetForLimit() / 1000);
+        }
+        if (task.timer != nullptr) {
+            task.timer->stop();
+            task.timer->deleteLater();
+        }
+        if (task.provider != nullptr) {
+            disconnect(task.provider, nullptr, this, nullptr);
+            task.provider->deleteLater();
+        }
+    }
+    m_done = m_total;
+    qCWarning(lcSearch) << "全局预算用尽，跳过未完成源" << pending.size() << "个";
+    emit searchPartial(mergedItems(), mergedFiltered(), m_done, m_total);
+    finishSearch();
 }
 
 void SearchCoordinator::onProviderFinished(SearchProviderBase *provider,
@@ -241,6 +284,8 @@ void SearchCoordinator::finishSearch()
     if (!m_busy)
         return;
 
+    if (m_globalTimer != nullptr)
+        m_globalTimer->stop();
     m_busy = false;
     const QVector<MediaItem> items = mergedItems();
     const int filtered = mergedFiltered();
@@ -253,6 +298,8 @@ void SearchCoordinator::finishSearch()
 
 void SearchCoordinator::cancel()
 {
+    if (m_globalTimer != nullptr)
+        m_globalTimer->stop();
     const QVector<SourceTask> tasks = m_tasks;
     m_tasks.clear();
     for (const SourceTask &task : tasks) {
