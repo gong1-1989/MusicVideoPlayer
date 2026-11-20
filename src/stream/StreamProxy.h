@@ -6,6 +6,7 @@
 #include <QList>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QSharedPointer>
 #include <QString>
 #include <QUrl>
@@ -16,6 +17,7 @@ class HttpClient;
 class QTcpServer;
 class QTcpSocket;
 class QNetworkReply;
+class QTimer;
 
 /// 本地回环 HTTP 代理。
 ///
@@ -44,6 +46,17 @@ public:
     QUrl proxyUrlFor(const QUrl &upstream,
                      const QHash<QString, QString> &headers = QHash<QString, QString>());
 
+    /// 深拖动前调用：按播放列表里记录的分片时长，把目标时间映射成分片序号，
+    /// 在 FFmpeg 真正 seek 之前先把目标附近的分片排进预取队列。
+    /// 必须在代理线程调用；只登记任务，不会阻塞等待下载。
+    void prefetchForSeek(const QUrl &playlistUrl, const QHash<QString, QString> &headers,
+                         qint64 targetMs);
+
+    /// 正常播放时调用：按当前位置向后预取少量分片，避免下一片才开始拉网络。
+    /// 必须在代理线程调用。
+    void prefetchForPosition(const QUrl &playlistUrl, const QHash<QString, QString> &headers,
+                             qint64 positionMs);
+
 signals:
     /// 上游 302 落到 /404 或返回的不是音视频，通常是版权/付费/登录限制。
     void sourceUnavailable(const QUrl &upstream, const QString &contentType);
@@ -64,9 +77,28 @@ private:
     /// 上游忽略 Range 时，拖动请求由这里的缓冲区切片返回 206。
     struct CacheEntry;
 
+    struct PlaylistInfo
+    {
+        QUrl source;
+        QList<QUrl> segments;
+        QList<qint64> starts;
+        qint64 totalMs = 0;
+        qint64 lastUsedMs = 0;
+        bool prefetchable = false;
+    };
+
+    struct PrefetchJob
+    {
+        QUrl upstream;
+        QHash<QString, QString> headers;
+        QString cacheKey;
+        qint64 generation = 0;
+        int index = -1;
+    };
+
     void handleClient(QTcpSocket *client, const QByteArray &payload);
     void attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
-    void attachPlaylist(QTcpSocket *client, QNetworkReply *reply, const QUrl &playlistUrl,
+    void attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
                         const QHash<QString, QString> &headers);
     void flushUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
 
@@ -85,6 +117,21 @@ private:
 
     QByteArray buildCacheHead(const CacheEntry &entry, int status, qint64 start, qint64 end) const;
     static bool parseRange(const QString &value, qint64 total, qint64 *start, qint64 *end);
+    static QString cacheKeyFor(const QUrl &upstream, const QHash<QString, QString> &headers);
+
+    /// 解析原始 m3u8，记录每个媒体分片的起始时间和地址；只处理完整分片播放列表。
+    void rememberPlaylist(const QByteArray &body, const QUrl &playlistUrl,
+                          const QHash<QString, QString> &headers);
+    int segmentIndexAt(const PlaylistInfo &info, qint64 positionMs) const;
+    const PlaylistInfo *playlistFor(const QUrl &playlistUrl,
+                                    const QHash<QString, QString> &headers) const;
+
+    void enqueuePrefetch(const QUrl &playlistUrl, const QHash<QString, QString> &headers,
+                         int firstIndex, int lastIndex, qint64 generation);
+    void startNextPrefetch();
+    void cancelPrefetch();
+    void finishPrefetch(const QString &cacheKey, QNetworkReply *reply, qint64 generation);
+    void onPrefetchReply(QNetworkReply *reply, const PrefetchJob &job);
 
     void replyError(QTcpSocket *client, int status, const QString &reason);
 
@@ -109,6 +156,21 @@ private:
     QTcpServer *m_server;
     QHash<QString, Upstream> m_tokens;
     QHash<QString, QSharedPointer<CacheEntry>> m_cache;
+    QHash<QString, QSharedPointer<PlaylistInfo>> m_playlists;
+    QString m_lastPlaylistKey;
+
+    QList<PrefetchJob> m_prefetchQueue;
+    QHash<QString, QNetworkReply *> m_prefetchReplies;
+    QHash<QString, qint64> m_prefetchStartedMs;
+    QTimer *m_seekPrefetchTimer = nullptr;
+    QString m_prefetchPlaylistKey;
+    qint64 m_prefetchGeneration = 0;
+    qint64 m_seekTargetMs = -1;
+    int m_prefetchActive = 0;
+    int m_prefetchConcurrency = 2;
+    bool m_seekPrefetchActive = false;
+    qint64 m_prefetchDisabledUntilMs = 0;
+
     std::atomic_bool m_listening{false};
     std::atomic<int> m_port{0};
 };

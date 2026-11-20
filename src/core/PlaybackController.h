@@ -85,6 +85,8 @@ private:
     /// 代理发现上游不是音视频时记下的原因，用来替代播放器含糊的报错
     QString m_unavailableReason;
     int m_consecutiveErrors = 0;
+    /// 上一次向代理提交正常播放预取的位置，避免每个 positionChanged 都重复排队
+    qint64 m_lastPrefetchPosition = -1;
 };
 
 #endif // PLAYBACKCONTROLLER_H

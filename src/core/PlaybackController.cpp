@@ -43,6 +43,24 @@ PlaybackController::PlaybackController(QObject *parent)
 
     connect(m_player, &QMediaPlayer::positionChanged,
             this, &PlaybackController::positionChanged);
+    connect(m_player, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
+        if (!m_proxyReady || m_proxy == nullptr || !hasCurrentItem())
+            return;
+        const MediaItem item = currentItem();
+        if (!item.online
+            || !item.url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive))
+            return;
+        // 每 3 秒提交一次就够了；分片时长通常 3-7 秒，太频繁只会反复覆盖队列。
+        if (m_lastPrefetchPosition >= 0 && qAbs(position - m_lastPrefetchPosition) < 3000)
+            return;
+        m_lastPrefetchPosition = position;
+        QMetaObject::invokeMethod(
+            m_proxy,
+            [proxy = m_proxy, url = item.url, headers = item.headers, position] {
+                proxy->prefetchForPosition(url, headers, position);
+            },
+            Qt::QueuedConnection);
+    });
     connect(m_player, &QMediaPlayer::durationChanged,
             this, &PlaybackController::durationChanged);
     connect(m_player, &QMediaPlayer::playbackStateChanged,
@@ -150,6 +168,7 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
 
     m_row = row;
     m_unavailableReason.clear();
+    m_lastPrefetchPosition = -1;
 
     // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
     // 本地文件直接用 file:// 播放。
@@ -233,8 +252,24 @@ void PlaybackController::previous()
 
 void PlaybackController::seek(qint64 ms)
 {
-    if (hasCurrentItem())
-        m_player->setPosition(ms);
+    if (!hasCurrentItem())
+        return;
+
+    const MediaItem item = currentItem();
+    // 在 setPosition 之前把 seek 目标交给代理：代理可以先把 FFmpeg 将要回退读取的
+    // 那组分片排进队列，等 FFmpeg 发请求时直接命中缓存，而不是等它逐片去拉网络。
+    if (m_proxyReady && m_proxy != nullptr && item.online
+        && item.url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive)) {
+        QMetaObject::invokeMethod(
+            m_proxy,
+            [proxy = m_proxy, url = item.url, headers = item.headers, ms] {
+                proxy->prefetchForSeek(url, headers, ms);
+            },
+            Qt::BlockingQueuedConnection);
+        m_lastPrefetchPosition = -1;
+    }
+
+    m_player->setPosition(ms);
 }
 
 void PlaybackController::setMode(Mode mode)
