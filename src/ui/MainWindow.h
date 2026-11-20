@@ -5,7 +5,6 @@
 #include "media/MediaItem.h"
 
 #include <QMainWindow>
-#include <QPointer>
 #include <QStringList>
 
 class PlaylistModel;
@@ -15,9 +14,9 @@ class SearchPanelController;
 class FullscreenController;
 class PanelOverlayController;
 class LyricsController;
+class DownloadController;
 class SourceRegistry;
 class HttpClient;
-class DownloadTask;
 class QCloseEvent;
 class QResizeEvent;
 
@@ -59,7 +58,6 @@ private:
 
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
-    void downloadItem(const MediaItem &item);
     void clearPlaybackUi();
 
     void refreshModeButton();
@@ -72,6 +70,7 @@ private:
     FullscreenController *m_fullscreen = nullptr;
     PanelOverlayController *m_panels = nullptr;
     LyricsController *m_lyrics = nullptr;
+    DownloadController *m_downloads = nullptr;
     PlaybackController *m_player;
     PlaylistController *m_playlists = nullptr;
     PlaylistModel *m_musicModel = nullptr;
@@ -79,7 +78,6 @@ private:
 
     bool m_userSeeking = false;
     QString m_lastDir;
-    QPointer<DownloadTask> m_download;
 };
 
 #endif // MAINWINDOW_H

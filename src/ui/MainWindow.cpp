@@ -2,12 +2,12 @@
 #include "ui_MainWindow.h"
 
 #include "core/PlaylistModel.h"
-#include "download/DownloadTask.h"
 #include "net/HttpClient.h"
 #include "net/SearchCoordinator.h"
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
 #include "settings/WindowPreset.h"
+#include "ui/DownloadController.h"
 #include "ui/FullscreenController.h"
 #include "ui/LyricsController.h"
 #include "ui/PanelOverlayController.h"
@@ -219,6 +219,13 @@ MainWindow::MainWindow(QWidget *parent)
     }
     m_coordinator = new SearchCoordinator(m_registry, m_http, this);
 
+    // 下载对话框、HLS 后缀处理、任务进度与结果提示交给控制器
+    m_downloads = new DownloadController(m_http, this, this);
+    connect(m_downloads, &DownloadController::statusMessage, this,
+            [this](const QString &text) { ui->label_status->setText(text); });
+    connect(m_downloads, &DownloadController::lastDirChanged, this,
+            [this](const QString &dir) { m_lastDir = dir; });
+
     // 搜索面板的模型、委托、分页和右键菜单全部由控制器持有
     SearchPanelUi searchUi;
     searchUi.list = ui->list_search;
@@ -238,8 +245,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::playSearchItem);
     connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
             this, &MainWindow::addSearchItemToPlaylist);
-    connect(m_searchPanel, &SearchPanelController::downloadRequested,
-            this, &MainWindow::downloadItem);
+    connect(m_searchPanel, &SearchPanelController::downloadRequested, this,
+            [this](const MediaItem &item) { m_downloads->download(item, m_lastDir); });
 
     // 播放列表模型、持久化、右键菜单和本地导入统一交给控制器
     PlaylistUi playlistUi;
@@ -639,56 +646,4 @@ void MainWindow::clearPlaybackUi()
     m_lyrics->clear();
 }
 
-void MainWindow::downloadItem(const MediaItem &item)
-{
-    if (!item.online) {
-        ui->label_status->setText(tr("本地文件无需下载"));
-        return;
-    }
-
-    const bool hls = DownloadTask::looksLikeHls(item.url);
-    const QString suffix = hls ? QStringLiteral("ts")
-                               : (item.type == MediaType::Video ? QStringLiteral("mp4")
-                                                                : QStringLiteral("mp3"));
-    const QString filter = hls ? tr("视频文件 (*.ts *.mp4)")
-                               : tr("媒体文件 (*.%1)").arg(suffix);
-    const QString suggested =
-        QDir(m_lastDir).filePath(DownloadTask::sanitizeFileName(item.displayName(), suffix));
-    const QString target = QFileDialog::getSaveFileName(this, tr("保存文件"), suggested, filter);
-    if (target.isEmpty())
-        return;
-
-    m_lastDir = QFileInfo(target).absolutePath();
-    QString finalTarget = target;
-    if (hls) {
-        if (!finalTarget.endsWith(QLatin1String(".ts"), Qt::CaseInsensitive)
-            && !finalTarget.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive)) {
-            finalTarget += QLatin1String(".ts");
-        }
-    } else if (!finalTarget.endsWith(QStringLiteral(".") + suffix, Qt::CaseInsensitive)) {
-        finalTarget += QStringLiteral(".") + suffix;
-    }
-
-    qCInfo(lcWindow) << "开始下载" << item.displayName() << "到" << finalTarget
-                     << (hls ? "（HLS 分片合并）" : "");
-    auto *task = DownloadTask::start(m_http, item.url, finalTarget, item.headers, this);
-    m_download = task;
-
-    connect(task, &DownloadTask::progress, this, [this](qint64 received, qint64 total) {
-        if (total > 0)
-            ui->label_status->setText(tr("下载中 %1%").arg(static_cast<int>(received * 100 / total)));
-        else
-            ui->label_status->setText(tr("下载中 %1 KB").arg(received / 1024));
-    });
-    connect(task, &DownloadTask::succeeded, this, [this](const QString &path) {
-        ui->label_status->setText(tr("下载完成：%1").arg(QDir::toNativeSeparators(path)));
-    });
-    connect(task, &DownloadTask::failed, this, [this](const QString &message) {
-        ui->label_status->setText(tr("下载失败：%1").arg(message));
-    });
-    connect(task, &DownloadTask::finished, this, [this, task] {
-        if (m_download == task)
-            m_download.clear();
-    });
-}
 
