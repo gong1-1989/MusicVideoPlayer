@@ -16,8 +16,11 @@
 #include <QStringList>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimer>
 
 #include <algorithm>
+#include <limits>
+#include <utility>
 
 Q_LOGGING_CATEGORY(lcProxy, "mvp.stream")
 
@@ -27,6 +30,19 @@ const char *const kHeaderSent = "proxyHeadersSent";
 const char *const kHandled = "proxyHandled";
 const char *const kBuffer = "proxyRequestBuffer";
 const char *const kMethod = "proxyMethod";
+const char *const kCacheNext = "proxyCacheNext";
+const char *const kCacheEnd = "proxyCacheEnd";
+const char *const kCacheRequested = "proxyCacheRequested";
+
+// 上游忽略 Range 时，把整段音视频留在内存里按需切片。
+// 单条 128MB、总量 256MB，覆盖常见歌曲和短片，避免无上限吃内存。
+constexpr qint64 kMaxCacheEntryBytes = 128LL * 1024 * 1024;
+constexpr qint64 kMaxCacheTotalBytes = 256LL * 1024 * 1024;
+constexpr int kMaxCacheEntries = 6;
+constexpr int kCacheIdleMs = 30 * 60 * 1000;
+constexpr int kRangeWaitMs = 20 * 1000;
+constexpr qint64 kMaxSocketBacklog = 512LL * 1024;
+constexpr qint64 kCacheWriteChunk = 256LL * 1024;
 
 /// 网易云对无版权/付费歌曲不会返回错误码，而是 302 到 /404 再返回整页 HTML。
 /// 把 HTML 当音频流喂给 FFmpeg 只会得到含糊的 “Could not open file”，
@@ -93,6 +109,18 @@ QByteArray statusReason(int status)
 
 } // namespace
 
+struct StreamProxy::CacheEntry
+{
+    QByteArray data;
+    qint64 total = -1;
+    bool complete = false;
+    bool failed = false;
+    QByteArray contentType;
+    qint64 lastUsedMs = 0;
+    QNetworkReply *reply = nullptr;
+    QList<QPointer<QTcpSocket>> clients;
+};
+
 StreamProxy::StreamProxy(QObject *parent)
     : QObject(parent)
     , m_http(new HttpClient(this))
@@ -104,6 +132,14 @@ StreamProxy::StreamProxy(QObject *parent)
 StreamProxy::~StreamProxy()
 {
     m_server->close();
+    for (const auto &entry : std::as_const(m_cache)) {
+        if (entry->reply != nullptr) {
+            entry->reply->abort();
+            entry->reply->deleteLater();
+            entry->reply = nullptr;
+        }
+    }
+    m_cache.clear();
 }
 
 bool StreamProxy::start()
@@ -271,11 +307,31 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     const bool isHead = request.method == QLatin1String("HEAD");
     const bool hasRange = !request.range.isEmpty();
 
+    // 缓存键必须同时包含地址和鉴权头，避免同一 CDN 地址在不同 Referer/Cookie
+    // 下共用缓存，把 A 源的响应喂给 B 源。
+    QStringList headerKeys = headers.keys();
+    headerKeys.sort();
+    QString cacheKey = upstream.toString(QUrl::FullyEncoded);
+    for (const QString &key : std::as_const(headerKeys))
+        cacheKey += QLatin1Char('\x1f') + key + QLatin1Char('\x1e') + headers.value(key);
+
+    // 先查缓存：完整或已下载部分都能立刻回 206，拖动无需等上游。
+    if (!isHead) {
+        const QSharedPointer<CacheEntry> cached = m_cache.value(cacheKey);
+        if (!cached.isNull() && cached->total >= 0 && !cached->failed) {
+            if (serveFromCache(client, cached, cacheKey, request.range, hasRange)) {
+                qCDebug(lcProxy) << "流转缓存命中" << HttpClient::redactUrl(upstream)
+                                 << "已缓存" << cached->data.size() << "/" << cached->total;
+                return;
+            }
+        }
+    }
+
     // 由 HttpClient 手动跟随 302（含 https→http 降级），拿到可读的上游 reply。
     // 用 stream() 而不是 fetch()：响应头一到就能开始转发，不会先缓冲整段音视频。
     QPointer<QTcpSocket> guard(client);
     m_http->stream(upstream, range, headers,
-                   [this, guard, upstream, headers, isHead, hasRange](QNetworkReply *reply) {
+                   [this, guard, upstream, headers, isHead, hasRange, cacheKey, request](QNetworkReply *reply) {
         if (guard.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -305,11 +361,63 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
             return;
         }
 
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
         // HEAD/带 Range 的播放列表不做正文改写，避免破坏 206 语义；
         // 正常 GET 播放列表则把每个 URI 都映射到代理，绝对地址也不会绕过鉴权头。
-        if (!isHead && !hasRange && isPlaylistResponse(reply)) {
-            attachPlaylist(client, reply, upstream, headers);
-            return;
+        if (!isHead && isPlaylistResponse(reply)) {
+            if (!hasRange) {
+                attachPlaylist(client, reply, upstream, headers);
+                return;
+            }
+        } else if (!isHead && status == 200) {
+            // 只有“上游忽略 Range、返回完整 200”才值得缓存。上游已经回 206
+            // 说明它自己支持分段，保持原样透传即可，不额外占内存。
+            const QVariant lengthHeader = reply->header(QNetworkRequest::ContentLengthHeader);
+            const qint64 total =
+                lengthHeader.isValid() ? lengthHeader.toLongLong() : -1;
+            if (total > 0 && total <= kMaxCacheEntryBytes) {
+                const QSharedPointer<CacheEntry> existing = m_cache.value(cacheKey);
+                if (!existing.isNull() && existing->total >= 0 && !existing->failed) {
+                    if (serveFromCache(client, existing, cacheKey, request.range, hasRange)) {
+                        reply->abort();
+                        reply->deleteLater();
+                        return;
+                    }
+                }
+
+                auto entry = QSharedPointer<CacheEntry>::create();
+                entry->total = total;
+                entry->contentType =
+                    reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
+                entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+                entry->reply = reply;
+                m_cache.insert(cacheKey, entry);
+                qCInfo(lcProxy) << "流转缓存建立" << HttpClient::redactUrl(upstream)
+                                << total << "字节";
+
+                QPointer<QTcpSocket> clientGuard(client);
+                connect(reply, &QNetworkReply::readyRead, this,
+                        [this, cacheKey, entry, reply] {
+                            readIntoCache(cacheKey, entry, reply);
+                        });
+                connect(reply, &QNetworkReply::finished, this,
+                        [this, cacheKey, entry, reply] {
+                            finishCache(cacheKey, entry, reply);
+                        });
+                readIntoCache(cacheKey, entry, reply);
+                if (reply->isFinished())
+                    finishCache(cacheKey, entry, reply);
+                if (!clientGuard.isNull())
+                    serveFromCache(clientGuard.data(), entry, cacheKey, request.range, hasRange);
+                pruneCache(cacheKey);
+                return;
+            }
+
+            if (total > kMaxCacheEntryBytes) {
+                qCInfo(lcProxy) << "流转缓存跳过：文件过大" << HttpClient::redactUrl(upstream)
+                                << total << "字节";
+            }
         }
 
         attachUpstream(client, reply, upstream);
@@ -502,6 +610,373 @@ void StreamProxy::flushUpstream(QTcpSocket *client, QNetworkReply *reply, const 
     const QByteArray chunk = reply->readAll();
     if (!chunk.isEmpty())
         client->write(chunk);
+}
+
+bool StreamProxy::parseRange(const QString &value, qint64 total, qint64 *start, qint64 *end)
+{
+    if (start == nullptr || end == nullptr || total <= 0)
+        return false;
+
+    const QString trimmed = value.trimmed();
+    if (!trimmed.startsWith(QLatin1String("bytes="), Qt::CaseInsensitive))
+        return false;
+
+    const QString spec = trimmed.mid(6).trimmed();
+    // 多段 Range（bytes=0-1,5-6）无法用单个切片表达，返回 false 让
+    // serveFromCache 退化成 200 全量。
+    if (spec.contains(QLatin1Char(',')))
+        return false;
+
+    const int dash = spec.indexOf(QLatin1Char('-'));
+    if (dash < 0)
+        return false;
+
+    const QString left = spec.left(dash).trimmed();
+    const QString right = spec.mid(dash + 1).trimmed();
+
+    qint64 first = 0;
+    qint64 last = 0;
+    if (left.isEmpty()) {
+        // bytes=-N：最后 N 个字节
+        if (right.isEmpty())
+            return false;
+        bool ok = false;
+        const qint64 suffix = right.toLongLong(&ok);
+        if (!ok || suffix <= 0)
+            return false;
+        first = qMax<qint64>(0, total - suffix);
+        last = total - 1;
+    } else {
+        bool ok = false;
+        first = left.toLongLong(&ok);
+        if (!ok || first < 0)
+            return false;
+        if (right.isEmpty()) {
+            last = total - 1;
+        } else {
+            last = right.toLongLong(&ok);
+            if (!ok || last < first)
+                return false;
+            last = qMin(last, total - 1);
+        }
+    }
+
+    *start = first;
+    *end = last;
+    return true;
+}
+
+bool StreamProxy::serveFromCache(QTcpSocket *client, const QSharedPointer<CacheEntry> &entry,
+                                 const QString &cacheKey, const QString &rangeHeader,
+                                 bool hasRange)
+{
+    if (entry.isNull() || entry->total < 0)
+        return false;
+    if (client->state() != QAbstractSocket::ConnectedState)
+        return true;
+
+    qint64 start = 0;
+    qint64 end = entry->total - 1;
+    // 多段 Range 等无法用单段缓存表达的请求，退回“忽略 Range 的 200 全量”，
+    // 总比把客户端挂住好；播放器实际只会发单段。
+    if (hasRange && !parseRange(rangeHeader, entry->total, &start, &end)) {
+        hasRange = false;
+        start = 0;
+        end = entry->total - 1;
+    }
+
+    if (start >= entry->total || start > end) {
+        const QByteArray head = buildCacheHead(*entry, 416, start, end);
+        client->write(head);
+        client->disconnectFromHost();
+        return true;
+    }
+
+    if (entry->failed) {
+        replyError(client, 502, QStringLiteral("Cached stream unavailable"));
+        return true;
+    }
+
+    client->setProperty(kHeaderSent, false);
+    client->setProperty(kCacheNext, start);
+    client->setProperty(kCacheEnd, end);
+    client->setProperty(kCacheRequested, hasRange);
+    entry->clients.append(QPointer<QTcpSocket>(client));
+
+    connect(client, &QTcpSocket::bytesWritten, this,
+            [this, cacheKey, entry, client](qint64) {
+                if (client->state() != QAbstractSocket::ConnectedState)
+                    return;
+                const QSharedPointer<CacheEntry> current = m_cache.value(cacheKey);
+                if (!current.isNull() && current == entry)
+                    pumpCache(cacheKey, entry);
+            });
+    connect(client, &QTcpSocket::disconnected, this,
+            [entry, client] {
+                for (int i = entry->clients.size() - 1; i >= 0; --i) {
+                    if (entry->clients.at(i).isNull() || entry->clients.at(i).data() == client)
+                        entry->clients.removeAt(i);
+                }
+            });
+
+    // 缓存已经覆盖起始位置才发响应头；否则让播放器等数据到齐。
+    // 不在“无数据”时先发 206 头，是为了超时还能合法地回 504。
+    if (entry->data.size() > start || entry->complete) {
+        const int status = hasRange ? 206 : 200;
+        client->write(buildCacheHead(*entry, status, start, end));
+        client->setProperty(kHeaderSent, true);
+    }
+
+    QPointer<QTcpSocket> guard(client);
+    QTimer::singleShot(kRangeWaitMs, client, [this, guard, cacheKey, start] {
+        if (guard.isNull())
+            return;
+        QTcpSocket *socket = guard.data();
+        if (socket->state() != QAbstractSocket::ConnectedState)
+            return;
+        if (socket->property(kHeaderSent).toBool())
+            return;
+
+        const QSharedPointer<CacheEntry> current = m_cache.value(cacheKey);
+        if (!current.isNull() && current->data.size() > start) {
+            // 刚好在超时前拿到数据，补一次 pump 再让客户端继续读
+            pumpCache(cacheKey, current);
+            return;
+        }
+        if (!current.isNull() && current->complete && start >= current->total) {
+            socket->write(buildCacheHead(*current, 416, start, start));
+            socket->disconnectFromHost();
+            return;
+        }
+
+        qCWarning(lcProxy) << "流转缓存等待超时，起始字节" << start;
+        replyError(socket, 504, QStringLiteral("Range wait timeout"));
+    });
+
+    pumpCache(cacheKey, entry);
+    return true;
+}
+
+void StreamProxy::pumpCache(const QString &key, const QSharedPointer<CacheEntry> &entry)
+{
+    if (entry.isNull() || key.isEmpty())
+        return;
+    const QSharedPointer<CacheEntry> current = m_cache.value(key);
+    if (current.isNull() || current != entry)
+        return;
+
+    for (int i = entry->clients.size() - 1; i >= 0; --i) {
+        QTcpSocket *client = entry->clients.at(i).data();
+        if (client == nullptr || client->state() != QAbstractSocket::ConnectedState) {
+            entry->clients.removeAt(i);
+            continue;
+        }
+
+        if (entry->failed) {
+            if (!client->property(kHeaderSent).toBool())
+                replyError(client, 502, QStringLiteral("Cached stream unavailable"));
+            else
+                client->disconnectFromHost();
+            entry->clients.removeAt(i);
+            continue;
+        }
+
+        const qint64 next = client->property(kCacheNext).toLongLong();
+        const qint64 end = client->property(kCacheEnd).toLongLong();
+        const bool requested = client->property(kCacheRequested).toBool();
+
+        if (!client->property(kHeaderSent).toBool()) {
+            if (entry->data.size() <= next && !entry->complete)
+                continue;
+            const int status = requested ? 206 : 200;
+            client->write(buildCacheHead(*entry, status, next, end));
+            client->setProperty(kHeaderSent, true);
+        }
+
+        if (client->bytesToWrite() > kMaxSocketBacklog)
+            continue; // 播放器读得慢，等 bytesWritten 再续写
+
+        const qint64 remaining = end + 1 - next;
+        if (remaining <= 0) {
+            client->disconnectFromHost();
+            entry->clients.removeAt(i);
+            continue;
+        }
+
+        const qint64 available = entry->data.size();
+        if (available <= next) {
+            if (entry->complete) {
+                client->disconnectFromHost();
+                entry->clients.removeAt(i);
+            }
+            continue;
+        }
+
+        const qint64 chunk = qMin(qMin(remaining, available - next), kCacheWriteChunk);
+        client->write(entry->data.constData() + next, chunk);
+        client->setProperty(kCacheNext, next + chunk);
+        if (next + chunk > end) {
+            client->disconnectFromHost();
+            entry->clients.removeAt(i);
+        } else if (entry->complete && next + chunk >= available) {
+            client->disconnectFromHost();
+            entry->clients.removeAt(i);
+        }
+    }
+}
+
+void StreamProxy::readIntoCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
+                                QNetworkReply *reply)
+{
+    if (entry.isNull() || reply == nullptr || entry->reply != reply)
+        return;
+    if (entry->total < 0 || entry->data.size() >= entry->total)
+        return;
+
+    QByteArray chunk = reply->readAll();
+    if (chunk.isEmpty())
+        return;
+
+    const qint64 remain = entry->total - entry->data.size();
+    if (chunk.size() > remain)
+        chunk.truncate(static_cast<int>(remain));
+    entry->data.append(chunk);
+    entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+    if (entry->data.size() >= entry->total)
+        entry->complete = true;
+    pumpCache(key, entry);
+}
+
+void StreamProxy::finishCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
+                              QNetworkReply *reply)
+{
+    if (entry.isNull() || reply == nullptr || entry->reply != reply)
+        return;
+
+    readIntoCache(key, entry, reply);
+    if (entry->data.size() >= entry->total)
+        entry->complete = true;
+    if (!entry->complete) {
+        // 连接提前结束（断流、被 CDN 掐断）时不要把残缺数据当完整文件，
+        // 否则后续 Range 会拿到错误的 Content-Range 和 416。
+        qCWarning(lcProxy) << "流转缓存中断：" << reply->errorString()
+                           << "已缓存" << entry->data.size() << "/" << entry->total;
+        entry->failed = true;
+    }
+
+    entry->reply = nullptr;
+    entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+    reply->deleteLater();
+    pumpCache(key, entry);
+    pruneCache(key);
+}
+
+void StreamProxy::pruneCache(const QString &keepKey)
+{
+    if (m_cache.isEmpty())
+        return;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QStringList drop;
+    qint64 totalBytes = 0;
+    for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
+        const QSharedPointer<CacheEntry> &entry = it.value();
+        bool active = false;
+        for (const QPointer<QTcpSocket> &client : std::as_const(entry->clients)) {
+            if (!client.isNull() && client->state() == QAbstractSocket::ConnectedState) {
+                active = true;
+                break;
+            }
+        }
+        if (entry->failed && !active) {
+            drop.append(it.key());
+            continue;
+        }
+        if (!active && entry->lastUsedMs > 0 && entry->lastUsedMs < now - kCacheIdleMs)
+            drop.append(it.key());
+        totalBytes += entry->data.size();
+    }
+    for (const QString &key : std::as_const(drop)) {
+        const QSharedPointer<CacheEntry> entry = m_cache.value(key);
+        if (!entry.isNull())
+            totalBytes -= entry->data.size();
+        dropCacheEntry(key);
+    }
+
+    while (m_cache.size() > kMaxCacheEntries || totalBytes > kMaxCacheTotalBytes) {
+        QString oldestKey;
+        qint64 oldest = std::numeric_limits<qint64>::max();
+        for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
+            if (it.key() == keepKey)
+                continue;
+            bool active = false;
+            for (const QPointer<QTcpSocket> &client : std::as_const(it.value()->clients)) {
+                if (!client.isNull() && client->state() == QAbstractSocket::ConnectedState) {
+                    active = true;
+                    break;
+                }
+            }
+            if (active)
+                continue;
+            if (it.value()->lastUsedMs < oldest) {
+                oldest = it.value()->lastUsedMs;
+                oldestKey = it.key();
+            }
+        }
+        if (oldestKey.isEmpty())
+            break;
+        totalBytes -= m_cache.value(oldestKey)->data.size();
+        dropCacheEntry(oldestKey);
+    }
+}
+
+void StreamProxy::dropCacheEntry(const QString &key)
+{
+    const QSharedPointer<CacheEntry> entry = m_cache.take(key);
+    if (entry.isNull())
+        return;
+
+    if (entry->reply != nullptr) {
+        entry->reply->abort();
+        entry->reply->deleteLater();
+        entry->reply = nullptr;
+    }
+    for (const QPointer<QTcpSocket> &client : std::as_const(entry->clients)) {
+        if (!client.isNull() && client->state() == QAbstractSocket::ConnectedState)
+            client->disconnectFromHost();
+    }
+    entry->clients.clear();
+    entry->data.clear();
+    qCDebug(lcProxy) << "流转缓存淘汰" << key.left(32);
+}
+
+QByteArray StreamProxy::buildCacheHead(const CacheEntry &entry, int status, qint64 start,
+                                       qint64 end) const
+{
+    QByteArray head = "HTTP/1.1 " + QByteArray::number(status) + ' '
+                      + statusReason(status) + "\r\n";
+    QByteArray contentType = entry.contentType;
+    if (contentType.isEmpty())
+        contentType = QByteArrayLiteral("application/octet-stream");
+    head += "Content-Type: " + contentType + "\r\n";
+
+    if (status == 416) {
+        head += "Content-Range: bytes */" + QByteArray::number(entry.total) + "\r\n";
+        head += "Content-Length: 0\r\n";
+    } else {
+        const qint64 length =
+            status == 206 ? qMax<qint64>(0, end - start + 1) : qMax<qint64>(0, entry.total);
+        head += "Content-Length: " + QByteArray::number(length) + "\r\n";
+        if (status == 206) {
+            head += "Content-Range: bytes " + QByteArray::number(start) + '-'
+                    + QByteArray::number(end) + '/' + QByteArray::number(entry.total) + "\r\n";
+        }
+    }
+
+    head += "Accept-Ranges: bytes\r\n";
+    head += "Cache-Control: no-store\r\n";
+    head += "Connection: close\r\n\r\n";
+    return head;
 }
 
 QByteArray StreamProxy::buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const

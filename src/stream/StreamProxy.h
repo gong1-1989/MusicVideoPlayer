@@ -3,7 +3,10 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QList>
 #include <QObject>
+#include <QPointer>
+#include <QSharedPointer>
 #include <QString>
 #include <QUrl>
 
@@ -51,11 +54,32 @@ private:
         bool isValid = false;
     };
 
+    /// 一条上游 200 响应在本地内存里的副本。
+    /// 上游忽略 Range 时，拖动请求由这里的缓冲区切片返回 206。
+    struct CacheEntry;
+
     void handleClient(QTcpSocket *client, const QByteArray &payload);
     void attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
     void attachPlaylist(QTcpSocket *client, QNetworkReply *reply, const QUrl &playlistUrl,
                         const QHash<QString, QString> &headers);
     void flushUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
+
+    /// 命中缓存时接管该客户端并返回 true；条目本身无效时返回 false，
+    /// 让调用方回退到上游透传。无法用单段缓存表达的 Range 会在缓存内
+    /// 退化成 200 全量，不再回到上游。
+    bool serveFromCache(QTcpSocket *client, const QSharedPointer<CacheEntry> &entry,
+                        const QString &cacheKey, const QString &rangeHeader, bool hasRange);
+    void pumpCache(const QString &key, const QSharedPointer<CacheEntry> &entry);
+    void readIntoCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
+                       QNetworkReply *reply);
+    void finishCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
+                     QNetworkReply *reply);
+    void pruneCache(const QString &keepKey = QString());
+    void dropCacheEntry(const QString &key);
+
+    QByteArray buildCacheHead(const CacheEntry &entry, int status, qint64 start, qint64 end) const;
+    static bool parseRange(const QString &value, qint64 total, qint64 *start, qint64 *end);
+
     void replyError(QTcpSocket *client, int status, const QString &reason);
 
     /// 把 m3u8 里的相对/绝对分片、子播放列表、key、init 段改写成代理地址，
@@ -78,6 +102,7 @@ private:
     HttpClient *m_http;
     QTcpServer *m_server;
     QHash<QString, Upstream> m_tokens;
+    QHash<QString, QSharedPointer<CacheEntry>> m_cache;
 };
 
 #endif // STREAMPROXY_H

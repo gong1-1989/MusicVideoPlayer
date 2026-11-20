@@ -3,13 +3,136 @@
 #include "net/ConfigMapper.h"
 #include "net/HttpClient.h"
 #include "net/SourceConfig.h"
+#include "stream/StreamProxy.h"
 #include "util/TimeFormat.h"
 
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTest>
+#include <QTimer>
 #include <QUrlQuery>
+
+namespace {
+
+QByteArray proxyTestBody()
+{
+    QByteArray body;
+    body.resize(1000);
+    for (int i = 0; i < body.size(); ++i)
+        body[i] = char('a' + (i % 26));
+    return body;
+}
+
+/// 模拟“忽略 Range、永远返回 200 全量”的上游 CDN。
+/// 这是网易云等直链的常见行为，也是代理缓存要覆盖的核心场景。
+class RangeIgnoringServer : public QTcpServer
+{
+public:
+    explicit RangeIgnoringServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("responded").toBool())
+                        return;
+
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+
+                    ++requestCount;
+                    for (const QByteArray &line : pending.left(headEnd).split('\n')) {
+                        if (line.toLower().startsWith("range:"))
+                            lastRange = QString::fromUtf8(line.mid(6)).trimmed();
+                    }
+
+                    socket->setProperty("responded", true);
+                    QByteArray response = "HTTP/1.1 200 OK\r\n"
+                                          "Content-Type: audio/mpeg\r\n"
+                                          "Accept-Ranges: none\r\n"
+                                          "Content-Length: "
+                                          + QByteArray::number(body.size())
+                                          + "\r\nConnection: close\r\n\r\n" + body;
+                    socket->write(response);
+                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QByteArray body;
+    int requestCount = 0;
+    QString lastRange;
+};
+
+bool readProxyResponse(QTcpSocket *socket, QByteArray *head, QByteArray *body,
+                       int timeoutMs = 5000)
+{
+    QByteArray buffer;
+    int headEnd = -1;
+    qint64 expectedLength = 0;
+    bool done = false;
+
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+
+    auto consume = [&] {
+        buffer += socket->readAll();
+        if (headEnd < 0)
+            headEnd = buffer.indexOf("\r\n\r\n");
+        if (headEnd < 0)
+            return;
+
+        *head = buffer.left(headEnd + 4);
+        for (const QByteArray &line : head->split('\n')) {
+            if (line.toLower().startsWith("content-length:")) {
+                expectedLength = line.mid(15).trimmed().toLongLong();
+                break;
+            }
+        }
+        *body = buffer.mid(headEnd + 4);
+        if (body->size() >= expectedLength) {
+            body->truncate(int(expectedLength));
+            done = true;
+            loop.quit();
+        }
+    };
+
+    // 代理和 mock 上游都在本线程，必须跑事件循环才能让 QTcpServer/QNetworkAccessManager
+    // 收到连接；单纯 waitForReadyRead 只会等当前客户端 socket。
+    const QMetaObject::Connection readyConnection =
+        QObject::connect(socket, &QTcpSocket::readyRead, socket, consume);
+    const QMetaObject::Connection dropConnection =
+        QObject::connect(socket, &QTcpSocket::disconnected, socket, [&] {
+            consume();
+            loop.quit();
+        });
+
+    timeout.start(timeoutMs);
+    consume();
+    if (!done)
+        loop.exec();
+    consume();
+    QObject::disconnect(readyConnection);
+    QObject::disconnect(dropConnection);
+    return done;
+}
+
+} // namespace
 
 class CoreLogicTest : public QObject
 {
@@ -29,6 +152,7 @@ private slots:
     void configMapperReadsNestedPaths();
     void configMapperBoolRulesDoNotMixWithNumbers();
     void configMapperSplitsEpisodesAndResolvesUrls();
+    void streamProxySlicesRangeFromCache();
 };
 
 void CoreLogicTest::timeFormat()
@@ -321,6 +445,68 @@ void CoreLogicTest::configMapperSplitsEpisodesAndResolvesUrls()
 
     QCOMPARE(ConfigMapper::jsonEscape(QStringLiteral("a\"b\\c")),
              QStringLiteral("a\\\"b\\\\c"));
+}
+
+void CoreLogicTest::streamProxySlicesRangeFromCache()
+{
+    RangeIgnoringServer upstream;
+    upstream.body = proxyTestBody();
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QString upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/audio/test.mp3").arg(upstream.serverPort());
+    const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl));
+    QVERIFY(local.isValid());
+
+    auto fetch = [&local](const QByteArray &range, QByteArray *head, QByteArray *body) {
+        QTcpSocket socket;
+        socket.connectToHost(local.host(), quint16(local.port()));
+        if (!socket.waitForConnected(3000))
+            return false;
+
+        QByteArray request = "GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                             "Host: 127.0.0.1\r\n";
+        if (!range.isEmpty())
+            request += "Range: " + range + "\r\n";
+        request += "Connection: close\r\n\r\n";
+        socket.write(request);
+        socket.flush();
+        return readProxyResponse(&socket, head, body);
+    };
+
+    QByteArray head;
+    QByteArray body;
+
+    // 上游收到 Range 仍回 200 全量，代理必须自己切出第一段 206。
+    QVERIFY(fetch("bytes=0-99", &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QVERIFY(head.contains("Content-Range: bytes 0-99/1000"));
+    QCOMPARE(body, upstream.body.mid(0, 100));
+    QTRY_COMPARE_WITH_TIMEOUT(upstream.requestCount, 1, 3000);
+
+    // 第二段必须命中内存缓存，不能再打上游。
+    QVERIFY(fetch("bytes=200-299", &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QVERIFY(head.contains("Content-Range: bytes 200-299/1000"));
+    QCOMPARE(body, upstream.body.mid(200, 100));
+    QCOMPARE(upstream.requestCount, 1);
+
+    // bytes=-N：播放器 seek 到尾部时常见。
+    QVERIFY(fetch("bytes=-50", &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QVERIFY(head.contains("Content-Range: bytes 950-999/1000"));
+    QCOMPARE(body, upstream.body.mid(950, 50));
+    QCOMPARE(upstream.requestCount, 1);
+
+    // 起点越界必须 416，并且带完整长度，避免播放器无限重试或退化成整段重下。
+    QVERIFY(fetch("bytes=1000-", &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 416"), head.constData());
+    QVERIFY(head.contains("Content-Range: bytes */1000"));
+    QCOMPARE(body.size(), 0);
+    QCOMPARE(upstream.requestCount, 1);
 }
 
 QTEST_GUILESS_MAIN(CoreLogicTest)
