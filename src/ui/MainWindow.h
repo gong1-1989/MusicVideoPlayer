@@ -2,13 +2,11 @@
 #define MAINWINDOW_H
 
 #include "core/PlaybackController.h"
-#include "lyrics/LrcParser.h"
 #include "media/MediaItem.h"
 
 #include <QMainWindow>
 #include <QPointer>
 #include <QStringList>
-#include <QVector>
 
 class PlaylistModel;
 class PlaylistController;
@@ -16,8 +14,8 @@ class SearchCoordinator;
 class SearchPanelController;
 class FullscreenController;
 class PanelOverlayController;
+class LyricsController;
 class SourceRegistry;
-class LyricsService;
 class HttpClient;
 class DownloadTask;
 class QCloseEvent;
@@ -58,14 +56,12 @@ private:
     void saveSettings();
     void applySettings();
     void applyWindowPreset();
-    void highlightCurrentLyric();
 
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void downloadItem(const MediaItem &item);
     void clearPlaybackUi();
 
-    void updateLyrics(qint64 positionMs);
     void refreshModeButton();
 
     Ui::MainWindow *ui;
@@ -75,14 +71,12 @@ private:
     SearchPanelController *m_searchPanel = nullptr;
     FullscreenController *m_fullscreen = nullptr;
     PanelOverlayController *m_panels = nullptr;
-    LyricsService *m_lyrics;
+    LyricsController *m_lyrics = nullptr;
     PlaybackController *m_player;
     PlaylistController *m_playlists = nullptr;
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
 
-    QVector<LrcLine> m_lrcLines;
-    int m_lrcIndex = -1;
     bool m_userSeeking = false;
     QString m_lastDir;
     QPointer<DownloadTask> m_download;

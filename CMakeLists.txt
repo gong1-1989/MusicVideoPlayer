@@ -96,6 +96,8 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/FullscreenController.cpp
     src/ui/PanelOverlayController.h
     src/ui/PanelOverlayController.cpp
+    src/ui/LyricsController.h
+    src/ui/LyricsController.cpp
     src/ui/ThemeManager.h
     src/ui/ThemeManager.cpp
     src/ui/VideoSurface.h

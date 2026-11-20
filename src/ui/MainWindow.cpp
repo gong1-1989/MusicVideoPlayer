@@ -3,13 +3,13 @@
 
 #include "core/PlaylistModel.h"
 #include "download/DownloadTask.h"
-#include "lyrics/LyricsService.h"
 #include "net/HttpClient.h"
 #include "net/SearchCoordinator.h"
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
 #include "settings/WindowPreset.h"
 #include "ui/FullscreenController.h"
+#include "ui/LyricsController.h"
 #include "ui/PanelOverlayController.h"
 #include "ui/PlaylistController.h"
 #include "ui/SearchPanelController.h"
@@ -207,7 +207,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_http(new HttpClient(this))
     , m_registry(new SourceRegistry(this))
     , m_coordinator(nullptr)
-    , m_lyrics(new LyricsService(m_http, this))
     , m_player(new PlaybackController(this))
 {
     ui->setupUi(this);
@@ -263,6 +262,12 @@ MainWindow::MainWindow(QWidget *parent)
                     openLocalVideo();
             });
 
+    // 歌词加载、当前行高亮和歌词栏显隐由控制器统一处理
+    LyricsUi lyricsUi;
+    lyricsUi.panel = ui->panelLyrics;
+    lyricsUi.list = ui->list_lrc;
+    m_lyrics = new LyricsController(m_http, lyricsUi, this);
+
     // 全屏窗口与视频面搬运
     m_fullscreen = new FullscreenController(ui->videoWidget, ui->layout_videoStage, 16.0, this);
 
@@ -283,7 +288,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_player->mediaPlayer()->setVideoSink(ui->videoWidget->sink());
 
     // 歌词栏默认隐藏，只有播音乐时才让位出来
-    ui->panelLyrics->hide();
+    m_lyrics->hidePanel();
 
     // 自绘控件的几何参数：圆角半径与歌词渐隐高度不再散落在各处
     ui->videoStage->setCornerRadius(16.0);
@@ -294,7 +299,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
             [this] {
                 ThemeManager::instance().applyWindowChrome(this);
-                highlightCurrentLyric();
+                m_lyrics->refreshHighlight();
             });
 
     auto *settingsShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+,")), this);
@@ -354,7 +359,7 @@ void MainWindow::setupConnections()
         }
         ui->label_time->setText(TimeFormat::formatMs(position) + QStringLiteral(" / ")
                                 + TimeFormat::formatMs(m_player->duration()));
-        updateLyrics(position);
+        m_lyrics->updatePosition(position);
     });
     connect(m_player, &PlaybackController::durationChanged, this, [this](qint64 duration) {
         QSignalBlocker blocker(ui->slider_progress);
@@ -367,13 +372,13 @@ void MainWindow::setupConnections()
                 if (state == QMediaPlayer::StoppedState) {
                     // 停止后播放器不会再送新帧；不清掉的话上一部视频的最后一帧会一直留在面板上
                     ui->videoWidget->clearFrame();
-                    ui->panelLyrics->hide();
+                    m_lyrics->hidePanel();
                 } else {
                     // 新一次播放开始，允许视频面重新接收帧
                     ui->videoWidget->resumeFrames();
                     if (m_player->hasCurrentItem()
                         && m_player->currentItem().type == MediaType::Music)
-                        ui->panelLyrics->show();
+                        m_lyrics->showPanel();
                 }
             });
     connect(m_player, &PlaybackController::modeChanged, this, [this] { refreshModeButton(); });
@@ -383,9 +388,7 @@ void MainWindow::setupConnections()
                 ui->videoWidget->clearFrame();
                 ui->label_status->setText(tr("正在播放：%1").arg(item.displayName()));
 
-                // 歌词栏只在音乐播放时出现，视频不需要
-                ui->panelLyrics->setVisible(item.type == MediaType::Music);
-
+                // 歌词栏只在音乐播放时出现，视频不需要；歌词由控制器按当前项重新加载
                 if (item.type == MediaType::Music) {
                     ui->list_music->setCurrentIndex(m_musicModel->index(row));
                     ui->tab_media->setCurrentIndex(0);
@@ -394,33 +397,10 @@ void MainWindow::setupConnections()
                     ui->tab_media->setCurrentIndex(1);
                 }
 
-                m_lrcLines.clear();
-                m_lrcIndex = -1;
-                ui->list_lrc->clear();
-
-                if (item.lyricUrl.isLocalFile())
-                    m_lyrics->loadLocalFile(item.lyricUrl.toLocalFile());
-                else if (!item.lyricUrl.isEmpty())
-                    m_lyrics->load(item.lyricUrl);
+                m_lyrics->setCurrentItem(item);
             });
     connect(m_player, &PlaybackController::errorOccurred, this, [this](const QString &message) {
         ui->label_status->setText(tr("播放失败：%1").arg(message));
-    });
-
-    connect(m_lyrics, &LyricsService::lyricsReady, this, [this](const QVector<LrcLine> &lines) {
-        m_lrcLines = lines;
-        m_lrcIndex = -1;
-        ui->list_lrc->clear();
-        for (const LrcLine &line : lines) {
-            auto *item = new QListWidgetItem(line.text);
-            item->setTextAlignment(Qt::AlignCenter);
-            ui->list_lrc->addItem(item);
-        }
-        if (m_player->hasCurrentItem())
-            updateLyrics(m_player->position());
-    });
-    connect(m_lyrics, &LyricsService::lyricsFailed, this, [this](const QString &message) {
-        qCWarning(lcWindow) << "歌词加载失败：" << message;
     });
 
     connect(ui->list_music, &QAbstractItemView::doubleClicked, this,
@@ -518,7 +498,7 @@ void MainWindow::applySettings()
     // 侧栏 / 控制条的启动折叠策略改了要立刻生效
     m_panels->applyVisibility();
 
-    highlightCurrentLyric();
+    m_lyrics->refreshHighlight();
 }
 
 void MainWindow::on_btn_settings_clicked()
@@ -526,14 +506,6 @@ void MainWindow::on_btn_settings_clicked()
     SettingsDialog dialog(m_registry, m_http, this);
     if (dialog.exec() == QDialog::Accepted)
         applySettings();
-}
-
-void MainWindow::highlightCurrentLyric()
-{
-    if (m_lrcIndex < 0 || m_lrcIndex >= ui->list_lrc->count())
-        return;
-    if (auto *item = ui->list_lrc->item(m_lrcIndex))
-        item->setForeground(QBrush(ThemeManager::instance().current().accentColor));
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -664,9 +636,7 @@ void MainWindow::clearPlaybackUi()
     QSignalBlocker blocker(ui->slider_progress);
     ui->slider_progress->setValue(0);
     ui->label_time->setText(QStringLiteral("00:00 / 00:00"));
-    ui->list_lrc->clear();
-    m_lrcLines.clear();
-    m_lrcIndex = -1;
+    m_lyrics->clear();
 }
 
 void MainWindow::downloadItem(const MediaItem &item)
@@ -722,23 +692,3 @@ void MainWindow::downloadItem(const MediaItem &item)
     });
 }
 
-void MainWindow::updateLyrics(qint64 positionMs)
-{
-    if (m_lrcLines.isEmpty())
-        return;
-
-    const int index = LrcParser::indexAt(m_lrcLines, positionMs);
-    if (index == m_lrcIndex || index < 0)
-        return;
-
-    if (m_lrcIndex >= 0 && m_lrcIndex < ui->list_lrc->count()) {
-        if (auto *previous = ui->list_lrc->item(m_lrcIndex))
-            previous->setForeground(QBrush());
-    }
-
-    m_lrcIndex = index;
-    if (auto *current = ui->list_lrc->item(index)) {
-        current->setForeground(QBrush(ThemeManager::instance().current().accentColor));
-        ui->list_lrc->scrollToItem(current, QAbstractItemView::PositionAtCenter);
-    }
-}
