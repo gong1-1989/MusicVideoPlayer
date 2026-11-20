@@ -21,6 +21,7 @@ class SourceRegistry;
 class HttpClient;
 class QCloseEvent;
 class QResizeEvent;
+class QShowEvent;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -39,6 +40,7 @@ public:
 protected:
     void closeEvent(QCloseEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 private slots:
     void on_btn_fullscreen_clicked();
@@ -53,6 +55,10 @@ private:
     void clearPlaybackUi();
     /// 窄窗口下压缩控制条：收窄间距与按钮，避免“列表循环 / 全屏 / 音量”互相压字
     void updateControlBarLayout();
+    /// 显示后把窗口夹回当前屏幕可用区，避免 150% 下外框越界
+    void clampToAvailableScreen();
+    /// Qt 的 frameGeometry 不含 Windows 不可见缩放边框，最后用原生外框兜底
+    void clampNativeFrameToWorkArea();
 
     Ui::MainWindow *ui;
     HttpClient *m_http;

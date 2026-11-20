@@ -20,13 +20,23 @@
 #include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QLoggingCategory>
 #include <QMessageBox>
 #include <QModelIndex>
 #include <QResizeEvent>
+#include <QScreen>
 #include <QShortcut>
+#include <QShowEvent>
 #include <QTimer>
 #include <QWidget>
+
+#ifdef Q_OS_WIN
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
 
 Q_LOGGING_CATEGORY(lcWindow, "mvp.window")
 
@@ -230,6 +240,106 @@ void MainWindow::closeEvent(QCloseEvent *event)
     QMainWindow::closeEvent(event);
     // 关闭主窗后显式结束事件循环：避免独立全屏窗或异步播放对象让进程残留在后台。
     QCoreApplication::quit();
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+    if (!event->spontaneous())
+        QTimer::singleShot(0, this, &MainWindow::clampToAvailableScreen);
+}
+
+void MainWindow::clampToAvailableScreen()
+{
+    if (isFullScreen() || isMaximized() || isMinimized())
+        return;
+
+    QScreen *targetScreen = screen();
+    if (targetScreen == nullptr)
+        targetScreen = QGuiApplication::primaryScreen();
+    if (targetScreen == nullptr)
+        return;
+
+    const QRect available = targetScreen->availableGeometry();
+    QRect frame = frameGeometry();
+    if (available.contains(frame)) {
+        clampNativeFrameToWorkArea();
+        return;
+    }
+
+    // 外框比可用区还大时，先按标题栏/边框差值收缩客户区，再整体挪回屏内
+    const int frameExtraW = qMax(0, frame.width() - width());
+    const int frameExtraH = qMax(0, frame.height() - height());
+    const int targetW = qMin(width(), qMax(240, available.width() - frameExtraW));
+    const int targetH = qMin(height(), qMax(180, available.height() - frameExtraH));
+    const int oldW = width();
+    const int oldH = height();
+    if (targetW != oldW || targetH != oldH) {
+        resize(targetW, targetH);
+        // 窗口管理器可能延迟更新外框，尺寸真的变了就下一拍再夹一次
+        if (width() != oldW || height() != oldH) {
+            QTimer::singleShot(0, this, &MainWindow::clampToAvailableScreen);
+            return;
+        }
+    }
+
+    frame = frameGeometry();
+    int x = frame.x();
+    int y = frame.y();
+    if (frame.right() > available.right())
+        x -= frame.right() - available.right();
+    if (frame.bottom() > available.bottom())
+        y -= frame.bottom() - available.bottom();
+    if (frame.left() < available.left())
+        x += available.left() - frame.left();
+    if (frame.top() < available.top())
+        y += available.top() - frame.top();
+    if (x != frame.x() || y != frame.y())
+        move(x, y);
+
+    clampNativeFrameToWorkArea();
+}
+
+void MainWindow::clampNativeFrameToWorkArea()
+{
+#ifdef Q_OS_WIN
+    HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (hwnd == nullptr)
+        return;
+
+    RECT frame{};
+    if (!GetWindowRect(hwnd, &frame))
+        return;
+
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfo(monitor, &info))
+        return;
+
+    const RECT &work = info.rcWork;
+    const int width = frame.right - frame.left;
+    const int height = frame.bottom - frame.top;
+    const int maxWidth = work.right - work.left;
+    const int maxHeight = work.bottom - work.top;
+    const int targetW = qMin(width, maxWidth);
+    const int targetH = qMin(height, maxHeight);
+    int x = frame.left;
+    int y = frame.top;
+    if (x + targetW > work.right)
+        x = work.right - targetW;
+    if (y + targetH > work.bottom)
+        y = work.bottom - targetH;
+    if (x < work.left)
+        x = work.left;
+    if (y < work.top)
+        y = work.top;
+
+    if (x != frame.left || y != frame.top || targetW != width || targetH != height) {
+        SetWindowPos(hwnd, nullptr, x, y, targetW, targetH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+#endif
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
