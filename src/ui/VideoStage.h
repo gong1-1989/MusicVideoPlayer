@@ -6,7 +6,7 @@
 class VideoSurface;
 
 /// 视频舞台容器：给视频面描一条主题色圆角细边，并把圆角半径下发给视频面。
-/// 实际裁切由 VideoSurface 自己画，这里只负责"外壳"视觉。
+/// 视频本身由 QVideoWidget 原生窗口零拷贝显示，内层直角不再逐帧读回后自绘。
 class VideoStage : public QWidget
 {
     Q_OBJECT

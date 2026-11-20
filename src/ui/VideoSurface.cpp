@@ -1,60 +1,93 @@
 #include "ui/VideoSurface.h"
 
+#include <QEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QVBoxLayout>
 #include <QVideoFrame>
 #include <QVideoSink>
+#include <QVideoWidget>
 
 VideoSurface::VideoSurface(QWidget *parent)
     : QWidget(parent)
 {
     setObjectName(QStringLiteral("videoWidget"));
-    setAttribute(Qt::WA_OpaquePaintEvent, false);
+    setAttribute(Qt::WA_StyledBackground, false);
     setAutoFillBackground(false);
 
-    m_sink = new QVideoSink(this);
-    connect(m_sink, &QVideoSink::videoFrameChanged, this, &VideoSurface::onFrame);
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(1, 1, 1, 1);
+    layout->setSpacing(0);
+
+    m_videoWidget = new QVideoWidget(this);
+    m_videoWidget->setObjectName(QStringLiteral("videoView"));
+    // 视频按比例显示，黑边由 QVideoWidget 自己补，不再由 QPainter 算目标矩形
+    m_videoWidget->setAspectRatioMode(Qt::KeepAspectRatio);
+    m_videoWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // 交给原生视频窗口显示；Qt 不会再走 toImage 的 GPU 读回路径
+    m_videoWidget->hide();
+    layout->addWidget(m_videoWidget);
+
+    connect(m_videoWidget->videoSink(), &QVideoSink::videoFrameChanged, this,
+            &VideoSurface::onFrame);
+}
+
+QVideoSink *VideoSurface::sink() const
+{
+    return m_videoWidget != nullptr ? m_videoWidget->videoSink() : nullptr;
 }
 
 void VideoSurface::setCornerRadius(qreal radius)
 {
-    if (qFuzzyCompare(m_radius, radius))
-        return;
     m_radius = qMax(0.0, radius);
     update();
 }
 
 void VideoSurface::clearFrame()
 {
-    // 停播时 QVideoSink 仍可能排着最后一帧；只清 QImage 会被它立刻画回来
     m_framesBlocked = true;
-    m_image = QImage();
+    // 直接隐藏原生视频窗口，最后一帧不会继续留在舞台上
+    m_videoWidget->hide();
     update();
 }
 
 void VideoSurface::resumeFrames()
 {
     m_framesBlocked = false;
-}
-
-QSize VideoSurface::sizeHint() const
-{
-    return QSize(640, 360);
+    // 等首帧到达再显示视频窗口，避免上一帧先闪出来
 }
 
 void VideoSurface::onFrame(const QVideoFrame &frame)
 {
     if (m_framesBlocked)
         return;
-    if (!frame.isValid()) {
+    if (!frame.isValid())
         return;
+    if (window() != nullptr && window()->isMinimized())
+        return;
+    if (!m_videoWidget->isVisible())
+        m_videoWidget->show();
+}
+
+void VideoSurface::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+
+    if (event->type() != QEvent::WindowStateChange || m_videoWidget == nullptr)
+        return;
+
+    if (window() != nullptr && window()->isMinimized()) {
+        // 最小化时原生视频窗口不再参与合成，后台只解码不送显
+        m_videoWidget->hide();
+    } else if (!m_framesBlocked) {
+        m_videoWidget->show();
     }
-    // 转成 QImage 后由我们自己绘制；这里一次性转换，绘制时不再重复解码
-    const QImage image = frame.toImage();
-    if (!image.isNull())
-        m_image = image;
-    update();
+}
+
+QSize VideoSurface::sizeHint() const
+{
+    return QSize(640, 360);
 }
 
 void VideoSurface::paintEvent(QPaintEvent *event)
@@ -63,29 +96,12 @@ void VideoSurface::paintEvent(QPaintEvent *event)
 
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-
-    const QRectF bounds = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
 
     QPainterPath clip;
     if (m_radius > 0.0)
-        clip.addRoundedRect(bounds, m_radius, m_radius);
+        clip.addRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), m_radius, m_radius);
     else
-        clip.addRect(bounds);
+        clip.addRect(QRectF(rect()));
     painter.setClipPath(clip);
-
-    // 圆角之外的区域保持不画，露出父控件的面板底色
     painter.fillRect(rect(), Qt::black);
-
-    if (m_image.isNull())
-        return;
-
-    const QSizeF imageSize(m_image.size());
-    QSizeF scaled = imageSize;
-    scaled.scale(bounds.size(), Qt::KeepAspectRatio);
-
-    const QRectF target(bounds.left() + (bounds.width() - scaled.width()) / 2.0,
-                        bounds.top() + (bounds.height() - scaled.height()) / 2.0,
-                        scaled.width(), scaled.height());
-    painter.drawImage(target, m_image);
 }

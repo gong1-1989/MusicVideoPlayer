@@ -1,15 +1,14 @@
 #ifndef VIDEOSURFACE_H
 #define VIDEOSURFACE_H
 
-#include <QImage>
 #include <QWidget>
 
 class QVideoFrame;
 class QVideoSink;
+class QVideoWidget;
 
-/// 自绘视频面：从 QVideoSink 收帧，用 QPainter 画到控件上。
-/// 用 QVideoWidget 时视频渲染在独立原生窗口里，QSS 圆角和 setMask 都裁不动；
-/// 自己画才能真正做圆角裁切，顺带把等比缩放/黑边也收进来。
+/// 视频面：QVideoWidget 负责零拷贝显示，本类只做停播黑场、最小化停绘和首帧恢复。
+/// 不再逐帧 toImage()：那会把 GPU 帧反复读回系统内存，D3D 设备一旦丢失就会整窗卡死。
 class VideoSurface : public QWidget
 {
     Q_OBJECT
@@ -17,24 +16,25 @@ class VideoSurface : public QWidget
 public:
     explicit VideoSurface(QWidget *parent = nullptr);
 
-    QVideoSink *sink() const { return m_sink; }
+    QVideoSink *sink() const;
 
+    /// 保留接口给 VideoStage；QVideoWidget 是原生窗口，内层圆角由外层舞台边框负责
     void setCornerRadius(qreal radius);
     qreal cornerRadius() const { return m_radius; }
 
     void clearFrame();
-    /// 新视频真正开始播放后恢复收帧；clearFrame() 到 resumeFrames() 之间的迟到旧帧会被丢弃
+    /// 新视频真正开始播放后恢复收帧；首帧到达前视频窗口保持隐藏，避免旧帧残留
     void resumeFrames();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void changeEvent(QEvent *event) override;
     QSize sizeHint() const override;
 
 private:
     void onFrame(const QVideoFrame &frame);
 
-    QVideoSink *m_sink = nullptr;
-    QImage m_image;
+    QVideoWidget *m_videoWidget = nullptr;
     qreal m_radius = 0.0;
     bool m_framesBlocked = false;
 };
