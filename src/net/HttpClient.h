@@ -42,7 +42,10 @@ public:
     void stream(const QUrl &url, const QByteArray &range,
                 const QHash<QString, QString> &headers, const ReplyHandler &onReady);
 
-    static bool isHttpSuccess(QNetworkReply *reply);    static QString describeError(QNetworkReply *reply);
+    static bool isHttpSuccess(QNetworkReply *reply);
+    static QString describeError(QNetworkReply *reply);
+    /// 日志里隐藏签名/令牌类 query，只保留参数名
+    static QString redactUrl(const QUrl &url);
 
 private:
     void fetchInternal(const QUrl &url, const QByteArray &range,

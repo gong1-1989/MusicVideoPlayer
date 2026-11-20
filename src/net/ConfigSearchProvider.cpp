@@ -253,6 +253,7 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
     m_nextDetail = 0;
     m_activeDetails = 0;
     m_detailBuckets.clear();
+    m_searchTimer.start();
 
     if (m_http == nullptr) {
         emit finished(m_config.id, {}, 0, tr("网络模块未就绪"));
@@ -278,7 +279,7 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
     if (!m_config.cookie.isEmpty())
         headers.insert(QStringLiteral("Cookie"), m_config.cookie);
 
-    qCInfo(lcProvider) << "搜索" << m_config.id << requestUrl.toString();
+    qCInfo(lcProvider) << "搜索" << m_config.id << HttpClient::redactUrl(requestUrl);
 
     if (m_config.method == QLatin1String("POST")) {
         QHash<QString, QString> bodyVars = vars;
@@ -317,14 +318,22 @@ void ConfigSearchProvider::onReplyFinished()
     m_baseUrl = reply->url();
     reply->deleteLater();
 
+    const int httpStatus =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const qint64 elapsedMs = m_searchTimer.isValid() ? m_searchTimer.elapsed() : -1;
+
     if (!HttpClient::isHttpSuccess(reply)) {
         const QString error = HttpClient::describeError(reply);
-        qCWarning(lcProvider) << m_config.id << "搜索失败：" << error;
+        qCWarning(lcProvider) << m_config.id << "搜索失败：HTTP" << httpStatus
+                              << "用时" << elapsedMs << "ms：" << error;
         emit finished(m_config.id, {}, 0, error);
         return;
     }
 
     const QByteArray payload = reply->readAll();
+    // 成功路径也把状态码/字节数/耗时写进日志，排障时不必再猜响应大小
+    qCInfo(lcProvider) << m_config.id << "搜索响应 HTTP" << httpStatus << payload.size()
+                       << "字节，用时" << elapsedMs << "ms";
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
     if (parseError.error != QJsonParseError::NoError) {
@@ -484,7 +493,8 @@ void ConfigSearchProvider::launchDetails()
 
         const QUrl requestUrl(renderTemplate(m_config.detailUrlTemplate, vars));
         if (!requestUrl.isValid()) {
-            qCWarning(lcProvider) << m_config.id << "详情地址无效：" << requestUrl.toString();
+            qCWarning(lcProvider) << m_config.id << "详情地址无效："
+                                  << HttpClient::redactUrl(requestUrl);
             ++m_filtered;
             continue;
         }
@@ -500,8 +510,10 @@ void ConfigSearchProvider::launchDetails()
         }
 
         ++m_activeDetails;
-        connect(reply, &QNetworkReply::finished, this, [this, reply, index] {
-            onDetailFinished(reply, index);
+        QElapsedTimer timer;
+        timer.start();
+        connect(reply, &QNetworkReply::finished, this, [this, reply, index, timer] {
+            onDetailFinished(reply, index, timer.elapsed());
         });
     }
 
@@ -509,7 +521,7 @@ void ConfigSearchProvider::launchDetails()
         finishSearch();
 }
 
-void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index)
+void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index, qint64 elapsedMs)
 {
     if (m_done) {
         if (reply != nullptr)
@@ -526,14 +538,20 @@ void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index)
     }
     reply->deleteLater();
 
+    const int httpStatus =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     if (!HttpClient::isHttpSuccess(reply)) {
-        qCWarning(lcProvider) << m_config.id << "详情请求失败：" << HttpClient::describeError(reply);
+        qCWarning(lcProvider) << m_config.id << "详情请求失败：HTTP" << httpStatus
+                              << "用时" << elapsedMs << "ms："
+                              << HttpClient::describeError(reply);
         ++m_filtered;
         launchDetails();
         return;
     }
 
     const QByteArray payload = reply->readAll();
+    qCInfo(lcProvider) << m_config.id << "详情" << index << "HTTP" << httpStatus
+                       << payload.size() << "字节，用时" << elapsedMs << "ms";
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
     if (parseError.error != QJsonParseError::NoError) {

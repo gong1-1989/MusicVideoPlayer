@@ -1,10 +1,12 @@
 #include "lyrics/LrcParser.h"
 #include "media/MediaItem.h"
+#include "net/HttpClient.h"
 #include "net/SourceConfig.h"
 #include "util/TimeFormat.h"
 
 #include <QJsonObject>
 #include <QTest>
+#include <QUrlQuery>
 
 class CoreLogicTest : public QObject
 {
@@ -20,6 +22,7 @@ private slots:
     void sourceConfigJsonRoundTrip();
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
+    void httpLogUrlRedactsSignature();
 };
 
 void CoreLogicTest::timeFormat()
@@ -232,6 +235,20 @@ void CoreLogicTest::sourceConfigNormalizesTimeout()
     const SourceConfig config = sourceConfigFromJson(object, &ok);
     QVERIFY(ok);
     QCOMPARE(config.timeoutMs, 8000);
+}
+
+void CoreLogicTest::httpLogUrlRedactsSignature()
+{
+    const QString text = HttpClient::redactUrl(
+        QUrl(QStringLiteral("https://cdn.example.com/a.m3u8?id=42&sign=abc123&token=xyz&key=kk")));
+    const QUrlQuery query{QUrl(text)};
+
+    QCOMPARE(query.queryItemValue(QStringLiteral("id")), QStringLiteral("42"));
+    QCOMPARE(query.queryItemValue(QStringLiteral("sign")), QStringLiteral("***"));
+    QCOMPARE(query.queryItemValue(QStringLiteral("token")), QStringLiteral("***"));
+    QCOMPARE(query.queryItemValue(QStringLiteral("key")), QStringLiteral("***"));
+    QVERIFY(!text.contains(QStringLiteral("abc123")));
+    QVERIFY(!text.contains(QStringLiteral("xyz")));
 }
 
 QTEST_GUILESS_MAIN(CoreLogicTest)

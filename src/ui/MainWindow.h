@@ -46,6 +46,8 @@ private slots:
 
 private:
     void setupConnections();
+    /// 搜索/下载类提示单独放一个标签，避免反复覆盖播放与恢复状态
+    void setNetworkStatus(const QString &text);
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void clearPlaybackUi();

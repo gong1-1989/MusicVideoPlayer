@@ -264,8 +264,8 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
 
     client->setProperty(kMethod, request.method);
     const QByteArray range = request.range.toUtf8();
-    qCDebug(lcProxy) << "流转请求" << request.method << "上游" << upstream.toString() << "分段"
-                     << request.range;
+    qCDebug(lcProxy) << "流转请求" << request.method << "上游"
+                     << HttpClient::redactUrl(upstream) << "分段" << request.range;
 
     const QHash<QString, QString> headers = entry.headers;
     const bool isHead = request.method == QLatin1String("HEAD");
@@ -296,7 +296,8 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
         if (!looksLikeMedia(reply)) {
             const QString type =
                 reply->header(QNetworkRequest::ContentTypeHeader).toString();
-            qCWarning(lcProxy) << "上游返回的不是音视频：" << reply->url() << type;
+            qCWarning(lcProxy) << "上游返回的不是音视频：" << HttpClient::redactUrl(reply->url())
+                              << type;
             emit sourceUnavailable(upstream, type);
             replyError(client, 404, QStringLiteral("no audio source"));
             reply->abort();
@@ -344,7 +345,7 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply, const
         const QByteArray body = reply->readAll();
         const QUrl finalUrl = reply->url();
         if (!body.contains("#EXTM3U")) {
-            qCWarning(lcProxy) << "播放列表正文不是 m3u8：" << finalUrl;
+            qCWarning(lcProxy) << "播放列表正文不是 m3u8：" << HttpClient::redactUrl(finalUrl);
             replyError(socket, 404, QStringLiteral("playlist unavailable"));
             reply->deleteLater();
             return;

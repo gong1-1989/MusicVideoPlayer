@@ -7,6 +7,7 @@
 #include <QNetworkRequest>
 #include <QSet>
 #include <QUrl>
+#include <QUrlQuery>
 
 #include <memory>
 
@@ -116,7 +117,7 @@ HttpClient::HttpClient(QObject *parent)
 QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
                                const QHash<QString, QString> &headers)
 {
-    qCDebug(lcHttp) << "GET" << url.toString() << "分段" << range;
+    qCDebug(lcHttp) << "GET" << redactUrl(url) << "分段" << range;
     QNetworkRequest request = buildRequest(url, headers);
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
@@ -132,7 +133,7 @@ QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body,
 QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
                                     const QHash<QString, QString> &headers)
 {
-    qCDebug(lcHttp) << "POST" << url.toString() << "请求体" << body.size() << "字节";
+    qCDebug(lcHttp) << "POST" << redactUrl(url) << "请求体" << body.size() << "字节";
     QNetworkRequest request = buildRequest(url, headers);
     const QByteArray contentType =
         headers.value(QStringLiteral("Content-Type"),
@@ -163,7 +164,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
                                const ReplyHandler &onReady, int hop, bool deliverOnHeaders)
 {
     if (hop > kMaxRedirects || !isAllowedScheme(url)) {
-        qCWarning(lcHttp) << "重定向链被拒绝：" << url.toString() << "第" << hop << "跳";
+        qCWarning(lcHttp) << "重定向链被拒绝：" << redactUrl(url) << "第" << hop << "跳";
         onReady(nullptr);
         return;
     }
@@ -176,7 +177,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
 
-    qCDebug(lcHttp) << "拉取" << url.toString() << "分段" << range << "第" << hop << "跳";
+    qCDebug(lcHttp) << "拉取" << redactUrl(url) << "分段" << range << "第" << hop << "跳";
 
     QNetworkReply *reply = m_nam->get(request);
     auto delivered = std::make_shared<bool>(false);
@@ -207,7 +208,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
             onReady(nullptr);
             return;
         }
-        qCInfo(lcHttp) << "重定向" << status << url.toString() << "->" << next.toString();
+        qCInfo(lcHttp) << "重定向" << status << redactUrl(url) << "->" << redactUrl(next);
         const QHash<QString, QString> nextHeaders = headersForRedirect(headers, url, next);
         fetchInternal(next, range, nextHeaders, onReady, hop + 1, deliverOnHeaders);
     });
@@ -243,4 +244,36 @@ QString HttpClient::describeError(QNetworkReply *reply)
     if (status.isValid())
         message = QStringLiteral("HTTP %1: %2").arg(status.toInt()).arg(message);
     return message;
+}
+
+QString HttpClient::redactUrl(const QUrl &url)
+{
+    if (url.isEmpty())
+        return QString();
+
+    QUrl copy(url);
+    if (!copy.password().isEmpty())
+        copy.setPassword(QStringLiteral("***"));
+
+    if (!copy.hasQuery())
+        return copy.toString();
+
+    // 直链常带签名/时效参数，日志只保留参数名，值统一打码
+    const QList<QPair<QString, QString>> items = QUrlQuery(url).queryItems();
+    QUrlQuery clean;
+    for (const auto &item : items) {
+        const QString key = item.first.toLower();
+        const bool sensitive = key.contains(QLatin1String("sign"))
+                               || key.contains(QLatin1String("token"))
+                               || key.contains(QLatin1String("secret"))
+                               || key.contains(QLatin1String("auth"))
+                               || key.contains(QLatin1String("password"))
+                               || key.contains(QLatin1String("expire"))
+                               || key.contains(QLatin1String("nonce"))
+                               || key == QLatin1String("key")
+                               || key == QLatin1String("timestamp");
+        clean.addQueryItem(item.first, sensitive ? QStringLiteral("***") : item.second);
+    }
+    copy.setQuery(clean);
+    return copy.toString();
 }

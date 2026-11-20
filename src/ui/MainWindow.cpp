@@ -50,7 +50,7 @@ MainWindow::MainWindow(QWidget *parent)
     // 下载对话框、HLS 后缀处理、任务进度与结果提示交给控制器
     m_downloads = new DownloadController(m_http, this, this);
     connect(m_downloads, &DownloadController::statusMessage, this,
-            [this](const QString &text) { ui->label_status->setText(text); });
+            [this](const QString &text) { setNetworkStatus(text); });
 
     // 搜索面板的模型、委托、分页和右键菜单全部由控制器持有
     SearchPanelUi searchUi;
@@ -66,7 +66,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_searchPanel = new SearchPanelController(m_coordinator, m_registry, searchUi, this);
 
     connect(m_searchPanel, &SearchPanelController::statusMessage, this,
-            [this](const QString &text) { ui->label_status->setText(text); });
+            [this](const QString &text) { setNetworkStatus(text); });
     connect(m_searchPanel, &SearchPanelController::mediaActivated,
             this, &MainWindow::playSearchItem);
     connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
@@ -202,6 +202,14 @@ void MainWindow::setupConnections()
                 m_player->setPlaylist(m_videoModel);
                 m_player->playRow(index.row());
             });
+}
+
+void MainWindow::setNetworkStatus(const QString &text)
+{
+    ui->label_network->setText(text);
+    // 状态栏空间有限，完整原因放悬停提示，正文不挤占播放状态
+    ui->label_network->setToolTip(text);
+    ui->label_network->setVisible(!text.isEmpty());
 }
 
 void MainWindow::on_btn_settings_clicked()

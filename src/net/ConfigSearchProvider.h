@@ -5,6 +5,7 @@
 #include "net/SearchProviderBase.h"
 #include "net/SourceConfig.h"
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QPointer>
 
@@ -29,7 +30,7 @@ private:
 
     // 二次解析：搜索命中后取详情换直链，最多 3 路并发；结果按原索引缓存保证顺序
     void launchDetails();
-    void onDetailFinished(QNetworkReply *reply, int index);
+    void onDetailFinished(QNetworkReply *reply, int index, qint64 elapsedMs);
     void finishSearch();
     QVector<MediaItem> buildItems(const MediaItem &base, const QString &stream);
 
@@ -40,6 +41,7 @@ private:
     int m_limit = 20;
     bool m_done = false;
     QUrl m_baseUrl;
+    QElapsedTimer m_searchTimer;
 
     QVector<MediaItem> m_result;
     int m_filtered = 0;
