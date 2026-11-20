@@ -9,6 +9,8 @@
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
 #include "settings/WindowPreset.h"
+#include "ui/FullscreenController.h"
+#include "ui/PanelOverlayController.h"
 #include "ui/PlaylistController.h"
 #include "ui/SearchPanelController.h"
 #include "ui/SettingsDialog.h"
@@ -23,7 +25,6 @@
 #include <QCloseEvent>
 #include <QColor>
 #include <QComboBox>
-#include <QCursor>
 #include <QDebug>
 #include <QDir>
 #include <QEvent>
@@ -31,7 +32,6 @@
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QGuiApplication>
-#include <QKeyEvent>
 #include <QLineEdit>
 #include <QListView>
 #include <QListWidget>
@@ -54,7 +54,6 @@
 #include <QStyleOptionViewItem>
 #include <QTabWidget>
 #include <QTimer>
-#include <QVBoxLayout>
 #include <QWidget>
 
 Q_LOGGING_CATEGORY(lcWindow, "mvp.window")
@@ -264,6 +263,19 @@ MainWindow::MainWindow(QWidget *parent)
                     openLocalVideo();
             });
 
+    // 全屏窗口与视频面搬运
+    m_fullscreen = new FullscreenController(ui->videoWidget, ui->layout_videoStage, 16.0, this);
+
+    // 侧栏 / 控制条的常显与浮层形态、贴边检测和几何定位
+    PanelOverlayUi panelUi;
+    panelUi.centralWidget = ui->centralwidget;
+    panelUi.sidebar = ui->panelSidebar;
+    panelUi.stage = ui->panelStage;
+    panelUi.transport = ui->panelTransport;
+    panelUi.rootLayout = ui->layout_root;
+    panelUi.centerLayout = ui->layout_center;
+    m_panels = new PanelOverlayController(panelUi, this);
+
     // 列表里长名字默认被省略号截断，改成悬停/当前行横向滚动
     ui->list_music->setItemDelegate(new MarqueeDelegate(ui->list_music));
     ui->list_video->setItemDelegate(new MarqueeDelegate(ui->list_video));
@@ -272,13 +284,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 歌词栏默认隐藏，只有播音乐时才让位出来
     ui->panelLyrics->hide();
-
-    // 左侧栏 / 控制条"收起=浮层、常显=占布局"的切换由 applyPanelVisibility() 决定，
-    // 这里只管鼠标贴边检测的定时器
-    m_edgeTimer = new QTimer(this);
-    m_edgeTimer->setInterval(120);
-    connect(m_edgeTimer, &QTimer::timeout, this, &MainWindow::updateEdgePanels);
-    m_edgeTimer->start();
 
     // 自绘控件的几何参数：圆角半径与歌词渐隐高度不再散落在各处
     ui->videoStage->setCornerRadius(16.0);
@@ -299,7 +304,7 @@ MainWindow::MainWindow(QWidget *parent)
     restoreSettings();
     m_playlists->restore();
     refreshModeButton();
-    applyPanelVisibility();
+    m_panels->applyVisibility();
 }
 
 MainWindow::~MainWindow()
@@ -311,8 +316,8 @@ MainWindow::~MainWindow()
         if (m_player->mediaPlayer() != nullptr)
             m_player->mediaPlayer()->setVideoSink(nullptr);
     }
-    if (m_fullScreenWindow != nullptr)
-        exitFullScreen();
+    if (m_fullscreen != nullptr)
+        m_fullscreen->exitFullScreen();
     delete ui;
 }
 
@@ -511,7 +516,7 @@ void MainWindow::applySettings()
     }
 
     // 侧栏 / 控制条的启动折叠策略改了要立刻生效
-    applyPanelVisibility();
+    m_panels->applyVisibility();
 
     highlightCurrentLyric();
 }
@@ -534,8 +539,8 @@ void MainWindow::highlightCurrentLyric()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     // 全屏是独立顶层窗；不先退出，主窗关闭后进程可能被它拉住不退出。
-    if (m_fullScreenWindow != nullptr)
-        exitFullScreen();
+    if (m_fullscreen != nullptr)
+        m_fullscreen->exitFullScreen();
     m_player->stop();
     m_playlists->save();
     saveSettings();
@@ -548,26 +553,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
     // 侧栏、控制条都是浮层、不跟布局走，窗口尺寸一变要自己贴回原位
-    positionSidebarOverlay();
-    positionControlOverlay();
-}
-
-bool MainWindow::eventFilter(QObject *watched, QEvent *event)
-{
-    if (m_fullScreenWindow != nullptr && watched == m_fullScreenWindow) {
-        if (event->type() == QEvent::KeyPress) {
-            auto *keyEvent = static_cast<QKeyEvent *>(event);
-            if (keyEvent->key() == Qt::Key_Escape) {
-                exitFullScreen();
-                return true;
-            }
-        } else if (event->type() == QEvent::Close) {
-            // Alt+F4 关掉全屏窗口时，也要把视频面放回舞台
-            exitFullScreen();
-            return true;
-        }
-    }
-    return QMainWindow::eventFilter(watched, event);
+    m_panels->reposition();
 }
 
 void MainWindow::openLocalMusic()
@@ -654,199 +640,7 @@ void MainWindow::on_btn_mode_clicked()
 
 void MainWindow::on_btn_fullscreen_clicked()
 {
-    toggleFullScreen();
-}
-
-void MainWindow::updateEdgePanels()
-{
-    if (!m_sidebarAutoHide && !m_controlsAutoHide)
-        return;
-
-    const QPoint local = ui->centralwidget->mapFromGlobal(QCursor::pos());
-    const bool inside = ui->centralwidget->rect().contains(local);
-
-    // 左侧栏：鼠标贴到窗口左边缘弹出，移出侧栏范围就收回去
-    if (m_sidebarAutoHide) {
-        if (!m_sidebarPeek && inside && local.x() <= 10) {
-            positionSidebarOverlay();
-            ui->panelSidebar->show();
-            ui->panelSidebar->raise();
-            m_sidebarPeek = true;
-        } else if (m_sidebarPeek
-                   && (!inside || local.x() > ui->panelSidebar->width() + 8)) {
-            ui->panelSidebar->hide();
-            m_sidebarPeek = false;
-        }
-    }
-
-    // 底部控制条：贴到底边弹出，鼠标离开控制条范围就收回
-    if (m_controlsAutoHide) {
-        const bool controlsVisible = ui->panelTransport->isVisible();
-        if (!controlsVisible && inside && local.y() >= ui->centralwidget->height() - 20) {
-            positionControlOverlay();
-            ui->panelTransport->show();
-            ui->panelTransport->raise();
-        } else if (controlsVisible
-                   && (!inside
-                       || !ui->panelTransport->geometry().adjusted(-8, -8, 8, 8).contains(local))) {
-            ui->panelTransport->hide();
-        }
-    }
-}
-
-void MainWindow::applyPanelVisibility()
-{
-    m_sidebarAutoHide = AppSettings::sidebarAutoHide();
-    m_controlsAutoHide = AppSettings::controlsAutoHide();
-
-    // 收起 = 浮层（贴边弹出、不参与布局）；常显 = 回布局（正常占位）
-    setSidebarFloating(m_sidebarAutoHide);
-    setControlsFloating(m_controlsAutoHide);
-
-    m_sidebarPeek = false;
-    ui->panelSidebar->setVisible(!m_sidebarAutoHide);
-    ui->panelTransport->setVisible(!m_controlsAutoHide);
-
-    if (m_sidebarAutoHide)
-        positionSidebarOverlay();
-    if (m_controlsAutoHide)
-        positionControlOverlay();
-
-    // 两侧都常显时没有任何贴边检测需求，停掉 120ms 定时器
-    if (m_edgeTimer != nullptr) {
-        if (m_sidebarAutoHide || m_controlsAutoHide) {
-            if (!m_edgeTimer->isActive())
-                m_edgeTimer->start();
-        } else {
-            m_edgeTimer->stop();
-        }
-    }
-
-    if (ui->panelSidebar->isVisible())
-        ui->panelSidebar->raise();
-    if (ui->panelTransport->isVisible())
-        ui->panelTransport->raise();
-}
-
-void MainWindow::setSidebarFloating(bool floating)
-{
-    if (floating == m_sidebarFloating)
-        return;
-
-    m_sidebarFloating = floating;
-    m_sidebarPeek = false;
-
-    if (floating) {
-        // 浮层：从布局里摘出来，挂到 centralwidget 上，由 positionSidebarOverlay() 定位
-        ui->layout_root->removeWidget(ui->panelSidebar);
-        ui->panelSidebar->setParent(ui->centralwidget);
-    } else {
-        // 占布局：插回原来的位置（布局最左）
-        ui->layout_root->insertWidget(0, ui->panelSidebar);
-    }
-
-    // QSS 用 [floating="true"] 区分两种底色：浮层压画面要更实，占布局保持淡玻璃
-    ui->panelSidebar->setProperty("floating", floating);
-    if (QStyle *style = ui->panelSidebar->style()) {
-        style->unpolish(ui->panelSidebar);
-        style->polish(ui->panelSidebar);
-    }
-    ui->panelSidebar->update();
-
-    positionSidebarOverlay();
-}
-
-void MainWindow::setControlsFloating(bool floating)
-{
-    if (floating == m_controlsFloating)
-        return;
-
-    m_controlsFloating = floating;
-
-    if (floating) {
-        ui->layout_center->removeWidget(ui->panelTransport);
-        ui->panelTransport->setParent(ui->centralwidget);
-        positionControlOverlay();
-    } else {
-        // 回布局时放在舞台下方，恢复原来的上下排布
-        ui->layout_center->addWidget(ui->panelTransport);
-    }
-}
-
-void MainWindow::positionSidebarOverlay()
-{
-    if (ui->panelSidebar == nullptr || !m_sidebarFloating)
-        return;
-
-    const int margin = 16;
-    const int width = 280;
-    ui->panelSidebar->setGeometry(margin, margin, width,
-                                  qMax(240, ui->centralwidget->height() - margin * 2));
-}
-
-void MainWindow::positionControlOverlay()
-{
-    if (ui->panelStage == nullptr || ui->panelTransport == nullptr || !m_controlsFloating)
-        return;
-
-    // 舞台是 centralwidget 的直接子控件，控制条挂在同一层，坐标可以直接对齐
-    const QRect stage = ui->panelStage->geometry();
-    const int margin = 8;
-    const int height = qBound(112, ui->panelTransport->sizeHint().height(), 150);
-    const QRect target(stage.left() + margin, stage.bottom() - height - margin,
-                       qMax(240, stage.width() - margin * 2), height);
-    ui->panelTransport->setGeometry(target);
-    ui->panelTransport->raise();
-}
-
-void MainWindow::toggleFullScreen()
-{
-    if (m_fullScreenWindow != nullptr)
-        exitFullScreen();
-    else
-        enterFullScreen();
-}
-
-void MainWindow::enterFullScreen()
-{
-    // 视频面是自绘控件，不再走 QVideoWidget 的原生全屏；
-    // 把它临时搬进一个全屏窗口，退出时再放回舞台布局。
-    auto *window = new QWidget(nullptr, Qt::Window);
-    window->setObjectName(QStringLiteral("fullScreenWindow"));
-    window->setWindowTitle(tr("全屏播放"));
-    window->setStyleSheet(QStringLiteral("QWidget#fullScreenWindow { background: black; }"));
-
-    auto *layout = new QVBoxLayout(window);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
-
-    ui->videoWidget->setParent(window);
-    ui->videoWidget->setCornerRadius(0.0);
-    layout->addWidget(ui->videoWidget);
-    ui->videoWidget->show();
-
-    window->installEventFilter(this);
-    window->showFullScreen();
-    window->setFocus();
-
-    m_fullScreenWindow = window;
-}
-
-void MainWindow::exitFullScreen()
-{
-    if (m_fullScreenWindow == nullptr)
-        return;
-
-    QWidget *window = m_fullScreenWindow;
-    m_fullScreenWindow = nullptr;
-
-    window->removeEventFilter(this);
-    ui->layout_videoStage->addWidget(ui->videoWidget);
-    ui->videoWidget->setCornerRadius(16.0);
-    ui->videoWidget->show();
-
-    window->close();
-    window->deleteLater();
+    m_fullscreen->toggle();
 }
 
 void MainWindow::refreshModeButton()
