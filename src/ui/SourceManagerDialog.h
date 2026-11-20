@@ -26,14 +26,20 @@ class SourceManagerDialog;
 QT_END_NAMESPACE
 
 /// 搜索源管理：左侧源列表，右侧编辑当前源，底部可试搜、导入导出。
-/// 改动先留在草稿里，点“保存”才写回 registry。界面由 SourceManagerDialog.ui 描述。
+/// 改动先留在草稿里，点“保存”才写回 registry；延迟提交模式下只把草稿交给调用方。
 class SourceManagerDialog : public QDialog
 {
     Q_OBJECT
 
 public:
-    SourceManagerDialog(SourceRegistry *registry, HttpClient *http, QWidget *parent = nullptr);
+    SourceManagerDialog(SourceRegistry *registry, HttpClient *http, QWidget *parent = nullptr,
+                        bool deferCommit = false);
     ~SourceManagerDialog() override;
+
+    /// 延迟提交模式：accept() 只把最终草稿交给调用方，不写 sources.json
+    QVector<SourceConfig> committedSources() const { return m_committedSources; }
+    /// 延迟提交模式下重新打开时，用上一次未提交的草稿继续编辑
+    void setDraftSources(const QVector<SourceConfig> &sources);
 
 protected:
     void accept() override;
@@ -72,6 +78,8 @@ private:
     HttpClient *m_http;
 
     QVector<SourceConfig> m_drafts;
+    QVector<SourceConfig> m_committedSources;
+    bool m_deferCommit = false;
     int m_currentRow = -1;
     bool m_updating = false;
     bool m_probeBusy = false;

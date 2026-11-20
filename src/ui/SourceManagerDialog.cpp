@@ -85,11 +85,12 @@ QString makeUniqueId(const QString &seed, const QVector<SourceConfig> &existing)
 } // namespace
 
 SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *http,
-                                         QWidget *parent)
+                                         QWidget *parent, bool deferCommit)
     : QDialog(parent)
     , ui(new Ui::SourceManagerDialog)
     , m_registry(registry)
     , m_http(http)
+    , m_deferCommit(deferCommit)
 {
     ui->setupUi(this);
     setWindowTitle(tr("搜索源管理"));
@@ -114,6 +115,15 @@ SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *h
 SourceManagerDialog::~SourceManagerDialog()
 {
     delete ui;
+}
+
+void SourceManagerDialog::setDraftSources(const QVector<SourceConfig> &sources)
+{
+    // 先把编辑区从旧草稿上摘下来，否则 reloadList() 会把旧表单写回新草稿第 0 行
+    m_currentRow = -1;
+    loadDraftToForm(SourceConfig());
+    m_drafts = sources;
+    reloadList(m_drafts.isEmpty() ? -1 : 0);
 }
 
 void SourceManagerDialog::bindUi()
@@ -961,6 +971,12 @@ bool SourceManagerDialog::saveAll()
         }
         if (!kept)
             finalSources.append(config);
+    }
+
+    // 延迟提交模式：只把草稿交给调用方，由设置页在“保存”时统一写盘
+    if (m_deferCommit) {
+        m_committedSources = finalSources;
+        return true;
     }
 
     // 一次整表提交：要么全部写成功，要么保持原文件；不会出现删到一半/写一半。

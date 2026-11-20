@@ -94,6 +94,12 @@ protected:
                 m_hoveredRow = index.isValid() ? index.row() : -1;
             } else if (event->type() == QEvent::Leave) {
                 m_hoveredRow = -1;
+            } else if (event->type() == QEvent::Hide || event->type() == QEvent::HideToParent) {
+                // 切到另一个列表页后不再 40ms 空转，重新显示时再启动
+                m_timer.stop();
+            } else if (event->type() == QEvent::Show || event->type() == QEvent::ShowToParent) {
+                if (!m_timer.isActive())
+                    m_timer.start();
             }
         }
         return QStyledItemDelegate::eventFilter(object, event);
@@ -212,6 +218,12 @@ protected:
                 m_hoveredRow = index.isValid() ? index.row() : -1;
             } else if (event->type() == QEvent::Leave) {
                 m_hoveredRow = -1;
+            } else if (event->type() == QEvent::Hide || event->type() == QEvent::HideToParent) {
+                // 切到另一个列表页后不再 40ms 空转，重新显示时再启动
+                m_timer.stop();
+            } else if (event->type() == QEvent::Show || event->type() == QEvent::ShowToParent) {
+                if (!m_timer.isActive())
+                    m_timer.start();
             }
         }
         return QStyledItemDelegate::eventFilter(object, event);
@@ -910,6 +922,7 @@ void MainWindow::removePlaylistRow(MediaType type, int row)
 {
     PlaylistModel *model = type == MediaType::Music ? m_musicModel : m_videoModel;
     const QString name = model->itemAt(row).displayName();
+    const bool removingCurrent = m_player->playlist() == model && m_player->currentRow() == row;
 
     if (!model->removeRow(row))
         return;
@@ -917,8 +930,21 @@ void MainWindow::removePlaylistRow(MediaType type, int row)
     if (m_player->playlist() == model)
         m_player->onPlaylistRowRemoved(row);
 
-    if (savePlaylists())
-        ui->label_status->setText(tr("已从列表移除：%1").arg(name));
+    if (removingCurrent) {
+        // 停播信号只负责清画面；进度条、时间和歌词仍会停在已删除的那一行
+        QSignalBlocker blocker(ui->slider_progress);
+        ui->slider_progress->setValue(0);
+        ui->label_time->setText(QStringLiteral("00:00 / 00:00"));
+        ui->list_lrc->clear();
+        m_lrcLines.clear();
+        m_lrcIndex = -1;
+    }
+
+    if (savePlaylists()) {
+        ui->label_status->setText(
+            removingCurrent ? tr("已移除当前播放项：%1").arg(name)
+                            : tr("已从列表移除：%1").arg(name));
+    }
 }
 
 void MainWindow::clearPlaylist(MediaType type)
@@ -1156,6 +1182,9 @@ void MainWindow::on_btn_fullscreen_clicked()
 
 void MainWindow::updateEdgePanels()
 {
+    if (!m_sidebarAutoHide && !m_controlsAutoHide)
+        return;
+
     const QPoint local = ui->centralwidget->mapFromGlobal(QCursor::pos());
     const bool inside = ui->centralwidget->rect().contains(local);
 
@@ -1205,6 +1234,16 @@ void MainWindow::applyPanelVisibility()
         positionSidebarOverlay();
     if (m_controlsAutoHide)
         positionControlOverlay();
+
+    // 两侧都常显时没有任何贴边检测需求，停掉 120ms 定时器
+    if (m_edgeTimer != nullptr) {
+        if (m_sidebarAutoHide || m_controlsAutoHide) {
+            if (!m_edgeTimer->isActive())
+                m_edgeTimer->start();
+        } else {
+            m_edgeTimer->stop();
+        }
+    }
 
     if (ui->panelSidebar->isVisible())
         ui->panelSidebar->raise();

@@ -1,7 +1,10 @@
 #ifndef SETTINGSDIALOG_H
 #define SETTINGSDIALOG_H
 
+#include "net/SourceConfig.h"
+
 #include <QDialog>
+#include <QVector>
 
 class HttpClient;
 class QCheckBox;
@@ -41,6 +44,8 @@ private:
     Ui::SettingsDialog *ui;
     SourceRegistry *m_registry = nullptr;
     HttpClient *m_http = nullptr;
+    QVector<SourceConfig> m_stagedSources;
+    bool m_sourcesDirty = false;
 
     QComboBox *m_theme = nullptr;
     QComboBox *m_windowSize = nullptr;

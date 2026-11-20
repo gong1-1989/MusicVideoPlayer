@@ -10,6 +10,7 @@
 #include <QGuiApplication>
 #include <QLabel>
 #include <QLoggingCategory>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
 #include <QSlider>
@@ -135,24 +136,52 @@ void SettingsDialog::refreshSourcesLabel()
         m_sourcesButton->setEnabled(false);
         return;
     }
-    m_sourcesLabel->setText(tr("已启用 %1 个源（共 %2 个）")
-                                .arg(m_registry->enabledCount())
-                                .arg(m_registry->sources().size()));
+
+    const QVector<SourceConfig> sources =
+        m_sourcesDirty ? m_stagedSources : m_registry->sources();
+    int enabled = 0;
+    for (const SourceConfig &config : sources) {
+        if (config.enabled && config.isValid())
+            ++enabled;
+    }
+    m_sourcesLabel->setText(tr("已启用 %1 个源（共 %2 个）").arg(enabled).arg(sources.size()));
     m_sourcesButton->setToolTip(
-        tr("源管理里的“保存”会立即写入 sources.json；即使本页点“取消”也不会回滚源改动。"));
+        tr("源管理里的“保存”只改本页草稿；点本页“保存”才写入 sources.json，点“取消”会丢弃。"));
 }
 
 void SettingsDialog::openSourceManager()
 {
     if (m_registry == nullptr)
         return;
-    SourceManagerDialog dialog(m_registry, m_http, this);
-    if (dialog.exec() == QDialog::Accepted)
+
+    // 延迟提交：源管理只返回草稿，设置页确认后才真正写盘，取消可整体回滚
+    SourceManagerDialog dialog(m_registry, m_http, this, true);
+    if (m_sourcesDirty)
+        dialog.setDraftSources(m_stagedSources);
+    if (dialog.exec() == QDialog::Accepted) {
+        m_stagedSources = dialog.committedSources();
+        m_sourcesDirty = true;
         refreshSourcesLabel();
+    }
 }
 
 void SettingsDialog::accept()
 {
+    // 先提交源草稿；写盘失败就留在设置页，不能把其余设置当作已保存
+    if (m_sourcesDirty) {
+        if (m_registry == nullptr || !m_registry->replaceAll(m_stagedSources)) {
+            QMessageBox::warning(
+                this, tr("保存失败"),
+                m_registry == nullptr
+                    ? tr("未连接源仓库，无法保存搜索源。")
+                    : (m_registry->lastError().isEmpty()
+                           ? tr("无法写入 sources.json，请检查 Data 目录权限。")
+                           : m_registry->lastError()));
+            return;
+        }
+        m_sourcesDirty = false;
+    }
+
     AppSettings::setThemeId(m_theme->currentData().toString());
     AppSettings::setWindowPresetId(m_windowSize->currentData().toString());
     AppSettings::setDefaultVolume(m_volume->value());
