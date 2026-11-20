@@ -27,6 +27,25 @@ QString resolveCommand(const QString &command)
     return command; // 交给系统按 PATH 查找（例如 python / node）
 }
 
+/// 外部解析器可能直接吐站点里的相对地址；能补成绝对 URL 的就补，
+/// 补不出来的返回空，避免“非空但不可播”的条目混进列表。
+QUrl normalizeExternalUrl(const QString &raw, const QUrl &base = QUrl())
+{
+    QString text = raw.trimmed();
+    if (text.isEmpty())
+        return QUrl();
+    if (text.startsWith(QStringLiteral("//")))
+        text.prepend(QStringLiteral("https:"));
+
+    QUrl url(text);
+    const bool httpBase = base.isValid() && !base.isRelative()
+                          && (base.scheme() == QLatin1String("http")
+                              || base.scheme() == QLatin1String("https"));
+    if (url.isRelative() && httpBase)
+        url = base.resolved(url);
+    return url;
+}
+
 } // namespace
 
 ExternalSearchProvider::ExternalSearchProvider(const SourceConfig &config, QObject *parent)
@@ -152,9 +171,12 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
         item.type = m_config.mediaType;
         item.title = object.value(QStringLiteral("title")).toString();
         item.artist = object.value(QStringLiteral("artist")).toString();
-        item.url = QUrl(stream);
-        item.lyricUrl = QUrl(object.value(QStringLiteral("lyricUrl")).toString());
-        item.webUrl = QUrl(object.value(QStringLiteral("webUrl")).toString());
+        // 先归一 webUrl 作为相对地址基准，再处理播放页和歌词地址
+        item.webUrl = normalizeExternalUrl(object.value(QStringLiteral("webUrl")).toString());
+        item.url = normalizeExternalUrl(stream, item.webUrl);
+        item.lyricUrl =
+            normalizeExternalUrl(object.value(QStringLiteral("lyricUrl")).toString(),
+                                 item.webUrl);
         item.durationMs = static_cast<qint64>(object.value(QStringLiteral("durationMs")).toDouble(0));
         item.sourceId = m_config.id;
         item.online = true;
@@ -162,7 +184,8 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
         if (!m_config.cookie.isEmpty())
             item.headers.insert(QStringLiteral("Cookie"), m_config.cookie);
 
-        if (item.title.isEmpty() || item.url.isEmpty() || !item.url.isValid()) {
+        if (item.title.isEmpty() || item.url.isEmpty() || item.url.isRelative()
+            || !item.url.isValid()) {
             ++m_filtered;
             continue;
         }

@@ -4,9 +4,11 @@
 #include "media/MediaItem.h"
 #include "net/SourceConfig.h"
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QStringList>
 #include <QTimer>
+#include <QVector>
 
 class SearchProviderBase;
 class HttpClient;
@@ -16,7 +18,7 @@ class SourceRegistry;
 SearchProviderBase *createSearchProvider(const SourceConfig &config, HttpClient *http,
                                          QObject *parent);
 
-/// 依次跑所有启用源，把结果合并成一份；单个源失败不影响其它源。
+/// 并发跑所有启用源，按源配置顺序合并结果；单个源失败/超时不影响其它源。
 class SearchCoordinator : public QObject
 {
     Q_OBJECT
@@ -37,26 +39,44 @@ signals:
     void searchFinished();
 
 private:
-    void startNext();
-    void onProviderFinished(const QVector<MediaItem> &items, int filtered, const QString &error);
-    void onSourceTimeout();
+    struct SourceTask
+    {
+        SearchProviderBase *provider = nullptr;
+        QTimer *timer = nullptr;
+        QString name;
+        int sourceIndex = -1;
+        int timeoutMs = 0;
+    };
+
+    void startAll();
+    void finishSearch();
+    void onProviderFinished(SearchProviderBase *provider, const QVector<MediaItem> &items,
+                            int filtered, const QString &error);
+    void onSourceTimeout(SearchProviderBase *provider);
+    int timeoutForSource(const SourceConfig &config) const;
+    QVector<MediaItem> mergedItems() const;
+    int mergedFiltered() const;
+    QStringList failedSources() const;
+    int taskIndexFor(SearchProviderBase *provider) const;
 
     SourceRegistry *m_registry;
     HttpClient *m_http;
 
     QVector<SourceConfig> m_queue;
-    int m_index = 0;
-    bool m_busy = false;
+    QVector<SourceTask> m_tasks;
+    QVector<QVector<MediaItem>> m_buckets;
+    QVector<int> m_bucketFiltered;
+    QVector<QString> m_errors;
 
     QString m_keyword;
     int m_limit = 20;
-    QVector<MediaItem> m_items;
-    int m_filtered = 0;
-    QStringList m_failed;
-    QVector<QString> m_queueNames;
-    SearchProviderBase *m_current = nullptr;
-    QTimer m_sourceTimeout;
-    int m_sourceTimeoutMs = 20000;
+    int m_total = 0;
+    int m_done = 0;
+    bool m_busy = false;
+    /// 正在批量启动：同步完成的源不能提前收尾，否则后面的源还没发出去
+    bool m_launching = false;
+    QElapsedTimer m_elapsed;
+
     static constexpr int kSourceTimeoutMs = 20000;
 };
 
