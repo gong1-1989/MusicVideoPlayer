@@ -15,6 +15,7 @@ class FullscreenController;
 class PanelOverlayController;
 class LyricsController;
 class DownloadController;
+class PlaybackUiController;
 class SourceRegistry;
 class HttpClient;
 class QCloseEvent;
@@ -41,11 +42,6 @@ protected:
 private slots:
     void openLocalMusic();
     void openLocalVideo();
-    void on_btn_prev_clicked();
-    void on_btn_play_clicked();
-    void on_btn_stop_clicked();
-    void on_btn_next_clicked();
-    void on_btn_mode_clicked();
     void on_btn_fullscreen_clicked();
     void on_btn_settings_clicked();
 
@@ -60,8 +56,6 @@ private:
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void clearPlaybackUi();
 
-    void refreshModeButton();
-
     Ui::MainWindow *ui;
     HttpClient *m_http;
     SourceRegistry *m_registry;
@@ -71,12 +65,12 @@ private:
     PanelOverlayController *m_panels = nullptr;
     LyricsController *m_lyrics = nullptr;
     DownloadController *m_downloads = nullptr;
+    PlaybackUiController *m_transport = nullptr;
     PlaybackController *m_player;
     PlaylistController *m_playlists = nullptr;
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
 
-    bool m_userSeeking = false;
     QString m_lastDir;
 };
 

@@ -11,6 +11,7 @@
 #include "ui/FullscreenController.h"
 #include "ui/LyricsController.h"
 #include "ui/PanelOverlayController.h"
+#include "ui/PlaybackUiController.h"
 #include "ui/PlaylistController.h"
 #include "ui/SearchPanelController.h"
 #include "ui/SettingsDialog.h"
@@ -288,6 +289,19 @@ MainWindow::MainWindow(QWidget *parent)
     panelUi.centerLayout = ui->layout_center;
     m_panels = new PanelOverlayController(panelUi, this);
 
+    // 播放条：进度、音量、播放/停止/上下曲、模式按钮与歌词联动
+    PlaybackUi playbackUi;
+    playbackUi.progress = ui->slider_progress;
+    playbackUi.volume = ui->slider_volume;
+    playbackUi.time = ui->label_time;
+    playbackUi.play = ui->btn_play;
+    playbackUi.stop = ui->btn_stop;
+    playbackUi.previous = ui->btn_prev;
+    playbackUi.next = ui->btn_next;
+    playbackUi.mode = ui->btn_mode;
+    m_transport = new PlaybackUiController(m_player, m_playlists, ui->videoWidget,
+                                           m_lyrics, playbackUi, this);
+
     // 列表里长名字默认被省略号截断，改成悬停/当前行横向滚动
     ui->list_music->setItemDelegate(new MarqueeDelegate(ui->list_music));
     ui->list_video->setItemDelegate(new MarqueeDelegate(ui->list_video));
@@ -315,7 +329,6 @@ MainWindow::MainWindow(QWidget *parent)
     setupConnections();
     restoreSettings();
     m_playlists->restore();
-    refreshModeButton();
     m_panels->applyVisibility();
 }
 
@@ -335,67 +348,10 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupConnections()
 {
-    // 音量：单向 slider -> controller，避免双向回环
-    connect(ui->slider_volume, &QSlider::valueChanged,
-            m_player, &PlaybackController::setVolumePercent);
-
-    // 进度条：拖动期间不回写，松手才 seek
-    connect(ui->slider_progress, &QSlider::sliderPressed, this, [this] {
-        m_userSeeking = true;
-    });
-    connect(ui->slider_progress, &QSlider::sliderReleased, this, [this] {
-        m_userSeeking = false;
-        m_player->seek(ui->slider_progress->value());
-    });
-    connect(ui->slider_progress, &QSlider::sliderMoved, this, [this](int value) {
-        ui->label_time->setText(TimeFormat::formatMs(value) + QStringLiteral(" / ")
-                                + TimeFormat::formatMs(m_player->duration()));
-    });
-    // 点击凹槽直接跳转（该路径不一定触发 sliderPressed）
-    connect(ui->slider_progress, &QSlider::valueChanged, this, [this](int value) {
-        if (m_userSeeking)
-            return;
-        if (qAbs(value - m_player->position()) > 1500)
-            m_player->seek(value);
-    });
-
-    connect(m_player, &PlaybackController::positionChanged, this, [this](qint64 position) {
-        if (!m_userSeeking) {
-            QSignalBlocker blocker(ui->slider_progress);
-            ui->slider_progress->setValue(static_cast<int>(position));
-        }
-        ui->label_time->setText(TimeFormat::formatMs(position) + QStringLiteral(" / ")
-                                + TimeFormat::formatMs(m_player->duration()));
-        m_lyrics->updatePosition(position);
-    });
-    connect(m_player, &PlaybackController::durationChanged, this, [this](qint64 duration) {
-        QSignalBlocker blocker(ui->slider_progress);
-        ui->slider_progress->setRange(0, static_cast<int>(qMax<qint64>(0, duration)));
-    });
-    connect(m_player, &PlaybackController::playbackStateChanged, this,
-            [this](QMediaPlayer::PlaybackState state) {
-                ui->btn_play->setText(state == QMediaPlayer::PlayingState ? tr("暂停") : tr("播放"));
-                // 停止后不再占着歌词栏；继续播音乐时再放出来
-                if (state == QMediaPlayer::StoppedState) {
-                    // 停止后播放器不会再送新帧；不清掉的话上一部视频的最后一帧会一直留在面板上
-                    ui->videoWidget->clearFrame();
-                    m_lyrics->hidePanel();
-                } else {
-                    // 新一次播放开始，允许视频面重新接收帧
-                    ui->videoWidget->resumeFrames();
-                    if (m_player->hasCurrentItem()
-                        && m_player->currentItem().type == MediaType::Music)
-                        m_lyrics->showPanel();
-                }
-            });
-    connect(m_player, &PlaybackController::modeChanged, this, [this] { refreshModeButton(); });
-    connect(m_player, &PlaybackController::currentItemChanged, this,
+    connect(m_transport, &PlaybackUiController::statusMessage, this,
+            [this](const QString &text) { ui->label_status->setText(text); });
+    connect(m_transport, &PlaybackUiController::currentItemChanged, this,
             [this](const MediaItem &item, int row) {
-                // 视频切歌/切回音乐时先清掉上一帧，等新视频首帧到达再显示
-                ui->videoWidget->clearFrame();
-                ui->label_status->setText(tr("正在播放：%1").arg(item.displayName()));
-
-                // 歌词栏只在音乐播放时出现，视频不需要；歌词由控制器按当前项重新加载
                 if (item.type == MediaType::Music) {
                     ui->list_music->setCurrentIndex(m_musicModel->index(row));
                     ui->tab_media->setCurrentIndex(0);
@@ -403,12 +359,7 @@ void MainWindow::setupConnections()
                     ui->list_video->setCurrentIndex(m_videoModel->index(row));
                     ui->tab_media->setCurrentIndex(1);
                 }
-
-                m_lyrics->setCurrentItem(item);
             });
-    connect(m_player, &PlaybackController::errorOccurred, this, [this](const QString &message) {
-        ui->label_status->setText(tr("播放失败：%1").arg(message));
-    });
 
     connect(ui->list_music, &QAbstractItemView::doubleClicked, this,
             [this](const QModelIndex &index) {
@@ -563,68 +514,9 @@ void MainWindow::openLocalVideo()
     m_playlists->addLocalFiles(MediaType::Video, files);
 }
 
-void MainWindow::on_btn_prev_clicked()
-{
-    m_playlists->ensurePlaylist();
-    m_player->previous();
-}
-
-void MainWindow::on_btn_play_clicked()
-{
-    if (!m_player->hasCurrentItem()) {
-        PlaylistModel *model = m_playlists->activeModel();
-        if (model == nullptr || model->isEmpty())
-            return;
-        m_player->setPlaylist(model);
-        const QModelIndex current = m_playlists->activeView()->currentIndex();
-        m_player->playRow(current.isValid() ? current.row() : 0);
-        return;
-    }
-    m_player->togglePlayPause();
-}
-
-void MainWindow::on_btn_stop_clicked()
-{
-    m_player->stop();
-    {
-        QSignalBlocker blocker(ui->slider_progress);
-        ui->slider_progress->setValue(0);
-    }
-    ui->label_time->setText(QStringLiteral("00:00 / 00:00"));
-}
-
-void MainWindow::on_btn_next_clicked()
-{
-    m_playlists->ensurePlaylist();
-    m_player->next();
-}
-
-void MainWindow::on_btn_mode_clicked()
-{
-    using Mode = PlaybackController::Mode;
-    Mode nextMode = Mode::ListLoop;
-    switch (m_player->mode()) {
-    case Mode::ListLoop:
-        nextMode = Mode::SingleLoop;
-        break;
-    case Mode::SingleLoop:
-        nextMode = Mode::Random;
-        break;
-    case Mode::Random:
-        nextMode = Mode::ListLoop;
-        break;
-    }
-    m_player->setMode(nextMode);
-}
-
 void MainWindow::on_btn_fullscreen_clicked()
 {
     m_fullscreen->toggle();
-}
-
-void MainWindow::refreshModeButton()
-{
-    ui->btn_mode->setText(m_player->modeText());
 }
 
 void MainWindow::playSearchItem(const MediaItem &item)
