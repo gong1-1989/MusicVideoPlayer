@@ -679,18 +679,19 @@ void StreamProxy::prefetchForSeek(const QUrl &playlistUrl,
 
     cancelPrefetch();
     m_prefetchPlaylistKey = cacheKeyFor(playlistUrl, headers);
-    // 定位阶段目标明确，允许三路并行：FFmpeg 实测会同时打开回退起点和后一片，
-    // 第三路提前抓目标片，兼顾不同源直接落到目标的情况。
-    // 如果源站慢，finishPrefetch 会自动降到单路并暂停。
-    m_prefetchConcurrency = qMax(3, m_prefetchConcurrency);
+    // 定位阶段不要一上来就三路并发：源站变慢时三路会互相抢带宽，
+    // 实测单分片会从 2.5 秒恶化到 20 秒以上并直接超时。
+    // 先单路抓 FFmpeg 最先打开的回退起点，只有连续快速完成时才由
+    // finishPrefetch 逐步升到 2/3 路，慢源始终只占一条连接。
+    m_prefetchConcurrency = 1;
     m_seekPrefetchActive = true;
     m_seekTargetMs = targetMs;
     m_seekPrefetchTimer->start(kPrefetchSeekGuardMs);
 
     qCInfo(lcProxy) << "HLS 定位预取：目标" << targetMs << "ms，目标片" << targetIndex
                     << "，窗口" << begin << "到" << last;
-    // 先发 FFmpeg 最先打开的回退起点和后一片，再用第三路抓目标片；
-    // 中间分片随后补齐，避免两路都被远处的目标片占住。
+    // 先发 FFmpeg 最先打开的回退起点；随后按窗口顺序排队，快速源会并发追上来，
+    // 慢源则只保留一条预取连接，不再额外抢播放器自己的请求。
     enqueuePrefetch(playlistUrl, headers, begin, begin, m_prefetchGeneration);
     if (begin + 1 <= targetIndex)
         enqueuePrefetch(playlistUrl, headers, begin + 1, begin + 1, m_prefetchGeneration);

@@ -255,20 +255,12 @@ void PlaybackController::seek(qint64 ms)
     if (!hasCurrentItem())
         return;
 
-    const MediaItem item = currentItem();
-    // 在 setPosition 之前把 seek 目标交给代理：代理可以先把 FFmpeg 将要回退读取的
-    // 那组分片排进队列，等 FFmpeg 发请求时直接命中缓存，而不是等它逐片去拉网络。
-    if (m_proxyReady && m_proxy != nullptr && item.online
-        && item.url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive)) {
-        QMetaObject::invokeMethod(
-            m_proxy,
-            [proxy = m_proxy, url = item.url, headers = item.headers, ms] {
-                proxy->prefetchForSeek(url, headers, ms);
-            },
-            Qt::BlockingQueuedConnection);
-        m_lastPrefetchPosition = -1;
-    }
-
+    // 拖动时不再预取：实测 FFmpeg 的 HLS seek 会先回退约 9 片，
+    // 预取这些分片会和播放器自己的请求抢同一条慢源连接，单路都可能超时；
+    // 深拖动只保留 UI 的“定位中”等待提示，正常播放仍由 positionChanged 预取后续分片。
+    // 这里把预取基准同步到目标位置，避免位置跳到目标后立刻又预取目标片，
+    // 和 FFmpeg 正在回退读取的分片抢带宽。
+    m_lastPrefetchPosition = ms;
     m_player->setPosition(ms);
 }
 
