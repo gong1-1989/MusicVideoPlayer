@@ -56,21 +56,11 @@
     </widget>
    </item>
    <item>
-    <widget class="QScrollArea" name="scroll_body">
-     <property name="frameShape">
-      <enum>QFrame::NoFrame</enum>
-     </property>
-     <property name="widgetResizable">
-      <bool>true</bool>
-     </property>
-     <property name="horizontalScrollBarPolicy">
-      <enum>Qt::ScrollBarAlwaysOff</enum>
-     </property>
-     <widget class="QWidget" name="scroll_bodyWidget">
-      <layout class="QHBoxLayout" name="layout_body">
-     <property name="spacing">
-      <number>12</number>
-     </property>
+    <widget class="QWidget" name="bodyWidget" native="true">
+     <layout class="QHBoxLayout" name="layout_body">
+      <property name="spacing">
+       <number>12</number>
+      </property>
      <item>
       <widget class="QWidget" name="leftBox" native="true">
        <property name="minimumSize">
@@ -853,8 +843,7 @@ op 可选 eq / ne / gt / gte / lt / lte / empty / notEmpty / contains</string>
        </widget>
       </widget>
      </item>
-      </layout>
-     </widget>
+     </layout>
     </widget>
    </item>
    <item>

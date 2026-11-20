@@ -28,9 +28,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QScreen>
-#include <QScrollBar>
 #include <QSpinBox>
-#include <QTimer>
 #include <QUrl>
 
 namespace {
@@ -98,21 +96,24 @@ SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *h
     setWindowTitle(tr("搜索源管理"));
     setModal(true);
 
-    // 表单内容比小屏高，先按可用工作区收一收，右侧表单内部自己滚动
+    // 表单内容比小屏高时右侧表单内部自己滚动，左侧操作区保持固定可见
     const QRect available = QGuiApplication::primaryScreen()
                                 ? QGuiApplication::primaryScreen()->availableGeometry()
                                 : QRect(0, 0, 1280, 800);
-    // 让中间滚动区可以被压缩，底部试搜/保存/取消始终留在屏幕内
-    ui->scroll_body->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    ui->scroll_body->setMinimumHeight(0);
+    // 中间区域可以被压缩，底部试搜/保存/取消始终留在屏幕内
+    ui->bodyWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    ui->bodyWidget->setMinimumHeight(0);
     // 中间区域吃掉剩余高度，标题和底部试搜/保存栏保持固定
     ui->layout_root->setStretch(2, 1);
     setMaximumSize(available.width(), available.height() - 20);
     resize(qMin(900, available.width() - 40), qMin(640, available.height() - 60));
-
-    QTimer::singleShot(0, this, [this] {
-        ui->scroll_body->verticalScrollBar()->setValue(0);
-    });
+    // 小屏高度紧张时收紧外边距和行距，优先保证左侧操作按钮完整可见
+    if (available.height() <= 800) {
+        ui->layout_root->setContentsMargins(12, 8, 12, 4);
+        ui->layout_root->setSpacing(6);
+        ui->layout_listButtons->setVerticalSpacing(0);
+        ui->list_test->setMaximumHeight(56);
+    }
 
     if (m_registry != nullptr)
         m_drafts = m_registry->sources();
@@ -141,9 +142,12 @@ void SourceManagerDialog::setDraftSources(const QVector<SourceConfig> &sources)
 void SourceManagerDialog::bindUi()
 {
     m_list = ui->list_sources;
-    m_list->setMinimumHeight(180);
+    // 150% 下窗口高度有限，列表最小高度要给底部固定按钮让位；常规尺寸仍会自动撑满
+    m_list->setMinimumHeight(64);
     ui->layout_body->setStretch(0, 0);
     ui->layout_body->setStretch(1, 1);
+    // 源列表独自吃掉左栏剩余高度，底部操作按钮固定不动
+    ui->layout_left->setStretch(0, 1);
     ui->leftBox->setMinimumWidth(240);
     ui->leftBox->setMaximumWidth(320);
     ui->scroll_form->setMinimumWidth(420);
