@@ -15,9 +15,11 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Multimedia
     MultimediaWidgets
     LinguistTools
+    Test
 )
 
 qt_standard_project_setup()
+enable_testing()
 
 function(mvp_enable_warnings target)
     if(MSVC)
@@ -111,6 +113,16 @@ target_link_libraries(MusicVideoPlayer PRIVATE
     Qt6::MultimediaWidgets
 )
 mvp_enable_warnings(MusicVideoPlayer)
+
+# ---------------------------------------------------------------- 回归测试
+# 只锁纯逻辑/序列化/解析；涉及网络、GUI、进程的路径留给后续集成测试。
+add_executable(mvp_tests tests/test_core_logic.cpp)
+target_link_libraries(mvp_tests PRIVATE
+    mvp_core
+    Qt6::Test
+)
+mvp_enable_warnings(mvp_tests)
+add_test(NAME mvp_core_logic COMMAND mvp_tests)
 
 # 主题样式表嵌入资源，ThemeManager 从 :/themes/<id>.qss 加载
 qt_add_resources(MusicVideoPlayer "app_themes"

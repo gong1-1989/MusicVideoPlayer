@@ -135,8 +135,9 @@ QJsonObject sourceConfigToJson(const SourceConfig &config)
     if (config.kind == QLatin1String("external")) {
         object.insert(QStringLiteral("command"), config.command);
         object.insert(QStringLiteral("arguments"), config.arguments);
-        object.insert(QStringLiteral("timeoutMs"), config.timeoutMs);
     }
+    // 超时对配置型/内置型搜索同样生效；只给外部解析器写会导致重启后静默回落到 8000ms
+    object.insert(QStringLiteral("timeoutMs"), config.timeoutMs);
     object.insert(QStringLiteral("method"), config.method.toUpper());
     object.insert(QStringLiteral("url"), config.urlTemplate);
     if (!config.bodyTemplate.isEmpty()) {
