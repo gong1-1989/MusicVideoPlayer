@@ -1,9 +1,12 @@
 #include "lyrics/LrcParser.h"
 #include "media/MediaItem.h"
+#include "net/ConfigMapper.h"
 #include "net/HttpClient.h"
 #include "net/SourceConfig.h"
 #include "util/TimeFormat.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTest>
 #include <QUrlQuery>
@@ -23,6 +26,9 @@ private slots:
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
     void httpLogUrlRedactsSignature();
+    void configMapperReadsNestedPaths();
+    void configMapperBoolRulesDoNotMixWithNumbers();
+    void configMapperSplitsEpisodesAndResolvesUrls();
 };
 
 void CoreLogicTest::timeFormat()
@@ -249,6 +255,72 @@ void CoreLogicTest::httpLogUrlRedactsSignature()
     QCOMPARE(query.queryItemValue(QStringLiteral("key")), QStringLiteral("***"));
     QVERIFY(!text.contains(QStringLiteral("abc123")));
     QVERIFY(!text.contains(QStringLiteral("xyz")));
+}
+
+void CoreLogicTest::configMapperReadsNestedPaths()
+{
+    const QJsonDocument document = QJsonDocument::fromJson(
+        QByteArrayLiteral("{\"data\":{\"items\":[{\"id\":11,\"title\":\"第一首\"}]}}"));
+    QVERIFY(document.isObject());
+
+    const QJsonValue items = ConfigMapper::valueAtPath(document.object(), QStringLiteral("data.items"));
+    QVERIFY(items.isArray());
+    QCOMPARE(items.toArray().size(), 1);
+
+    const QJsonValue title =
+        ConfigMapper::valueAtPath(items, QStringLiteral("[0].title"));
+    QCOMPARE(title.toString(), QStringLiteral("第一首"));
+    QVERIFY(ConfigMapper::valueAtPath(items, QStringLiteral("[1].id")).isNull());
+}
+
+void CoreLogicTest::configMapperBoolRulesDoNotMixWithNumbers()
+{
+    const QJsonObject item{{QStringLiteral("is_streamable"), true},
+                           {QStringLiteral("play_count"), 12}};
+
+    // true 不能等于 false，也不能和数字 0 混算
+    QVERIFY(!ConfigMapper::ruleMatches(
+        item, QJsonObject{{QStringLiteral("path"), QStringLiteral("is_streamable")},
+                          {QStringLiteral("op"), QStringLiteral("eq")},
+                          {QStringLiteral("value"), false}}));
+    QVERIFY(ConfigMapper::ruleMatches(
+        item, QJsonObject{{QStringLiteral("path"), QStringLiteral("is_streamable")},
+                          {QStringLiteral("op"), QStringLiteral("eq")},
+                          {QStringLiteral("value"), true}}));
+
+    // 字段缺失时 eq false 不算命中，避免把“没有该字段”当成合法结果
+    QVERIFY(!ConfigMapper::ruleMatches(
+        QJsonObject{}, QJsonObject{{QStringLiteral("path"), QStringLiteral("is_streamable")},
+                                   {QStringLiteral("op"), QStringLiteral("eq")},
+                                   {QStringLiteral("value"), false}}));
+
+    QVERIFY(ConfigMapper::ruleMatches(
+        item, QJsonObject{{QStringLiteral("path"), QStringLiteral("play_count")},
+                          {QStringLiteral("op"), QStringLiteral("gt")},
+                          {QStringLiteral("value"), 10}}));
+}
+
+void CoreLogicTest::configMapperSplitsEpisodesAndResolvesUrls()
+{
+    const QVector<ConfigMapper::EpisodePart> parts = ConfigMapper::parseEpisodes(
+        QStringLiteral("第01集$https://x/1.m3u8#第02集$https://x/2.m3u8"
+                       "$$$备用源$https://y/3.m3u8"));
+    QCOMPARE(parts.size(), 2);
+    QCOMPARE(parts.at(0).name, QStringLiteral("第01集"));
+    QCOMPARE(parts.at(0).url, QStringLiteral("https://x/1.m3u8"));
+    QCOMPARE(parts.at(1).name, QStringLiteral("第02集"));
+
+    const QUrl protocolRelative =
+        ConfigMapper::normalizeUrl(QStringLiteral("//cdn.example.com/a.ts"));
+    QCOMPARE(protocolRelative.scheme(), QStringLiteral("https"));
+    QCOMPARE(protocolRelative.host(), QStringLiteral("cdn.example.com"));
+
+    const QUrl relative = ConfigMapper::normalizeUrl(
+        QStringLiteral("000001.ts"), QUrl(QStringLiteral("https://x/a/index.m3u8")));
+    QCOMPARE(relative.toString(), QStringLiteral("https://x/a/000001.ts"));
+
+    QCOMPARE(ConfigMapper::jsonEscape(QStringLiteral("a\"b\\c")),
+             QStringLiteral("a\\\"b\\\\c"));
 }
 
 QTEST_GUILESS_MAIN(CoreLogicTest)
