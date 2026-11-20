@@ -2,6 +2,7 @@
 #define MEDIAITEM_H
 
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMetaType>
@@ -22,6 +23,9 @@ struct MediaItem
     QString title;
     QString artist;
     QUrl url;
+    /// 备用播放地址。采集接口常用 `$$$` 分隔多条线路，同一集可能同时有
+    /// m3u8 和 mp4；播放时优先选 mp4/flv 这类可按字节定位的直链。
+    QStringList alternateUrls;
     QUrl lyricUrl;
     QUrl webUrl;                    // 原始页面，便于回看来源
     QString sourceId;               // 来自哪个搜索源（本地文件为空）
@@ -80,6 +84,42 @@ struct MediaItem
 
 Q_DECLARE_METATYPE(MediaItem)
 
+/// 可按字节 Range 定位的直链视频格式。HLS 只能按分片定位，深拖动时
+/// 目标分片慢会把整个等待放大；同一条目有 mp4/flv 时应优先用它。
+inline bool isProgressiveVideoUrl(const QUrl &url)
+{
+    const QString path = url.path().toLower();
+    return path.endsWith(QLatin1String(".mp4")) || path.endsWith(QLatin1String(".m4v"))
+        || path.endsWith(QLatin1String(".mov")) || path.endsWith(QLatin1String(".flv"))
+        || path.endsWith(QLatin1String(".webm"));
+}
+
+inline bool isHlsUrl(const QUrl &url)
+{
+    const QString path = url.path().toLower();
+    return path.endsWith(QLatin1String(".m3u8"))
+        || url.toString().toLower().contains(QLatin1String(".m3u8"));
+}
+
+/// 条目实际播放地址：视频优先 mp4/flv，找不到再回退原地址；
+/// 备选地址无效时不会把播放地址换成空值。
+inline QUrl preferredPlaybackUrl(const MediaItem &item)
+{
+    if (!item.url.isEmpty() && item.url.isValid()
+        && (item.type != MediaType::Video || isProgressiveVideoUrl(item.url))) {
+        return item.url;
+    }
+
+    for (const QString &raw : item.alternateUrls) {
+        const QUrl candidate(raw);
+        if (candidate.isEmpty() || !candidate.isValid())
+            continue;
+        if (isProgressiveVideoUrl(candidate))
+            return candidate;
+    }
+    return item.url;
+}
+
 /// 去重用的身份标识：
 /// - 本地文件看路径；
 /// - 在线条目优先看原始网页地址（稳定），再带上标题——
@@ -109,6 +149,12 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
     if (!item.artist.isEmpty())
         object.insert(QStringLiteral("artist"), item.artist);
     object.insert(QStringLiteral("url"), item.url.toString());
+    if (!item.alternateUrls.isEmpty()) {
+        QJsonArray alternatives;
+        for (const QString &url : item.alternateUrls)
+            alternatives.append(url);
+        object.insert(QStringLiteral("altUrls"), alternatives);
+    }
     if (!item.lyricUrl.isEmpty())
         object.insert(QStringLiteral("lyricUrl"), item.lyricUrl.toString());
     if (!item.webUrl.isEmpty())
@@ -146,6 +192,12 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
     item.title = object.value(QStringLiteral("title")).toString();
     item.artist = object.value(QStringLiteral("artist")).toString();
     item.url = QUrl(object.value(QStringLiteral("url")).toString());
+    const QJsonArray altUrls = object.value(QStringLiteral("altUrls")).toArray();
+    for (const QJsonValue &value : altUrls) {
+        const QString raw = value.toString();
+        if (!raw.isEmpty())
+            item.alternateUrls.append(raw);
+    }
     item.lyricUrl = QUrl(object.value(QStringLiteral("lyricUrl")).toString());
     item.webUrl = QUrl(object.value(QStringLiteral("webUrl")).toString());
     item.sourceId = object.value(QStringLiteral("sourceId")).toString();

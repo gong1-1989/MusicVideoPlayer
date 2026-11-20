@@ -28,7 +28,8 @@ void DownloadController::download(const MediaItem &item)
         return;
     }
 
-    const bool hls = DownloadTask::looksLikeHls(item.url);
+    const QUrl downloadUrl = preferredPlaybackUrl(item);
+    const bool hls = DownloadTask::looksLikeHls(downloadUrl);
     const QString suffix = hls ? QStringLiteral("ts")
                                : (item.type == MediaType::Video ? QStringLiteral("mp4")
                                                                 : QStringLiteral("mp3"));
@@ -56,7 +57,7 @@ void DownloadController::download(const MediaItem &item)
 
     qCInfo(lcDownloadUi) << "开始下载" << item.displayName() << "到" << finalTarget
                        << (hls ? "（HLS 分片合并）" : "");
-    auto *task = DownloadTask::start(m_http, item.url, finalTarget, item.headers, this);
+    auto *task = DownloadTask::start(m_http, downloadUrl, finalTarget, item.headers, this);
     m_task = task;
 
     connect(task, &DownloadTask::progress, this, [this](qint64 received, qint64 total) {

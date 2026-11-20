@@ -47,8 +47,8 @@ PlaybackController::PlaybackController(QObject *parent)
         if (!m_proxyReady || m_proxy == nullptr || !hasCurrentItem())
             return;
         const MediaItem item = currentItem();
-        if (!item.online
-            || !item.url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive))
+        const QUrl playbackUrl = preferredPlaybackUrl(item);
+        if (!item.online || !isHlsUrl(playbackUrl))
             return;
         // 每 3 秒提交一次就够了；分片时长通常 3-7 秒，太频繁只会反复覆盖队列。
         if (m_lastPrefetchPosition >= 0 && qAbs(position - m_lastPrefetchPosition) < 3000)
@@ -56,7 +56,7 @@ PlaybackController::PlaybackController(QObject *parent)
         m_lastPrefetchPosition = position;
         QMetaObject::invokeMethod(
             m_proxy,
-            [proxy = m_proxy, url = item.url, headers = item.headers, position] {
+            [proxy = m_proxy, url = playbackUrl, headers = item.headers, position] {
                 proxy->prefetchForPosition(url, headers, position);
             },
             Qt::QueuedConnection);
@@ -171,13 +171,14 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     m_lastPrefetchPosition = -1;
 
     // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
-    // 本地文件直接用 file:// 播放。
-    QUrl source = item.url;
+    // 本地文件直接用 file:// 播放。视频优先 mp4/flv，HLS 只做回退。
+    const QUrl playbackUrl = preferredPlaybackUrl(item);
+    QUrl source = playbackUrl;
     if (item.online && m_proxyReady && m_proxyThread->isRunning()) {
         QUrl proxied;
         const bool invoked = QMetaObject::invokeMethod(
             m_proxy,
-            [proxy = m_proxy, url = item.url, headers = item.headers, &proxied] {
+            [proxy = m_proxy, url = playbackUrl, headers = item.headers, &proxied] {
                 proxied = proxy->proxyUrlFor(url, headers);
             },
             Qt::BlockingQueuedConnection);

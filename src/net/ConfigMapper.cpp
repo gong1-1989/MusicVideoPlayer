@@ -195,22 +195,47 @@ QString jsonEscape(const QString &raw)
 QVector<EpisodePart> parseEpisodes(const QString &raw)
 {
     QVector<EpisodePart> parts;
-    QString body = raw.trimmed();
-    const int sourceSep = body.indexOf(QStringLiteral("$$$"));
-    if (sourceSep >= 0)
-        body = body.left(sourceSep);
+    const QString body = raw.trimmed();
+    if (body.isEmpty())
+        return parts;
 
-    const QStringList groups = body.split(QLatin1Char('#'), Qt::SkipEmptyParts);
-    for (const QString &group : groups) {
-        const QString trimmed = group.trimmed();
-        if (trimmed.isEmpty())
-            continue;
-        const int dollar = trimmed.indexOf(QLatin1Char('$'));
-        const QString name = dollar > 0 ? trimmed.left(dollar).trimmed() : QString();
-        const QString url = dollar >= 0 ? trimmed.mid(dollar + 1).trimmed() : trimmed;
-        if (url.isEmpty())
-            continue;
-        parts.append(EpisodePart{name, url});
+    // `$$$` 是采集接口的多线路分隔符：第一组是主线路，后面是备用线路。
+    // 以前直接截断会丢掉 mp4 备用线路；现在按“同名剧集优先、否则同序号”
+    // 归到对应 EpisodePart，播放时再决定主/备。
+    const QStringList sources = body.split(QStringLiteral("$$$"), Qt::SkipEmptyParts);
+    for (int sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex) {
+        const QStringList groups = sources.at(sourceIndex).split(QLatin1Char('#'), Qt::SkipEmptyParts);
+        for (int groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+            const QString trimmed = groups.at(groupIndex).trimmed();
+            if (trimmed.isEmpty())
+                continue;
+            const int dollar = trimmed.indexOf(QLatin1Char('$'));
+            const QString name = dollar > 0 ? trimmed.left(dollar).trimmed() : QString();
+            const QString url = dollar >= 0 ? trimmed.mid(dollar + 1).trimmed() : trimmed;
+            if (url.isEmpty())
+                continue;
+
+            if (sourceIndex == 0) {
+                parts.append(EpisodePart{name, url, QStringList()});
+                continue;
+            }
+
+            int target = -1;
+            if (!name.isEmpty()) {
+                for (int i = 0; i < parts.size(); ++i) {
+                    if (parts.at(i).name == name) {
+                        target = i;
+                        break;
+                    }
+                }
+            }
+            if (target < 0 && groupIndex < parts.size())
+                target = groupIndex;
+            if (target >= 0 && parts.at(target).url != url
+                && !parts.at(target).altUrls.contains(url)) {
+                parts[target].altUrls.append(url);
+            }
+        }
     }
     return parts;
 }

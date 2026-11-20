@@ -5,6 +5,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 #include <QVector>
 
@@ -17,6 +18,8 @@ struct EpisodePart
 {
     QString name;
     QString url;
+    /// `$$$` 后面的备用线路，按同一集/同名分组收集；不再直接丢弃。
+    QStringList altUrls;
 };
 
 /// 支持 a.b[0].c 形式的路径取值；空路径返回根节点。

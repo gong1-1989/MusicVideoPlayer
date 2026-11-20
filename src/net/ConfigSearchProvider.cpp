@@ -16,6 +16,50 @@ Q_LOGGING_CATEGORY(lcProvider, "mvp.net.provider")
 
 using namespace ConfigMapper;
 
+namespace {
+
+QStringList collectNormalizedUrls(const QString &primary, const QStringList &alternatives,
+                                  const QUrl &base)
+{
+    QStringList result;
+    const QStringList raw = QStringList{primary} + alternatives;
+    for (const QString &value : raw) {
+        const QUrl url = normalizeUrl(value, base);
+        if (url.isEmpty() || !url.isValid())
+            continue;
+        const QString text = url.toString();
+        if (!result.contains(text))
+            result.append(text);
+    }
+    return result;
+}
+
+/// 同一集的多条线路里优先 mp4/flv；没有直链时才用 HLS。
+QUrl choosePlaybackUrl(const QStringList &candidates, QStringList *remaining)
+{
+    if (remaining != nullptr)
+        remaining->clear();
+    if (candidates.isEmpty())
+        return QUrl();
+
+    QString chosen = candidates.first();
+    for (const QString &candidate : candidates) {
+        if (isProgressiveVideoUrl(QUrl(candidate))) {
+            chosen = candidate;
+            break;
+        }
+    }
+    if (remaining != nullptr) {
+        for (const QString &candidate : candidates) {
+            if (candidate != chosen)
+                remaining->append(candidate);
+        }
+    }
+    return QUrl(chosen);
+}
+
+} // namespace
+
 ConfigSearchProvider::ConfigSearchProvider(const SourceConfig &config, HttpClient *http,
                                            QObject *parent)
     : SearchProviderBase(parent)
@@ -227,7 +271,10 @@ QVector<MediaItem> ConfigSearchProvider::buildItems(const MediaItem &base, const
         }
         for (const EpisodePart &part : parts) {
             MediaItem item = base;
-            item.url = normalizeUrl(part.url, m_baseUrl);
+            const QStringList candidates = collectNormalizedUrls(part.url, part.altUrls, m_baseUrl);
+            QStringList remaining;
+            item.url = choosePlaybackUrl(candidates, &remaining);
+            item.alternateUrls = remaining;
             if (!part.name.isEmpty() && part.name != base.title)
                 item.title = QStringLiteral("%1 · %2").arg(base.title, part.name);
             if (item.title.isEmpty())
@@ -242,7 +289,15 @@ QVector<MediaItem> ConfigSearchProvider::buildItems(const MediaItem &base, const
     }
 
     MediaItem item = base;
-    item.url = normalizeUrl(stream, m_baseUrl);
+    // 单集接口也可能用 `$$$` 给多条线路；和剧集模式一样优先 mp4/flv。
+    QStringList rawSources = stream.split(QStringLiteral("$$$"), Qt::SkipEmptyParts);
+    if (rawSources.isEmpty())
+        rawSources.append(stream);
+    const QString primary = rawSources.takeFirst().trimmed();
+    QStringList remaining;
+    const QStringList candidates = collectNormalizedUrls(primary, rawSources, m_baseUrl);
+    item.url = choosePlaybackUrl(candidates, &remaining);
+    item.alternateUrls = remaining;
     if (item.title.isEmpty())
         item.title = item.url.fileName();
     if (item.url.isEmpty() || !item.url.isValid()) {

@@ -143,6 +143,7 @@ private slots:
     void lrcParseWithOffsetAndMultipleTimestamps();
     void lrcIndexAt();
     void mediaItemJsonRoundTrip();
+    void preferredPlaybackUrlSelectsProgressive();
     void mediaItemValidity();
     void mediaIdentityUsesStableWebUrl();
     void sourceConfigJsonRoundTrip();
@@ -205,6 +206,8 @@ void CoreLogicTest::mediaItemJsonRoundTrip()
     item.title = QStringLiteral("标题");
     item.artist = QStringLiteral("作者");
     item.url = QUrl(QStringLiteral("https://example.com/video.mp4"));
+    item.alternateUrls = {QStringLiteral("https://example.com/video.m3u8"),
+                          QStringLiteral("https://example.com/video.flv")};
     item.lyricUrl = QUrl(QStringLiteral("https://example.com/a.lrc"));
     item.webUrl = QUrl(QStringLiteral("https://example.com/page"));
     item.sourceId = QStringLiteral("src");
@@ -223,6 +226,7 @@ void CoreLogicTest::mediaItemJsonRoundTrip()
     QCOMPARE(restored.title, item.title);
     QCOMPARE(restored.artist, item.artist);
     QCOMPARE(restored.url, item.url);
+    QCOMPARE(restored.alternateUrls, item.alternateUrls);
     QCOMPARE(restored.lyricUrl, item.lyricUrl);
     QCOMPARE(restored.webUrl, item.webUrl);
     QCOMPARE(restored.sourceId, item.sourceId);
@@ -234,6 +238,34 @@ void CoreLogicTest::mediaItemJsonRoundTrip()
     QCOMPARE(restored.area, item.area);
     QCOMPARE(restored.genre, item.genre);
     QCOMPARE(restored.description, item.description);
+}
+
+void CoreLogicTest::preferredPlaybackUrlSelectsProgressive()
+{
+    MediaItem hlsPrimary;
+    hlsPrimary.type = MediaType::Video;
+    hlsPrimary.url = QUrl(QStringLiteral("https://example.com/video.m3u8"));
+    hlsPrimary.alternateUrls = {QStringLiteral("https://example.com/video.mp4"),
+                                QStringLiteral("https://example.com/video.flv")};
+    QCOMPARE(preferredPlaybackUrl(hlsPrimary),
+             QUrl(QStringLiteral("https://example.com/video.mp4")));
+
+    MediaItem progressivePrimary;
+    progressivePrimary.type = MediaType::Video;
+    progressivePrimary.url = QUrl(QStringLiteral("https://example.com/video.flv"));
+    progressivePrimary.alternateUrls = {QStringLiteral("https://example.com/video.m3u8")};
+    QCOMPARE(preferredPlaybackUrl(progressivePrimary), progressivePrimary.url);
+
+    MediaItem hlsOnly = hlsPrimary;
+    hlsOnly.alternateUrls = {QStringLiteral("https://example.com/video.m3u8"),
+                             QStringLiteral("https://cdn.example.com/not-a-video")};
+    QCOMPARE(preferredPlaybackUrl(hlsOnly), hlsOnly.url);
+
+    MediaItem music;
+    music.type = MediaType::Music;
+    music.url = QUrl(QStringLiteral("https://example.com/song.mp3"));
+    music.alternateUrls = {QStringLiteral("https://example.com/song.mp4")};
+    QCOMPARE(preferredPlaybackUrl(music), music.url);
 }
 
 void CoreLogicTest::mediaItemValidity()
@@ -428,11 +460,14 @@ void CoreLogicTest::configMapperSplitsEpisodesAndResolvesUrls()
 {
     const QVector<ConfigMapper::EpisodePart> parts = ConfigMapper::parseEpisodes(
         QStringLiteral("第01集$https://x/1.m3u8#第02集$https://x/2.m3u8"
-                       "$$$备用源$https://y/3.m3u8"));
+                       "$$$第01集$https://y/1.mp4#第02集$https://y/2.mp4"));
     QCOMPARE(parts.size(), 2);
     QCOMPARE(parts.at(0).name, QStringLiteral("第01集"));
     QCOMPARE(parts.at(0).url, QStringLiteral("https://x/1.m3u8"));
+    QCOMPARE(parts.at(0).altUrls.size(), 1);
+    QCOMPARE(parts.at(0).altUrls.first(), QStringLiteral("https://y/1.mp4"));
     QCOMPARE(parts.at(1).name, QStringLiteral("第02集"));
+    QCOMPARE(parts.at(1).altUrls.first(), QStringLiteral("https://y/2.mp4"));
 
     const QUrl protocolRelative =
         ConfigMapper::normalizeUrl(QStringLiteral("//cdn.example.com/a.ts"));
