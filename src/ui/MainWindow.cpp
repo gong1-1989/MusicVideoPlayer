@@ -5,8 +5,6 @@
 #include "net/HttpClient.h"
 #include "net/SearchCoordinator.h"
 #include "net/SourceRegistry.h"
-#include "settings/AppSettings.h"
-#include "settings/WindowPreset.h"
 #include "ui/DownloadController.h"
 #include "ui/FullscreenController.h"
 #include "ui/LyricsController.h"
@@ -14,7 +12,7 @@
 #include "ui/PlaybackUiController.h"
 #include "ui/PlaylistController.h"
 #include "ui/SearchPanelController.h"
-#include "ui/SettingsDialog.h"
+#include "ui/SettingsController.h"
 #include "ui/ThemeManager.h"
 #include "ui/VideoStage.h"
 #include "util/TimeFormat.h"
@@ -29,7 +27,6 @@
 #include <QDebug>
 #include <QEvent>
 #include <QFontMetrics>
-#include <QGuiApplication>
 #include <QLineEdit>
 #include <QListView>
 #include <QListWidget>
@@ -42,7 +39,6 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QResizeEvent>
-#include <QScreen>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -175,28 +171,6 @@ private:
     int m_phase = 0;
 };
 
-/// 预设尺寸只是目标值：屏幕装不下时按可用工作区收一收，否则布局会被挤到裁切
-QSize fitToAvailableScreen(const QSize &size)
-{
-    QSize target = size;
-    if (const QScreen *screen = QGuiApplication::primaryScreen()) {
-        const QRect available = screen->availableGeometry();
-        target.setWidth(qMin(target.width(), available.width() - 24));
-        target.setHeight(qMin(target.height(), available.height() - 32));
-    }
-    return target;
-}
-
-/// 当前屏幕的可用工作区（扣掉任务栏）
-QSize availableWindowSize()
-{
-    if (const QScreen *screen = QGuiApplication::primaryScreen()) {
-        const QRect available = screen->availableGeometry();
-        return QSize(available.width(), available.height());
-    }
-    return QSize(1280, 720);
-}
-
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -314,8 +288,17 @@ MainWindow::MainWindow(QWidget *parent)
     auto *settingsShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+,")), this);
     connect(settingsShortcut, &QShortcut::activated, this, &MainWindow::on_btn_settings_clicked);
 
+    // 设置读写、主题/窗口预设与设置对话框入口交给控制器
+    m_settings = new SettingsController(m_player, m_registry, m_http,
+                                        SettingsUi{this, ui->slider_volume}, this);
+    connect(m_settings, &SettingsController::applied, this, [this] {
+        // 侧栏 / 控制条的折叠策略改了要立刻生效；歌词高亮跟随主题刷新
+        m_panels->applyVisibility();
+        m_lyrics->refreshHighlight();
+    });
+
     setupConnections();
-    restoreSettings();
+    m_settings->restore();
     m_playlists->restore();
     m_panels->applyVisibility();
 }
@@ -365,90 +348,9 @@ void MainWindow::setupConnections()
             });
 }
 
-void MainWindow::restoreSettings()
-{
-    // 音量、播放模式、搜索条数全部来自设置，不再有散落的默认值
-    m_player->setVolumePercent(AppSettings::defaultVolume());
-    ui->slider_volume->setValue(m_player->volumePercent());
-
-    const int modeValue = AppSettings::playbackMode();
-    m_player->setMode(static_cast<PlaybackController::Mode>(qBound(0, modeValue, 2)));
-
-    applyWindowPreset();
-}
-
-void MainWindow::applyWindowPreset()
-{
-    const WindowPreset preset = AppSettings::windowPreset();
-
-    // 记住上次：直接用上次的几何，不再套预设
-    if (preset == WindowPreset::Last) {
-        const QByteArray geometry = AppSettings::savedGeometry();
-        if (!geometry.isEmpty())
-            restoreGeometry(geometry);
-        return;
-    }
-
-    // 自适应 = 铺满可用工作区；固定预设 = 标准分辨率
-    const QSize presetSize = preset == WindowPreset::Auto
-                                 ? availableWindowSize()
-                                 : AppSettings::presetWindowSize(preset);
-    if (!presetSize.isValid())
-        return;
-
-    // 预设只是目标值：屏幕装不下时按可用工作区收一收
-    const QSize target = fitToAvailableScreen(presetSize);
-    resize(target);
-
-    // 自适应/固定尺寸都不沿用历史位置，启动时居中
-    if (const QScreen *screen = QGuiApplication::primaryScreen()) {
-        const QRect available = screen->availableGeometry();
-        move(available.center() - QPoint(target.width() / 2, target.height() / 2));
-    }
-}
-
-void MainWindow::saveSettings()
-{
-    AppSettings::setDefaultVolume(m_player->volumePercent());
-    AppSettings::setPlaybackMode(static_cast<int>(m_player->mode()));
-    // 播放列表现只写 Data/playlists.json；QSettings 双写会让删除后的列表“复活”。
-
-    // 只有"记住上次"才写几何，固定尺寸预设下写进去会互相打架
-    if (AppSettings::windowPreset() == WindowPreset::Last)
-        AppSettings::setSavedGeometry(saveGeometry());
-}
-
-void MainWindow::applySettings()
-{
-    ThemeManager::instance().apply(AppSettings::themeId());
-
-    // 尺寸实时跟着设置走：自适应铺开，固定预设按标准分辨率（超屏自动收）
-    const WindowPreset preset = AppSettings::windowPreset();
-    if (preset != WindowPreset::Last) {
-        const QSize target = preset == WindowPreset::Auto
-                                 ? fitToAvailableScreen(availableWindowSize())
-                                 : fitToAvailableScreen(AppSettings::presetWindowSize(preset));
-        if (target.isValid())
-            resize(target);
-    }
-
-    m_player->setVolumePercent(AppSettings::defaultVolume());
-    {
-        QSignalBlocker blocker(ui->slider_volume);
-        ui->slider_volume->setValue(m_player->volumePercent());
-    }
-
-    // 侧栏 / 控制条的启动折叠策略改了要立刻生效
-    m_panels->applyVisibility();
-
-    m_lyrics->refreshHighlight();
-}
-
 void MainWindow::on_btn_settings_clicked()
 {
-    SettingsDialog dialog(m_registry, m_http, this);
-    if (dialog.exec() == QDialog::Accepted)
-        applySettings();
+    m_settings->openDialog();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -458,7 +360,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
         m_fullscreen->exitFullScreen();
     m_player->stop();
     m_playlists->save();
-    saveSettings();
+    m_settings->save();
     QMainWindow::closeEvent(event);
     // 关闭主窗后显式结束事件循环：避免独立全屏窗或异步播放对象让进程残留在后台。
     QCoreApplication::quit();

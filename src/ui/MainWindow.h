@@ -16,6 +16,7 @@ class PanelOverlayController;
 class LyricsController;
 class DownloadController;
 class PlaybackUiController;
+class SettingsController;
 class SourceRegistry;
 class HttpClient;
 class QCloseEvent;
@@ -45,11 +46,6 @@ private slots:
 
 private:
     void setupConnections();
-    void restoreSettings();
-    void saveSettings();
-    void applySettings();
-    void applyWindowPreset();
-
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void clearPlaybackUi();
@@ -64,6 +60,7 @@ private:
     LyricsController *m_lyrics = nullptr;
     DownloadController *m_downloads = nullptr;
     PlaybackUiController *m_transport = nullptr;
+    SettingsController *m_settings = nullptr;
     PlaybackController *m_player;
     PlaylistController *m_playlists = nullptr;
     PlaylistModel *m_musicModel = nullptr;
