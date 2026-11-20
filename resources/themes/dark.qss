@@ -44,6 +44,13 @@ QFrame#panelSidebar[floating="true"] {
     background: rgba(14, 16, 36, 90%);
 }
 
+/* 搜索分页条与结果列表分开，避免最后一行贴着翻页按钮像被压住 */
+QFrame#frame_searchPager {
+    border: none;
+    border-top: 1px solid rgba(160, 190, 255, 18%);
+    background: transparent;
+}
+
 QFrame#panelTransport {
     background: rgba(20, 22, 48, 55%);
     border: 1px solid rgba(160, 190, 255, 16%);
