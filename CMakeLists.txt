@@ -75,7 +75,6 @@ target_include_directories(mvp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(mvp_core PUBLIC
     Qt6::Core
     Qt6::Gui
-    Qt6::Widgets
     Qt6::Network
     Qt6::Multimedia
 )
