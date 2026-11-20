@@ -47,6 +47,9 @@ private:
     void stopPressed();
     void modePressed();
     void refreshModeButton();
+    /// HLS 深拖动时 FFmpeg 要从目标前若干分片顺序读起，这里只负责把“正在定位”说清楚
+    void beginSeek(qint64 target);
+    bool isHlsItem() const;
 
     PlaybackUi m_ui;
     PlaybackController *m_player;
@@ -54,6 +57,10 @@ private:
     VideoSurface *m_surface;
     LyricsController *m_lyrics;
     bool m_userSeeking = false;
+    /// 正在等待画面追上的 seek 目标；小于 0 表示没有待确认的定位
+    qint64 m_seekTarget = -1;
+    /// 每次定位递增，用来让上一轮的超时回调失效
+    quint64 m_seekSerial = 0;
 };
 
 #endif // PLAYBACKUICONTROLLER_H
