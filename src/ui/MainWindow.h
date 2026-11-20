@@ -40,8 +40,6 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private slots:
-    void openLocalMusic();
-    void openLocalVideo();
     void on_btn_fullscreen_clicked();
     void on_btn_settings_clicked();
 
@@ -70,8 +68,6 @@ private:
     PlaylistController *m_playlists = nullptr;
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
-
-    QString m_lastDir;
 };
 
 #endif // MAINWINDOW_H

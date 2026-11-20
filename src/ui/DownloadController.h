@@ -18,11 +18,10 @@ class DownloadController : public QObject
 public:
     DownloadController(HttpClient *http, QWidget *dialogParent, QObject *parent = nullptr);
 
-    void download(const MediaItem &item, const QString &initialDir);
+    void download(const MediaItem &item);
 
 signals:
     void statusMessage(const QString &message);
-    void lastDirChanged(const QString &dir);
 
 private:
     HttpClient *m_http;

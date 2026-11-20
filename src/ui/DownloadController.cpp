@@ -3,6 +3,7 @@
 #include "download/DownloadTask.h"
 #include "media/MediaItem.h"
 #include "net/HttpClient.h"
+#include "settings/AppSettings.h"
 
 #include <QDir>
 #include <QFileDialog>
@@ -20,7 +21,7 @@ DownloadController::DownloadController(HttpClient *http, QWidget *dialogParent, 
     Q_ASSERT(m_dialogParent != nullptr);
 }
 
-void DownloadController::download(const MediaItem &item, const QString &initialDir)
+void DownloadController::download(const MediaItem &item)
 {
     if (!item.online) {
         emit statusMessage(tr("本地文件无需下载"));
@@ -34,13 +35,14 @@ void DownloadController::download(const MediaItem &item, const QString &initialD
     const QString filter = hls ? tr("视频文件 (*.ts *.mp4)")
                                : tr("媒体文件 (*.%1)").arg(suffix);
     const QString suggested =
-        QDir(initialDir).filePath(DownloadTask::sanitizeFileName(item.displayName(), suffix));
+        QDir(AppSettings::lastDir())
+            .filePath(DownloadTask::sanitizeFileName(item.displayName(), suffix));
     const QString target =
         QFileDialog::getSaveFileName(m_dialogParent, tr("保存文件"), suggested, filter);
     if (target.isEmpty())
         return;
 
-    emit lastDirChanged(QFileInfo(target).absolutePath());
+    AppSettings::setLastDir(QFileInfo(target).absolutePath());
 
     QString finalTarget = target;
     if (hls) {

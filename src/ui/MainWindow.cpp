@@ -27,10 +27,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDebug>
-#include <QDir>
 #include <QEvent>
-#include <QFileDialog>
-#include <QFileInfo>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QLineEdit>
@@ -224,8 +221,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_downloads = new DownloadController(m_http, this, this);
     connect(m_downloads, &DownloadController::statusMessage, this,
             [this](const QString &text) { ui->label_status->setText(text); });
-    connect(m_downloads, &DownloadController::lastDirChanged, this,
-            [this](const QString &dir) { m_lastDir = dir; });
 
     // 搜索面板的模型、委托、分页和右键菜单全部由控制器持有
     SearchPanelUi searchUi;
@@ -247,7 +242,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
             this, &MainWindow::addSearchItemToPlaylist);
     connect(m_searchPanel, &SearchPanelController::downloadRequested, this,
-            [this](const MediaItem &item) { m_downloads->download(item, m_lastDir); });
+            [this](const MediaItem &item) { m_downloads->download(item); });
 
     // 播放列表模型、持久化、右键菜单和本地导入统一交给控制器
     PlaylistUi playlistUi;
@@ -262,13 +257,6 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const QString &text) { ui->label_status->setText(text); });
     connect(m_playlists, &PlaylistController::playbackInvalidated,
             this, &MainWindow::clearPlaybackUi);
-    connect(m_playlists, &PlaylistController::localFilesRequested, this,
-            [this](MediaType type) {
-                if (type == MediaType::Music)
-                    openLocalMusic();
-                else
-                    openLocalVideo();
-            });
 
     // 歌词加载、当前行高亮和歌词栏显隐由控制器统一处理
     LyricsUi lyricsUi;
@@ -379,8 +367,6 @@ void MainWindow::setupConnections()
 
 void MainWindow::restoreSettings()
 {
-    m_lastDir = AppSettings::lastDir();
-
     // 音量、播放模式、搜索条数全部来自设置，不再有散落的默认值
     m_player->setVolumePercent(AppSettings::defaultVolume());
     ui->slider_volume->setValue(m_player->volumePercent());
@@ -423,7 +409,6 @@ void MainWindow::applyWindowPreset()
 
 void MainWindow::saveSettings()
 {
-    AppSettings::setLastDir(m_lastDir);
     AppSettings::setDefaultVolume(m_player->volumePercent());
     AppSettings::setPlaybackMode(static_cast<int>(m_player->mode()));
     // 播放列表现只写 Data/playlists.json；QSettings 双写会让删除后的列表“复活”。
@@ -484,34 +469,6 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
     // 侧栏、控制条都是浮层、不跟布局走，窗口尺寸一变要自己贴回原位
     m_panels->reposition();
-}
-
-void MainWindow::openLocalMusic()
-{
-    const QStringList files = QFileDialog::getOpenFileNames(
-        this,
-        tr("选择音频文件"),
-        m_lastDir,
-        tr("音频文件 (*.mp3 *.wav *.m4a *.flac *.ogg);;所有文件 (*)"));
-    if (files.isEmpty())
-        return;
-
-    m_lastDir = QFileInfo(files.first()).absolutePath();
-    m_playlists->addLocalFiles(MediaType::Music, files);
-}
-
-void MainWindow::openLocalVideo()
-{
-    const QStringList files = QFileDialog::getOpenFileNames(
-        this,
-        tr("选择视频文件"),
-        m_lastDir,
-        tr("视频文件 (*.mp4 *.mkv *.avi *.mov *.flv *.wmv);;所有文件 (*)"));
-    if (files.isEmpty())
-        return;
-
-    m_lastDir = QFileInfo(files.first()).absolutePath();
-    m_playlists->addLocalFiles(MediaType::Video, files);
 }
 
 void MainWindow::on_btn_fullscreen_clicked()

@@ -47,13 +47,13 @@ public:
     void addSearchItem(const MediaItem &item, MediaType type);
     /// 本地文件导入：自动找同名 .lrc
     void addLocalFiles(MediaType type, const QStringList &files);
+    /// 弹出文件选择框并导入本地音乐/视频，目录记忆走 AppSettings
+    void chooseLocalFiles(MediaType type);
 
 signals:
     void statusMessage(const QString &text);
     /// 当前播放项被删除或列表被清空：窗口需要复位进度、时间与歌词
     void playbackInvalidated();
-    /// 右键菜单请求打开本地文件选择框，窗口负责弹对话框并记住目录
-    void localFilesRequested(MediaType type);
 
 private:
     void bindView(QListView *view, PlaylistModel *model, MediaType type);

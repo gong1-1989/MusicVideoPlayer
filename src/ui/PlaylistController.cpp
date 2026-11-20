@@ -6,6 +6,7 @@
 #include "settings/AppSettings.h"
 
 #include <QAction>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -224,6 +225,22 @@ void PlaylistController::addLocalFiles(MediaType type, const QStringList &files)
                        << files.size() << "个，新增" << added << "个";
 }
 
+void PlaylistController::chooseLocalFiles(MediaType type)
+{
+    QWidget *parent = m_ui.tabs != nullptr ? m_ui.tabs->window() : nullptr;
+    const QString filter = type == MediaType::Music
+                               ? tr("音乐文件 (*.mp3 *.flac *.wav *.m4a *.aac *.ogg);;所有文件 (*)")
+                               : tr("视频文件 (*.mp4 *.mkv *.avi *.mov *.flv *.wmv);;所有文件 (*)");
+    const QStringList files = QFileDialog::getOpenFileNames(
+        parent, type == MediaType::Music ? tr("选择音乐文件") : tr("选择视频文件"),
+        AppSettings::lastDir(), filter);
+    if (files.isEmpty())
+        return;
+
+    AppSettings::setLastDir(QFileInfo(files.first()).absolutePath());
+    addLocalFiles(type, files);
+}
+
 void PlaylistController::bindView(QListView *view, PlaylistModel *model, MediaType type)
 {
     view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -312,7 +329,7 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     } else if (chosen == clearAction) {
         clearPlaylist(type);
     } else if (chosen == addLocalAction) {
-        emit localFilesRequested(type);
+        chooseLocalFiles(type);
     }
 }
 
