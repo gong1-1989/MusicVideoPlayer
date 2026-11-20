@@ -28,7 +28,9 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QScreen>
+#include <QScrollBar>
 #include <QSpinBox>
+#include <QTimer>
 #include <QUrl>
 
 namespace {
@@ -100,7 +102,17 @@ SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *h
     const QRect available = QGuiApplication::primaryScreen()
                                 ? QGuiApplication::primaryScreen()->availableGeometry()
                                 : QRect(0, 0, 1280, 800);
+    // 让中间滚动区可以被压缩，底部试搜/保存/取消始终留在屏幕内
+    ui->scroll_body->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    ui->scroll_body->setMinimumHeight(0);
+    // 中间区域吃掉剩余高度，标题和底部试搜/保存栏保持固定
+    ui->layout_root->setStretch(2, 1);
+    setMaximumSize(available.width(), available.height() - 20);
     resize(qMin(900, available.width() - 40), qMin(640, available.height() - 60));
+
+    QTimer::singleShot(0, this, [this] {
+        ui->scroll_body->verticalScrollBar()->setValue(0);
+    });
 
     if (m_registry != nullptr)
         m_drafts = m_registry->sources();

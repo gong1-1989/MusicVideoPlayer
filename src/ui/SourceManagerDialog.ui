@@ -56,7 +56,18 @@
     </widget>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="layout_body">
+    <widget class="QScrollArea" name="scroll_body">
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <property name="horizontalScrollBarPolicy">
+      <enum>Qt::ScrollBarAlwaysOff</enum>
+     </property>
+     <widget class="QWidget" name="scroll_bodyWidget">
+      <layout class="QHBoxLayout" name="layout_body">
      <property name="spacing">
       <number>12</number>
      </property>
@@ -842,7 +853,9 @@ op 可选 eq / ne / gt / gte / lt / lte / empty / notEmpty / contains</string>
        </widget>
       </widget>
      </item>
-    </layout>
+      </layout>
+     </widget>
+    </widget>
    </item>
    <item>
     <layout class="QHBoxLayout" name="layout_testRow">

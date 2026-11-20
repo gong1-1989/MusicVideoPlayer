@@ -25,6 +25,7 @@
 #include <QModelIndex>
 #include <QResizeEvent>
 #include <QShortcut>
+#include <QTimer>
 #include <QWidget>
 
 Q_LOGGING_CATEGORY(lcWindow, "mvp.window")
@@ -157,6 +158,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_settings->restore();
     m_playlists->restore();
     m_panels->applyVisibility();
+    updateControlBarLayout();
 }
 
 MainWindow::~MainWindow()
@@ -235,6 +237,32 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
     // 侧栏、控制条都是浮层、不跟布局走，窗口尺寸一变要自己贴回原位
     m_panels->reposition();
+    // 布局几何在 resizeEvent 结束后才最终确定，延迟一拍再判断控制条是否需要紧凑
+    QTimer::singleShot(0, this, &MainWindow::updateControlBarLayout);
+}
+
+void MainWindow::updateControlBarLayout()
+{
+    // 150% 缩放后右侧播放区只剩约 600 逻辑像素，仍按宽屏尺寸排会压字。
+    const bool compact = ui->panelTransport->width() < 720;
+    if (compact == m_compactControls)
+        return;
+    m_compactControls = compact;
+
+    ui->layout_controls->setSpacing(compact ? 4 : 8);
+    ui->label_volume->setVisible(!compact);
+    ui->slider_volume->setMinimumWidth(compact ? 72 : 96);
+    ui->slider_volume->setMaximumWidth(compact ? 88 : 110);
+    ui->btn_prev->setMinimumWidth(compact ? 60 : 68);
+    ui->btn_next->setMinimumWidth(compact ? 60 : 68);
+    ui->btn_stop->setMinimumWidth(compact ? 54 : 60);
+    ui->btn_mode->setMinimumWidth(compact ? 64 : 86);
+    ui->btn_fullscreen->setMinimumWidth(compact ? 54 : 60);
+    ui->btn_settings->setMinimumWidth(compact ? 52 : 58);
+    // 窄屏用两字“循环”，完整含义保留在悬停提示里，避免文字溢出按钮边界
+    ui->btn_mode->setText(compact ? tr("循环") : tr("列表循环"));
+    ui->spacer_controls->changeSize(compact ? 8 : 24, 20, QSizePolicy::Expanding);
+    ui->layout_controls->invalidate();
 }
 
 void MainWindow::on_btn_fullscreen_clicked()

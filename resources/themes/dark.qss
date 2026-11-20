@@ -512,17 +512,24 @@ QDialog#SourceProbeDialog QListWidget {
 }
 
 /* 表单在滚动区里，滚动区本身不能带白底 */
+QDialog#SettingsDialog QScrollArea,
 QDialog#SourceManagerDialog QScrollArea,
 QDialog#SourceProbeDialog QScrollArea {
     background: transparent;
     border: none;
 }
 
-QDialog#SourceManagerDialog QScrollArea > QWidget > QWidget,
-QDialog#SourceProbeDialog QScrollArea > QWidget > QWidget {
-    background: transparent;
+/* 滚动容器使用与对话框一致的底色。
+   半透明卡片必须叠在不透明底色上才不会被“透明套透明”吃掉边框和背景。 */
+QWidget#scroll_widget,
+QWidget#scroll_bodyWidget,
+QWidget#rightBox {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #0a0a1e,
+                                stop:1 #101a33);
 }
 
+QDialog#SettingsDialog QScrollArea QScrollBar:vertical,
 QDialog#SourceManagerDialog QScrollArea QScrollBar:vertical,
 QDialog#SourceProbeDialog QScrollArea QScrollBar:vertical {
     background: rgba(255, 255, 255, 4%);
@@ -530,6 +537,7 @@ QDialog#SourceProbeDialog QScrollArea QScrollBar:vertical {
     border-radius: 4px;
 }
 
+QDialog#SettingsDialog QScrollArea QScrollBar::handle:vertical,
 QDialog#SourceManagerDialog QScrollArea QScrollBar::handle:vertical,
 QDialog#SourceProbeDialog QScrollArea QScrollBar::handle:vertical {
     background: rgba(150, 190, 255, 45%);
@@ -543,9 +551,10 @@ QLabel#label_sectionTitle {
     font-weight: 600;
 }
 
-QFrame#settingsCard {
-    background: rgba(255, 255, 255, 4%);
-    border: 1px solid rgba(160, 190, 255, 14%);
+QDialog#SettingsDialog QScrollArea QFrame#settingsCard {
+    /* 滚动区里的半透明控件在透明父层上会被吃掉，改用与玻璃面板等效的不透明底色 */
+    background: #15162b;
+    border: 1px solid #29304c;
     border-radius: 14px;
 }
 

@@ -51,6 +51,8 @@ private:
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void clearPlaybackUi();
+    /// 窄窗口下压缩控制条：收窄间距与按钮，避免“列表循环 / 全屏 / 音量”互相压字
+    void updateControlBarLayout();
 
     Ui::MainWindow *ui;
     HttpClient *m_http;
@@ -67,6 +69,7 @@ private:
     PlaylistController *m_playlists = nullptr;
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
+    bool m_compactControls = false;
 };
 
 #endif // MAINWINDOW_H

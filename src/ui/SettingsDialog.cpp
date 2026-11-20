@@ -8,12 +8,16 @@
 #include "ui_SettingsDialog.h"
 
 #include <QGuiApplication>
+#include <QFrame>
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
+#include <QScrollBar>
 #include <QSlider>
+#include <QStyle>
+#include <QTimer>
 
 Q_LOGGING_CATEGORY(lcSettings, "mvp.settings")
 
@@ -24,13 +28,36 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
     , m_http(http)
 {
     ui->setupUi(this);
+    // 卡片在滚动容器里时，半透明背景需要显式开启 styled background 才会绘制
+    QFrame *cards[] = {ui->card_appearance, ui->card_layout, ui->card_window,
+                       ui->card_behavior, ui->card_sources};
+    for (QFrame *card : cards) {
+        card->setAttribute(Qt::WA_StyledBackground, true);
+        // setWidget 会在 retranslateUi 之前先 polish 子控件，此时对象名还是旧值。
+        // 重新 polish 一次，让 QFrame#settingsCard 的全局样式真正命中。
+        card->style()->unpolish(card);
+        card->style()->polish(card);
+        card->update();
+    }
+
     setWindowTitle(tr("系统设置"));
     setModal(true);
     setMinimumWidth(720);
 
     const QRect available = screen() != nullptr ? screen()->availableGeometry()
                                                 : QRect(0, 0, 1280, 800);
+    // 滚动区允许被压缩到 0，否则布局最小高度会把窗口顶出屏幕，底部按钮再次不可达
+    ui->scroll_content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
+    ui->scroll_content->setMinimumHeight(0);
+    // 滚动区独占根布局的剩余高度，标题保持贴顶，不被拉成居中
+    ui->layout_root->setStretch(1, 1);
+    setMaximumSize(available.width(), available.height() - 20);
     resize(qMin(820, available.width() - 40), qMin(620, available.height() - 60));
+
+    // 首次打开时焦点落在首个输入控件会把滚动区带到中间，显示时强制回到顶部
+    QTimer::singleShot(0, this, [this] {
+        ui->scroll_content->verticalScrollBar()->setValue(0);
+    });
 
     bindUi();
     loadValues();
