@@ -20,10 +20,10 @@
 
 namespace {
 
-QByteArray proxyTestBody()
+QByteArray proxyTestBody(int size = 1000)
 {
     QByteArray body;
-    body.resize(1000);
+    body.resize(size);
     for (int i = 0; i < body.size(); ++i)
         body[i] = char('a' + (i % 26));
     return body;
@@ -75,6 +75,86 @@ public:
     QByteArray body;
     int requestCount = 0;
     QString lastRange;
+};
+
+/// 模拟真正支持 206 的 HLS 分片源站。代理对 `bytes=0-` 的 .ts 请求会先
+/// 用 64KB 探测总长，再并发拉剩余分段；这里逐条记录 Range，供测试确认
+/// 多连接路径确实被走到、而不是退化在上游单路透传。
+class RangeSupportingServer : public QTcpServer
+{
+public:
+    explicit RangeSupportingServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("responded").toBool())
+                        return;
+
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+
+                    ++requestCount;
+                    qint64 start = 0;
+                    qint64 end = body.size() - 1;
+                    for (const QByteArray &line : pending.left(headEnd).split('\n')) {
+                        if (!line.toLower().startsWith("range:"))
+                            continue;
+                        const QByteArray spec = line.mid(6).trimmed();
+                        if (!spec.startsWith("bytes="))
+                            continue;
+                        const QByteArray value = spec.mid(6);
+                        const int dash = value.indexOf('-');
+                        if (dash <= 0)
+                            continue;
+                        start = value.left(dash).toLongLong();
+                        const QByteArray tail = value.mid(dash + 1);
+                        if (!tail.isEmpty())
+                            end = tail.toLongLong();
+                    }
+                    ranges.append(qMakePair(start, end));
+
+                    socket->setProperty("responded", true);
+                    if (start < 0 || start >= body.size()) {
+                        const QByteArray response = "HTTP/1.1 416 Range Not Satisfiable\r\n"
+                                                    "Content-Range: bytes */"
+                                                    + QByteArray::number(body.size())
+                                                    + "\r\nContent-Length: 0\r\n"
+                                                      "Connection: close\r\n\r\n";
+                        socket->write(response);
+                        QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                        return;
+                    }
+
+                    end = qMin(end, qint64(body.size() - 1));
+                    const QByteArray part = body.mid(int(start), int(end - start + 1));
+                    QByteArray response = "HTTP/1.1 206 Partial Content\r\n"
+                                          "Content-Type: video/mp2t\r\n"
+                                          "Accept-Ranges: bytes\r\n"
+                                          "Content-Range: bytes "
+                                          + QByteArray::number(start) + '-'
+                                          + QByteArray::number(end) + '/'
+                                          + QByteArray::number(body.size())
+                                          + "\r\nContent-Length: "
+                                          + QByteArray::number(part.size())
+                                          + "\r\nConnection: close\r\n\r\n" + part;
+                    socket->write(response);
+                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QByteArray body;
+    int requestCount = 0;
+    QList<QPair<qint64, qint64>> ranges;
 };
 
 bool readProxyResponse(QTcpSocket *socket, QByteArray *head, QByteArray *body,
@@ -154,6 +234,8 @@ private slots:
     void configMapperBoolRulesDoNotMixWithNumbers();
     void configMapperSplitsEpisodesAndResolvesUrls();
     void streamProxySlicesRangeFromCache();
+    void streamProxyMultiRangeForHlsSegment();
+    void streamProxyFallsBackWhenHlsRangeIgnored();
 };
 
 void CoreLogicTest::timeFormat()
@@ -542,6 +624,78 @@ void CoreLogicTest::streamProxySlicesRangeFromCache()
     QVERIFY(head.contains("Content-Range: bytes */1000"));
     QCOMPARE(body.size(), 0);
     QCOMPARE(upstream.requestCount, 1);
+}
+
+void CoreLogicTest::streamProxyMultiRangeForHlsSegment()
+{
+    RangeSupportingServer upstream;
+    upstream.body = proxyTestBody(200'000);
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QString upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/hls/0000001.ts").arg(upstream.serverPort());
+    const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl));
+    QVERIFY(local.isValid());
+
+    QTcpSocket socket;
+    socket.connectToHost(local.host(), quint16(local.port()));
+    QVERIFY(socket.waitForConnected(3000));
+
+    const QByteArray request = "GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                               "Host: 127.0.0.1\r\n"
+                               "Range: bytes=0-\r\n"
+                               "Connection: close\r\n\r\n";
+    socket.write(request);
+    socket.flush();
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(readProxyResponse(&socket, &head, &body, 8000));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QVERIFY(head.contains("Content-Range: bytes 0-199999/200000"));
+    QCOMPARE(body, upstream.body);
+
+    // 64KB 探测 + 3 个剩余分段，必须是多连接 Range，而不是单路全量透传。
+    QTRY_VERIFY_WITH_TIMEOUT(upstream.requestCount >= 4, 5000);
+    QVERIFY(upstream.ranges.contains(qMakePair(qint64(0), qint64(65535))));
+    QVERIFY(upstream.ranges.contains(qMakePair(qint64(65536), qint64(115535))));
+}
+
+void CoreLogicTest::streamProxyFallsBackWhenHlsRangeIgnored()
+{
+    RangeIgnoringServer upstream;
+    upstream.body = proxyTestBody();
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QString upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/hls/0000002.ts").arg(upstream.serverPort());
+    const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl));
+    QVERIFY(local.isValid());
+
+    QTcpSocket socket;
+    socket.connectToHost(local.host(), quint16(local.port()));
+    QVERIFY(socket.waitForConnected(3000));
+
+    const QByteArray request = "GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                               "Host: 127.0.0.1\r\n"
+                               "Range: bytes=0-\r\n"
+                               "Connection: close\r\n\r\n";
+    socket.write(request);
+    socket.flush();
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(readProxyResponse(&socket, &head, &body, 8000));
+    QCOMPARE(body, upstream.body);
+    // 首片探测收到 200 后必须回退单路，不能把客户端挂在 multiRange 上等超时。
+    QTRY_COMPARE_WITH_TIMEOUT(upstream.requestCount, 2, 5000);
+    QCOMPARE(upstream.lastRange, QStringLiteral("bytes=0-"));
 }
 
 QTEST_GUILESS_MAIN(CoreLogicTest)
