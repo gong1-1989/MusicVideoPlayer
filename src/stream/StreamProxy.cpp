@@ -45,6 +45,12 @@ constexpr int kCacheIdleMs = 30 * 60 * 1000;
 constexpr int kRangeWaitMs = 20 * 1000;
 constexpr qint64 kMaxSocketBacklog = 512LL * 1024;
 constexpr qint64 kCacheWriteChunk = 256LL * 1024;
+// HLS 分片多连接 Range：目标片通常几百 KB，4 路能把单路 4.7 秒压到 2.6 秒左右。
+// 只对分片启用，不拆分大 MP4；首片 64KB 用来探测总长，剩余按最多 4 路均分。
+constexpr int kRangeMaxConnections = 4;
+constexpr qint64 kRangeProbeBytes = 64LL * 1024;
+constexpr qint64 kRangeMinPartBytes = 48LL * 1024;
+constexpr qint64 kRangeMaxSegmentBytes = 8LL * 1024 * 1024;
 
 // 预取窗口：深拖动时覆盖 FFmpeg 的实际回退范围，正常播放只补后面几片。
 // 实测 FFmpeg 对 600s 的目标会从 564.6s 的分片开始读，目标片是第 152 片，
@@ -156,6 +162,14 @@ struct StreamProxy::CacheEntry
     qint64 lastUsedMs = 0;
     QNetworkReply *reply = nullptr;
     QList<QPointer<QTcpSocket>> clients;
+    // 多连接 Range 下载：各分片先按起始偏移暂存，凑齐连续前缀后再并入
+    // data 供播放器顺序读取。rangeReplies 用来在换片/淘汰时统一中止。
+    bool multiRange = false;
+    QHash<qint64, QByteArray> rangeParts;
+    QHash<qint64, qint64> rangePartEnds;
+    QSet<qint64> rangePending;
+    QSet<qint64> rangeRetried;
+    QList<QPointer<QNetworkReply>> rangeReplies;
 };
 
 StreamProxy::StreamProxy(QObject *parent)
@@ -190,6 +204,13 @@ void StreamProxy::shutdown()
             entry->reply->deleteLater();
             entry->reply = nullptr;
         }
+        for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
+            if (!reply.isNull()) {
+                reply->abort();
+                reply->deleteLater();
+            }
+        }
+        entry->rangeReplies.clear();
     }
     m_cache.clear();
     m_tokens.clear();
@@ -393,6 +414,23 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
         }
     }
 
+    // 已知 HLS 分片且是整段请求时，先走多连接 Range；源站不支持或异常时
+    // 在异步回调里回退到原来的单路透传。
+    if (!isHead && hasRange && tryStartRangeDownload(client, upstream, headers, request,
+                                                     hasRange, cacheKey)) {
+        return;
+    }
+
+    startUpstreamRequest(client, upstream, headers, request, hasRange, cacheKey);
+}
+
+void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
+                                       const QHash<QString, QString> &headers,
+                                       const Request &request, bool hasRange,
+                                       const QString &cacheKey)
+{
+    const bool isHead = request.method == QLatin1String("HEAD");
+    const QByteArray range = request.range.toUtf8();
     // 由 HttpClient 手动跟随 302（含 https→http 降级），拿到可读的上游 reply。
     // 用 stream() 而不是 fetch()：响应头一到就能开始转发，不会先缓冲整段音视频。
     QPointer<QTcpSocket> guard(client);
@@ -496,6 +534,359 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
             reply->deleteLater();
         }
     });
+}
+
+bool StreamProxy::parseContentRange(const QByteArray &value, qint64 *start, qint64 *end,
+                                    qint64 *total)
+{
+    if (start == nullptr || end == nullptr || total == nullptr)
+        return false;
+    static const QRegularExpression pattern(
+        QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/(\\d+)$"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = pattern.match(QString::fromLatin1(value).trimmed());
+    if (!match.hasMatch())
+        return false;
+    bool okStart = false;
+    bool okEnd = false;
+    bool okTotal = false;
+    const qint64 first = match.captured(1).toLongLong(&okStart);
+    const qint64 last = match.captured(2).toLongLong(&okEnd);
+    const qint64 size = match.captured(3).toLongLong(&okTotal);
+    if (!okStart || !okEnd || !okTotal || size <= 0 || first < 0 || last < first
+        || last >= size) {
+        return false;
+    }
+    *start = first;
+    *end = last;
+    *total = size;
+    return true;
+}
+
+bool StreamProxy::isHlsSegmentUrl(const QUrl &url) const
+{
+    const QString path = url.path().toLower();
+    if (path.endsWith(QLatin1String(".ts")) || path.endsWith(QLatin1String(".m4s"))
+        || path.endsWith(QLatin1String(".aac"))) {
+        return true;
+    }
+    for (const auto &info : m_playlists) {
+        if (info.isNull())
+            continue;
+        for (const QUrl &segment : info->segments) {
+            if (segment == url)
+                return true;
+        }
+    }
+    return false;
+}
+
+bool StreamProxy::tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream,
+                                        const QHash<QString, QString> &headers,
+                                        const Request &request, bool hasRange,
+                                        const QString &cacheKey)
+{
+    if (!hasRange || client == nullptr
+        || client->state() != QAbstractSocket::ConnectedState) {
+        return false;
+    }
+
+    // 只拆 FFmpeg 请求整段的 `bytes=0-`。带明确末字节的请求是播放器
+    // 自己限定范围，贸然下载整片会越界，也会浪费带宽。
+    const QString spec = request.range.trimmed();
+    if (!spec.startsWith(QLatin1String("bytes="), Qt::CaseInsensitive))
+        return false;
+    if (spec.mid(6).trimmed() != QLatin1String("0-"))
+        return false;
+    if (!isHlsSegmentUrl(upstream))
+        return false;
+
+    const QSharedPointer<CacheEntry> existing = m_cache.value(cacheKey);
+    if (!existing.isNull()) {
+        if (!existing->failed)
+            return false;
+        dropCacheEntry(cacheKey);
+    }
+
+    auto entry = QSharedPointer<CacheEntry>::create();
+    entry->pending = true;
+    entry->multiRange = true;
+    entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+    m_cache.insert(cacheKey, entry);
+
+    qCInfo(lcProxy) << "HLS 分片多连接 Range 开始" << HttpClient::redactUrl(upstream)
+                    << "首片" << kRangeProbeBytes << "字节";
+    startRangePart(entry, cacheKey, upstream, headers, 0, kRangeProbeBytes - 1, true,
+                   client, request);
+    return true;
+}
+
+void StreamProxy::startRangePart(const QSharedPointer<CacheEntry> &entry,
+                                 const QString &cacheKey, const QUrl &upstream,
+                                 const QHash<QString, QString> &headers,
+                                 qint64 start, qint64 end, bool probe,
+                                 QTcpSocket *client, const Request &request)
+{
+    if (entry.isNull() || entry->failed || !entry->multiRange || start > end)
+        return;
+
+    entry->rangePending.insert(start);
+    const QByteArray range = "bytes=" + QByteArray::number(start) + '-'
+                             + QByteArray::number(end);
+    QPointer<StreamProxy> self(this);
+    QPointer<QTcpSocket> clientGuard(client);
+    m_http->stream(upstream, range, headers,
+                   [self, entry, cacheKey, upstream, headers, start, end, probe, clientGuard,
+                    request](QNetworkReply *reply) {
+        if (self.isNull()) {
+            if (reply != nullptr) {
+                reply->abort();
+                reply->deleteLater();
+            }
+            return;
+        }
+        self->onRangePartReply(entry, cacheKey, upstream, headers, reply, start, end, probe,
+                               clientGuard.data(), request);
+    });
+}
+
+void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
+                                   const QString &cacheKey, const QUrl &upstream,
+                                   const QHash<QString, QString> &headers,
+                                   QNetworkReply *reply, qint64 requestedStart,
+                                   qint64 requestedEnd, bool probe, QTcpSocket *client,
+                                   const Request &request)
+{
+    if (entry.isNull() || m_cache.value(cacheKey) != entry) {
+        if (reply != nullptr) {
+            reply->abort();
+            reply->deleteLater();
+        }
+        return;
+    }
+
+    entry->rangePending.remove(requestedStart);
+
+    if (reply == nullptr) {
+        if (probe) {
+            qCWarning(lcProxy) << "HLS 分片首片请求失败，回退单路";
+            entry->pending = false;
+            entry->failed = true;
+            m_cache.remove(cacheKey);
+            if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
+                startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
+            return;
+        }
+        if (!entry->rangeRetried.contains(requestedStart)) {
+            entry->rangeRetried.insert(requestedStart);
+            entry->rangeParts.remove(requestedStart);
+            entry->rangePartEnds.remove(requestedStart);
+            startRangePart(entry, cacheKey, upstream, headers, requestedStart, requestedEnd,
+                           false, nullptr, Request());
+            return;
+        }
+        failRangeEntry(cacheKey, entry, QStringLiteral("分片请求失败"));
+        return;
+    }
+
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (!HttpClient::isHttpSuccess(reply) || status != 206) {
+        if (probe) {
+            qCWarning(lcProxy) << "HLS 分片首片未返回 206，回退单路"
+                               << HttpClient::redactUrl(upstream) << "状态" << status
+                               << reply->errorString();
+            if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
+                startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
+            reply->abort();
+            reply->deleteLater();
+            entry->pending = false;
+            entry->failed = true;
+            m_cache.remove(cacheKey);
+            return;
+        }
+        failRangeEntry(cacheKey, entry, QStringLiteral("分片未返回 206"));
+        reply->deleteLater();
+        return;
+    }
+
+    qint64 partStart = -1;
+    qint64 partEnd = -1;
+    qint64 total = -1;
+    if (!parseContentRange(reply->rawHeader("Content-Range"), &partStart, &partEnd, &total)
+        || partStart != requestedStart) {
+        if (probe) {
+            qCWarning(lcProxy) << "HLS 分片首片 Content-Range 无效，回退单路"
+                               << reply->rawHeader("Content-Range");
+            if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
+                startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
+            reply->abort();
+            reply->deleteLater();
+            entry->pending = false;
+            entry->failed = true;
+            m_cache.remove(cacheKey);
+            return;
+        }
+        failRangeEntry(cacheKey, entry, QStringLiteral("分片 Content-Range 无效"));
+        reply->deleteLater();
+        return;
+    }
+
+    if (probe) {
+        if (total > kRangeMaxSegmentBytes) {
+            qCInfo(lcProxy) << "HLS 分片过大，回退单路" << total << "字节";
+            if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
+                startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
+            reply->abort();
+            reply->deleteLater();
+            entry->pending = false;
+            entry->failed = true;
+            m_cache.remove(cacheKey);
+            return;
+        }
+
+        entry->total = total;
+        entry->pending = false;
+        entry->contentType =
+            reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
+        qCInfo(lcProxy) << "HLS 分片总长" << total << "字节，按"
+                        << kRangeMaxConnections << "路拆分";
+        if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
+            serveFromCache(client, entry, cacheKey, request.range, true);
+
+        const qint64 partSize =
+            qMax(kRangeMinPartBytes, (total + kRangeMaxConnections - 1) / kRangeMaxConnections);
+        qint64 next = partEnd + 1;
+        while (next < total) {
+            const qint64 end = qMin(total - 1, next + partSize - 1);
+            startRangePart(entry, cacheKey, upstream, headers, next, end, false, nullptr,
+                           Request());
+            next = end + 1;
+        }
+        pruneCache(cacheKey);
+    } else if (partEnd > requestedEnd || total != entry->total) {
+        failRangeEntry(cacheKey, entry, QStringLiteral("分片范围与总长不一致"));
+        reply->deleteLater();
+        return;
+    }
+
+    entry->rangeReplies.append(QPointer<QNetworkReply>(reply));
+    connect(reply, &QNetworkReply::readyRead, this,
+            [this, entry, reply, partStart, partEnd] {
+                readRangePartIntoCache(entry, reply, partStart, partEnd);
+            });
+    connect(reply, &QNetworkReply::finished, this,
+            [this, cacheKey, entry, reply, partStart, partEnd, upstream, headers] {
+                finishRangePart(cacheKey, entry, reply, partStart, partEnd, upstream, headers);
+            });
+
+    readRangePartIntoCache(entry, reply, partStart, partEnd);
+    if (reply->isFinished())
+        finishRangePart(cacheKey, entry, reply, partStart, partEnd, upstream, headers);
+}
+
+void StreamProxy::readRangePartIntoCache(const QSharedPointer<CacheEntry> &entry,
+                                         QNetworkReply *reply, qint64 start, qint64 end)
+{
+    if (entry.isNull() || reply == nullptr || !entry->multiRange || start > end)
+        return;
+    const qint64 expected = end - start + 1;
+    QByteArray &buffer = entry->rangeParts[start];
+    if (buffer.size() >= expected)
+        return;
+
+    const QByteArray chunk = reply->readAll();
+    if (chunk.isEmpty())
+        return;
+    const qint64 remain = expected - buffer.size();
+    if (chunk.size() > remain)
+        buffer.append(chunk.left(static_cast<int>(remain)));
+    else
+        buffer.append(chunk);
+    entry->rangePartEnds.insert(start, end);
+    entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+}
+
+void StreamProxy::mergeRangeParts(const QString &key,
+                                  const QSharedPointer<CacheEntry> &entry)
+{
+    if (entry.isNull() || m_cache.value(key) != entry)
+        return;
+
+    while (true) {
+        const qint64 start = entry->data.size();
+        const auto part = entry->rangeParts.find(start);
+        if (part == entry->rangeParts.end())
+            break;
+        const qint64 end = entry->rangePartEnds.value(start, -1);
+        if (end < start || part.value().size() < end - start + 1)
+            break;
+        entry->data.append(part.value());
+        entry->rangeParts.erase(part);
+        entry->rangePartEnds.remove(start);
+    }
+
+    if (entry->total >= 0 && entry->data.size() >= entry->total)
+        entry->complete = true;
+    pumpCache(key, entry);
+}
+
+void StreamProxy::finishRangePart(const QString &key,
+                                  const QSharedPointer<CacheEntry> &entry,
+                                  QNetworkReply *reply, qint64 start, qint64 end,
+                                  const QUrl &upstream,
+                                  const QHash<QString, QString> &headers)
+{
+    if (entry.isNull() || reply == nullptr)
+        return;
+    entry->rangeReplies.removeAll(QPointer<QNetworkReply>(reply));
+    entry->rangePending.remove(start);
+    readRangePartIntoCache(entry, reply, start, end);
+
+    const qint64 expected = end - start + 1;
+    const QByteArray buffer = entry->rangeParts.value(start);
+    // 前一个分片收尾时 mergeRangeParts 可能已经把后面已完整的分片并进
+    // data，并把它从 rangeParts 删除；此时这里看到“空 buffer”是正常的，
+    // 只要连续前缀已经覆盖该段就不要再重试。
+    const bool alreadyMerged = entry->data.size() >= start + expected;
+    if (buffer.size() < expected && !alreadyMerged) {
+        if (!entry->rangeRetried.contains(start)) {
+            entry->rangeRetried.insert(start);
+            entry->rangeParts.remove(start);
+            entry->rangePartEnds.remove(start);
+            qCWarning(lcProxy) << "HLS 分片段不完整，重试一次" << start << buffer.size()
+                               << "/" << expected;
+            startRangePart(entry, key, upstream, headers, start, end, false, nullptr,
+                           Request());
+        } else {
+            failRangeEntry(key, entry, QStringLiteral("分片段重试后仍不完整"));
+        }
+        reply->deleteLater();
+        return;
+    }
+
+    mergeRangeParts(key, entry);
+    reply->deleteLater();
+}
+
+void StreamProxy::failRangeEntry(const QString &key,
+                                 const QSharedPointer<CacheEntry> &entry,
+                                 const QString &reason)
+{
+    if (entry.isNull())
+        return;
+    qCWarning(lcProxy) << "HLS 分片多连接失败" << reason
+                       << "已缓存" << entry->data.size() << "/" << entry->total;
+    entry->failed = true;
+    entry->pending = false;
+    for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
+        if (!reply.isNull()) {
+            reply->abort();
+            reply->deleteLater();
+        }
+    }
+    entry->rangeReplies.clear();
+    entry->rangePending.clear();
+    pumpCache(key, entry);
 }
 
 QString StreamProxy::cacheKeyFor(const QUrl &upstream,
@@ -1549,6 +1940,14 @@ void StreamProxy::dropCacheEntry(const QString &key)
         entry->reply->deleteLater();
         entry->reply = nullptr;
     }
+    for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
+        if (!reply.isNull()) {
+            reply->abort();
+            reply->deleteLater();
+        }
+    }
+    entry->rangeReplies.clear();
+    entry->rangePending.clear();
     for (const QPointer<QTcpSocket> &client : std::as_const(entry->clients)) {
         if (!client.isNull() && client->state() == QAbstractSocket::ConnectedState)
             client->disconnectFromHost();

@@ -97,6 +97,35 @@ private:
     };
 
     void handleClient(QTcpSocket *client, const QByteArray &payload);
+    void startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
+                              const QHash<QString, QString> &headers,
+                              const Request &request, bool hasRange,
+                              const QString &cacheKey);
+    /// HLS 分片请求命中时，用多路 Range 并发拉取并在缓存里按偏移拼接。
+    /// 只对已知媒体分片、`bytes=0-` 且总长受限的请求启用。
+    bool tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream,
+                               const QHash<QString, QString> &headers,
+                               const Request &request, bool hasRange,
+                               const QString &cacheKey);
+    bool isHlsSegmentUrl(const QUrl &url) const;
+    void startRangePart(const QSharedPointer<CacheEntry> &entry, const QString &cacheKey,
+                        const QUrl &upstream, const QHash<QString, QString> &headers,
+                        qint64 start, qint64 end, bool probe, QTcpSocket *client,
+                        const Request &request);
+    void onRangePartReply(const QSharedPointer<CacheEntry> &entry, const QString &cacheKey,
+                          const QUrl &upstream, const QHash<QString, QString> &headers,
+                          QNetworkReply *reply, qint64 requestedStart, qint64 requestedEnd,
+                          bool probe, QTcpSocket *client, const Request &request);
+    void readRangePartIntoCache(const QSharedPointer<CacheEntry> &entry,
+                                QNetworkReply *reply, qint64 start, qint64 end);
+    void finishRangePart(const QString &key, const QSharedPointer<CacheEntry> &entry,
+                         QNetworkReply *reply, qint64 start, qint64 end,
+                         const QUrl &upstream, const QHash<QString, QString> &headers);
+    void mergeRangeParts(const QString &key, const QSharedPointer<CacheEntry> &entry);
+    void failRangeEntry(const QString &key, const QSharedPointer<CacheEntry> &entry,
+                        const QString &reason);
+    static bool parseContentRange(const QByteArray &value, qint64 *start, qint64 *end,
+                                  qint64 *total);
     void attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
     void attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
                         const QHash<QString, QString> &headers);
