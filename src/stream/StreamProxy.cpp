@@ -56,8 +56,8 @@ constexpr qint64 kRangeMaxSegmentBytes = 8LL * 1024 * 1024;
 // 实测 FFmpeg 对 600s 的目标会从 564.6s 的分片开始读，目标片是第 152 片，
 // 回退起点是第 143 片，正好差 9 片；目标片本身也要预取，防止不同源的
 // seek 行为直接落到目标片。
-constexpr int kSeekPrefetchBackSegments = 9;
-constexpr int kSeekPrefetchAheadSegments = 6;
+constexpr int kSeekPrefetchAheadSegments = 2;
+constexpr int kSeekPrefetchDelayMs = 800;
 constexpr int kPlaybackPrefetchSegments = 3;
 constexpr int kPrefetchConcurrencyMax = 3;
 // 连续失败或单次超过该时长时，降低并发并暂停预取，优先保证前台播放。
@@ -1058,39 +1058,38 @@ void StreamProxy::prefetchForSeek(const QUrl &playlistUrl,
     if (info == nullptr)
         return;
 
-    // FFmpeg 的 HLS seek 实测会先回退约 9 片再顺序读到目标；但不同源的
-    // seek 行为并不一致，所以目标片本身也提前预取，避免只赌一种行为。
     const int targetIndex = segmentIndexAt(*info, targetMs);
     if (targetIndex < 0)
         return;
 
-    const int begin = qMax(0, targetIndex - kSeekPrefetchBackSegments);
+    // 目标片本身由播放器自己的多连接 Range 请求负责，预取不再重复下载它。
+    // 实测 FFmpeg 深拖动后会顺序打开后续分片，所以只提前抓紧随其后的 1-2 片：
+    // 单连接、延迟 800ms 起步，给目标片的 4 路 Range 让出带宽。
+    const int first = targetIndex + 1;
     const int last = qMin(info->segments.size() - 1,
                           targetIndex + kSeekPrefetchAheadSegments);
+    if (first > last)
+        return;
 
     cancelPrefetch();
+    const qint64 generation = m_prefetchGeneration;
     m_prefetchPlaylistKey = cacheKeyFor(playlistUrl, headers);
-    // 定位阶段不要一上来就三路并发：源站变慢时三路会互相抢带宽，
-    // 实测单分片会从 2.5 秒恶化到 20 秒以上并直接超时。
-    // 先单路抓 FFmpeg 最先打开的回退起点，只有连续快速完成时才由
-    // finishPrefetch 逐步升到 2/3 路，慢源始终只占一条连接。
     m_prefetchConcurrency = 1;
     m_seekPrefetchActive = true;
     m_seekTargetMs = targetMs;
     m_seekPrefetchTimer->start(kPrefetchSeekGuardMs);
 
-    qCInfo(lcProxy) << "HLS 定位预取：目标" << targetMs << "ms，目标片" << targetIndex
-                    << "，窗口" << begin << "到" << last;
-    // 先发 FFmpeg 最先打开的回退起点；随后按窗口顺序排队，快速源会并发追上来，
-    // 慢源则只保留一条预取连接，不再额外抢播放器自己的请求。
-    enqueuePrefetch(playlistUrl, headers, begin, begin, m_prefetchGeneration);
-    if (begin + 1 <= targetIndex)
-        enqueuePrefetch(playlistUrl, headers, begin + 1, begin + 1, m_prefetchGeneration);
-    enqueuePrefetch(playlistUrl, headers, targetIndex, targetIndex, m_prefetchGeneration);
-    if (begin + 2 <= targetIndex - 1)
-        enqueuePrefetch(playlistUrl, headers, begin + 2, targetIndex - 1, m_prefetchGeneration);
-    if (targetIndex + 1 <= last)
-        enqueuePrefetch(playlistUrl, headers, targetIndex + 1, last, m_prefetchGeneration);
+    qCInfo(lcProxy) << "HLS 定位后续预取：目标" << targetMs << "ms，目标片" << targetIndex
+                    << "，预取" << first << "到" << last;
+    QPointer<StreamProxy> self(this);
+    QTimer::singleShot(kSeekPrefetchDelayMs, this,
+                       [self, playlistUrl, headers, first, last, generation] {
+        if (self.isNull() || generation != self->m_prefetchGeneration
+            || !self->m_seekPrefetchActive) {
+            return;
+        }
+        self->enqueuePrefetch(playlistUrl, headers, first, last, generation);
+    });
 }
 
 void StreamProxy::prefetchForPosition(const QUrl &playlistUrl,
@@ -1356,7 +1355,8 @@ void StreamProxy::finishPrefetch(const QString &cacheKey, QNetworkReply *reply,
         m_prefetchDisabledUntilMs =
             QDateTime::currentMSecsSinceEpoch() + kPrefetchDisableMs;
         m_prefetchQueue.clear();
-    } else if (elapsed > 0 && elapsed < 3000 && m_prefetchConcurrency < kPrefetchConcurrencyMax) {
+    } else if (!m_seekPrefetchActive && elapsed > 0 && elapsed < 3000
+               && m_prefetchConcurrency < kPrefetchConcurrencyMax) {
         ++m_prefetchConcurrency;
     }
 
@@ -1389,6 +1389,8 @@ void StreamProxy::cancelPrefetch()
     // 取消时要一并把占位条目判失败并唤醒挂在上面的播放器请求。
     for (auto it = m_cache.begin(); it != m_cache.end(); ++it) {
         const QSharedPointer<CacheEntry> &entry = it.value();
+        if (entry->multiRange)
+            continue;
         if (entry->pending && entry->reply == nullptr) {
             entry->pending = false;
             entry->failed = true;

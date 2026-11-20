@@ -263,6 +263,19 @@ void PlaybackController::seek(qint64 ms)
     // 和 FFmpeg 正在回退读取的分片抢带宽。
     m_lastPrefetchPosition = ms;
     m_player->setPosition(ms);
+
+    // 只预取目标片之后 1-2 片，且由代理单连接、延迟起步；
+    // 目标片本身仍交给播放器的多连接 Range 请求，避免重复占带宽。
+    const MediaItem item = currentItem();
+    const QUrl playbackUrl = preferredPlaybackUrl(item);
+    if (m_proxyReady && m_proxy != nullptr && item.online && isHlsUrl(playbackUrl)) {
+        QMetaObject::invokeMethod(
+            m_proxy,
+            [proxy = m_proxy, playbackUrl, headers = item.headers, ms] {
+                proxy->prefetchForSeek(playbackUrl, headers, ms);
+            },
+            Qt::QueuedConnection);
+    }
 }
 
 void PlaybackController::setMode(Mode mode)
