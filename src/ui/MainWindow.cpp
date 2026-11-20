@@ -10,6 +10,7 @@
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
 #include "settings/WindowPreset.h"
+#include "ui/SearchPanelController.h"
 #include "ui/SettingsDialog.h"
 #include "ui/ThemeManager.h"
 #include "ui/VideoStage.h"
@@ -182,178 +183,6 @@ private:
     int m_phase = 0;
 };
 
-/// 搜索结果的三栏绘制：类型图案 | 名称（放不下时悬停滚动） | 来源。
-/// 名称与来源各自的可用宽度先算好，来源栏最多占三分之一，免得长站名把名称挤没。
-class SearchItemDelegate : public QStyledItemDelegate
-{
-public:
-    explicit SearchItemDelegate(QListView *view)
-        : QStyledItemDelegate(view)
-        , m_view(view)
-    {
-        m_timer.setInterval(40);
-        QObject::connect(&m_timer, &QTimer::timeout, view->viewport(), [this] { advance(); });
-        m_timer.start();
-
-        m_view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        m_view->setMouseTracking(true);
-        m_view->viewport()->setMouseTracking(true);
-        m_view->viewport()->installEventFilter(this);
-    }
-
-    /// 源名要跟着"搜索源管理"里的改动刷新
-    void setSourceNames(const QHash<QString, QString> &names)
-    {
-        m_sourceNames = names;
-        m_view->viewport()->update();
-    }
-
-protected:
-    bool eventFilter(QObject *object, QEvent *event) override
-    {
-        if (object == m_view->viewport()) {
-            if (event->type() == QEvent::MouseMove) {
-                const QPoint pos = static_cast<QMouseEvent *>(event)->position().toPoint();
-                const QModelIndex index = m_view->indexAt(pos);
-                m_hoveredRow = index.isValid() ? index.row() : -1;
-            } else if (event->type() == QEvent::Leave) {
-                m_hoveredRow = -1;
-            } else if (event->type() == QEvent::Hide || event->type() == QEvent::HideToParent) {
-                // 切到另一个列表页后不再 40ms 空转，重新显示时再启动
-                m_timer.stop();
-            } else if (event->type() == QEvent::Show || event->type() == QEvent::ShowToParent) {
-                if (!m_timer.isActive())
-                    m_timer.start();
-            }
-        }
-        return QStyledItemDelegate::eventFilter(object, event);
-    }
-
-    void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
-        QStyleOptionViewItem opt = option;
-        initStyleOption(&opt, index);
-        opt.text.clear();
-
-        const QWidget *widget = opt.widget;
-        QStyle *style = widget != nullptr ? widget->style() : QApplication::style();
-        // 背景、悬停、选中态完全交给主题画，文字自己按三栏排
-        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
-
-        const bool selected = (option.state & QStyle::State_Selected) != 0;
-        const QPalette::ColorGroup group =
-            (option.state & QStyle::State_Enabled) != 0 ? QPalette::Normal : QPalette::Disabled;
-        const QColor textColor =
-            opt.palette.color(group, selected ? QPalette::HighlightedText : QPalette::Text);
-        QColor dimColor = textColor;
-        dimColor.setAlpha(160);
-
-        const QRect inner =
-            style->subElementRect(QStyle::SE_ItemViewItemText, &opt, widget).adjusted(2, 0, -2, 0);
-        const QFontMetrics metrics(opt.font);
-
-        const bool isVideo = index.data(PlaylistModel::TypeRole).toInt()
-                             == static_cast<int>(MediaType::Video);
-        const QString title = index.data(PlaylistModel::TitleRole).toString();
-        const QString artist = index.data(PlaylistModel::ArtistRole).toString();
-        const QString text = artist.isEmpty() ? title
-                                              : title + QStringLiteral(" - ") + artist;
-        QString source = m_sourceNames.value(index.data(PlaylistModel::SourceRole).toString());
-        if (source.isEmpty())
-            source = tr("本地");
-
-        const int iconWidth = 22;
-        const int gap = 6;
-        const int sourceWidth =
-            qBound(48, metrics.horizontalAdvance(source) + 10, qMax(48, inner.width() / 3));
-        const QRect iconRect(inner.left(), inner.top(), iconWidth, inner.height());
-        const QRect titleRect(iconRect.right() + gap, inner.top(),
-                              qMax(0, inner.width() - iconWidth - gap - sourceWidth - gap),
-                              inner.height());
-        const QRect sourceRect(inner.right() - sourceWidth, inner.top(), sourceWidth,
-                               inner.height());
-
-        painter->save();
-
-        // 类型图案：视频三角、音乐音符，颜色取主题强调色
-        painter->setPen(opt.palette.color(QPalette::Normal, QPalette::Highlight));
-        QFont iconFont = opt.font;
-        iconFont.setPointSizeF(qMax(10.0, opt.font.pointSizeF()));
-        painter->setFont(iconFont);
-        painter->drawText(iconRect, Qt::AlignCenter,
-                          isVideo ? QStringLiteral("▶") : QStringLiteral("♪"));
-
-        painter->setFont(opt.font);
-        painter->setPen(textColor);
-        const bool scrollRow =
-            index.row() == m_hoveredRow
-            || (m_hoveredRow < 0 && index.row() == m_view->currentIndex().row());
-        const int textWidth = metrics.horizontalAdvance(text);
-        if (scrollRow && textWidth > titleRect.width()) {
-            painter->setClipRect(titleRect);
-            const int tailGap = 36;
-            const int period = textWidth + tailGap;
-            const int offset = m_phase % period;
-            painter->drawText(QRect(titleRect.x() - offset, titleRect.y(), textWidth,
-                                    titleRect.height()),
-                              Qt::AlignVCenter | Qt::AlignLeft, text);
-            painter->drawText(QRect(titleRect.x() - offset + period, titleRect.y(), textWidth,
-                                    titleRect.height()),
-                              Qt::AlignVCenter | Qt::AlignLeft, text);
-        } else {
-            painter->drawText(titleRect, Qt::AlignVCenter | Qt::AlignLeft,
-                              metrics.elidedText(text, Qt::ElideRight, titleRect.width()));
-        }
-
-        painter->setPen(dimColor);
-        painter->drawText(sourceRect, Qt::AlignVCenter | Qt::AlignRight,
-                          metrics.elidedText(source, Qt::ElideMiddle, sourceRect.width()));
-        painter->restore();
-    }
-
-    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
-    {
-        QSize hint = QStyledItemDelegate::sizeHint(option, index);
-        hint.setHeight(qMax(hint.height(), 30));
-        return hint;
-    }
-
-private:
-    void advance()
-    {
-        const int row = m_hoveredRow >= 0 ? m_hoveredRow : m_view->currentIndex().row();
-        if (row < 0)
-            return;
-        const QModelIndex index = m_view->model() ? m_view->model()->index(row, 0, QModelIndex())
-                                                  : QModelIndex();
-        if (!index.isValid())
-            return;
-        const QRect rect = m_view->visualRect(index);
-        if (!rect.isValid())
-            return;
-        // 名称 + 前后两栏的真实宽度，够放就不用动
-        const QFontMetrics metrics(m_view->font());
-        const QString title = index.data(PlaylistModel::TitleRole).toString();
-        const QString artist = index.data(PlaylistModel::ArtistRole).toString();
-        const QString text = artist.isEmpty() ? title
-                                              : title + QStringLiteral(" - ") + artist;
-        if (metrics.horizontalAdvance(text) <= rect.width() - 140)
-            return;
-
-        m_phase += 2;
-        if (m_phase > 100000)
-            m_phase = 0;
-        m_view->viewport()->update(rect);
-    }
-
-    QListView *m_view;
-    QTimer m_timer;
-    QHash<QString, QString> m_sourceNames;
-    int m_hoveredRow = -1;
-    int m_phase = 0;
-};
-
 /// 预设尺寸只是目标值：屏幕装不下时按可用工作区收一收，否则布局会被挤到裁切
 QSize fitToAvailableScreen(const QSize &size)
 {
@@ -411,7 +240,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_player(new PlaybackController(this))
     , m_musicModel(new PlaylistModel(this))
     , m_videoModel(new PlaylistModel(this))
-    , m_searchModel(new PlaylistModel(this))
 {
     ui->setupUi(this);
 
@@ -423,33 +251,34 @@ MainWindow::MainWindow(QWidget *parent)
     }
     m_coordinator = new SearchCoordinator(m_registry, m_http, this);
 
-    ui->list_search->setModel(m_searchModel);    ui->list_music->setModel(m_musicModel);
+    ui->list_music->setModel(m_musicModel);
     ui->list_video->setModel(m_videoModel);
-    ui->list_search->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    // 列表里长名字默认被省略号截断，改成悬停/当前行横向滚动；
-    // 搜索结果额外分三栏（类型图案 / 名称 / 来源）
-    auto *searchDelegate = new SearchItemDelegate(ui->list_search);
-    searchDelegate->setSourceNames(sourceDisplayNames());
-    ui->list_search->setItemDelegate(searchDelegate);
+    // 搜索面板的模型、委托、分页和右键菜单全部由控制器持有
+    SearchPanelUi searchUi;
+    searchUi.list = ui->list_search;
+    searchUi.edit = ui->edit_search;
+    searchUi.searchButton = ui->btn_search;
+    searchUi.pager = ui->frame_searchPager;
+    searchUi.pageSizeCombo = ui->combo_searchPageSize;
+    searchUi.prevButton = ui->btn_searchPrev;
+    searchUi.nextButton = ui->btn_searchNext;
+    searchUi.titleLabel = ui->label_searchTitle;
+    searchUi.pageLabel = ui->label_searchPage;
+    m_searchPanel = new SearchPanelController(m_coordinator, m_registry, searchUi, this);
+
+    connect(m_searchPanel, &SearchPanelController::statusMessage, this,
+            [this](const QString &text) { ui->label_status->setText(text); });
+    connect(m_searchPanel, &SearchPanelController::mediaActivated,
+            this, &MainWindow::playSearchItem);
+    connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
+            this, &MainWindow::addSearchItemToPlaylist);
+    connect(m_searchPanel, &SearchPanelController::downloadRequested,
+            this, &MainWindow::downloadItem);
+
+    // 列表里长名字默认被省略号截断，改成悬停/当前行横向滚动
     ui->list_music->setItemDelegate(new MarqueeDelegate(ui->list_music));
     ui->list_video->setItemDelegate(new MarqueeDelegate(ui->list_video));
-
-    // 分页条：每页条数由用户在这里自己选，选择会记住
-    m_searchPageSize = AppSettings::searchPageSize();
-    for (int size : {10, 20, 30, 50, 100})
-        ui->combo_searchPageSize->addItem(tr("%1 条/页").arg(size), size);
-    const int sizeIndex = ui->combo_searchPageSize->findData(m_searchPageSize);
-    if (sizeIndex >= 0)
-        ui->combo_searchPageSize->setCurrentIndex(sizeIndex);
-    else
-        m_searchPageSize = ui->combo_searchPageSize->currentData().toInt();
-    // 还没搜索过：整块搜索列表先折叠起来，省下高度给播放列表
-    setSearchAreaVisible(false);
-
-    // 源列表变了（改名、增删）要刷新来源栏
-    connect(m_registry, &SourceRegistry::changed, this,
-            [this, searchDelegate] { searchDelegate->setSourceNames(sourceDisplayNames()); });
 
     m_player->mediaPlayer()->setVideoSink(ui->videoWidget->sink());
 
@@ -602,105 +431,6 @@ void MainWindow::setupConnections()
         qCWarning(lcWindow) << "歌词加载失败：" << message;
     });
 
-    connect(m_coordinator, &SearchCoordinator::searchStarted, this, [this] {
-        ui->btn_search->setEnabled(true);
-        ui->btn_search->setText(tr("取消"));
-        ui->label_status->setText(tr("搜索中…"));
-        // 一发起搜索就把折叠着的搜索列表放出来
-        setSearchAreaVisible(true);
-    });
-    connect(m_coordinator, &SearchCoordinator::searchPartial, this,
-            [this](const QVector<MediaItem> &items, int filtered, int done, int total) {
-                m_searchResults = items;
-                setSearchAreaVisible(true);
-                applySearchPage();
-                ui->label_status->setText(
-                    tr("搜索中… 已完成 %1/%2 个源，当前 %3 条%4")
-                        .arg(done)
-                        .arg(total)
-                        .arg(items.size())
-                        .arg(filtered > 0 ? tr("（已过滤 %1 条）").arg(filtered) : QString()));
-            });
-    connect(m_coordinator, &SearchCoordinator::searchSucceeded, this,
-            [this](const QVector<MediaItem> &items, int filtered, const QStringList &failed) {
-                showSearchResults(items);
-
-                int musicCount = 0;
-                int videoCount = 0;
-                for (const MediaItem &item : items) {
-                    if (item.type == MediaType::Video)
-                        ++videoCount;
-                    else
-                        ++musicCount;
-                }
-
-                QString text;
-                if (items.isEmpty()) {
-                    text = filtered > 0
-                               ? tr("未搜索到可播放结果（已过滤 %1 条）").arg(filtered)
-                               : tr("未搜索到结果");
-                } else {
-                    text = tr("搜索完成：音乐 %1 首，视频 %2 个，共 %3 页")
-                               .arg(musicCount)
-                               .arg(videoCount)
-                               .arg(searchPageCount());
-                    if (filtered > 0)
-                        text += tr("（已过滤 %1 条）").arg(filtered);
-                }
-                if (!failed.isEmpty()) {
-                    // 状态栏只放前两条，且单条过长时截断，避免把整串技术失败原因铺满
-                    QStringList shown;
-                    for (int i = 0; i < failed.size() && i < 2; ++i) {
-                        QString detail = failed.at(i);
-                        if (detail.size() > 90)
-                            detail = detail.left(90) + QStringLiteral("…");
-                        shown.append(detail);
-                    }
-                    text += tr("；失败：%1").arg(shown.join(QStringLiteral("、")));
-                    if (failed.size() > shown.size())
-                        text += tr(" 等 %1 个源").arg(failed.size());
-                }
-                ui->label_status->setText(text);
-            });
-    connect(m_coordinator, &SearchCoordinator::searchFinished, this, [this] {
-        ui->btn_search->setEnabled(true);
-        ui->btn_search->setText(tr("搜索"));
-    });
-
-    // ---------------------------------------------------------- 搜索结果分页
-    connect(ui->btn_searchPrev, &QPushButton::clicked, this, [this] {
-        if (m_searchPage <= 0)
-            return;
-        --m_searchPage;
-        applySearchPage();
-    });
-    connect(ui->btn_searchNext, &QPushButton::clicked, this, [this] {
-        if (m_searchPage + 1 >= searchPageCount())
-            return;
-        ++m_searchPage;
-        applySearchPage();
-    });
-    connect(ui->combo_searchPageSize, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) {
-                const int size = ui->combo_searchPageSize->currentData().toInt();
-                if (size <= 0)
-                    return;
-                m_searchPageSize = size;
-                AppSettings::setSearchPageSize(size);
-                m_searchPage = 0;
-                applySearchPage();
-            });
-
-    connect(ui->edit_search, &QLineEdit::returnPressed,
-            this, &MainWindow::on_btn_search_clicked);
-
-    connect(ui->list_search, &QWidget::customContextMenuRequested,
-            this, &MainWindow::showSearchContextMenu);
-    connect(ui->list_search, &QAbstractItemView::doubleClicked, this,
-            [this](const QModelIndex &index) {
-                if (index.isValid())
-                    playSearchItem(m_searchModel->itemAt(index.row()));
-            });
     connect(ui->list_music, &QAbstractItemView::doubleClicked, this,
             [this](const QModelIndex &index) {
                 if (!index.isValid())
@@ -1044,22 +774,6 @@ void MainWindow::ensurePlaylist()
         m_player->setPlaylist(activeModel());
 }
 
-void MainWindow::on_btn_search_clicked()
-{
-    if (m_coordinator->isBusy()) {
-        m_coordinator->cancel();
-        ui->label_status->setText(tr("搜索已取消"));
-        return;
-    }
-
-    const QString keyword = ui->edit_search->text().trimmed();
-    if (keyword.isEmpty()) {
-        ui->label_status->setText(tr("请输入搜索关键词"));
-        return;
-    }
-    m_coordinator->search(keyword, AppSettings::searchLimit());
-}
-
 void MainWindow::openLocalMusic()
 {
     const QStringList files = QFileDialog::getOpenFileNames(
@@ -1396,113 +1110,19 @@ void MainWindow::playSearchItem(const MediaItem &item)
     ui->tab_media->setCurrentIndex(item.type == MediaType::Music ? 0 : 1);
 }
 
-QHash<QString, QString> MainWindow::sourceDisplayNames() const
+void MainWindow::addSearchItemToPlaylist(const MediaItem &item, MediaType type)
 {
-    QHash<QString, QString> names;
-    if (m_registry == nullptr)
-        return names;
-    for (const SourceConfig &config : m_registry->sources())
-        names.insert(config.id, config.name);
-    return names;
-}
-
-void MainWindow::setSearchAreaVisible(bool visible)
-{
-    m_searchAreaVisible = visible;
-    ui->label_searchTitle->setVisible(visible);
-    ui->list_search->setVisible(visible);
-    ui->frame_searchPager->setVisible(visible);
-}
-
-int MainWindow::searchPageCount() const
-{
-    if (m_searchResults.isEmpty() || m_searchPageSize <= 0)
-        return 0;
-    return (m_searchResults.size() + m_searchPageSize - 1) / m_searchPageSize;
-}
-
-void MainWindow::showSearchResults(const QVector<MediaItem> &items)
-{
-    m_searchResults = items;
-    m_searchPage = 0;
-    setSearchAreaVisible(true);
-    applySearchPage();
-}
-
-void MainWindow::applySearchPage()
-{
-    const int pageCount = searchPageCount();
-    ui->label_searchTitle->setText(tr("搜索结果（共 %1 条）").arg(m_searchResults.size()));
-
-    if (pageCount <= 0) {
-        m_searchPage = 0;
-        m_searchModel->clear();
-        ui->label_searchPage->setText(tr("0 / 0"));
-        ui->btn_searchPrev->setEnabled(false);
-        ui->btn_searchNext->setEnabled(false);
+    MediaItem copy = item;
+    copy.type = type;
+    PlaylistModel *model = type == MediaType::Music ? m_musicModel : m_videoModel;
+    if (!model->addItem(copy)) {
+        ui->label_status->setText(type == MediaType::Music ? tr("音乐列表中已存在")
+                                                         : tr("视频列表中已存在"));
         return;
     }
-
-    m_searchPage = qBound(0, m_searchPage, pageCount - 1);
-    const int begin = m_searchPage * m_searchPageSize;
-    const int end = qMin(begin + m_searchPageSize, m_searchResults.size());
-
-    QVector<MediaItem> slice;
-    slice.reserve(end - begin);
-    for (int i = begin; i < end; ++i)
-        slice.append(m_searchResults.at(i));
-    m_searchModel->setItems(slice);
-
-    ui->label_searchPage->setText(tr("%1 / %2").arg(m_searchPage + 1).arg(pageCount));
-    ui->btn_searchPrev->setEnabled(m_searchPage > 0);
-    ui->btn_searchNext->setEnabled(m_searchPage + 1 < pageCount);
-}
-
-void MainWindow::showSearchContextMenu(const QPoint &pos)
-{    const QModelIndex index = ui->list_search->indexAt(pos);
-    if (!index.isValid())
-        return;
-
-    const MediaItem item = m_searchModel->itemAt(index.row());
-    if (!item.isValid())
-        return;
-
-    QMenu menu(this);
-    QAction *playAction = menu.addAction(tr("播放"));
-    QAction *addMusicAction = menu.addAction(tr("加入音乐列表"));
-    QAction *addVideoAction = menu.addAction(tr("加入视频列表"));
-    addVideoAction->setEnabled(item.type == MediaType::Video);
-    QAction *downloadAction = menu.addAction(tr("下载"));
-
-    QAction *chosen = menu.exec(ui->list_search->viewport()->mapToGlobal(pos));
-    if (chosen == nullptr)
-        return;
-
-    if (chosen == playAction) {
-        playSearchItem(item);
-    } else if (chosen == addMusicAction) {
-        MediaItem music = item;
-        music.type = MediaType::Music;
-        const bool ok = m_musicModel->addItem(music);
-        if (ok) {
-            if (savePlaylists())
-                ui->label_status->setText(tr("已加入音乐列表"));
-        } else {
-            ui->label_status->setText(tr("音乐列表中已存在"));
-        }
-    } else if (chosen == addVideoAction) {
-        MediaItem video = item;
-        video.type = MediaType::Video;
-        const bool ok = m_videoModel->addItem(video);
-        if (ok) {
-            if (savePlaylists())
-                ui->label_status->setText(tr("已加入视频列表"));
-        } else {
-            ui->label_status->setText(tr("视频列表中已存在"));
-        }
-    } else if (chosen == downloadAction) {
-        downloadItem(item);
-    }
+    if (savePlaylists())
+        ui->label_status->setText(type == MediaType::Music ? tr("已加入音乐列表")
+                                                         : tr("已加入视频列表"));
 }
 
 void MainWindow::downloadItem(const MediaItem &item)

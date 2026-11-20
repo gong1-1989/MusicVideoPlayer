@@ -6,7 +6,6 @@
 #include "media/MediaItem.h"
 
 #include <QMainWindow>
-#include <QHash>
 #include <QPoint>
 #include <QPointer>
 #include <QStringList>
@@ -14,6 +13,7 @@
 
 class PlaylistModel;
 class SearchCoordinator;
+class SearchPanelController;
 class SourceRegistry;
 class LyricsService;
 class HttpClient;
@@ -43,7 +43,6 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
-    void on_btn_search_clicked();
     void openLocalMusic();
     void openLocalVideo();
     void on_btn_prev_clicked();
@@ -64,19 +63,13 @@ private:
 
     void addLocalFiles(MediaType type, const QStringList &files);
     void playSearchItem(const MediaItem &item);
+    void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void downloadItem(const MediaItem &item);
-    void showSearchContextMenu(const QPoint &pos);
-
-    /// 搜索结果分页：整批结果留在内存，分页只替换模型里的那一段切片
-    void showSearchResults(const QVector<MediaItem> &items);
-    void applySearchPage();
-    int searchPageCount() const;
-    void setSearchAreaVisible(bool visible);
-    QHash<QString, QString> sourceDisplayNames() const;
 
     void restorePlaylists();
     bool savePlaylists();
-    void setupPlaylistInteractions();    void removePlaylistRow(MediaType type, int row);
+    void setupPlaylistInteractions();
+    void removePlaylistRow(MediaType type, int row);
     void clearPlaylist(MediaType type);
     void showPlaylistContextMenu(MediaType type, QListView *view, PlaylistModel *model,
                                  const QPoint &pos);
@@ -101,17 +94,11 @@ private:
     HttpClient *m_http;
     SourceRegistry *m_registry;
     SearchCoordinator *m_coordinator;
+    SearchPanelController *m_searchPanel = nullptr;
     LyricsService *m_lyrics;
     PlaybackController *m_player;
     PlaylistModel *m_musicModel;
     PlaylistModel *m_videoModel;
-    PlaylistModel *m_searchModel;
-
-    /// 搜索结果的完整列表与当前页：模型里只有当前页的切片
-    QVector<MediaItem> m_searchResults;
-    int m_searchPage = 0;
-    int m_searchPageSize = 20;
-    bool m_searchAreaVisible = false;
 
     QVector<LrcLine> m_lrcLines;
     int m_lrcIndex = -1;
