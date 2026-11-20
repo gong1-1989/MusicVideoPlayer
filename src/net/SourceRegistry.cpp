@@ -1,6 +1,6 @@
 #include "net/SourceRegistry.h"
+#include "storage/StoragePaths.h"
 
-#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -10,7 +10,6 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QSaveFile>
-#include <QStandardPaths>
 
 Q_LOGGING_CATEGORY(lcRegistry, "mvp.sources")
 
@@ -162,7 +161,7 @@ QVector<SourceConfig> seedSources()
 
 QString primaryDir()
 {
-    return QCoreApplication::applicationDirPath() + QStringLiteral("/Data");
+    return StoragePaths::dataDir();
 }
 
 /// 损坏的源配置先改名备份，绝不能直接补种子覆盖用户原文件。
@@ -235,6 +234,8 @@ bool SourceRegistry::load()
             m_lastError = corruptMessage + tr(" 预置源写入失败：%1").arg(m_lastError);
             return false;
         }
+        // save() 会清空错误；恢复成功后仍要把“原文件已损坏并备份”带到界面提示
+        m_lastError = corruptMessage;
         return true;
     }
 

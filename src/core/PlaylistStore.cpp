@@ -1,6 +1,6 @@
 #include "core/PlaylistStore.h"
+#include "storage/StoragePaths.h"
 
-#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -28,8 +28,7 @@ QString keyFor(MediaType type)
 /// 程序目录下的 Data/，和 log/ 同级；安装目录不可写时退回用户数据目录
 QString primaryPath()
 {
-    return QDir(QCoreApplication::applicationDirPath())
-        .filePath(QStringLiteral("Data/playlists.json"));
+    return StoragePaths::dataFile(QStringLiteral("playlists.json"));
 }
 
 QString fallbackPath()

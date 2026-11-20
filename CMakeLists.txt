@@ -69,6 +69,8 @@ qt_add_library(mvp_core STATIC
     src/settings/WindowPreset.h
     src/settings/AppSettings.h
     src/settings/AppSettings.cpp
+    src/storage/StoragePaths.h
+    src/storage/StoragePaths.cpp
 )
 
 target_include_directories(mvp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -122,6 +124,15 @@ target_link_libraries(mvp_tests PRIVATE
 )
 mvp_enable_warnings(mvp_tests)
 add_test(NAME mvp_core_logic COMMAND mvp_tests)
+
+# 存储层：真实文件读写、损坏备份、迁移/种子行为，全部隔离在临时 Data 目录
+add_executable(mvp_storage_tests tests/test_storage.cpp)
+target_link_libraries(mvp_storage_tests PRIVATE
+    mvp_core
+    Qt6::Test
+)
+mvp_enable_warnings(mvp_storage_tests)
+add_test(NAME mvp_storage COMMAND mvp_storage_tests)
 
 # 主题样式表嵌入资源，ThemeManager 从 :/themes/<id>.qss 加载
 qt_add_resources(MusicVideoPlayer "app_themes"
