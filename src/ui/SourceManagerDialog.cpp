@@ -111,7 +111,6 @@ SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *h
     if (available.height() <= 800) {
         ui->layout_root->setContentsMargins(12, 8, 12, 4);
         ui->layout_root->setSpacing(6);
-        ui->layout_listButtons->setVerticalSpacing(0);
         ui->list_test->setMaximumHeight(56);
     }
 
@@ -142,8 +141,8 @@ void SourceManagerDialog::setDraftSources(const QVector<SourceConfig> &sources)
 void SourceManagerDialog::bindUi()
 {
     m_list = ui->list_sources;
-    // 150% 下窗口高度有限，列表最小高度要给底部固定按钮让位；常规尺寸仍会自动撑满
-    m_list->setMinimumHeight(64);
+    // 两行紧凑按钮占高较小，列表可以保留更多可见行；常规尺寸仍会自动撑满
+    m_list->setMinimumHeight(140);
     ui->layout_body->setStretch(0, 0);
     ui->layout_body->setStretch(1, 1);
     // 源列表独自吃掉左栏剩余高度，底部操作按钮固定不动

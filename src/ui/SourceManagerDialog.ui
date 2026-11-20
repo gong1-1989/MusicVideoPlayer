@@ -89,7 +89,14 @@
          <widget class="QListWidget" name="list_sources"/>
         </item>
         <item>
-         <layout class="QGridLayout" name="layout_listButtons">
+         <widget class="QWidget" name="actionBar" native="true">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
+            <horstretch>0</horstretch>
+            <verstretch>0</verstretch>
+           </sizepolicy>
+          </property>
+          <layout class="QGridLayout" name="layout_listButtons">
           <property name="horizontalSpacing">
            <number>8</number>
           </property>
@@ -110,58 +117,59 @@
             </property>
            </widget>
           </item>
-          <item row="1" column="0">
+          <item row="0" column="2">
            <widget class="QPushButton" name="btn_remove">
             <property name="text">
              <string>删除</string>
             </property>
            </widget>
           </item>
-          <item row="1" column="1">
+          <item row="0" column="3">
            <widget class="QPushButton" name="btn_addSite">
             <property name="text">
-             <string>添加网站</string>
+             <string>网站</string>
             </property>
             <property name="toolTip">
-             <string>只填网址，自动探测接口并推断字段</string>
+             <string>添加网站：只填网址，自动探测接口并推断字段</string>
             </property>
            </widget>
           </item>
-          <item row="2" column="0">
+          <item row="1" column="0">
            <widget class="QPushButton" name="btn_import">
             <property name="text">
              <string>导入</string>
             </property>
            </widget>
           </item>
-          <item row="2" column="1">
+          <item row="1" column="1">
            <widget class="QPushButton" name="btn_export">
             <property name="text">
              <string>导出</string>
             </property>
            </widget>
           </item>
-          <item row="3" column="0">
+          <item row="1" column="2">
            <widget class="QPushButton" name="btn_example">
             <property name="text">
-             <string>影视示例</string>
+             <string>示例</string>
             </property>
             <property name="toolTip">
-             <string>插入一份影视采集接口的空白模板，填上自己的接口地址即可</string>
+             <string>影视示例：插入一份影视采集接口的空白模板，填上自己的接口地址即可</string>
             </property>
            </widget>
           </item>
-          <item row="3" column="1">
+          <item row="1" column="3">
            <widget class="QPushButton" name="btn_refresh">
             <property name="text">
-             <string>一键更新</string>
+             <string>更新</string>
             </property>
             <property name="toolTip">
-             <string>对当前选中的源重新探测，成功后再确认写入</string>
+             <string>一键更新：对当前选中的源重新探测，成功后再确认写入</string>
             </property>
            </widget>
           </item>
          </layout>
+         </widget>
         </item>
        </layout>
       </widget>

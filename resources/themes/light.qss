@@ -161,6 +161,19 @@ QPushButton {
     color: #3a3a58;
 }
 
+/* 源管理左侧 4 列紧凑按钮：收窄左右内边距，避免两字标签被裁 */
+QPushButton#btn_add,
+QPushButton#btn_duplicate,
+QPushButton#btn_remove,
+QPushButton#btn_addSite,
+QPushButton#btn_import,
+QPushButton#btn_export,
+QPushButton#btn_example,
+QPushButton#btn_refresh {
+    padding: 2px 4px;
+    min-height: 20px;
+}
+
 QPushButton:hover {
     background: #ffffff;
     border: 1px solid rgba(106, 75, 255, 55%);
