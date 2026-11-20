@@ -35,6 +35,9 @@ public:
                          VideoSurface *surface, LyricsController *lyrics,
                          const PlaybackUi &ui, QObject *parent = nullptr);
 
+    /// 当前播放项失效（如列表行被删除）时，把进度、时间和歌词一起清零
+    void clear();
+
 signals:
     void statusMessage(const QString &message);
     void currentItemChanged(const MediaItem &item, int row);

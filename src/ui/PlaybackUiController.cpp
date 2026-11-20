@@ -119,6 +119,16 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     refreshModeButton();
 }
 
+void PlaybackUiController::clear()
+{
+    // 播放项被删除后播放器已无位置可报，进度条、时间和歌词必须一起归零，
+    // 否则界面会停留在已删除的那一行。
+    QSignalBlocker blocker(m_ui.progress);
+    m_ui.progress->setValue(0);
+    m_ui.time->setText(QStringLiteral("00:00 / 00:00"));
+    m_lyrics->clear();
+}
+
 void PlaybackUiController::playPressed()
 {
     if (!m_player->hasCurrentItem()) {

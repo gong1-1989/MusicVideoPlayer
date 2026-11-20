@@ -98,6 +98,8 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/PanelOverlayController.cpp
     src/ui/LyricsController.h
     src/ui/LyricsController.cpp
+    src/ui/MarqueeDelegate.h
+    src/ui/MarqueeDelegate.cpp
     src/ui/DownloadController.h
     src/ui/DownloadController.cpp
     src/ui/PlaybackUiController.h
