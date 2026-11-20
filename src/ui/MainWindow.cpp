@@ -2,7 +2,6 @@
 #include "ui_MainWindow.h"
 
 #include "core/PlaylistModel.h"
-#include "core/PlaylistStore.h"
 #include "download/DownloadTask.h"
 #include "lyrics/LyricsService.h"
 #include "net/HttpClient.h"
@@ -10,6 +9,7 @@
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
 #include "settings/WindowPreset.h"
+#include "ui/PlaylistController.h"
 #include "ui/SearchPanelController.h"
 #include "ui/SettingsDialog.h"
 #include "ui/ThemeManager.h"
@@ -31,11 +31,6 @@
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QGuiApplication>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonParseError>
-#include <QJsonValue>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QListView>
@@ -205,29 +200,6 @@ QSize availableWindowSize()
     return QSize(1280, 720);
 }
 
-QVector<MediaItem> playlistFromJson(const QByteArray &payload)
-{
-    QVector<MediaItem> items;
-    if (payload.isEmpty())
-        return items;
-
-    QJsonParseError error{};
-    const QJsonDocument doc = QJsonDocument::fromJson(payload, &error);
-    if (error.error != QJsonParseError::NoError || !doc.isArray())
-        return items;
-
-    const QJsonArray array = doc.array();
-    items.reserve(array.size());
-    for (const QJsonValue &value : array) {
-        if (!value.isObject())
-            continue;
-        const MediaItem item = mediaItemFromJson(value.toObject());
-        if (item.isValid())
-            items.append(item);
-    }
-    return items;
-}
-
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -238,8 +210,6 @@ MainWindow::MainWindow(QWidget *parent)
     , m_coordinator(nullptr)
     , m_lyrics(new LyricsService(m_http, this))
     , m_player(new PlaybackController(this))
-    , m_musicModel(new PlaylistModel(this))
-    , m_videoModel(new PlaylistModel(this))
 {
     ui->setupUi(this);
 
@@ -250,9 +220,6 @@ MainWindow::MainWindow(QWidget *parent)
         QMessageBox::warning(this, tr("搜索源配置"), message);
     }
     m_coordinator = new SearchCoordinator(m_registry, m_http, this);
-
-    ui->list_music->setModel(m_musicModel);
-    ui->list_video->setModel(m_videoModel);
 
     // 搜索面板的模型、委托、分页和右键菜单全部由控制器持有
     SearchPanelUi searchUi;
@@ -275,6 +242,27 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::addSearchItemToPlaylist);
     connect(m_searchPanel, &SearchPanelController::downloadRequested,
             this, &MainWindow::downloadItem);
+
+    // 播放列表模型、持久化、右键菜单和本地导入统一交给控制器
+    PlaylistUi playlistUi;
+    playlistUi.musicView = ui->list_music;
+    playlistUi.videoView = ui->list_video;
+    playlistUi.tabs = ui->tab_media;
+    m_playlists = new PlaylistController(m_player, playlistUi, this);
+    m_musicModel = m_playlists->musicModel();
+    m_videoModel = m_playlists->videoModel();
+
+    connect(m_playlists, &PlaylistController::statusMessage, this,
+            [this](const QString &text) { ui->label_status->setText(text); });
+    connect(m_playlists, &PlaylistController::playbackInvalidated,
+            this, &MainWindow::clearPlaybackUi);
+    connect(m_playlists, &PlaylistController::localFilesRequested, this,
+            [this](MediaType type) {
+                if (type == MediaType::Music)
+                    openLocalMusic();
+                else
+                    openLocalVideo();
+            });
 
     // 列表里长名字默认被省略号截断，改成悬停/当前行横向滚动
     ui->list_music->setItemDelegate(new MarqueeDelegate(ui->list_music));
@@ -309,8 +297,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupConnections();
     restoreSettings();
-    restorePlaylists();
-    setupPlaylistInteractions();
+    m_playlists->restore();
     refreshModeButton();
     applyPanelVisibility();
 }
@@ -550,7 +537,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (m_fullScreenWindow != nullptr)
         exitFullScreen();
     m_player->stop();
-    savePlaylists();
+    m_playlists->save();
     saveSettings();
     QMainWindow::closeEvent(event);
     // 关闭主窗后显式结束事件循环：避免独立全屏窗或异步播放对象让进程残留在后台。
@@ -563,177 +550,6 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // 侧栏、控制条都是浮层、不跟布局走，窗口尺寸一变要自己贴回原位
     positionSidebarOverlay();
     positionControlOverlay();
-}
-
-void MainWindow::restorePlaylists()
-{
-    QVector<MediaItem> music = PlaylistStore::load(MediaType::Music);
-    QVector<MediaItem> video = PlaylistStore::load(MediaType::Video);
-
-    // 只迁移一次：旧版 QSettings 里的列表写入 Data/playlists.json 后清键。
-    // 迁移标记防止“用户清空列表”后下次启动又被旧键复活。
-    if (!AppSettings::playlistsMigrated()) {
-        bool canMarkMigrated = true;
-        bool imported = false;
-        if (music.isEmpty()) {
-            const QVector<MediaItem> legacyMusic =
-                playlistFromJson(AppSettings::playlist(MediaType::Music));
-            if (!legacyMusic.isEmpty()) {
-                music = legacyMusic;
-                imported = true;
-            }
-        }
-        if (video.isEmpty()) {
-            const QVector<MediaItem> legacyVideo =
-                playlistFromJson(AppSettings::playlist(MediaType::Video));
-            if (!legacyVideo.isEmpty()) {
-                video = legacyVideo;
-                imported = true;
-            }
-        }
-        if (imported) {
-            canMarkMigrated = PlaylistStore::saveAll(music, video);
-            if (canMarkMigrated)
-                qCInfo(lcWindow) << "已把旧 QSettings 播放列表迁移到 Data/playlists.json";
-            else
-                qCWarning(lcWindow) << "播放列表迁移失败，保留旧 QSettings 数据待下次重试";
-        }
-        if (canMarkMigrated) {
-            AppSettings::setPlaylistsMigrated(true);
-            AppSettings::clearLegacyPlaylists();
-        }
-    }
-
-    m_musicModel->setItems(music);
-    m_videoModel->setItems(video);
-
-    if (!music.isEmpty() || !video.isEmpty()) {
-        ui->label_status->setText(tr("已恢复上次的播放列表：音乐 %1 首，视频 %2 个")
-                                      .arg(music.size())
-                                      .arg(video.size()));
-    }
-}
-
-bool MainWindow::savePlaylists()
-{
-    if (PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items()))
-        return true;
-
-    qCWarning(lcWindow) << "播放列表保存失败";
-    if (ui != nullptr && ui->label_status != nullptr)
-        ui->label_status->setText(tr("播放列表保存失败：Data 目录不可写"));
-    return false;
-}
-
-void MainWindow::setupPlaylistInteractions()
-{
-    auto bindView = [this](QListView *view, PlaylistModel *model, MediaType type) {
-        view->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(view, &QWidget::customContextMenuRequested, this,
-                [this, view, model, type](const QPoint &pos) {
-                    showPlaylistContextMenu(type, view, model, pos);
-                });
-
-        // 选中一行后按 Delete 直接移除
-        auto *shortcut = new QShortcut(QKeySequence::Delete, view);
-        shortcut->setContext(Qt::WidgetWithChildrenShortcut);
-        connect(shortcut, &QShortcut::activated, this, [this, view, type] {
-            const QModelIndex index = view->currentIndex();
-            if (index.isValid())
-                removePlaylistRow(type, index.row());
-        });
-    };
-
-    bindView(ui->list_music, m_musicModel, MediaType::Music);
-    bindView(ui->list_video, m_videoModel, MediaType::Video);
-}
-
-void MainWindow::removePlaylistRow(MediaType type, int row)
-{
-    PlaylistModel *model = type == MediaType::Music ? m_musicModel : m_videoModel;
-    const QString name = model->itemAt(row).displayName();
-    const bool removingCurrent = m_player->playlist() == model && m_player->currentRow() == row;
-
-    if (!model->removeRow(row))
-        return;
-
-    if (m_player->playlist() == model)
-        m_player->onPlaylistRowRemoved(row);
-
-    if (removingCurrent) {
-        // 停播信号只负责清画面；进度条、时间和歌词仍会停在已删除的那一行
-        QSignalBlocker blocker(ui->slider_progress);
-        ui->slider_progress->setValue(0);
-        ui->label_time->setText(QStringLiteral("00:00 / 00:00"));
-        ui->list_lrc->clear();
-        m_lrcLines.clear();
-        m_lrcIndex = -1;
-    }
-
-    if (savePlaylists()) {
-        ui->label_status->setText(
-            removingCurrent ? tr("已移除当前播放项：%1").arg(name)
-                            : tr("已从列表移除：%1").arg(name));
-    }
-}
-
-void MainWindow::clearPlaylist(MediaType type)
-{
-    PlaylistModel *model = type == MediaType::Music ? m_musicModel : m_videoModel;
-    if (model->isEmpty())
-        return;
-
-    if (m_player->playlist() == model) {
-        m_player->stop();
-        m_player->setPlaylist(nullptr);
-        ui->list_lrc->clear();
-        m_lrcLines.clear();
-        m_lrcIndex = -1;
-    }
-
-    model->clear();
-    if (savePlaylists())
-        ui->label_status->setText(tr("已清空列表"));
-}
-
-void MainWindow::showPlaylistContextMenu(MediaType type, QListView *view, PlaylistModel *model,
-                                         const QPoint &pos)
-{
-    const QModelIndex index = view->indexAt(pos);
-
-    QMenu menu(this);
-    QAction *playAction = nullptr;
-    QAction *removeAction = nullptr;
-    if (index.isValid()) {
-        playAction = menu.addAction(tr("播放"));
-        removeAction = menu.addAction(tr("从列表移除"));
-        menu.addSeparator();
-    }
-    QAction *clearAction = menu.addAction(tr("清空列表"));
-    clearAction->setEnabled(!model->isEmpty());
-    menu.addSeparator();
-
-    // 菜单跟着当前列表走：音乐列表只给音乐入口，视频列表只给视频入口
-    QAction *addLocalAction = menu.addAction(type == MediaType::Music ? tr("加载本地音乐…")
-                                                                     : tr("加载本地视频…"));
-
-    QAction *chosen = menu.exec(view->viewport()->mapToGlobal(pos));
-    if (chosen == nullptr)
-        return;
-
-    if (chosen == playAction) {
-        m_player->setPlaylist(model);
-        m_player->playRow(index.row());
-    } else if (chosen == removeAction) {
-        removePlaylistRow(type, index.row());
-    } else if (chosen == clearAction) {
-        clearPlaylist(type);
-    } else if (chosen == addLocalAction) {
-        if (type == MediaType::Music)
-            openLocalMusic();
-        else
-            openLocalVideo();
-    }
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
@@ -754,26 +570,6 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     return QMainWindow::eventFilter(watched, event);
 }
 
-PlaylistModel *MainWindow::activeModel() const
-{
-    return ui->tab_media->currentIndex() == 1 ? m_videoModel : m_musicModel;
-}
-
-QListView *MainWindow::activeView() const
-{
-    return ui->tab_media->currentIndex() == 1 ? ui->list_video : ui->list_music;
-}
-
-void MainWindow::ensurePlaylist()
-{
-    if (m_player->playlist() == nullptr) {
-        m_player->setPlaylist(activeModel());
-        return;
-    }
-    if (!m_player->hasCurrentItem() && m_player->playlist() != activeModel())
-        m_player->setPlaylist(activeModel());
-}
-
 void MainWindow::openLocalMusic()
 {
     const QStringList files = QFileDialog::getOpenFileNames(
@@ -785,7 +581,7 @@ void MainWindow::openLocalMusic()
         return;
 
     m_lastDir = QFileInfo(files.first()).absolutePath();
-    addLocalFiles(MediaType::Music, files);
+    m_playlists->addLocalFiles(MediaType::Music, files);
 }
 
 void MainWindow::openLocalVideo()
@@ -799,56 +595,23 @@ void MainWindow::openLocalVideo()
         return;
 
     m_lastDir = QFileInfo(files.first()).absolutePath();
-    addLocalFiles(MediaType::Video, files);
-}
-
-void MainWindow::addLocalFiles(MediaType type, const QStringList &files)
-{
-    PlaylistModel *model = type == MediaType::Music ? m_musicModel : m_videoModel;
-    int added = 0;
-
-    for (const QString &path : files) {
-        const QFileInfo info(path);
-        MediaItem item;
-        item.type = type;
-        item.title = info.fileName();
-        item.url = QUrl::fromLocalFile(info.absoluteFilePath());
-        item.online = false;
-
-        // 同名 .lrc 作为本地歌词
-        const QString lyricPath = info.absolutePath() + QLatin1Char('/')
-                                + info.completeBaseName() + QStringLiteral(".lrc");
-        if (QFileInfo::exists(lyricPath))
-            item.lyricUrl = QUrl::fromLocalFile(lyricPath);
-
-        if (model->addItem(item))
-            ++added;
-    }
-
-    if (added > 0) {
-        if (savePlaylists())
-            ui->label_status->setText(tr("已添加 %1 个文件").arg(added));
-    } else {
-        ui->label_status->setText(tr("列表中已存在相同文件"));
-    }
-    qCInfo(lcWindow) << "加载本地文件" << (type == MediaType::Music ? "音乐" : "视频") << "共"
-                     << files.size() << "个，新增" << added << "个";
+    m_playlists->addLocalFiles(MediaType::Video, files);
 }
 
 void MainWindow::on_btn_prev_clicked()
 {
-    ensurePlaylist();
+    m_playlists->ensurePlaylist();
     m_player->previous();
 }
 
 void MainWindow::on_btn_play_clicked()
 {
     if (!m_player->hasCurrentItem()) {
-        PlaylistModel *model = activeModel();
+        PlaylistModel *model = m_playlists->activeModel();
         if (model == nullptr || model->isEmpty())
             return;
         m_player->setPlaylist(model);
-        const QModelIndex current = activeView()->currentIndex();
+        const QModelIndex current = m_playlists->activeView()->currentIndex();
         m_player->playRow(current.isValid() ? current.row() : 0);
         return;
     }
@@ -867,7 +630,7 @@ void MainWindow::on_btn_stop_clicked()
 
 void MainWindow::on_btn_next_clicked()
 {
-    ensurePlaylist();
+    m_playlists->ensurePlaylist();
     m_player->next();
 }
 
@@ -1093,36 +856,23 @@ void MainWindow::refreshModeButton()
 
 void MainWindow::playSearchItem(const MediaItem &item)
 {
-    if (!item.isValid())
-        return;
-
-    PlaylistModel *model = item.type == MediaType::Music ? m_musicModel : m_videoModel;
-    const bool added = model->addItem(item); // 已存在时返回 false，不影响下面的定位
-    const int row = model->indexOf(item);
-    if (row < 0)
-        return;
-
-    if (added)
-        savePlaylists();
-
-    m_player->setPlaylist(model);
-    m_player->playRow(row);
-    ui->tab_media->setCurrentIndex(item.type == MediaType::Music ? 0 : 1);
+    m_playlists->playItem(item);
 }
 
 void MainWindow::addSearchItemToPlaylist(const MediaItem &item, MediaType type)
 {
-    MediaItem copy = item;
-    copy.type = type;
-    PlaylistModel *model = type == MediaType::Music ? m_musicModel : m_videoModel;
-    if (!model->addItem(copy)) {
-        ui->label_status->setText(type == MediaType::Music ? tr("音乐列表中已存在")
-                                                         : tr("视频列表中已存在"));
-        return;
-    }
-    if (savePlaylists())
-        ui->label_status->setText(type == MediaType::Music ? tr("已加入音乐列表")
-                                                         : tr("已加入视频列表"));
+    m_playlists->addSearchItem(item, type);
+}
+
+void MainWindow::clearPlaybackUi()
+{
+    // 停播信号只负责清画面；进度条、时间和歌词仍会停在已删除的那一行
+    QSignalBlocker blocker(ui->slider_progress);
+    ui->slider_progress->setValue(0);
+    ui->label_time->setText(QStringLiteral("00:00 / 00:00"));
+    ui->list_lrc->clear();
+    m_lrcLines.clear();
+    m_lrcIndex = -1;
 }
 
 void MainWindow::downloadItem(const MediaItem &item)

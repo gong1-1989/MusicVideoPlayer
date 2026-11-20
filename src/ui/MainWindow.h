@@ -6,12 +6,12 @@
 #include "media/MediaItem.h"
 
 #include <QMainWindow>
-#include <QPoint>
 #include <QPointer>
 #include <QStringList>
 #include <QVector>
 
 class PlaylistModel;
+class PlaylistController;
 class SearchCoordinator;
 class SearchPanelController;
 class SourceRegistry;
@@ -61,18 +61,10 @@ private:
     void applyWindowPreset();
     void highlightCurrentLyric();
 
-    void addLocalFiles(MediaType type, const QStringList &files);
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void downloadItem(const MediaItem &item);
-
-    void restorePlaylists();
-    bool savePlaylists();
-    void setupPlaylistInteractions();
-    void removePlaylistRow(MediaType type, int row);
-    void clearPlaylist(MediaType type);
-    void showPlaylistContextMenu(MediaType type, QListView *view, PlaylistModel *model,
-                                 const QPoint &pos);
+    void clearPlaybackUi();
 
     void toggleFullScreen();
     void enterFullScreen();
@@ -97,8 +89,9 @@ private:
     SearchPanelController *m_searchPanel = nullptr;
     LyricsService *m_lyrics;
     PlaybackController *m_player;
-    PlaylistModel *m_musicModel;
-    PlaylistModel *m_videoModel;
+    PlaylistController *m_playlists = nullptr;
+    PlaylistModel *m_musicModel = nullptr;
+    PlaylistModel *m_videoModel = nullptr;
 
     QVector<LrcLine> m_lrcLines;
     int m_lrcIndex = -1;
