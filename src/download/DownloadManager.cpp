@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QLoggingCategory>
 #include <QSaveFile>
+#include <QThread>
 #include <QTimer>
 #include <QUuid>
 
@@ -21,6 +22,22 @@ Q_LOGGING_CATEGORY(lcDownloadManager, "mvp.download.manager")
 namespace {
 
 const int kMaxCompletedJobs = 100;
+
+/// Windows 上 QNetworkReply/QFile 刚 close 时句柄可能还没完全释放，
+/// 删除失败会留下“已移除任务但临时文件还在”的假象；这里短暂重试几次。
+bool removeFileNow(const QString &path)
+{
+    if (path.isEmpty())
+        return true;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        if (!QFileInfo::exists(path))
+            return true;
+        if (QFile::remove(path))
+            return true;
+        QThread::msleep(25);
+    }
+    return !QFileInfo::exists(path);
+}
 
 } // namespace
 
@@ -163,13 +180,11 @@ bool DownloadManager::removeJob(const QString &id)
 
     DownloadJob job = m_jobs.at(index);
 
-    auto taskIt = m_tasks.find(id);
-    if (taskIt != m_tasks.end()) {
-        if (!taskIt.value().isNull()) {
-            taskIt.value()->disconnect(this);
-            taskIt.value()->cancel();
-        }
-        m_tasks.erase(taskIt);
+    // 先断信号、从表里摘掉，再取消：cancel() 会同步发 failed/finished，
+    // 虽然已 disconnect，这个顺序也能避免以后加回调时重入 m_tasks/m_jobs。
+    if (QPointer<DownloadTask> task = m_tasks.take(id); !task.isNull()) {
+        task->disconnect(this);
+        task->cancel();
     }
 
     auto remuxIt = m_remuxes.find(id);
@@ -182,11 +197,17 @@ bool DownloadManager::removeJob(const QString &id)
     }
 
     if (job.status != DownloadJob::Status::Completed) {
-        QFile::remove(job.partialPath());
-        QFile::remove(job.filePath);
-        // 转封装成功前 job.filePath 还是 .ts；MP4 可能是半成品。
-        if (job.hls)
-            QFile::remove(uniqueMp4Path(job.filePath));
+        // 删除进行中的任务时，已下载的部分必须同步消失。
+        // task->cancel() 已关文件并删过一遍；这里按 job 记录兜底，
+        // 覆盖 HLS 改过后缀、MP4 半成品和状态文件与磁盘不同步的情况。
+        const QStringList leftovers = {
+            job.partialPath(), job.filePath, uniqueMp4Path(job.filePath),
+            job.filePath + QStringLiteral(".ts"),
+            job.filePath + QStringLiteral(".ts.mvpdownload")};
+        for (const QString &path : leftovers) {
+            if (!removeFileNow(path))
+                qCWarning(lcDownloadManager) << "移除下载任务时无法删除临时文件" << path;
+        }
     }
 
     m_jobs.removeAt(index);

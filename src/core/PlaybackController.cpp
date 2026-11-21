@@ -251,6 +251,10 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     }
 
     m_player->setSource(source);
+    // 新 source 的首片还没就绪，此时任何 setPosition 都会被播放器丢弃，
+    // 也会让代理提前取消正在传输的分片；等 Loaded/Buffered 再统一执行。
+    m_mediaReady = false;
+    m_deferredSeekMs = -1;
     m_player->play();
     qCInfo(lcPlayer) << "开始播放" << row << item.displayName()
                      << (item.online ? "在线代理" : "本地文件");
@@ -322,8 +326,18 @@ void PlaybackController::previous()
 
 void PlaybackController::seek(qint64 ms)
 {
-    if (!hasCurrentItem())
+    if (!hasCurrentItem() || ms < 0)
         return;
+
+    // 关键保护：播放器还没到 Loaded/Buffered 时不要下发 setPosition。
+    // 流媒体首片仍在加载时连续点击进度条，会让 StreamProxy 反复取消预取，
+    // FFmpeg 正在读的 Range 连接被 abort 后客户端会拿到 502 并崩溃。
+    // 这里只记录用户最后一次目标，等媒体真正可定位时再执行一次。
+    if (!m_mediaReady) {
+        m_deferredSeekMs = ms;
+        qCInfo(lcPlayer) << "媒体未就绪，暂存定位目标" << ms;
+        return;
+    }
 
     // 用户手动拖到别处时，放弃尚未确认的续播任务，避免 seekableChanged 等信号再把位置拉回去。
     if (m_pendingResumeMs > 0 && qAbs(ms - m_pendingResumeMs) > 1500) {
@@ -417,8 +431,19 @@ void PlaybackController::onPlaylistRowRemoved(int row)
 
 void PlaybackController::onMediaStatusChanged(QMediaPlayer::MediaStatus status)
 {
-    if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia)
+    if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia) {
+        m_mediaReady = true;
         applyPendingResume();
+        // 加载期间用户点过的最后一次定位只在这里执行一次，
+        // 不再让每次点击都去打断代理正在传输的分片连接。
+        if (m_deferredSeekMs >= 0) {
+            const qint64 target = m_deferredSeekMs;
+            m_deferredSeekMs = -1;
+            seek(target);
+        }
+    } else if (status == QMediaPlayer::InvalidMedia) {
+        m_mediaReady = false;
+    }
 
     if (status != QMediaPlayer::EndOfMedia)
         return;

@@ -273,6 +273,18 @@ QVector<MediaItem> SearchCoordinator::mergedItems() const
     QVector<MediaItem> all;
     for (const QVector<MediaItem> &bucket : m_buckets)
         all += bucket;
+    // 各源字段差异很大：影视站有 vod_remarks、音乐源多数没有独立品质字段。
+    // 统一在合并出口补一次推断，搜索结果品质栏不会长期空着。
+    for (MediaItem &item : all) {
+        if (item.quality.isEmpty()) {
+            item.quality = inferQuality(item.title + QLatin1Char(' ') + item.description
+                                        + QLatin1Char(' ') + item.url.toString(),
+                                        item.type);
+        }
+        // 音乐源大多不返回码率字段；给一个“标准”兜底，品质栏才不会整列空着。
+        if (item.quality.isEmpty() && item.type == MediaType::Music)
+            item.quality = QStringLiteral("标准");
+    }
     return all;
 }
 

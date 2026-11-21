@@ -19,6 +19,62 @@ enum class MediaType {
     Video
 };
 
+/// 把影视站/音乐源五花八门的清晰度写法归一成短标签。
+/// 只认明确的规格词，不把“更新至第 12 集”这类备注当成品质。
+inline QString normalizedQuality(const QString &raw, MediaType type)
+{
+    const QString text = raw.toUpper();
+    if (text.isEmpty())
+        return QString();
+    if (text.contains(QLatin1String("4K")) || text.contains(QLatin1String("2160"))
+        || text.contains(QLatin1String("UHD"))) {
+        return text.contains(QLatin1String("HDR")) ? QStringLiteral("4K HDR")
+                                                   : QStringLiteral("4K");
+    }
+    if (text.contains(QLatin1String("HDR")))
+        return QStringLiteral("HDR");
+    if (text.contains(QLatin1String("1080")) || text.contains(QLatin1String("FHD"))
+        || text.contains(QStringLiteral("蓝光")) || text.contains(QStringLiteral("BLURAY")))
+        return QStringLiteral("1080P");
+    if (text.contains(QLatin1String("720")))
+        return QStringLiteral("720P");
+    if (text.contains(QStringLiteral("杜比")) || text.contains(QLatin1String("DOLBY")))
+        return QStringLiteral("杜比");
+    if (type == MediaType::Music) {
+        if (text.contains(QStringLiteral("无损")) || text.contains(QLatin1String("FLAC"))
+            || text.contains(QLatin1String("APE")) || text.contains(QLatin1String("WAV"))
+            || text.contains(QLatin1String("HI-RES")) || text.contains(QLatin1String("HIRES"))) {
+            return QStringLiteral("无损");
+        }
+        if (text.contains(QLatin1String("320")) || text.contains(QLatin1String("HQ"))
+            || text.contains(QStringLiteral("高品质"))) {
+            return QStringLiteral("HQ");
+        }
+    }
+    if (text.contains(QStringLiteral("超清")) || text.contains(QStringLiteral("蓝光")))
+        return QStringLiteral("超清");
+    if (text.contains(QStringLiteral("高清")) || text.contains(QLatin1String("HD")))
+        return QStringLiteral("高清");
+    if (text.contains(QStringLiteral("标清")))
+        return QStringLiteral("标清");
+    return QString();
+}
+
+/// 没有独立品质字段的来源从标题/简介/直链里推断，避免搜索结果品质栏长期空着。
+inline QString inferQuality(const QString &text, MediaType type)
+{
+    QString inferred = normalizedQuality(text, type);
+    if (!inferred.isEmpty())
+        return inferred;
+    const QString lower = text.toLower();
+    if (type == MediaType::Music
+        && (lower.contains(QLatin1String(".flac")) || lower.contains(QLatin1String(".wav"))
+            || lower.contains(QLatin1String("lossless")))) {
+        return QStringLiteral("无损");
+    }
+    return QString();
+}
+
 /// 一条可播放的媒体记录。本地文件与在线流共用同一结构，
 /// 区别只在 url 的 scheme（file:// 还是 http/https）。
 struct MediaItem
@@ -46,6 +102,9 @@ struct MediaItem
     QString area;                   // 地区，如 "中国大陆"
     QString genre;                  // 类型，如 "剧情 / 悬疑"
     QString description;            // 简介
+    /// 清晰度/音质标签：4K、1080P、HDR、无损、HQ 等。
+    /// 影视站vod_remarks里有就原样归一化；音乐源没有独立字段时从标题推断。
+    QString quality;
 
     bool isValid() const { return !url.isEmpty() && url.isValid(); }
 
@@ -60,6 +119,8 @@ struct MediaItem
     QString metaLine() const
     {
         QStringList parts;
+        if (!quality.isEmpty())
+            parts.append(quality);
         if (!year.isEmpty())
             parts.append(year);
         if (!area.isEmpty())
@@ -216,6 +277,8 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
         object.insert(QStringLiteral("genre"), item.genre);
     if (!item.description.isEmpty())
         object.insert(QStringLiteral("description"), item.description);
+    if (!item.quality.isEmpty())
+        object.insert(QStringLiteral("quality"), item.quality);
     return object;
 }
 
@@ -252,6 +315,7 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
     item.area = object.value(QStringLiteral("area")).toString();
     item.genre = object.value(QStringLiteral("genre")).toString();
     item.description = object.value(QStringLiteral("description")).toString();
+    item.quality = object.value(QStringLiteral("quality")).toString();
     return item;
 }
 

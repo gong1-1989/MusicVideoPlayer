@@ -291,7 +291,7 @@ void DownloadManagerDialog::removeSelected()
 
     const QString text = job->status == DownloadJob::Status::Completed
         ? tr("只移除这条下载记录，磁盘上的文件不会删除。确定继续？")
-        : tr("该任务尚未完成，移除时会删除它的临时文件。确定继续？");
+        : tr("该任务尚未完成，移除时已下载的部分和临时文件会一起删除。确定继续？");
     if (QMessageBox::question(this, tr("移除下载记录"), text)
         != QMessageBox::Yes) {
         return;

@@ -252,6 +252,14 @@ void ConfigSearchProvider::onReplyFinished()
         base.genre = cleanText(mapString(node, m_config.fields, QStringLiteral("genre"), vars));
         base.description = cleanText(
             mapString(node, m_config.fields, QStringLiteral("description"), vars));
+        // 品质：配置里能映射就映射；没有字段的音乐/影视源从标题、简介和直链推断。
+        base.quality = normalizedQuality(
+            mapString(node, m_config.fields, QStringLiteral("quality"), vars), base.type);
+        if (base.quality.isEmpty()) {
+            base.quality = inferQuality(base.title + QLatin1Char(' ') + base.description
+                                        + QLatin1Char(' ') + stream,
+                                        base.type);
+        }
 
         const QString durationSpec = m_config.fields.value(QStringLiteral("durationMs"));
         if (!durationSpec.isEmpty() && !durationSpec.startsWith(QLatin1Char('@'))) {

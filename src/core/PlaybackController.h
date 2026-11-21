@@ -101,6 +101,10 @@ private:
     QString m_pendingResumeIdentity;
     /// 已尝试 setPosition 的次数；播放器过早调用会丢弃定位，需在播放启动后限次重试
     int m_resumeRetryCount = 0;
+    /// 媒体是否已经加载到可定位状态。未就绪时只记最后一次目标，
+    /// 避免源站还在拉首片时连续 setPosition 打断预取连接。
+    bool m_mediaReady = false;
+    qint64 m_deferredSeekMs = -1;
 };
 
 #endif // PLAYBACKCONTROLLER_H

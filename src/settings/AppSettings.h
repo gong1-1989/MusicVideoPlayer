@@ -46,6 +46,9 @@ void setPlaybackMode(int mode);
 // ---------------------------------------------------------------- 搜索
 int searchLimit();                 ///< 单次搜索结果条数
 void setSearchLimit(int limit);
+/// 最近搜索词（最多 8 个，去重），用于空输入时展示历史
+QStringList searchHistory();
+void setSearchHistory(const QStringList &history);
 
 /// 探源时先试的用户自定义接口路径（相对站点，或完整 URL；支持 {keyword}/{limit}）
 QStringList probePaths(MediaType type);

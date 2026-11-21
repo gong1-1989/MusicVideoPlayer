@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QLibraryInfo>
 #include <QLocale>
 #include <QLoggingCategory>
 #include <QMutex>
@@ -166,6 +167,13 @@ int main(int argc, char *argv[])
 
     // 主题来自系统设置，样式表在资源里；加载失败保留 Fusion 默认外观
     ThemeManager::instance().applySaved();
+
+    // Qt 标准对话框（QMessageBox 的 Yes/No/OK、文件选择器等）默认是英文，
+    // 加载 qtbase 中文翻译后再创建窗口，保证“确定/取消”等按钮与界面语言一致。
+    QTranslator qtTranslator;
+    const QString qtTranslations = QLibraryInfo::path(QLibraryInfo::TranslationsPath);
+    if (qtTranslator.load(QStringLiteral("qtbase_zh_CN"), qtTranslations))
+        QCoreApplication::installTranslator(&qtTranslator);
 
     QTranslator translator;
     if (translator.load(QLocale::system(), QStringLiteral("MusicVideoPlayer"),

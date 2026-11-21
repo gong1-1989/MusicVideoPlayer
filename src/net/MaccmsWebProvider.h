@@ -41,6 +41,8 @@ private:
         QString area;
         QString genre;
         QString description;
+        /// 影视站 vod_remarks（HD、1080P、更新至…）归一化后的品质标签
+        QString quality;
         QStringList playLines; // 详情页里每条线路的第一集（按线路顺序）
     };
 

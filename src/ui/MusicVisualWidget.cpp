@@ -1,0 +1,331 @@
+#include "ui/MusicVisualWidget.h"
+
+#include <QEvent>
+#include <QFontMetrics>
+#include <QHideEvent>
+#include <QLinearGradient>
+#include <QPainter>
+#include <QPainterPath>
+#include <QRadialGradient>
+#include <QResizeEvent>
+#include <QShowEvent>
+#include <QTimer>
+#include <QUrl>
+#include <QtMath>
+
+#include <utility>
+
+namespace {
+
+QColor withAlpha(const QColor &color, int alpha)
+{
+    QColor copy = color;
+    copy.setAlpha(qBound(0, alpha, 255));
+    return copy;
+}
+
+QString sourceLabel(const MediaItem &item)
+{
+    if (item.sourceId == QLatin1String("link"))
+        return QObject::tr("直链");
+    if (!item.sourceId.isEmpty())
+        return item.sourceId;
+    return item.online ? QObject::tr("网络") : QObject::tr("本地");
+}
+
+} // namespace
+
+MusicVisualWidget::MusicVisualWidget(QWidget *parent)
+    : QWidget(parent)
+{
+    setObjectName(QStringLiteral("musicVisual"));
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setAttribute(Qt::WA_OpaquePaintEvent, true);
+    setAutoFillBackground(false);
+
+    m_timer = new QTimer(this);
+    m_timer->setInterval(33);
+    connect(m_timer, &QTimer::timeout, this, [this] {
+        m_phase += m_playing ? 0.055 : 0.012;
+        if (m_phase > 10000.0)
+            m_phase = 0.0;
+        update();
+    });
+
+    if (parent != nullptr) {
+        parent->installEventFilter(this);
+        setGeometry(parent->rect());
+    }
+}
+
+void MusicVisualWidget::setTrack(const MediaItem &item)
+{
+    m_item = item;
+    m_cover = QPixmap();
+    if (item.posterUrl.isLocalFile()) {
+        QPixmap loaded(item.posterUrl.toLocalFile());
+        if (!loaded.isNull())
+            m_cover = loaded;
+    }
+    update();
+}
+
+void MusicVisualWidget::setPlaying(bool playing)
+{
+    if (m_playing == playing)
+        return;
+    m_playing = playing;
+    update();
+}
+
+void MusicVisualWidget::setAccent(const QColor &color)
+{
+    if (color.isValid())
+        m_accent = color;
+    update();
+}
+
+void MusicVisualWidget::paintEvent(QPaintEvent *event)
+{
+    Q_UNUSED(event)
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    const QRectF rect = QRectF(this->rect());
+    drawBackground(painter, rect);
+    drawSpectrum(painter, rect);
+    drawDisc(painter, rect);
+    drawTrackInfo(painter, rect);
+}
+
+void MusicVisualWidget::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    update();
+}
+
+void MusicVisualWidget::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    if (m_timer != nullptr && !m_timer->isActive())
+        m_timer->start();
+}
+
+void MusicVisualWidget::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    if (m_timer != nullptr)
+        m_timer->stop();
+}
+
+bool MusicVisualWidget::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == parentWidget() && event->type() == QEvent::Resize) {
+        setGeometry(parentWidget()->rect());
+        raise();
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void MusicVisualWidget::drawBackground(QPainter &painter, const QRectF &rect)
+{
+    painter.fillRect(rect, QColor(7, 9, 22));
+
+    // 两团缓慢漂移的光晕，形成“极光在流动”的观感；不依赖封面也能撑住画面。
+    const qreal driftX = qSin(m_phase * 0.62) * rect.width() * 0.10;
+    const qreal driftY = qCos(m_phase * 0.47) * rect.height() * 0.08;
+
+    QRadialGradient warm(rect.center() + QPointF(-rect.width() * 0.22 + driftX,
+                                                 -rect.height() * 0.16 + driftY),
+                         qMax(rect.width(), rect.height()) * 0.62);
+    warm.setColorAt(0.0, withAlpha(QColor(255, 92, 168), 120));
+    warm.setColorAt(0.45, withAlpha(QColor(126, 78, 255), 58));
+    warm.setColorAt(1.0, QColor(0, 0, 0, 0));
+    painter.fillRect(rect, warm);
+
+    QRadialGradient cool(rect.center() + QPointF(rect.width() * 0.24 + driftY,
+                                                 rect.height() * 0.10 + driftX),
+                         qMax(rect.width(), rect.height()) * 0.66);
+    cool.setColorAt(0.0, withAlpha(QColor(42, 210, 255), 105));
+    cool.setColorAt(0.48, withAlpha(QColor(66, 108, 255), 52));
+    cool.setColorAt(1.0, QColor(0, 0, 0, 0));
+    painter.fillRect(rect, cool);
+
+    // 底部压暗，给频谱和曲目信息留出稳定可读区。
+    QLinearGradient floor(rect.topLeft(), rect.bottomLeft());
+    floor.setColorAt(0.0, QColor(4, 6, 16, 0));
+    floor.setColorAt(0.62, QColor(4, 6, 16, 70));
+    floor.setColorAt(1.0, QColor(2, 3, 10, 210));
+    painter.fillRect(rect, floor);
+
+    painter.setPen(QPen(withAlpha(QColor(180, 220, 255), 34), 1));
+    painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 14, 14);
+}
+
+void MusicVisualWidget::drawSpectrum(QPainter &painter, const QRectF &rect)
+{
+    const qreal count = 46.0;
+    const qreal gap = qMax(2.0, rect.width() / 620.0);
+    const qreal totalWidth = rect.width() * 0.86;
+    const qreal barWidth = (totalWidth - gap * (count - 1)) / count;
+    const qreal baseY = rect.height() * 0.88;
+    const qreal maxHeight = rect.height() * (m_playing ? 0.20 : 0.07);
+
+    QLinearGradient barGradient(0, baseY - maxHeight, 0, baseY);
+    barGradient.setColorAt(0.0, withAlpha(m_accent.lighter(135), 225));
+    barGradient.setColorAt(0.55, withAlpha(QColor(86, 190, 255), 190));
+    barGradient.setColorAt(1.0, withAlpha(QColor(255, 104, 190), 150));
+
+    painter.setPen(Qt::NoPen);
+    for (int i = 0; i < int(count); ++i) {
+        // 用相位错开的正弦叠加做拟真频谱：稳定、不影响布局，也不额外解码音频。
+        const qreal a = qSin(m_phase * 2.1 + i * 0.52) * 0.5 + 0.5;
+        const qreal b = qSin(m_phase * 3.7 + i * 1.17) * 0.5 + 0.5;
+        const qreal c = qSin(m_phase * 0.9 + i * 0.21) * 0.5 + 0.5;
+        const qreal level = 0.16 + (a * 0.46 + b * 0.30 + c * 0.24) * 0.84;
+        const qreal h = maxHeight * level;
+        const QRectF bar(rect.left() + (rect.width() - totalWidth) / 2.0
+                             + i * (barWidth + gap),
+                         baseY - h, barWidth, h + 8.0);
+        QLinearGradient barGrad(bar.topLeft(), bar.bottomLeft());
+        barGrad.setColorAt(0.0, withAlpha(m_accent.lighter(130), 210));
+        barGrad.setColorAt(1.0, withAlpha(QColor(255, 98, 190), 62));
+        painter.setBrush(barGrad);
+        painter.drawRoundedRect(bar, barWidth / 2.0, barWidth / 2.0);
+    }
+}
+
+void MusicVisualWidget::drawDisc(QPainter &painter, const QRectF &rect)
+{
+    if (rect.width() < 420.0 || rect.height() < 220.0)
+        return;
+
+    const qreal radius = qMin(rect.width(), rect.height()) * 0.20;
+    const QPointF center(rect.left() + rect.width() * 0.75,
+                         rect.top() + rect.height() * 0.42);
+
+    // 外圈呼吸光晕
+    QRadialGradient glow(center, radius * 1.65);
+    glow.setColorAt(0.0, withAlpha(m_accent, 95));
+    glow.setColorAt(0.45, withAlpha(QColor(120, 90, 255), 30));
+    glow.setColorAt(1.0, QColor(0, 0, 0, 0));
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(glow);
+    painter.drawEllipse(center, radius * 1.65, radius * 1.65);
+
+    if (!m_cover.isNull()) {
+        QPainterPath clip;
+        clip.addEllipse(center, radius, radius);
+        painter.setClipPath(clip);
+        const QPixmap scaled = m_cover.scaled(int(radius * 2), int(radius * 2),
+                                              Qt::KeepAspectRatioByExpanding,
+                                              Qt::SmoothTransformation);
+        painter.drawPixmap(QRectF(center.x() - radius, center.y() - radius,
+                                  radius * 2, radius * 2), scaled,
+                          QRectF((scaled.width() - radius * 2) / 2.0,
+                                 (scaled.height() - radius * 2) / 2.0,
+                                 radius * 2, radius * 2));
+        painter.setClipping(false);
+        painter.setPen(QPen(withAlpha(QColor(220, 240, 255), 140), 2));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawEllipse(center, radius, radius);
+        return;
+    }
+
+    QRadialGradient disc(center - QPointF(radius * 0.28, radius * 0.30), radius * 1.5);
+    disc.setColorAt(0.0, QColor(40, 48, 86));
+    disc.setColorAt(0.55, QColor(18, 22, 44));
+    disc.setColorAt(1.0, QColor(8, 10, 24));
+    painter.setBrush(disc);
+    painter.setPen(QPen(withAlpha(QColor(150, 200, 255), 55), 1));
+    painter.drawEllipse(center, radius, radius);
+
+    painter.setBrush(Qt::NoBrush);
+    for (int i = 1; i <= 4; ++i) {
+        const qreal r = radius * (0.22 + i * 0.19);
+        painter.setPen(QPen(withAlpha(QColor(150, 200, 255), 18 + i * 6), 1));
+        painter.drawEllipse(center, r, r);
+    }
+
+    // 中心音符：不依赖图标资源，直接画，主题切换也不会失效。
+    const qreal noteSize = radius * 0.58;
+    QPainterPath note;
+    note.addEllipse(QRectF(center.x() - noteSize * 0.52,
+                            center.y() + noteSize * 0.18,
+                            noteSize * 0.62, noteSize * 0.46));
+    note.addRect(QRectF(center.x() + noteSize * 0.02,
+                         center.y() - noteSize * 0.52,
+                         noteSize * 0.11, noteSize * 1.10));
+    QPainterPath flag;
+    flag.moveTo(center.x() + noteSize * 0.13, center.y() - noteSize * 0.52);
+    flag.cubicTo(center.x() + noteSize * 0.56, center.y() - noteSize * 0.30,
+                 center.x() + noteSize * 0.52, center.y() + noteSize * 0.02,
+                 center.x() + noteSize * 0.18, center.y() + noteSize * 0.08);
+    note = note.united(flag);
+    QLinearGradient noteGradient(center.x() - noteSize, center.y() - noteSize,
+                                 center.x() + noteSize, center.y() + noteSize);
+    noteGradient.setColorAt(0.0, QColor(210, 240, 255));
+    noteGradient.setColorAt(0.55, QColor(120, 190, 255));
+    noteGradient.setColorAt(1.0, QColor(255, 120, 200));
+    painter.setBrush(noteGradient);
+    painter.setPen(Qt::NoPen);
+    painter.drawPath(note);
+}
+
+void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
+{
+    const qreal left = rect.left() + rect.width() * 0.075;
+    const qreal maxWidth = qMax(120.0, rect.width() * (rect.width() < 620 ? 0.84 : 0.52));
+    const qreal top = rect.top() + rect.height() * 0.16;
+
+    QFont titleFont = font();
+    titleFont.setPointSizeF(qMax(15.0, rect.height() / 15.0));
+    titleFont.setBold(true);
+    painter.setFont(titleFont);
+    painter.setPen(QColor(240, 247, 255));
+    const QFontMetrics titleMetrics(titleFont);
+    const QString title = titleMetrics.elidedText(
+        m_item.title.isEmpty() ? tr("未知曲目") : m_item.title, Qt::ElideRight,
+        int(maxWidth));
+    painter.drawText(QRectF(left, top, maxWidth, titleMetrics.height() + 8),
+                     Qt::AlignLeft | Qt::AlignVCenter, title);
+
+    const qreal subtitleTop = top + titleMetrics.height() + 14;
+    QFont subtitleFont = font();
+    subtitleFont.setPointSizeF(qMax(9.5, rect.height() / 28.0));
+    painter.setFont(subtitleFont);
+    painter.setPen(withAlpha(QColor(205, 222, 255), 205));
+    const QString subtitle =
+        m_item.artist.isEmpty() ? tr("未知歌手") : m_item.artist;
+    painter.drawText(QRectF(left, subtitleTop, maxWidth, fontMetrics().height() + 10),
+                     Qt::AlignLeft | Qt::AlignVCenter,
+                     QFontMetrics(subtitleFont).elidedText(subtitle, Qt::ElideRight,
+                                                          int(maxWidth)));
+
+    // 品质 / 来源小徽标：与搜索结果保持同一套信息口径。
+    QStringList tags;
+    if (!m_item.quality.isEmpty())
+        tags.append(m_item.quality);
+    tags.append(sourceLabel(m_item));
+    if (!m_playing)
+        tags.append(tr("已暂停"));
+
+    const qreal badgeTop = subtitleTop + fontMetrics().height() + 24;
+    qreal badgeLeft = left;
+    QFont badgeFont = font();
+    badgeFont.setPointSizeF(qMax(8.5, rect.height() / 34.0));
+    painter.setFont(badgeFont);
+    const QFontMetrics badgeMetrics(badgeFont);
+    for (const QString &tag : std::as_const(tags)) {
+        const qreal width = badgeMetrics.horizontalAdvance(tag) + 18.0;
+        if (badgeLeft + width > left + maxWidth)
+            break;
+        QRectF badge(badgeLeft, badgeTop, width, badgeMetrics.height() + 8);
+        painter.setPen(QPen(withAlpha(QColor(170, 210, 255), 55), 1));
+        painter.setBrush(withAlpha(QColor(80, 120, 255), 34));
+        painter.drawRoundedRect(badge, badge.height() / 2.0, badge.height() / 2.0);
+        painter.setPen(withAlpha(QColor(225, 240, 255), 220));
+        painter.drawText(badge, Qt::AlignCenter, tag);
+        badgeLeft += width + 8;
+    }
+}

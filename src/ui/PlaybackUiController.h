@@ -12,6 +12,7 @@ class VideoSurface;
 class QLabel;
 class QPushButton;
 class QSlider;
+class QTimer;
 
 /// 播放条与播放器之间的全部联动：进度、音量、播放/停止/上下曲、模式按钮。
 struct PlaybackUi
@@ -53,6 +54,8 @@ private:
     void refreshPlayButton(QMediaPlayer::PlaybackState state);
     /// HLS 深拖动时 FFmpeg 要从目标前若干分片顺序读起，这里只负责把“正在定位”说清楚
     void beginSeek(qint64 target);
+    /// 防抖后再真正下发，连续点击只执行最后一次，避免反复打断代理预取
+    void flushSeek();
     bool isHlsItem() const;
 
     PlaybackUi m_ui;
@@ -65,6 +68,9 @@ private:
     qint64 m_seekTarget = -1;
     /// 每次定位递增，用来让上一轮的超时回调失效
     quint64 m_seekSerial = 0;
+    /// 连续点击进度条时只保留最后一次目标
+    qint64 m_seekPendingTarget = -1;
+    QTimer *m_seekTimer = nullptr;
 };
 
 #endif // PLAYBACKUICONTROLLER_H

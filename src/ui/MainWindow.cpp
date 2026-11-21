@@ -9,6 +9,7 @@
 #include "ui/FullscreenController.h"
 #include "ui/LyricsController.h"
 #include "ui/MarqueeDelegate.h"
+#include "ui/MusicVisualWidget.h"
 #include "ui/PanelOverlayController.h"
 #include "ui/PlaybackUiController.h"
 #include "ui/PlaylistController.h"
@@ -21,7 +22,9 @@
 #include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QCoreApplication>
+#include <QFrame>
 #include <QGuiApplication>
+#include <QLabel>
 #include <QLoggingCategory>
 #include <QMessageBox>
 #include <QModelIndex>
@@ -29,7 +32,9 @@
 #include <QScreen>
 #include <QShortcut>
 #include <QShowEvent>
+#include <QSlider>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <QWidget>
 
 #ifdef Q_OS_WIN
@@ -80,7 +85,9 @@ MainWindow::MainWindow(QWidget *parent)
     searchUi.titleLabel = ui->label_searchTitle;
     searchUi.pageLabel = ui->label_searchPage;
     searchUi.pageInfoLabel = ui->label_searchPageInfo;
-    m_searchPanel = new SearchPanelController(m_coordinator, m_registry, searchUi, this);
+    searchUi.sidebar = ui->panelSidebar;
+    m_searchPanel = new SearchPanelController(m_coordinator, m_registry, m_http,
+                                             searchUi, this);
 
     connect(m_searchPanel, &SearchPanelController::statusMessage, this,
             [this](const QString &text) { setNetworkStatus(text); });
@@ -149,6 +156,32 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_player->mediaPlayer()->setVideoSink(ui->videoWidget->sink());
 
+    // 音乐没有视频帧，原 VideoSurface 会一直黑着。视觉层盖在整个播放舞台上，
+    // 播音乐时隐藏视频面、显示动态渐变+频谱；切回视频立刻还原。
+    m_musicVisual = new MusicVisualWidget(ui->videoStage);
+    m_musicVisual->setGeometry(ui->videoStage->rect());
+    m_musicVisual->raise();
+    m_musicVisual->hide();
+    connect(m_player, &PlaybackController::currentItemChanged, this,
+            [this](const MediaItem &item, int) {
+                const bool music = item.isValid() && item.type == MediaType::Music;
+                if (music) {
+                    m_musicVisual->setTrack(item);
+                    ui->videoWidget->hide();
+                    m_musicVisual->setGeometry(ui->videoStage->rect());
+                    m_musicVisual->show();
+                    m_musicVisual->raise();
+                } else {
+                    m_musicVisual->hide();
+                    ui->videoWidget->show();
+                }
+            });
+    connect(m_player, &PlaybackController::playbackStateChanged, this,
+            [this](QMediaPlayer::PlaybackState state) {
+                if (m_musicVisual != nullptr)
+                    m_musicVisual->setPlaying(state == QMediaPlayer::PlayingState);
+            });
+
     // 歌词栏默认隐藏，只有播音乐时才让位出来
     m_lyrics->hidePanel();
 
@@ -164,6 +197,8 @@ MainWindow::MainWindow(QWidget *parent)
                    tr("全屏 / 退出全屏"), 20);
     UiIcons::apply(ui->btn_downloads, QStringLiteral("downloads"),
                    tr("下载任务"), 20);
+    UiIcons::apply(ui->btn_volume, QStringLiteral("volume"), tr("音量"), 20);
+    setupVolumePopup();
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
             [this] {
                 ThemeManager::instance().applyWindowChrome(this);
@@ -173,6 +208,7 @@ MainWindow::MainWindow(QWidget *parent)
                                tr("全屏 / 退出全屏"), 20);
                 UiIcons::apply(ui->btn_downloads, QStringLiteral("downloads"),
                                tr("下载任务"), 20);
+                UiIcons::apply(ui->btn_volume, QStringLiteral("volume"), tr("音量"), 20);
                 QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
                 m_lyrics->refreshHighlight();
             });
@@ -246,6 +282,22 @@ void MainWindow::setNetworkStatus(const QString &text)
     // 状态栏空间有限，完整原因放悬停提示，正文不挤占播放状态
     ui->label_network->setToolTip(text);
     ui->label_network->setVisible(!text.isEmpty());
+
+    // 搜索/下载提示是过程性消息，不能一直留在控制条上。
+    // 8 秒后自动收起；期间有新消息会重新计时，避免旧提示和播放/定位状态叠在一起。
+    if (m_networkStatusTimer == nullptr) {
+        m_networkStatusTimer = new QTimer(this);
+        m_networkStatusTimer->setSingleShot(true);
+        connect(m_networkStatusTimer, &QTimer::timeout, this, [this] {
+            ui->label_network->clear();
+            ui->label_network->setToolTip(QString());
+            ui->label_network->hide();
+        });
+    }
+    if (text.isEmpty())
+        m_networkStatusTimer->stop();
+    else
+        m_networkStatusTimer->start(8000);
 }
 
 void MainWindow::on_btn_settings_clicked()
@@ -424,6 +476,82 @@ void MainWindow::clearPlaybackUi()
 {
     // 播放条自己负责把进度、时间和歌词清零，主窗不再逐个控件复位
     m_transport->clear();
+}
+
+void MainWindow::setupVolumePopup()
+{
+    // 要求是“右侧竖排悬浮音量条”：原来横向滑块长期占着控制条宽度，
+    // 现在只保留一个音量图标，点开后在按钮上方弹出竖排滑块。
+    // slider_volume 对象本身继续复用，PlaybackUiController 的音量联动和
+    // SettingsController 的持久化都不需要改接口。
+    ui->label_volume->hide();
+    ui->layout_auxButtons->removeWidget(ui->label_volume);
+    ui->label_volume->deleteLater();
+
+    ui->layout_auxButtons->removeWidget(ui->slider_volume);
+    ui->slider_volume->setParent(this);
+
+    m_volumePopup = new QFrame(this, Qt::Popup | Qt::FramelessWindowHint);
+    m_volumePopup->setObjectName(QStringLiteral("volumePopup"));
+    m_volumePopup->setAttribute(Qt::WA_StyledBackground, true);
+    m_volumePopup->setAttribute(Qt::WA_TranslucentBackground, true);
+    m_volumePopup->setFixedSize(72, 206);
+
+    auto *layout = new QVBoxLayout(m_volumePopup);
+    layout->setContentsMargins(10, 10, 10, 10);
+    layout->setSpacing(8);
+
+    m_volumeLabel = new QLabel(m_volumePopup);
+    m_volumeLabel->setObjectName(QStringLiteral("label_volumeValue"));
+    m_volumeLabel->setAlignment(Qt::AlignCenter);
+    m_volumeLabel->setText(QStringLiteral("%1%").arg(ui->slider_volume->value()));
+    layout->addWidget(m_volumeLabel);
+
+    ui->slider_volume->setParent(m_volumePopup);
+    ui->slider_volume->setOrientation(Qt::Vertical);
+    ui->slider_volume->setInvertedAppearance(false);
+    ui->slider_volume->setFixedSize(38, 146);
+    ui->slider_volume->setVisible(true);
+    layout->addWidget(ui->slider_volume, 0, Qt::AlignHCenter);
+
+    connect(ui->slider_volume, &QSlider::valueChanged, this, [this](int value) {
+        if (m_volumeLabel != nullptr)
+            m_volumeLabel->setText(QStringLiteral("%1%").arg(value));
+        if (ui->btn_volume != nullptr)
+            ui->btn_volume->setToolTip(tr("音量 %1%").arg(value));
+    });
+    ui->btn_volume->setToolTip(tr("音量 %1%").arg(ui->slider_volume->value()));
+
+    // 点击按钮在按钮上方弹出；点击外部由 Qt::Popup 自动关闭。
+    connect(ui->btn_volume, &QPushButton::clicked, this, &MainWindow::showVolumePopup);
+    m_volumePopup->hide();
+}
+
+void MainWindow::showVolumePopup()
+{
+    if (m_volumePopup == nullptr || ui->btn_volume == nullptr)
+        return;
+    if (m_volumePopup->isVisible()) {
+        m_volumePopup->hide();
+        return;
+    }
+
+    m_volumePopup->adjustSize();
+    const QPoint buttonTop = ui->btn_volume->mapToGlobal(QPoint(0, 0));
+    int x = buttonTop.x() + ui->btn_volume->width() - m_volumePopup->width();
+    int y = buttonTop.y() - m_volumePopup->height() - 6;
+
+    // 控制条贴近屏幕顶端时向下弹，避免跑到屏幕外。
+    const QRect available = ui->btn_volume->screen() != nullptr
+                                ? ui->btn_volume->screen()->availableGeometry()
+                                : QRect(buttonTop, QSize(0, 0));
+    if (y < available.top())
+        y = buttonTop.y() + ui->btn_volume->height() + 6;
+    x = qBound(available.left(), x, available.right() - m_volumePopup->width());
+
+    m_volumePopup->move(x, y);
+    m_volumePopup->show();
+    m_volumePopup->raise();
 }
 
 

@@ -41,6 +41,13 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     Q_ASSERT(m_ui.next != nullptr);
     Q_ASSERT(m_ui.mode != nullptr);
 
+    // 连续点击进度条时先把目标攒一下：每次点击都立刻 seek 会反复取消
+    // StreamProxy 的预取，FFmpeg 正在读的连接被中断后容易整条播放链崩溃。
+    m_seekTimer = new QTimer(this);
+    m_seekTimer->setSingleShot(true);
+    m_seekTimer->setInterval(180);
+    connect(m_seekTimer, &QTimer::timeout, this, &PlaybackUiController::flushSeek);
+
     connect(m_ui.previous, &QPushButton::clicked, this, [this] {
         m_playlists->ensurePlaylist();
         m_player->previous();
@@ -121,6 +128,8 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     connect(m_player, &PlaybackController::currentItemChanged, this,
             [this](const MediaItem &item, int row) {
                 m_seekTarget = -1;
+                m_seekPendingTarget = -1;
+                m_seekTimer->stop();
                 // 视频切歌/切回音乐时先清掉上一帧，等新视频首帧到达再显示
                 m_surface->clearFrame();
                 emit statusMessage(tr("正在播放：%1").arg(item.displayName()));
@@ -149,6 +158,9 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
 void PlaybackUiController::clear()
 {
     m_seekTarget = -1;
+    m_seekPendingTarget = -1;
+    if (m_seekTimer != nullptr)
+        m_seekTimer->stop();
     // 播放项被删除后播放器已无位置可报，进度条、时间和歌词必须一起归零，
     // 否则界面会停留在已删除的那一行。
     QSignalBlocker blocker(m_ui.progress);
@@ -160,6 +172,29 @@ void PlaybackUiController::clear()
 void PlaybackUiController::beginSeek(qint64 target)
 {
     if (!m_player->hasCurrentItem() || target < 0)
+        return;
+
+    m_seekPendingTarget = target;
+
+    // HLS 需要把“正在定位”立刻告诉用户；真正下发统一交给防抖计时器。
+    if (isHlsItem()) {
+        m_ui.time->setText(tr("定位中 %1 / %2")
+                               .arg(TimeFormat::formatMs(target),
+                                    TimeFormat::formatMs(m_player->duration())));
+        emit statusMessage(tr("正在定位到 %1，源站分片较慢时请稍候…")
+                               .arg(TimeFormat::formatMs(target)));
+    }
+
+    // 180ms 内的后续点击只覆盖目标，不发出第一次 seek；
+    // 这是用户“没加载完又点一次就崩”的直接保护。
+    m_seekTimer->start();
+}
+
+void PlaybackUiController::flushSeek()
+{
+    const qint64 target = m_seekPendingTarget;
+    m_seekPendingTarget = -1;
+    if (target < 0 || !m_player->hasCurrentItem())
         return;
 
     // 本地文件拖动几乎瞬间完成，只有 HLS 才需要把分片顺序读取的等待说清楚。
@@ -218,6 +253,8 @@ void PlaybackUiController::playPressed()
 void PlaybackUiController::stopPressed()
 {
     m_seekTarget = -1;
+    m_seekPendingTarget = -1;
+    m_seekTimer->stop();
     m_player->stop();
     QSignalBlocker blocker(m_ui.progress);
     m_ui.progress->setValue(0);

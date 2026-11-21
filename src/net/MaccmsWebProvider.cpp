@@ -475,6 +475,13 @@ void MaccmsWebProvider::trySuggest()
                               decodeEntities(item.value(QStringLiteral("pic")).toString().trimmed());
                           if (!pic.isEmpty())
                               candidate.poster = self->siteUrl(pic).toString();
+                          const QString remarks =
+                              item.value(QStringLiteral("remarks")).toString()
+                              + QLatin1Char(' ')
+                              + item.value(QStringLiteral("vod_remarks")).toString();
+                          candidate.quality = normalizedQuality(remarks, MediaType::Video);
+                          if (candidate.quality.isEmpty())
+                              candidate.quality = inferQuality(candidate.title, MediaType::Video);
                           self->m_candidates.append(candidate);
                       }
                       if (self->m_candidates.isEmpty()) {
@@ -796,6 +803,15 @@ void MaccmsWebProvider::processJob(const QSharedPointer<Job> &job)
             job->candidate.year = firstGroup(html, QStringLiteral(">((?:19|20)\\d{2})<"));
         job->candidate.area = firstGroup(html, QStringLiteral("地区[:：]\\s*([^<\\s]{1,12})"));
         job->candidate.genre = firstGroup(html, QStringLiteral("类型[:：]\\s*([^<]{1,24})"));
+        // 详情页常见 `<span class="pic-text ...">HD</span>` / `vod_remarks`；
+        // 统一归一化成品质标签，取不到就靠标题推断。
+        const QString remarks =
+            firstGroup(html, QStringLiteral("vod_remarks[^>]*>\\s*([^<]{1,20})<"))
+            + QLatin1Char(' ')
+            + firstGroup(html, QStringLiteral("pic-text[^>]*>\\s*([^<]{1,20})<"));
+        job->candidate.quality = normalizedQuality(remarks, MediaType::Video);
+        if (job->candidate.quality.isEmpty())
+            job->candidate.quality = inferQuality(job->candidate.title, MediaType::Video);
 
         // 详情页里通常是整部剧的播放链接：按线路各取第一集
         const QVector<QString> plays = extractHrefs(html, kPlayPattern);
@@ -951,6 +967,9 @@ void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
         item.area = job->candidate.area;
         item.genre = job->candidate.genre;
         item.description = job->candidate.description;
+        item.quality = job->candidate.quality;
+        if (item.quality.isEmpty())
+            item.quality = inferQuality(item.title, MediaType::Video);
 
         qCInfo(lcWeb) << "取到直链" << item.title << HttpClient::redactUrl(media);
         self->finishJob(job, true, item);

@@ -1270,19 +1270,28 @@ void StreamProxy::cancelPrefetch()
     const QStringList rangeKeys = m_rangePrefetchKeys.values();
     for (const QString &key : rangeKeys) {
         const QSharedPointer<CacheEntry> entry = m_cache.value(key);
-        if (!entry.isNull()) {
-            for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
-                if (!reply.isNull())
-                    abortReplySilently(reply.data());
-            }
-            entry->rangeReplies.clear();
-            entry->rangePending.clear();
-            entry->pending = false;
-            entry->failed = true;
+        if (entry.isNull())
+            continue;
+        // 关键保护：这条缓存已经有播放器客户端挂上（FFmpeg 正在顺序读），
+        // 此时中止 Range 连接会让客户端收到断流/502 并直接崩溃。
+        // 不再当它是预取：保留数据与在途请求，交给播放器正常读完，
+        // 只把预取计数摘掉，避免旧一代的 finished 回调误减新 seek 的并发槽。
+        if (!entry->clients.isEmpty()) {
             entry->prefetch = false;
-            pumpCache(key, entry);
-            m_cache.remove(key);
+            m_prefetchStartedMs.remove(key);
+            continue;
         }
+        for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
+            if (!reply.isNull())
+                abortReplySilently(reply.data());
+        }
+        entry->rangeReplies.clear();
+        entry->rangePending.clear();
+        entry->pending = false;
+        entry->failed = true;
+        entry->prefetch = false;
+        pumpCache(key, entry);
+        m_cache.remove(key);
     }
     m_rangePrefetchKeys.clear();
 

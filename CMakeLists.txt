@@ -148,6 +148,8 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/ThemeManager.cpp
     src/ui/VideoSurface.h
     src/ui/VideoSurface.cpp
+    src/ui/MusicVisualWidget.h
+    src/ui/MusicVisualWidget.cpp
     src/ui/VideoStage.h
     src/ui/VideoStage.cpp
     src/ui/LyricsView.h

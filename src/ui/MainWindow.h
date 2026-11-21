@@ -22,6 +22,10 @@ class HttpClient;
 class QCloseEvent;
 class QResizeEvent;
 class QShowEvent;
+class QFrame;
+class QLabel;
+class QTimer;
+class MusicVisualWidget;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -54,6 +58,9 @@ private:
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void clearPlaybackUi();
+    /// 音量按钮改成右侧竖排悬浮条：滑块仍复用 ui->slider_volume，设置持久化不断链
+    void setupVolumePopup();
+    void showVolumePopup();
     /// 让控制条左右两列等宽，保证中间播放键组落在面板真正的中线
     void updateControlBarCentering();
     /// 显示后把窗口夹回当前屏幕可用区；尺寸由窗口预设/用户拖动决定，不再按 150% 特判
@@ -76,6 +83,10 @@ private:
     PlaylistController *m_playlists = nullptr;
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
+    QFrame *m_volumePopup = nullptr;
+    QLabel *m_volumeLabel = nullptr;
+    MusicVisualWidget *m_musicVisual = nullptr;
+    QTimer *m_networkStatusTimer = nullptr;
 };
 
 #endif // MAINWINDOW_H

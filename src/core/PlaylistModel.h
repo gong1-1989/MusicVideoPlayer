@@ -27,7 +27,9 @@ public:
         MetaRole,
         /// 搜索结果分栏用：类型（MediaType）与来源（MediaItem::sourceId）
         TypeRole,
-        SourceRole
+        SourceRole,
+        /// 清晰度/音质（4K、1080P、无损等）
+        QualityRole
     };
 
     explicit PlaylistModel(QObject *parent = nullptr);

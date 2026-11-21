@@ -13,6 +13,7 @@ const char kGeometry[] = "ui/geometry";
 const char kVolume[] = "playback/volume";
 const char kMode[] = "playback/mode";
 const char kSearchLimit[] = "search/limit";
+const char kSearchHistory[] = "search/history";
 const char kDownloadLimitMb[] = "download/limitMb";
 const char kDownloadDir[] = "download/dir";
 const char kProbePathsVideo[] = "search/probePaths/video";
@@ -163,6 +164,30 @@ int searchLimit()
 void setSearchLimit(int limit)
 {
     settings().setValue(QLatin1String(kSearchLimit), qBound(1, limit, 100));
+}
+
+QStringList searchHistory()
+{
+    const QStringList stored =
+        settings().value(QLatin1String(kSearchHistory)).toStringList();
+    QStringList cleaned;
+    for (const QString &word : stored) {
+        const QString trimmed = word.trimmed();
+        if (!trimmed.isEmpty() && !cleaned.contains(trimmed))
+            cleaned.append(trimmed);
+    }
+    return cleaned.mid(0, 8);
+}
+
+void setSearchHistory(const QStringList &history)
+{
+    QStringList cleaned;
+    for (const QString &word : history) {
+        const QString trimmed = word.trimmed();
+        if (!trimmed.isEmpty() && !cleaned.contains(trimmed))
+            cleaned.append(trimmed);
+    }
+    settings().setValue(QLatin1String(kSearchHistory), cleaned.mid(0, 8));
 }
 
 int downloadLimitMb()

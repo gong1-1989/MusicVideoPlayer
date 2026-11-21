@@ -25,6 +25,8 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
         const QString meta = item.metaLine();
         if (!meta.isEmpty())
             text += QStringLiteral("  ·  ") + meta;
+        // 来源放在最前面，长标题被省略时也不会把“本地/网络”截掉。
+        text = (item.online ? QStringLiteral("[网络] ") : QStringLiteral("[本地] ")) + text;
         if (item.online && item.type == MediaType::Video)
             return QStringLiteral("▶ ") + text;
         return text;
@@ -57,6 +59,8 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
         return static_cast<int>(item.type);
     case SourceRole:
         return item.sourceId;
+    case QualityRole:
+        return item.quality;
     default:
         return QVariant();
     }

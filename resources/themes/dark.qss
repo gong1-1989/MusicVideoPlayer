@@ -158,6 +158,31 @@ QComboBox QAbstractItemView {
     selection-background-color: rgba(110, 92, 255, 45%);
 }
 
+/* 搜索筛选行宽度紧张：三个下拉并排时压缩内边距，避免只剩一两个字可见 */
+QComboBox#combo_searchType,
+QComboBox#combo_searchSource,
+QComboBox#combo_searchQuality {
+    padding: 2px 18px 2px 5px;
+    border-radius: 8px;
+    min-height: 24px;
+}
+
+QComboBox#combo_searchType::drop-down,
+QComboBox#combo_searchSource::drop-down,
+QComboBox#combo_searchQuality::drop-down {
+    width: 16px;
+}
+
+QListView#searchSuggestions {
+    background: #14122e;
+    border: 1px solid rgba(150, 190, 255, 30%);
+    border-radius: 10px;
+    padding: 4px;
+    color: #e6ecff;
+    outline: none;
+    selection-background-color: rgba(110, 92, 255, 45%);
+}
+
 /* ------------------------------------------------ 通用按钮 */
 QPushButton {
     background: rgba(255, 255, 255, 5%);
@@ -389,6 +414,62 @@ QSlider#slider_volume::handle:horizontal {
     height: 11px;
     margin: -4px 0;
     border-radius: 6px;
+}
+
+/* 右侧竖排悬浮音量条：按钮只保留图标，滑块放进弹出面板 */
+QPushButton#btn_volume {
+    min-width: 38px;
+    max-width: 38px;
+    min-height: 38px;
+    max-height: 38px;
+    border-radius: 19px;
+    padding: 0;
+}
+
+QFrame#volumePopup {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 rgba(34, 39, 74, 96%),
+                                stop:1 rgba(15, 18, 38, 96%));
+    border: 1px solid rgba(130, 180, 255, 55%);
+    border-radius: 16px;
+}
+
+QLabel#label_volumeValue {
+    color: #dceeff;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 8px;
+    background: rgba(120, 170, 255, 14%);
+}
+
+QSlider#slider_volume::groove:vertical {
+    width: 8px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 22%);
+    border: 1px solid rgba(140, 185, 255, 26%);
+}
+
+QSlider#slider_volume::sub-page:vertical {
+    border-radius: 4px;
+    background: qlineargradient(x1:0, y1:1, x2:0, y2:0,
+                                stop:0 #7b5bff,
+                                stop:1 #29c6ff);
+}
+
+QSlider#slider_volume::add-page:vertical {
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 8%);
+}
+
+QSlider#slider_volume::handle:vertical {
+    width: 18px;
+    height: 18px;
+    margin: 0 -6px;
+    border-radius: 9px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #e8f9ff,
+                                stop:1 #7fd0ff);
+    border: 1px solid rgba(150, 220, 255, 95%);
 }
 
 /* ------------------------------------------------ 滚动条 */
