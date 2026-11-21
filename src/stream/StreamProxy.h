@@ -161,6 +161,9 @@ private:
     void cancelPrefetch();
     void finishPrefetch(const QString &cacheKey, QNetworkReply *reply, qint64 generation);
     void onPrefetchReply(QNetworkReply *reply, const PrefetchJob &job);
+    bool startRangePrefetch(const PrefetchJob &job);
+    void finishRangePrefetch(const QString &cacheKey,
+                             const QSharedPointer<CacheEntry> &entry);
 
     void replyError(QTcpSocket *client, int status, const QString &reason);
 
@@ -191,6 +194,7 @@ private:
     QList<PrefetchJob> m_prefetchQueue;
     QHash<QString, QNetworkReply *> m_prefetchReplies;
     QHash<QString, qint64> m_prefetchStartedMs;
+    QSet<QString> m_rangePrefetchKeys;
     QTimer *m_seekPrefetchTimer = nullptr;
     QString m_prefetchPlaylistKey;
     qint64 m_prefetchGeneration = 0;

@@ -45,19 +45,23 @@ constexpr int kCacheIdleMs = 30 * 60 * 1000;
 constexpr int kRangeWaitMs = 20 * 1000;
 constexpr qint64 kMaxSocketBacklog = 512LL * 1024;
 constexpr qint64 kCacheWriteChunk = 256LL * 1024;
-// HLS 分片多连接 Range：目标片通常几百 KB，4 路能把单路 4.7 秒压到 2.6 秒左右。
-// 只对分片启用，不拆分大 MP4；首片 64KB 用来探测总长，剩余按最多 4 路均分。
+// HLS 分片多连接 Range：目标片通常几百 KB。首片 16KB 只用于探测总长，
+// 剩余按 4 路均分。实测从 4 路加到 8 路，10 片总耗时只从 11.58s 降到 11.53s，
+// 说明瓶颈是每片的请求往返与顺序打开，而不是单片刻度；多开连接只会增加源站压力。
 constexpr int kRangeMaxConnections = 4;
-constexpr qint64 kRangeProbeBytes = 64LL * 1024;
-constexpr qint64 kRangeMinPartBytes = 48LL * 1024;
+constexpr qint64 kRangeProbeBytes = 16LL * 1024;
+constexpr qint64 kRangeMinPartBytes = 24LL * 1024;
 constexpr qint64 kRangeMaxSegmentBytes = 8LL * 1024 * 1024;
 
-// 预取窗口：深拖动时覆盖 FFmpeg 的实际回退范围，正常播放只补后面几片。
-// 实测 FFmpeg 对 600s 的目标会从 564.6s 的分片开始读，目标片是第 152 片，
-// 回退起点是第 143 片，正好差 9 片；目标片本身也要预取，防止不同源的
-// seek 行为直接落到目标片。
-constexpr int kSeekPrefetchAheadSegments = 2;
-constexpr int kSeekPrefetchDelayMs = 800;
+// 预取窗口：用播放列表索引而不是文件名推算。实测索引 152 对应分片文件
+// 0000143.ts，FFmpeg 深拖动后会打开索引 152..161（文件 143..152），
+// 所以必须预取 targetIndex..targetIndex+9，只预取目标前后任意一侧都会错位。
+// 每片 4 路 Range，同时跑 4 片，峰值 20 条连接（含播放器目标片 4 条），
+// 让 9 个后续分片在 FFmpeg 顺序打开到它们之前全部落缓存。
+// 实测 3 片并发时最后一波仍只赶上 16KB 探测头，恢复约 5.0 秒；4 片才能覆盖。
+constexpr int kSeekPrefetchAheadSegments = 9;
+constexpr int kSeekPrefetchConcurrency = 4;
+constexpr int kSeekPrefetchDelayMs = 100;
 constexpr int kPlaybackPrefetchSegments = 3;
 constexpr int kPrefetchConcurrencyMax = 3;
 // 连续失败或单次超过该时长时，降低并发并暂停预取，优先保证前台播放。
@@ -165,6 +169,11 @@ struct StreamProxy::CacheEntry
     // 多连接 Range 下载：各分片先按起始偏移暂存，凑齐连续前缀后再并入
     // data 供播放器顺序读取。rangeReplies 用来在换片/淘汰时统一中止。
     bool multiRange = false;
+    // 预取条目由 HLS 流水预取创建，完成后要归还预取并发槽位。
+    bool prefetch = false;
+    // 目标片用 4 路，预取也用 4 路；字段化是为了以后按源站能力调整，
+    // 不再让所有条目共用同一个全局连接数。
+    int rangeConnections = kRangeMaxConnections;
     QHash<qint64, QByteArray> rangeParts;
     QHash<qint64, qint64> rangePartEnds;
     QSet<qint64> rangePending;
@@ -672,6 +681,7 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
             qCWarning(lcProxy) << "HLS 分片首片请求失败，回退单路";
             entry->pending = false;
             entry->failed = true;
+            finishRangePrefetch(cacheKey, entry);
             m_cache.remove(cacheKey);
             if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
                 startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
@@ -701,6 +711,7 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
             reply->deleteLater();
             entry->pending = false;
             entry->failed = true;
+            finishRangePrefetch(cacheKey, entry);
             m_cache.remove(cacheKey);
             return;
         }
@@ -723,6 +734,7 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
             reply->deleteLater();
             entry->pending = false;
             entry->failed = true;
+            finishRangePrefetch(cacheKey, entry);
             m_cache.remove(cacheKey);
             return;
         }
@@ -740,6 +752,7 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
             reply->deleteLater();
             entry->pending = false;
             entry->failed = true;
+            finishRangePrefetch(cacheKey, entry);
             m_cache.remove(cacheKey);
             return;
         }
@@ -748,13 +761,14 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
         entry->pending = false;
         entry->contentType =
             reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
+        const int connections = qMax(2, entry->rangeConnections);
         qCInfo(lcProxy) << "HLS 分片总长" << total << "字节，按"
-                        << kRangeMaxConnections << "路拆分";
+                        << connections << "路拆分";
         if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
             serveFromCache(client, entry, cacheKey, request.range, true);
 
         const qint64 partSize =
-            qMax(kRangeMinPartBytes, (total + kRangeMaxConnections - 1) / kRangeMaxConnections);
+            qMax(kRangeMinPartBytes, (total + connections - 1) / connections);
         qint64 next = partEnd + 1;
         while (next < total) {
             const qint64 end = qMin(total - 1, next + partSize - 1);
@@ -828,6 +842,8 @@ void StreamProxy::mergeRangeParts(const QString &key,
     if (entry->total >= 0 && entry->data.size() >= entry->total)
         entry->complete = true;
     pumpCache(key, entry);
+    if (entry->complete)
+        finishRangePrefetch(key, entry);
 }
 
 void StreamProxy::finishRangePart(const QString &key,
@@ -887,6 +903,7 @@ void StreamProxy::failRangeEntry(const QString &key,
     entry->rangeReplies.clear();
     entry->rangePending.clear();
     pumpCache(key, entry);
+    finishRangePrefetch(key, entry);
 }
 
 QString StreamProxy::cacheKeyFor(const QUrl &upstream,
@@ -1062,10 +1079,9 @@ void StreamProxy::prefetchForSeek(const QUrl &playlistUrl,
     if (targetIndex < 0)
         return;
 
-    // 目标片本身由播放器自己的多连接 Range 请求负责，预取不再重复下载它。
-    // 实测 FFmpeg 深拖动后会顺序打开后续分片，所以只提前抓紧随其后的 1-2 片：
-    // 单连接、延迟 800ms 起步，给目标片的 4 路 Range 让出带宽。
-    const int first = targetIndex + 1;
+    // 这里必须用播放列表索引，不能用文件名反推：索引 152 实际是文件 143。
+    // FFmpeg 从目标索引开始顺序打开 10 片，所以窗口是 target..target+9。
+    const int first = targetIndex;
     const int last = qMin(info->segments.size() - 1,
                           targetIndex + kSeekPrefetchAheadSegments);
     if (first > last)
@@ -1074,7 +1090,7 @@ void StreamProxy::prefetchForSeek(const QUrl &playlistUrl,
     cancelPrefetch();
     const qint64 generation = m_prefetchGeneration;
     m_prefetchPlaylistKey = cacheKeyFor(playlistUrl, headers);
-    m_prefetchConcurrency = 1;
+    m_prefetchConcurrency = kSeekPrefetchConcurrency;
     m_seekPrefetchActive = true;
     m_seekTargetMs = targetMs;
     m_seekPrefetchTimer->start(kPrefetchSeekGuardMs);
@@ -1194,6 +1210,14 @@ void StreamProxy::startNextPrefetch()
                                  || cached->total >= 0))
             continue;
 
+        // 拖动后的后续分片用多连接 Range 逐片流水预取：单连接每片约 0.5 秒，
+        // 播放器顺序打开 10 片就要 5 秒；4 路 Range 每片约 0.4 秒且与前台重叠，
+        // 才能真正缩短恢复时间。正常播放仍走单连接，避免长期多占源站连接。
+        if (m_seekPrefetchActive && isHlsSegmentUrl(job.upstream)) {
+            if (startRangePrefetch(job))
+                continue;
+        }
+
         ++m_prefetchActive;
         m_prefetchStartedMs.insert(job.cacheKey, QDateTime::currentMSecsSinceEpoch());
 
@@ -1224,6 +1248,43 @@ void StreamProxy::startNextPrefetch()
             self->onPrefetchReply(reply, job);
         });
     }
+}
+
+bool StreamProxy::startRangePrefetch(const PrefetchJob &job)
+{
+    if (!m_seekPrefetchActive || job.cacheKey.isEmpty()
+        || m_rangePrefetchKeys.contains(job.cacheKey))
+        return false;
+
+    auto entry = QSharedPointer<CacheEntry>::create();
+    entry->pending = true;
+    entry->multiRange = true;
+    entry->prefetch = true;
+    entry->rangeConnections = qMin(kRangeMaxConnections, 4);
+    entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+    m_cache.insert(job.cacheKey, entry);
+    m_rangePrefetchKeys.insert(job.cacheKey);
+    ++m_prefetchActive;
+    m_prefetchStartedMs.insert(job.cacheKey, QDateTime::currentMSecsSinceEpoch());
+
+    qCDebug(lcProxy) << "HLS 拖动预取开始（多连接）" << job.index
+                     << HttpClient::redactUrl(job.upstream);
+    startRangePart(entry, job.cacheKey, job.upstream, job.headers, 0,
+                   kRangeProbeBytes - 1, true, nullptr, Request());
+    pruneCache(job.cacheKey);
+    return true;
+}
+
+void StreamProxy::finishRangePrefetch(const QString &cacheKey,
+                                      const QSharedPointer<CacheEntry> &entry)
+{
+    if (entry.isNull() || !entry->prefetch)
+        return;
+    entry->prefetch = false;
+    m_rangePrefetchKeys.remove(cacheKey);
+    m_prefetchStartedMs.remove(cacheKey);
+    m_prefetchActive = qMax(0, m_prefetchActive - 1);
+    startNextPrefetch();
 }
 
 void StreamProxy::onPrefetchReply(QNetworkReply *reply, const PrefetchJob &job)
@@ -1384,6 +1445,29 @@ void StreamProxy::cancelPrefetch()
             reply->deleteLater();
         }
     }
+
+    // 多连接 Range 预取不在 m_prefetchReplies 里，必须按 key 单独中止；
+    // 否则旧 seek 的 4 路请求会继续和新的目标片抢带宽。
+    const QStringList rangeKeys = m_rangePrefetchKeys.values();
+    for (const QString &key : rangeKeys) {
+        const QSharedPointer<CacheEntry> entry = m_cache.value(key);
+        if (!entry.isNull()) {
+            for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
+                if (!reply.isNull()) {
+                    reply->abort();
+                    reply->deleteLater();
+                }
+            }
+            entry->rangeReplies.clear();
+            entry->rangePending.clear();
+            entry->pending = false;
+            entry->failed = true;
+            entry->prefetch = false;
+            pumpCache(key, entry);
+            m_cache.remove(key);
+        }
+    }
+    m_rangePrefetchKeys.clear();
 
     // 还有一批请求停在“已占位、响应头未到”，它们不在 m_prefetchReplies 里。
     // 取消时要一并把占位条目判失败并唤醒挂在上面的播放器请求。

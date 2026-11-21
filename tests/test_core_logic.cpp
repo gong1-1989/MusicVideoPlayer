@@ -78,7 +78,7 @@ public:
 };
 
 /// 模拟真正支持 206 的 HLS 分片源站。代理对 `bytes=0-` 的 .ts 请求会先
-/// 用 64KB 探测总长，再并发拉剩余分段；这里逐条记录 Range，供测试确认
+/// 用 16KB 探测总长，再并发拉剩余分段；这里逐条记录 Range，供测试确认
 /// 多连接路径确实被走到、而不是退化在上游单路透传。
 class RangeSupportingServer : public QTcpServer
 {
@@ -658,10 +658,10 @@ void CoreLogicTest::streamProxyMultiRangeForHlsSegment()
     QVERIFY(head.contains("Content-Range: bytes 0-199999/200000"));
     QCOMPARE(body, upstream.body);
 
-    // 64KB 探测 + 3 个剩余分段，必须是多连接 Range，而不是单路全量透传。
+    // 16KB 探测 + 剩余按 4 路拆分，必须是多连接 Range，而不是单路全量透传。
     QTRY_VERIFY_WITH_TIMEOUT(upstream.requestCount >= 4, 5000);
-    QVERIFY(upstream.ranges.contains(qMakePair(qint64(0), qint64(65535))));
-    QVERIFY(upstream.ranges.contains(qMakePair(qint64(65536), qint64(115535))));
+    QVERIFY(upstream.ranges.contains(qMakePair(qint64(0), qint64(16383))));
+    QVERIFY(upstream.ranges.contains(qMakePair(qint64(16384), qint64(66383))));
 }
 
 void CoreLogicTest::streamProxyFallsBackWhenHlsRangeIgnored()
