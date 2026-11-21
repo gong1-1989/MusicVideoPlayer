@@ -6,6 +6,7 @@
 #include "settings/AppSettings.h"
 #include "ui/ListMetrics.h"
 #include "ui/ThemeManager.h"
+#include "ui/UiIcons.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -235,13 +236,17 @@ void SearchPanelController::setupUi()
     m_ui.list->viewport()->installEventFilter(this);
     // 字体缩放会改变行高，主题重新应用后要重新算一页能放几行。
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
-            [this](const ThemeInfo &) { schedulePageSizeRefresh(); });
+            [this](const ThemeInfo &) {
+                applyButtonIcons(m_coordinator != nullptr && m_coordinator->isBusy());
+                schedulePageSizeRefresh();
+            });
 
     if (m_registry != nullptr) {
         connect(m_registry, &SourceRegistry::changed, this,
                 &SearchPanelController::refreshSourceNames);
     }
     refreshSourceNames();
+    applyButtonIcons(false);
 
     connect(m_ui.searchButton, &QPushButton::clicked,
             this, &SearchPanelController::toggleSearch);
@@ -268,7 +273,7 @@ void SearchPanelController::setupUi()
 
     connect(m_coordinator, &SearchCoordinator::searchStarted, this, [this] {
         m_ui.searchButton->setEnabled(true);
-        m_ui.searchButton->setText(tr("取消"));
+        applyButtonIcons(true);
         emit statusMessage(tr("搜索中…"));
         // 一发起搜索就把折叠着的搜索列表放出来
         setAreaVisible(true);
@@ -329,8 +334,18 @@ void SearchPanelController::setupUi()
             });
     connect(m_coordinator, &SearchCoordinator::searchFinished, this, [this] {
         m_ui.searchButton->setEnabled(true);
-        m_ui.searchButton->setText(tr("搜索"));
+        applyButtonIcons(false);
     });
+}
+
+void SearchPanelController::applyButtonIcons(bool busy)
+{
+    // 搜索键有渐变底色，图标必须强制白色，不能跟随主题前景色。
+    UiIcons::apply(m_ui.searchButton, busy ? QStringLiteral("cancel")
+                                                  : QStringLiteral("search"),
+                   busy ? tr("取消搜索") : tr("搜索"), 18, QColor(Qt::white));
+    UiIcons::apply(m_ui.prevButton, QStringLiteral("page-prev"), tr("上一页"), 18);
+    UiIcons::apply(m_ui.nextButton, QStringLiteral("page-next"), tr("下一页"), 18);
 }
 
 void SearchPanelController::toggleSearch()

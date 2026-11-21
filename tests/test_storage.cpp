@@ -1,5 +1,7 @@
 #include "core/PlaylistModel.h"
 #include "core/PlaylistStore.h"
+#include "download/DownloadJob.h"
+#include "download/DownloadPaths.h"
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
 #include "util/SecretStore.h"
@@ -51,6 +53,8 @@ private slots:
     void sourceRegistryReloadUsesPrimary();
     void sourceRegistryCorruptFileBacksUp();
     void sourceRegistryUnwritableDataDirFails();
+    void downloadJobRoundTripEncryptsSensitiveHeaders();
+    void downloadPathsAvoidOverwriteAndPickSuffix();
 
 private:
     QTemporaryDir m_tempDir;
@@ -294,6 +298,87 @@ void StorageTest::sourceRegistryUnwritableDataDirFails()
     // 只写程序目录：主路径不可写就直接失败，不再偷偷改写到 AppData。
     QVERIFY(!loaded);
     QVERIFY(!error.isEmpty());
+}
+
+void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
+{
+    DownloadJob job;
+    job.id = QStringLiteral("job-1");
+    job.item.type = MediaType::Video;
+    job.item.title = QStringLiteral("测试下载");
+    job.item.url = QUrl(QStringLiteral("https://example.com/a.m3u8"));
+    job.item.online = true;
+    job.url = job.item.url;
+    job.headers.insert(QStringLiteral("Referer"), QStringLiteral("https://example.com/"));
+    job.headers.insert(QStringLiteral("Cookie"), QStringLiteral("sid=secret-token"));
+    job.filePath = m_tempDir.filePath(QStringLiteral("测试下载.ts"));
+    job.bytesReceived = 1200;
+    job.bytesTotal = 5000;
+    job.maxBytes = 8192;
+    job.segmentIndex = 2;
+    job.segmentCount = 10;
+    job.hls = true;
+    job.status = DownloadJob::Status::Paused;
+    job.message = QStringLiteral("等待续传");
+    job.createdAt = QDateTime::currentDateTime();
+
+    const QJsonObject stored = job.toJson();
+    // 敏感请求头仍保留键，但值必须是 DPAPI 密文，不能出现明文 token。
+    const QString storedCookie =
+        stored.value(QStringLiteral("headers")).toObject().value(QStringLiteral("Cookie")).toString();
+    QVERIFY(!storedCookie.isEmpty());
+    QVERIFY(storedCookie != job.headers.value(QStringLiteral("Cookie")));
+    QVERIFY(storedCookie.startsWith(QStringLiteral("mvp-dpapi:v1:")));
+    QVERIFY(stored.value(QStringLiteral("headers")).toObject()
+                .contains(QStringLiteral("Referer")));
+
+    DownloadJob parsed;
+    QString error;
+    QVERIFY(DownloadJob::fromJson(stored, &parsed, &error));
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(parsed.id, job.id);
+    QCOMPARE(parsed.item.title, job.item.title);
+    QCOMPARE(parsed.filePath, job.filePath);
+    QCOMPARE(parsed.bytesReceived, job.bytesReceived);
+    QCOMPARE(parsed.bytesTotal, job.bytesTotal);
+    QCOMPARE(parsed.maxBytes, job.maxBytes);
+    QCOMPARE(parsed.segmentIndex, job.segmentIndex);
+    QCOMPARE(parsed.segmentCount, job.segmentCount);
+    QCOMPARE(parsed.hls, true);
+    QCOMPARE(parsed.status, DownloadJob::Status::Paused);
+    QCOMPARE(parsed.headers.value(QStringLiteral("Referer")),
+             job.headers.value(QStringLiteral("Referer")));
+    QCOMPARE(parsed.headers.value(QStringLiteral("Cookie")),
+             job.headers.value(QStringLiteral("Cookie")));
+}
+
+void StorageTest::downloadPathsAvoidOverwriteAndPickSuffix()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("downloads"));
+    QVERIFY(QDir().mkpath(dir));
+
+    const QString first = DownloadPaths::uniqueFilePath(dir, QStringLiteral("视频.mp4"));
+    QCOMPARE(first, QDir(dir).filePath(QStringLiteral("视频.mp4")));
+
+    QFile existing(first);
+    QVERIFY(existing.open(QIODevice::WriteOnly));
+    existing.close();
+
+    const QString second = DownloadPaths::uniqueFilePath(dir, QStringLiteral("视频.mp4"));
+    QCOMPARE(second, QDir(dir).filePath(QStringLiteral("视频 (1).mp4")));
+
+    QCOMPARE(DownloadPaths::suffixForDownload(
+                 QUrl(QStringLiteral("https://example.com/list.m3u8")), true, true),
+             QStringLiteral("ts"));
+    QCOMPARE(DownloadPaths::suffixForDownload(
+                 QUrl(QStringLiteral("https://example.com/video.MP4?token=x")), false, true),
+             QStringLiteral("mp4"));
+    QCOMPARE(DownloadPaths::suffixForDownload(
+                 QUrl(QStringLiteral("https://example.com/play?id=1")), false, true),
+             QStringLiteral("mp4"));
+    QCOMPARE(DownloadPaths::suffixForDownload(
+                 QUrl(QStringLiteral("https://example.com/play?id=1")), false, false),
+             QStringLiteral("mp3"));
 }
 
 QTEST_GUILESS_MAIN(StorageTest)

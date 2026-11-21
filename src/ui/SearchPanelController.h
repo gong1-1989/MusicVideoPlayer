@@ -58,6 +58,7 @@ signals:
 
 private:
     void setupUi();
+    void applyButtonIcons(bool busy);
     void refreshSourceNames();
     void setAreaVisible(bool visible);
     void showResults(const QVector<MediaItem> &items);

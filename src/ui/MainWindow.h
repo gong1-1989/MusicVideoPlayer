@@ -45,6 +45,7 @@ protected:
 private slots:
     void on_btn_fullscreen_clicked();
     void on_btn_settings_clicked();
+    void on_btn_downloads_clicked();
 
 private:
     void setupConnections();

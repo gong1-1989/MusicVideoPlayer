@@ -50,6 +50,8 @@ public:
     void addSearchItem(const MediaItem &item, MediaType type);
     /// 本地文件导入：自动找同名 .lrc
     void addLocalFiles(MediaType type, const QStringList &files);
+    /// 下载完成后把列表里同一来源条目更新为本地文件；找不到则忽略
+    bool updateDownloadedItem(const MediaItem &source, const QString &localPath);
     /// 弹出文件选择框并导入本地音乐/视频，目录记忆走 AppSettings
     void chooseLocalFiles(MediaType type);
 

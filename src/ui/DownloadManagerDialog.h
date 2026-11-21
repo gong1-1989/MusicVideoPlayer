@@ -1,0 +1,45 @@
+#ifndef DOWNLOADMANAGERDIALOG_H
+#define DOWNLOADMANAGERDIALOG_H
+
+#include "download/DownloadJob.h"
+
+#include <QDialog>
+#include <QPointer>
+
+class DownloadManager;
+class QLabel;
+class QPushButton;
+class QTreeWidget;
+class QTreeWidgetItem;
+
+/// 下载管理器窗口：上半区是正在下载/暂停/失败任务，下半区是已完成历史。
+/// 非模态窗口，下载过程中可以继续用播放器；任务状态变化时自动刷新。
+class DownloadManagerDialog : public QDialog
+{
+    Q_OBJECT
+
+public:
+    explicit DownloadManagerDialog(DownloadManager *manager, QWidget *parent = nullptr);
+
+private:
+    void rebuild();
+    void updateButtons();
+    const DownloadJob *selectedJob() const;
+    void openSelectedFile();
+    void openSelectedFolder();
+    void retrySelected();
+    void removeSelected();
+    void clearCompleted();
+
+    DownloadManager *m_manager = nullptr;
+    QTreeWidget *m_tree = nullptr;
+    QLabel *m_summary = nullptr;
+    QPushButton *m_openFile = nullptr;
+    QPushButton *m_openFolder = nullptr;
+    QPushButton *m_retry = nullptr;
+    QPushButton *m_remove = nullptr;
+    QPushButton *m_clearCompleted = nullptr;
+    QString m_selectedId;
+};
+
+#endif // DOWNLOADMANAGERDIALOG_H

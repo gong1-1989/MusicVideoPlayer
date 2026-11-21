@@ -274,6 +274,45 @@ void PlaylistController::addLocalFiles(MediaType type, const QStringList &files)
                        << files.size() << "个，新增" << added << "个";
 }
 
+bool PlaylistController::updateDownloadedItem(const MediaItem &source, const QString &localPath)
+{
+    if (localPath.isEmpty() || !QFileInfo::exists(localPath))
+        return false;
+
+    const QString identity = mediaIdentity(source);
+    const QUrl localUrl = QUrl::fromLocalFile(QFileInfo(localPath).absoluteFilePath());
+    bool changed = false;
+
+    // 下载时的条目类型可能和实际加入的列表不同（例如把视频加入音乐列表）。
+    // 两张列表都按来源身份查找，命中哪张就更新哪张。
+    for (PlaylistModel *model : {m_musicModel, m_videoModel}) {
+        for (int row = 0; row < model->size(); ++row) {
+            MediaItem item = model->itemAt(row);
+            if (mediaIdentity(item) != identity)
+                continue;
+
+            item.url = localUrl;
+            item.online = false;
+            item.sourceId.clear();
+            item.webUrl = QUrl();
+            item.headers.clear();
+            item.alternateUrls.clear();
+            item.positionMs = 0;
+            if (model->updateItem(row, item)) {
+                changed = true;
+                qCInfo(lcPlaylist) << "下载完成后列表条目已改为本地来源" << item.title
+                                   << localUrl.toLocalFile();
+            }
+        }
+    }
+
+    if (changed) {
+        if (save())
+            emit statusMessage(tr("下载完成，播放列表中的同源条目已更新为本地文件"));
+    }
+    return changed;
+}
+
 void PlaylistController::chooseLocalFiles(MediaType type)
 {
     QWidget *parent = m_ui.tabs != nullptr ? m_ui.tabs->window() : nullptr;

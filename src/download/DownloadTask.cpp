@@ -6,6 +6,7 @@
 #include "util/PlaylistSniffer.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QFileInfo>
 #include <QLoggingCategory>
 #include <QNetworkReply>
@@ -22,7 +23,7 @@ namespace {
 const QRegularExpression kUriAttribute(QStringLiteral("URI=\"([^\"]*)\""));
 const QRegularExpression kByteRangeAttribute(QStringLiteral("BYTERANGE=\"([^\"]*)\""));
 const QRegularExpression kBandwidth(QStringLiteral("BANDWIDTH=(\\d+)"));
-const QRegularExpression kContentRange(QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/"),
+const QRegularExpression kContentRange(QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)"),
                                        QRegularExpression::CaseInsensitiveOption);
 const QRegularExpression kRequestRange(QStringLiteral("^bytes=(\\d+)-(\\d+)$"),
                                         QRegularExpression::CaseInsensitiveOption);
@@ -94,6 +95,73 @@ bool DownloadTask::looksLikeHls(const QUrl &url)
     return PlaylistSniffer::metadataIndicatesPlaylist(url, QString());
 }
 
+bool DownloadTask::openTargetFile()
+{
+    if (m_file != nullptr)
+        return true;
+
+    const QFileInfo info(partialPath());
+    QDir().mkpath(info.absolutePath());
+
+    if (m_resumeBytes > 0)
+        m_bytesWritten = m_resumeBytes;
+    else
+        m_bytesWritten = 0;
+
+    m_file = new QFile(partialPath(), this);
+    if (!m_file->open(QIODevice::ReadWrite)) {
+        fail(tr("无法写入临时文件：%1").arg(m_file->errorString()), true);
+        return false;
+    }
+
+    const qint64 actual = m_file->size();
+    if (actual < m_bytesWritten) {
+        // 状态文件和实际临时文件不一致时不能盲目续传，从头开始最安全。
+        qCWarning(lcDownload) << "临时文件比续传点短，改为从头下载 actual=" << actual
+                              << "resume=" << m_bytesWritten;
+        m_bytesWritten = 0;
+        m_resumeSegmentIndex = 0;
+    } else if (actual > m_bytesWritten) {
+        // 上次进程在写盘过程中退出，截掉没有记录进状态文件的尾部。
+        if (!m_file->resize(m_bytesWritten)) {
+            fail(tr("无法截断临时文件：%1").arg(m_file->errorString()), true);
+            return false;
+        }
+    }
+    if (!m_file->seek(m_bytesWritten)) {
+        fail(tr("无法定位临时文件写位置：%1").arg(m_file->errorString()), true);
+        return false;
+    }
+
+    if (m_bytesWritten > m_maxBytes) {
+        fail(tr("已有临时文件超过 %1 MB 上限").arg(m_maxBytes / (1024 * 1024)), true);
+        return false;
+    }
+    return true;
+}
+
+void DownloadTask::resetTargetFile()
+{
+    if (m_file == nullptr)
+        return;
+    m_file->resize(0);
+    m_file->seek(0);
+    m_bytesWritten = 0;
+}
+
+void DownloadTask::setResumeState(qint64 bytesWritten, int segmentIndex, bool hls)
+{
+    m_resumeBytes = qMax<qint64>(0, bytesWritten);
+    m_resumeSegmentIndex = qMax(0, segmentIndex);
+    if (hls)
+        m_isHls = true;
+}
+
+QString DownloadTask::partialPath() const
+{
+    return m_filePath + QStringLiteral(".mvpdownload");
+}
+
 void DownloadTask::startRequest()
 {
     if (m_done)
@@ -101,20 +169,34 @@ void DownloadTask::startRequest()
     if (m_http == nullptr || m_url.isEmpty()
         || (m_url.scheme() != QLatin1String("http")
             && m_url.scheme() != QLatin1String("https"))) {
-        fail(tr("下载地址无效"));
+        fail(tr("下载地址无效"), true);
         return;
     }
 
-    m_file = new QSaveFile(m_filePath, this);
-    if (!m_file->open(QIODevice::WriteOnly)) {
-        fail(tr("无法写入文件：%1").arg(m_file->errorString()));
+    if (!openTargetFile())
+        return;
+
+    if (m_isHls) {
+        // 已知是 HLS：先重新拉播放列表，再按 m_resumeSegmentIndex 跳过已完成分片。
+        startPlaylistFetch(m_url, 0);
         return;
     }
+    startDirectRequest();
+}
+
+void DownloadTask::startDirectRequest()
+{
+    if (m_done)
+        return;
+
+    QByteArray range;
+    if (m_bytesWritten > 0)
+        range = QStringLiteral("bytes=%1-").arg(m_bytesWritten).toUtf8();
 
     QPointer<DownloadTask> self(this);
     const QHash<QString, QString> headers =
         HeaderPolicy::sanitizedForTarget(m_url, m_headers, m_originUrl);
-    m_http->stream(m_url, QByteArray(), headers, [self](QNetworkReply *reply) {
+    m_http->stream(m_url, range, headers, [self](QNetworkReply *reply) {
         if (self.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -154,7 +236,6 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
         if (!switchToHlsFile())
             return;
         m_expectedBytes = -1;
-        m_bytesWritten = 0;
         connect(reply, &QNetworkReply::finished, this, [this, reply] {
             onPlaylistFinished(reply);
         });
@@ -169,17 +250,56 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
     const QString contentType =
         reply->header(QNetworkRequest::ContentTypeHeader).toString();
     if (!isMediaContentType(contentType)) {
-        fail(tr("下载链接返回的是网页/接口数据（%1），不是音视频").arg(contentType));
+        fail(tr("下载链接返回的是网页/接口数据（%1），不是音视频").arg(contentType),
+             true);
         return;
     }
 
+    const int status =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QVariant length = reply->header(QNetworkRequest::ContentLengthHeader);
+    const QByteArray contentRange = reply->rawHeader(QByteArrayLiteral("Content-Range"));
     const QByteArray encoding = reply->rawHeader(QByteArrayLiteral("Content-Encoding"));
-    m_expectedBytes = (length.isValid() && (encoding.isEmpty()
-                                            || encoding.compare("identity", Qt::CaseInsensitive) == 0))
-        ? length.toLongLong()
-        : -1;
-    m_bytesWritten = 0;
+    const bool identityEncoding =
+        encoding.isEmpty() || encoding.compare("identity", Qt::CaseInsensitive) == 0;
+
+    if (m_bytesWritten > 0) {
+        if (status == 206) {
+            qint64 start = -1;
+            qint64 end = -1;
+            qint64 total = -1;
+            if (!parseContentRange(contentRange, &start, &end, &total)
+                || start != m_bytesWritten) {
+                fail(tr("服务器返回的续传起点不正确（%1），已停止")
+                         .arg(QString::fromLatin1(contentRange)));
+                return;
+            }
+            m_expectedBytes = total;
+            qCInfo(lcDownload) << "从已有临时文件续传，偏移" << m_bytesWritten;
+        } else {
+            // 服务器忽略 Range，只能从头写；清空临时文件避免前半段重复。
+            resetTargetFile();
+            qCWarning(lcDownload) << "服务器不支持 Range，已从头重新下载";
+            m_expectedBytes = (length.isValid() && identityEncoding)
+                                  ? length.toLongLong()
+                                  : -1;
+        }
+    } else if (status == 206) {
+        qint64 start = -1;
+        qint64 end = -1;
+        qint64 total = -1;
+        if (parseContentRange(contentRange, &start, &end, &total) && start >= 0) {
+            m_expectedBytes = total;
+        } else {
+            m_expectedBytes = (length.isValid() && identityEncoding)
+                                  ? length.toLongLong()
+                                  : -1;
+        }
+    } else {
+        m_expectedBytes = (length.isValid() && identityEncoding)
+                              ? length.toLongLong()
+                              : -1;
+    }
 
     connect(reply, &QNetworkReply::readyRead, this, [this, reply] {
         if (!m_done)
@@ -188,11 +308,6 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         onDirectFinished(reply);
     });
-    connect(reply, &QNetworkReply::downloadProgress, this,
-            [this](qint64 received, qint64 total) {
-                if (!m_done)
-                    emit progress(received, total);
-            });
 
     if (reply->bytesAvailable() > 0)
         writeReplyData(reply);
@@ -249,8 +364,23 @@ void DownloadTask::onPlaylistFinished(QNetworkReply *reply)
     }
 
     qCInfo(lcDownload) << "HLS 播放列表解析完成，分片数：" << m_segments.size();
-    m_segmentIndex = 0;
-    emit progress(0, m_segments.size());
+
+    int resumeIndex = m_isHls ? m_resumeSegmentIndex : 0;
+    if (resumeIndex > m_segments.size()) {
+        qCWarning(lcDownload) << "播放列表分片数少于续传序号，改为从头下载 resume="
+                              << resumeIndex << "count=" << m_segments.size();
+        resetTargetFile();
+        m_segmentIndex = 0;
+    } else {
+        m_segmentIndex = resumeIndex;
+    }
+
+    emit progress(m_segmentIndex, m_segments.size());
+    if (m_segmentIndex >= m_segments.size()) {
+        // 上次可能已经拉完所有分片，只差改名落盘。
+        commitFile();
+        return;
+    }
     startNextSegment();
 }
 
@@ -621,6 +751,9 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
     m_segmentExpected = -1;
     m_segmentBytes = 0;
     ++m_segmentIndex;
+    // 只在完整分片边界记录续传点：进程中途退出时，状态文件里的字节数
+    // 对应的一定是完整分片前缀，重启后可安全截断半截分片并重下该片。
+    emit checkpoint(m_bytesWritten, m_segmentIndex, m_segments.size());
     emit progress(m_segmentIndex, m_segments.size());
     startNextSegment();
 }
@@ -654,7 +787,7 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
 
 void DownloadTask::writeReplyData(QNetworkReply *reply)
 {
-    if (reply == nullptr || m_file.isNull())
+    if (reply == nullptr || m_file == nullptr)
         return;
 
     const QByteArray chunk = reply->readAll();
@@ -671,12 +804,22 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
     }
     m_bytesWritten += chunk.size();
     m_segmentBytes += chunk.size();
+
+    if (m_isHls) {
+        // HLS 的续传点按分片边界记录，避免把半截分片写进状态。
+        emit progress(m_segmentIndex, m_segments.size());
+    } else {
+        emit progress(m_bytesWritten, m_expectedBytes);
+        emit checkpoint(m_bytesWritten, 0, -1);
+    }
 }
 
 bool DownloadTask::switchToHlsFile()
 {
-    if (m_filePath.endsWith(QLatin1String(".ts"), Qt::CaseInsensitive))
+    if (m_filePath.endsWith(QLatin1String(".ts"), Qt::CaseInsensitive)) {
+        m_isHls = true;
         return true;
+    }
 
     const int slash = m_filePath.lastIndexOf(QLatin1Char('/'));
     const int dot = m_filePath.lastIndexOf(QLatin1Char('.'));
@@ -685,34 +828,44 @@ bool DownloadTask::switchToHlsFile()
         base = m_filePath.left(dot);
     const QString newPath = base + QStringLiteral(".ts");
 
-    if (!m_file.isNull()) {
-        m_file->cancelWriting();
+    if (m_file != nullptr) {
+        const QString oldPartial = partialPath();
+        m_file->close();
         m_file->deleteLater();
-        m_file.clear();
+        m_file = nullptr;
+        // 此刻还没有任何媒体字节；清掉按错误扩展名建的空临时文件。
+        QFile::remove(oldPartial);
     }
 
     m_filePath = newPath;
-    m_file = new QSaveFile(newPath, this);
-    if (!m_file->open(QIODevice::WriteOnly)) {
-        fail(tr("无法写入文件：%1").arg(m_file->errorString()));
+    m_bytesWritten = 0;
+    m_resumeSegmentIndex = 0;
+    m_isHls = true;
+    if (!openTargetFile())
         return false;
-    }
+    emit targetPathChanged(m_filePath, true);
     return true;
 }
 
 void DownloadTask::commitFile()
 {
-    if (m_file.isNull()) {
+    if (m_file == nullptr) {
         fail(tr("下载文件已失效"));
         return;
     }
 
-    if (!m_file->commit()) {
-        fail(tr("保存文件失败：%1").arg(m_file->errorString()));
-        return;
-    }
+    m_file->flush();
+    m_file->close();
+    const QString temp = partialPath();
     m_file->deleteLater();
     m_file = nullptr;
+
+    if (QFile::exists(m_filePath))
+        QFile::remove(m_filePath);
+    if (!QFile::rename(temp, m_filePath)) {
+        fail(tr("保存文件失败：无法把临时文件改名到 %1").arg(m_filePath));
+        return;
+    }
 
     qCInfo(lcDownload) << "下载完成，已保存到" << m_filePath
                        << (m_isHls ? "（HLS 分片已合并）" : "");
@@ -720,7 +873,7 @@ void DownloadTask::commitFile()
     finish();
 }
 
-void DownloadTask::fail(const QString &message)
+void DownloadTask::fail(const QString &message, bool removePartial)
 {
     if (m_done)
         return;
@@ -736,14 +889,44 @@ void DownloadTask::fail(const QString &message)
         reply->abort();
         reply->deleteLater();
     }
-    if (!m_file.isNull()) {
-        m_file->cancelWriting();
+    if (m_file != nullptr) {
+        m_file->flush();
+        m_file->close();
+        const QString temp = partialPath();
         m_file->deleteLater();
         m_file = nullptr;
+        // 下载失败默认保留临时文件，下载管理器可以重试续传；
+        // 地址无效/返回网页等根本不可能成功的情况才删掉空文件。
+        if (removePartial || m_bytesWritten == 0)
+            QFile::remove(temp);
     }
 
     qCWarning(lcDownload) << "下载失败：" << message;
     emit failed(message);
+    emit finished();
+    deleteLater();
+}
+
+void DownloadTask::stopForExit()
+{
+    if (m_done)
+        return;
+    m_done = true;
+
+    if (!m_reply.isNull()) {
+        QNetworkReply *reply = m_reply.data();
+        m_reply = nullptr;
+        reply->abort();
+        reply->deleteLater();
+    }
+    if (m_file != nullptr) {
+        m_file->flush();
+        m_file->close();
+        m_file->deleteLater();
+        m_file = nullptr;
+    }
+
+    // 不发出 failed：退出不是下载失败，管理器会保留状态供下次续传。
     emit finished();
     deleteLater();
 }
@@ -762,11 +945,14 @@ void DownloadTask::cancel()
         reply->abort();
         reply->deleteLater();
     }
-    if (!m_file.isNull()) {
-        m_file->cancelWriting();
+    const QString temp = partialPath();
+    if (m_file != nullptr) {
+        m_file->close();
         m_file->deleteLater();
         m_file = nullptr;
     }
+    QFile::remove(temp);
+    QFile::remove(m_filePath);
 
     emit failed(tr("下载已取消"));
     emit finished();
@@ -816,7 +1002,8 @@ bool DownloadTask::isMediaContentType(const QString &contentType)
     return false;
 }
 
-bool DownloadTask::parseContentRange(const QByteArray &value, qint64 *start, qint64 *end)
+bool DownloadTask::parseContentRange(const QByteArray &value, qint64 *start, qint64 *end,
+                                     qint64 *total)
 {
     if (value.isEmpty() || start == nullptr || end == nullptr)
         return false;
@@ -831,6 +1018,11 @@ bool DownloadTask::parseContentRange(const QByteArray &value, qint64 *start, qin
         return false;
     *start = first;
     *end = last;
+    if (total != nullptr) {
+        bool totalOk = false;
+        const qint64 parsedTotal = match.captured(3).toLongLong(&totalOk);
+        *total = (totalOk && parsedTotal > last) ? parsedTotal : -1;
+    }
     return true;
 }
 

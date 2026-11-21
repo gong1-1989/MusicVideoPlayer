@@ -31,6 +31,8 @@ public:
 
     void applyVisibility();
     void reposition();
+    /// 全屏窗口接管控制条时暂停主窗口的贴边检测，退出全屏后再恢复
+    void setEdgeDetectionEnabled(bool enabled);
 
 private:
     void updateEdgePanels();
@@ -47,6 +49,7 @@ private:
     bool m_controlsAutoHide = true;
     bool m_sidebarFloating = false;
     bool m_controlsFloating = false;
+    bool m_edgeDetectionEnabled = true;
 };
 
 #endif // PANELOVERLAYCONTROLLER_H

@@ -90,6 +90,10 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::addSearchItemToPlaylist);
     connect(m_searchPanel, &SearchPanelController::downloadRequested, this,
             [this](const MediaItem &item) { m_downloads->download(item); });
+    connect(m_downloads, &DownloadController::itemDownloaded, this,
+            [this](const MediaItem &item, const QString &localPath) {
+                m_playlists->updateDownloadedItem(item, localPath);
+            });
 
     // 播放列表模型、持久化、右键菜单和本地导入统一交给控制器
     PlaylistUi playlistUi;
@@ -111,9 +115,6 @@ MainWindow::MainWindow(QWidget *parent)
     lyricsUi.list = ui->list_lrc;
     m_lyrics = new LyricsController(m_http, lyricsUi, this);
 
-    // 全屏窗口与视频面搬运
-    m_fullscreen = new FullscreenController(ui->videoWidget, ui->layout_videoStage, 16.0, this);
-
     // 侧栏 / 控制条的常显与浮层形态、贴边检测和几何定位
     PanelOverlayUi panelUi;
     panelUi.centralWidget = ui->centralwidget;
@@ -123,6 +124,11 @@ MainWindow::MainWindow(QWidget *parent)
     panelUi.rootLayout = ui->layout_root;
     panelUi.centerLayout = ui->layout_center;
     m_panels = new PanelOverlayController(panelUi, this);
+
+    // 全屏窗口与视频面搬运：控制条复用上面这根已经接好播放信号的 panelTransport
+    m_fullscreen = new FullscreenController(ui->videoWidget, ui->layout_videoStage,
+                                            ui->panelTransport, ui->layout_center,
+                                            m_panels, 16.0, this);
 
     // 播放条：进度、音量、播放/停止/上下曲、模式按钮与歌词联动
     PlaybackUi playbackUi;
@@ -156,6 +162,8 @@ MainWindow::MainWindow(QWidget *parent)
                    tr("系统设置 (Ctrl+,)"), 20);
     UiIcons::apply(ui->btn_fullscreen, QStringLiteral("fullscreen"),
                    tr("全屏 / 退出全屏"), 20);
+    UiIcons::apply(ui->btn_downloads, QStringLiteral("downloads"),
+                   tr("下载任务"), 20);
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
             [this] {
                 ThemeManager::instance().applyWindowChrome(this);
@@ -163,6 +171,8 @@ MainWindow::MainWindow(QWidget *parent)
                                tr("系统设置 (Ctrl+,)"), 20);
                 UiIcons::apply(ui->btn_fullscreen, QStringLiteral("fullscreen"),
                                tr("全屏 / 退出全屏"), 20);
+                UiIcons::apply(ui->btn_downloads, QStringLiteral("downloads"),
+                               tr("下载任务"), 20);
                 QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
                 m_lyrics->refreshHighlight();
             });
@@ -243,8 +253,29 @@ void MainWindow::on_btn_settings_clicked()
     m_settings->openDialog();
 }
 
+void MainWindow::on_btn_downloads_clicked()
+{
+    if (m_downloads != nullptr)
+        m_downloads->openManager();
+}
+
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    if (m_downloads != nullptr && m_downloads->hasActiveDownloads()) {
+        const int count = m_downloads->activeDownloadCount();
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+            this, tr("下载任务尚未完成"),
+            tr("还有 %1 个下载任务正在进行。\n\n"
+               "退出后会暂停并保留已下载的部分，下次启动程序会自动续传。\n"
+               "是否退出？").arg(count),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            event->ignore();
+            return;
+        }
+        m_downloads->prepareForExit();
+    }
+
     // 全屏是独立顶层窗；不先退出，主窗关闭后进程可能被它拉住不退出。
     if (m_fullscreen != nullptr)
         m_fullscreen->exitFullScreen();

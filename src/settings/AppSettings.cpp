@@ -1,5 +1,6 @@
 #include "settings/AppSettings.h"
 
+#include <QDir>
 #include <QSettings>
 #include <QStandardPaths>
 
@@ -13,6 +14,7 @@ const char kVolume[] = "playback/volume";
 const char kMode[] = "playback/mode";
 const char kSearchLimit[] = "search/limit";
 const char kDownloadLimitMb[] = "download/limitMb";
+const char kDownloadDir[] = "download/dir";
 const char kProbePathsVideo[] = "search/probePaths/video";
 const char kProbePathsMusic[] = "search/probePaths/music";
 const char kLastDir[] = "paths/lastDir";
@@ -174,6 +176,28 @@ int downloadLimitMb()
 void setDownloadLimitMb(int limitMb)
 {
     settings().setValue(QLatin1String(kDownloadLimitMb), qBound(512, limitMb, 65536));
+}
+
+QString downloadDir()
+{
+    QString fallback =
+        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    if (fallback.isEmpty())
+        fallback = QDir::homePath();
+    fallback = QDir(fallback).filePath(QStringLiteral("MusicVideoPlayer"));
+
+    const QString configured =
+        settings().value(QLatin1String(kDownloadDir)).toString().trimmed();
+    return configured.isEmpty() ? fallback : QDir::cleanPath(configured);
+}
+
+void setDownloadDir(const QString &dir)
+{
+    const QString cleaned = QDir::cleanPath(dir.trimmed());
+    if (cleaned.isEmpty() || cleaned == QLatin1String("."))
+        settings().remove(QLatin1String(kDownloadDir));
+    else
+        settings().setValue(QLatin1String(kDownloadDir), cleaned);
 }
 
 QStringList probePaths(MediaType type)

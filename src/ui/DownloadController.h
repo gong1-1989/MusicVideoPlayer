@@ -1,16 +1,18 @@
 #ifndef DOWNLOADCONTROLLER_H
 #define DOWNLOADCONTROLLER_H
 
+#include "media/MediaItem.h"
+
 #include <QObject>
 #include <QPointer>
 
+class DownloadManager;
+class DownloadManagerDialog;
 class HttpClient;
-class DownloadTask;
 class QWidget;
-struct MediaItem;
 
-/// 下载流程：保存对话框、HLS 后缀处理、任务进度与结果提示。
-/// 目录记忆仍由主窗持有，控制器只通过信号回报本次选择的目录。
+/// 下载入口：按设置里的默认目录直接生成不冲突的文件名，不再弹路径选择。
+/// 队列、续传、退出保留由 DownloadManager 负责；本类只做界面装配和提示。
 class DownloadController : public QObject
 {
     Q_OBJECT
@@ -19,14 +21,21 @@ public:
     DownloadController(HttpClient *http, QWidget *dialogParent, QObject *parent = nullptr);
 
     void download(const MediaItem &item);
+    void openManager();
+
+    bool hasActiveDownloads() const;
+    int activeDownloadCount() const;
+    void prepareForExit();
 
 signals:
     void statusMessage(const QString &message);
+    void itemDownloaded(const MediaItem &item, const QString &localPath);
 
 private:
     HttpClient *m_http;
     QWidget *m_dialogParent;
-    QPointer<DownloadTask> m_task;
+    DownloadManager *m_manager = nullptr;
+    QPointer<DownloadManagerDialog> m_dialog;
 };
 
 #endif // DOWNLOADCONTROLLER_H

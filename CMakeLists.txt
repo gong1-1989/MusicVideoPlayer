@@ -68,6 +68,14 @@ qt_add_library(mvp_core STATIC
     src/lyrics/LyricsService.cpp
     src/download/DownloadTask.h
     src/download/DownloadTask.cpp
+    src/download/DownloadJob.h
+    src/download/DownloadJob.cpp
+    src/download/DownloadPaths.h
+    src/download/DownloadPaths.cpp
+    src/download/DownloadManager.h
+    src/download/DownloadManager.cpp
+    src/download/MediaRemux.h
+    src/download/MediaRemux.cpp
     src/stream/StreamProxy.h
     src/stream/StreamProxy.cpp
     src/stream/StreamCacheStore.h
@@ -124,6 +132,8 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/MarqueeDelegate.cpp
     src/ui/DownloadController.h
     src/ui/DownloadController.cpp
+    src/ui/DownloadManagerDialog.h
+    src/ui/DownloadManagerDialog.cpp
     src/ui/PlaybackUiController.h
     src/ui/PlaybackUiController.cpp
     src/ui/SeekSlider.h
@@ -224,6 +234,55 @@ set_target_properties(MusicVideoPlayer PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
 )
+
+# ---------------------------------------------------------------- 内置 FFmpeg
+# HLS 下载完成后无损转成 MP4 需要 ffmpeg.exe。发布包不依赖用户自行安装：
+# 源仓库只保存 LGPL shared 压缩包，配置时解压到 build 缓存，构建后复制到程序目录
+# ffmpeg/，安装时随发布包一起带入。GitHub 单文件 100MB 限制也由压缩包规避。
+if(WIN32)
+    set(MVP_FFMPEG_ARCHIVE
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip")
+    set(MVP_FFMPEG_CACHE "${CMAKE_BINARY_DIR}/ffmpeg_pkg")
+    set(MVP_FFMPEG_ROOT
+        "${MVP_FFMPEG_CACHE}/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1")
+
+    if(EXISTS "${MVP_FFMPEG_ARCHIVE}")
+        if(NOT EXISTS "${MVP_FFMPEG_ROOT}/bin/ffmpeg.exe")
+            message(STATUS "解压内置 FFmpeg 到 ${MVP_FFMPEG_CACHE}")
+            file(ARCHIVE_EXTRACT
+                INPUT "${MVP_FFMPEG_ARCHIVE}"
+                DESTINATION "${MVP_FFMPEG_CACHE}")
+        endif()
+
+        if(EXISTS "${MVP_FFMPEG_ROOT}/bin/ffmpeg.exe")
+            file(GLOB MVP_FFMPEG_RUNTIME
+                "${MVP_FFMPEG_ROOT}/bin/ffmpeg.exe"
+                "${MVP_FFMPEG_ROOT}/bin/*.dll")
+            add_custom_command(TARGET MusicVideoPlayer POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "$<TARGET_FILE_DIR:MusicVideoPlayer>/ffmpeg"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        ${MVP_FFMPEG_RUNTIME}
+                        "$<TARGET_FILE_DIR:MusicVideoPlayer>/ffmpeg"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${MVP_FFMPEG_ROOT}/LICENSE.txt"
+                        "$<TARGET_FILE_DIR:MusicVideoPlayer>/ffmpeg/LICENSE.txt"
+                COMMENT "复制内置 FFmpeg 到程序目录 ffmpeg/")
+
+            # 安装时 ffmpeg 与主程序同目录层级，MediaRemux 按程序目录/ffmpeg 查找。
+            install(DIRECTORY "${MVP_FFMPEG_ROOT}/bin/"
+                DESTINATION "${CMAKE_INSTALL_BINDIR}/ffmpeg"
+                FILES_MATCHING PATTERN "ffmpeg.exe" PATTERN "*.dll")
+            install(FILES "${MVP_FFMPEG_ROOT}/LICENSE.txt"
+                DESTINATION "${CMAKE_INSTALL_BINDIR}/ffmpeg")
+        else()
+            message(WARNING "内置 FFmpeg 压缩包存在但解压后未找到 bin/ffmpeg.exe")
+        endif()
+    else()
+        message(WARNING
+            "未找到 ${MVP_FFMPEG_ARCHIVE}，HLS 下载将无法自动转 MP4")
+    endif()
+endif()
 
 # ---------------------------------------------------------------- 翻译
 # qt_add_translations 会把 .qm 编译后嵌入资源，main.cpp 的 :/i18n 才能真正加载。

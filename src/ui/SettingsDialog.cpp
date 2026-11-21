@@ -7,12 +7,17 @@
 #include "ui/ThemeManager.h"
 #include "ui_SettingsDialog.h"
 
+#include <QDir>
+#include <QFileDialog>
 #include <QGuiApplication>
+#include <QBoxLayout>
 #include <QFrame>
 #include <QLabel>
+#include <QLineEdit>
 #include <QLoggingCategory>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QScrollBar>
 #include <QSlider>
@@ -54,6 +59,8 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
     ui->layout_root->setStretch(1, 1);
     setMaximumSize(available.width(), available.height() - 20);
     resize(qMin(820, available.width() - 40), qMin(620, available.height() - 60));
+    m_columns = ui->layout_columns;
+    updateColumnLayout();
 
     // 首次打开时焦点落在首个输入控件会把滚动区带到中间，显示时强制回到顶部
     QTimer::singleShot(0, this, [this] {
@@ -72,6 +79,36 @@ SettingsDialog::~SettingsDialog()
     delete ui;
 }
 
+void SettingsDialog::resizeEvent(QResizeEvent *event)
+{
+    QDialog::resizeEvent(event);
+    updateColumnLayout();
+}
+
+void SettingsDialog::updateColumnLayout()
+{
+    if (m_columns == nullptr)
+        return;
+
+    // 150% 字体时左右两列的总最小宽度会超过滚动区，右列被裁掉；
+    // 窄窗口同理。这里改成上下铺开，让全部设置都能纵向滚动到。
+    const bool single = AppSettings::uiFontPercent() > 100 || width() < 760;
+    if (single == m_singleColumn)
+        return;
+
+    m_singleColumn = single;
+    m_columns->setDirection(single ? QBoxLayout::TopToBottom
+                                   : QBoxLayout::LeftToRight);
+    if (single) {
+        ui->spacer_left->changeSize(0, 0, QSizePolicy::Minimum,
+                                    QSizePolicy::Minimum);
+    } else {
+        ui->spacer_left->changeSize(20, 40, QSizePolicy::Minimum,
+                                    QSizePolicy::Expanding);
+    }
+    m_columns->invalidate();
+}
+
 void SettingsDialog::bindUi()
 {
     m_theme = ui->combo_theme;
@@ -81,6 +118,8 @@ void SettingsDialog::bindUi()
     m_volumeValue = ui->label_volumeValue;
     m_searchLimit = ui->combo_searchLimit;
     m_downloadLimit = ui->combo_downloadLimit;
+    m_downloadDir = ui->edit_downloadDir;
+    m_browseDownloadDir = ui->btn_browseDownloadDir;
     m_sidebarAutoHide = ui->checkbox_sidebar;
     m_controlsAutoHide = ui->checkbox_controls;
     m_sourcesLabel = ui->label_sources;
@@ -141,11 +180,20 @@ void SettingsDialog::bindUi()
     m_downloadLimit->setToolTip(
         tr("单个文件超过该体积会停止下载并提示失败，避免异常大文件占满磁盘。"));
 
+    m_downloadDir->setToolTip(
+        tr("下载任务直接保存到这个目录，不再弹路径选择；同名文件会自动加序号。"));
+
     connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
         m_volumeValue->setText(QStringLiteral("%1%").arg(value));
     });
     connect(m_sourcesButton, &QPushButton::clicked, this,
             &SettingsDialog::openSourceManager);
+    connect(m_browseDownloadDir, &QPushButton::clicked, this, [this] {
+        const QString dir = QFileDialog::getExistingDirectory(
+            this, tr("选择默认下载目录"), m_downloadDir->text());
+        if (!dir.isEmpty())
+            m_downloadDir->setText(QDir::cleanPath(dir));
+    });
     connect(ui->btn_cancel, &QPushButton::clicked, this, &QDialog::reject);
     connect(ui->btn_save, &QPushButton::clicked, this, &SettingsDialog::accept);
 }
@@ -192,6 +240,8 @@ void SettingsDialog::loadValues()
     }
     if (downloadIndex >= 0)
         m_downloadLimit->setCurrentIndex(downloadIndex);
+
+    m_downloadDir->setText(AppSettings::downloadDir());
 
     m_sidebarAutoHide->setChecked(AppSettings::sidebarAutoHide());
     m_controlsAutoHide->setChecked(AppSettings::controlsAutoHide());
@@ -260,6 +310,18 @@ void SettingsDialog::accept()
     AppSettings::setDefaultVolume(m_volume->value());
     AppSettings::setSearchLimit(m_searchLimit->currentData().toInt());
     AppSettings::setDownloadLimitMb(m_downloadLimit->currentData().toInt());
+
+    QString downloadDir = m_downloadDir->text().trimmed();
+    if (downloadDir.isEmpty())
+        downloadDir = AppSettings::downloadDir();
+    QDir dir(downloadDir);
+    if (!dir.exists() && !QDir().mkpath(dir.absolutePath())) {
+        QMessageBox::warning(
+            this, tr("下载目录不可用"),
+            tr("无法创建目录：\n%1\n\n请换一个可写目录。").arg(dir.absolutePath()));
+        return;
+    }
+    AppSettings::setDownloadDir(dir.absolutePath());
     AppSettings::setSidebarAutoHide(m_sidebarAutoHide->isChecked());
     AppSettings::setControlsAutoHide(m_controlsAutoHide->isChecked());
 

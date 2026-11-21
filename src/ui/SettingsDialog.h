@@ -9,8 +9,11 @@
 class HttpClient;
 class QCheckBox;
 class QComboBox;
+class QHBoxLayout;
 class QLabel;
+class QLineEdit;
 class QPushButton;
+class QResizeEvent;
 class QSlider;
 class SourceRegistry;
 
@@ -34,12 +37,15 @@ public:
 
 protected:
     void accept() override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     void bindUi();
     void loadValues();
     void refreshSourcesLabel();
     void openSourceManager();
+    /// 大字体/窄窗口下把左右两列改成单列，避免右列被横向裁掉
+    void updateColumnLayout();
 
     Ui::SettingsDialog *ui;
     SourceRegistry *m_registry = nullptr;
@@ -54,10 +60,14 @@ private:
     QLabel *m_volumeValue = nullptr;
     QComboBox *m_searchLimit = nullptr;
     QComboBox *m_downloadLimit = nullptr;
+    QLineEdit *m_downloadDir = nullptr;
+    QPushButton *m_browseDownloadDir = nullptr;
     QCheckBox *m_sidebarAutoHide = nullptr;
     QCheckBox *m_controlsAutoHide = nullptr;
     QLabel *m_sourcesLabel = nullptr;
     QPushButton *m_sourcesButton = nullptr;
+    QHBoxLayout *m_columns = nullptr;
+    bool m_singleColumn = false;
 };
 
 #endif // SETTINGSDIALOG_H

@@ -79,6 +79,7 @@ private slots:
     void listPageSizeFollowsViewport();
     void themeFontScaleChangesFixedPixelSizes();
     void playlistSaveFailureKeepsDirtyAndRetries();
+    void downloadedItemSwitchesPlaylistToLocalSource();
 };
 
 void UiLogicTest::lyricsClearCancelsPendingRequest()
@@ -189,6 +190,65 @@ void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()
     QVERIFY(!controller.hasUnsavedChanges());
     QCOMPARE(tabs.tabText(0), QStringLiteral("音乐"));
     QCOMPARE(tabs.tabText(1), QStringLiteral("视频"));
+
+    if (oldDataDir.isEmpty())
+        qunsetenv("MVP_DATA_DIR");
+    else
+        qputenv("MVP_DATA_DIR", oldDataDir);
+}
+
+void UiLogicTest::downloadedItemSwitchesPlaylistToLocalSource()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    qputenv("MVP_DATA_DIR", temp.path().toUtf8());
+
+    const QString localFile = temp.filePath(QStringLiteral("本地视频.mp4"));
+    QFile file(localFile);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("video");
+    file.close();
+
+    PlaybackController player;
+    QTabWidget tabs;
+    QListView *musicView = new QListView;
+    QListView *videoView = new QListView;
+    tabs.addTab(musicView, QStringLiteral("音乐"));
+    tabs.addTab(videoView, QStringLiteral("视频"));
+
+    PlaylistController controller(&player, PlaylistUi{musicView, videoView, &tabs});
+
+    // 搜索结果的类型是视频，但用户把它加进了音乐页；下载完成仍应命中同源条目。
+    MediaItem online;
+    online.type = MediaType::Video;
+    online.title = QStringLiteral("下载后改本地");
+    online.url = QUrl(QStringLiteral("https://example.com/episode.m3u8"));
+    online.webUrl = QUrl(QStringLiteral("https://example.com/detail/1"));
+    online.online = true;
+    online.sourceId = QStringLiteral("src-1");
+    online.headers.insert(QStringLiteral("Referer"), QStringLiteral("https://example.com/"));
+    online.alternateUrls.append(QStringLiteral("https://cdn.example.com/episode.mp4"));
+
+    controller.addSearchItem(online, MediaType::Music);
+    QCOMPARE(controller.musicModel()->size(), 1);
+
+    MediaItem downloaded = online;
+    downloaded.type = MediaType::Video;
+    QVERIFY(controller.updateDownloadedItem(downloaded, localFile));
+
+    const MediaItem updated = controller.musicModel()->itemAt(0);
+    QCOMPARE(updated.title, online.title);
+    QCOMPARE(updated.type, MediaType::Music);
+    QCOMPARE(updated.url, QUrl::fromLocalFile(localFile));
+    QVERIFY(!updated.online);
+    QVERIFY(updated.sourceId.isEmpty());
+    QVERIFY(updated.webUrl.isEmpty());
+    QVERIFY(updated.headers.isEmpty());
+    QVERIFY(updated.alternateUrls.isEmpty());
+
+    // 文件不存在时不能把列表改成坏路径
+    QVERIFY(!controller.updateDownloadedItem(downloaded, temp.filePath(QStringLiteral("不存在.mp4"))));
 
     if (oldDataDir.isEmpty())
         qunsetenv("MVP_DATA_DIR");

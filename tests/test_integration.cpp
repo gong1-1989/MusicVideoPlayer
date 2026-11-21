@@ -1,4 +1,5 @@
 #include "download/DownloadTask.h"
+#include "download/MediaRemux.h"
 #include "net/ConfigSearchProvider.h"
 #include "net/ExternalSearchProvider.h"
 #include "net/HttpClient.h"
@@ -15,6 +16,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QLoggingCategory>
 #include <QNetworkReply>
@@ -210,6 +212,8 @@ private slots:
     void downloadFailsOnShortContentLength();
     void downloadStopsAtInjectedByteLimit();
     void downloadRejectsShortHlsSegmentRange();
+    void downloadResumesFromPartialFileWithRange();
+    void mediaRemuxConvertsTsToMp4();
     void streamProxyPreservesEncodedSegmentQuery();
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
@@ -450,6 +454,91 @@ void IntegrationTest::downloadRejectsShortHlsSegmentRange()
     QCOMPARE(failed.count(), 1);
     QVERIFY(failed.first().first().toString().contains(QStringLiteral("分片长度不完整")));
     QVERIFY(!QFile::exists(m_tempDir.filePath(QStringLiteral("short-list.ts"))));
+}
+
+void IntegrationTest::downloadResumesFromPartialFileWithRange()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+
+    const QByteArray full(1000, 'x');
+    server.handler = [full](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        const QByteArray range = request.headers.value("range");
+        if (range == "bytes=300-") {
+            LocalHttpServer::respond(socket, 206, full.mid(300), "audio/mpeg", 700,
+                                     "Content-Range: bytes 300-999/1000\r\n");
+            return;
+        }
+        LocalHttpServer::respond(socket, 200, full, "audio/mpeg", full.size());
+    };
+
+    HttpClient http;
+    const QString path = m_tempDir.filePath(QStringLiteral("resume.mp3"));
+    const QString partial = path + QStringLiteral(".mvpdownload");
+    QFile::remove(path);
+    QFile::remove(partial);
+    {
+        QFile file(partial);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write(full.left(300)) == 300);
+    }
+
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/resume.mp3")), path);
+    task->setResumeState(300, 0, false);
+
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 5000);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(succeeded.count(), 1);
+
+    QVERIFY(!QFile::exists(partial));
+    QFile result(path);
+    QVERIFY(result.open(QIODevice::ReadOnly));
+    QCOMPARE(result.size(), qint64(full.size()));
+    QCOMPARE(result.readAll(), full);
+
+    QCOMPARE(server.requests.size(), 1);
+    QCOMPARE(server.requests.first().headers.value("range"), QByteArray("bytes=300-"));
+}
+
+void IntegrationTest::mediaRemuxConvertsTsToMp4()
+{
+    if (!MediaRemux::isAvailable())
+        QSKIP("未找到 ffmpeg，跳过内置转封装测试");
+
+    const QString ffmpeg = MediaRemux::ffmpegExecutable();
+    QVERIFY(!ffmpeg.isEmpty());
+
+    const QString tsPath = m_tempDir.filePath(QStringLiteral("remux-sample.ts"));
+    const QString mp4Path = m_tempDir.filePath(QStringLiteral("remux-sample.mp4"));
+    QFile::remove(tsPath);
+    QFile::remove(mp4Path);
+
+    // 用 FFmpeg 自己生成 1 秒 MPEG-TS（LGPL 构建没有 libx264，用 mpeg2video）。
+    QProcess generator;
+    generator.start(ffmpeg, {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                             QStringLiteral("-loglevel"), QStringLiteral("error"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("testsrc=size=160x90:rate=25"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("sine=frequency=440"),
+                             QStringLiteral("-t"), QStringLiteral("1"),
+                             QStringLiteral("-c:v"), QStringLiteral("mpeg2video"),
+                             QStringLiteral("-c:a"), QStringLiteral("mp2"),
+                             QStringLiteral("-f"), QStringLiteral("mpegts"), tsPath});
+    QVERIFY(generator.waitForFinished(30000));
+    QCOMPARE(generator.exitCode(), 0);
+    QVERIFY(QFileInfo(tsPath).size() > 0);
+
+    MediaRemux remux;
+    QSignalSpy finished(&remux, &MediaRemux::finished);
+    remux.remuxToMp4(tsPath, mp4Path);
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() > 0, 30000);
+    QCOMPARE(finished.first().at(0).toBool(), true);
+    QCOMPARE(finished.first().at(1).toString(), mp4Path);
+    QVERIFY(QFileInfo(mp4Path).size() > 0);
 }
 
 void IntegrationTest::streamProxyPreservesEncodedSegmentQuery()

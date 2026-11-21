@@ -56,6 +56,13 @@ QFrame#panelTransport {
     border: 1px solid rgba(140, 130, 220, 22%);
 }
 
+/* 全屏时控制条压在视频上，底色要比普通浮层更实，保证文字和进度条可读 */
+QFrame#panelTransport[fullscreen="true"] {
+    background: rgba(248, 247, 255, 95%);
+    border: 1px solid rgba(140, 130, 220, 38%);
+    border-radius: 18px;
+}
+
 /* 歌词面板用实色底：渐隐遮罩必须与面板底色完全一致，否则会看出色块 */
 QFrame#panelLyrics {
     background: #fdfcff;
@@ -196,6 +203,18 @@ QPushButton#btn_search {
     border-radius: 19px;
     color: #ffffff;
     font-weight: 600;
+    padding: 0;
+}
+
+/* 搜索翻页按钮改成纯图标，固定紧凑尺寸 */
+QPushButton#btn_searchPrev,
+QPushButton#btn_searchNext {
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 26px;
+    max-height: 26px;
+    border-radius: 13px;
+    padding: 0;
 }
 
 QPushButton#btn_search:hover {
@@ -230,6 +249,7 @@ QPushButton#btn_play:hover {
 QPushButton#btn_stop,
 QPushButton#btn_mode,
 QPushButton#btn_fullscreen,
+QPushButton#btn_downloads,
 QPushButton#btn_prev,
 QPushButton#btn_next {
     min-width: 38px;
@@ -606,4 +626,71 @@ QPushButton#btn_applyPrimary {
     font-weight: 600;
     border-radius: 14px;
     padding: 7px 22px;
+}
+
+/* 下载管理器：浅色主题下保持同一套玻璃质感 */
+QDialog#DownloadManagerDialog {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #f7f8ff,
+                                stop:1 #e9f1ff);
+    color: #2b2b45;
+}
+QDialog#DownloadManagerDialog QLabel {
+    color: #2b2b45;
+    background: transparent;
+}
+QDialog#DownloadManagerDialog QTreeWidget {
+    background: rgba(255, 255, 255, 86%);
+    alternate-background-color: rgba(120, 150, 255, 7%);
+    border: 1px solid rgba(120, 150, 255, 28%);
+    border-radius: 10px;
+    color: #2b2b45;
+    outline: none;
+}
+QDialog#DownloadManagerDialog QTreeWidget::item {
+    padding: 4px 2px;
+    border-bottom: 1px solid rgba(43, 43, 69, 7%);
+}
+QDialog#DownloadManagerDialog QTreeWidget::item:selected {
+    background: rgba(110, 130, 255, 24%);
+    color: #1a1a2e;
+}
+QDialog#DownloadManagerDialog QHeaderView::section {
+    background: rgba(120, 150, 255, 14%);
+    color: #3d4770;
+    border: none;
+    border-bottom: 1px solid rgba(120, 150, 255, 26%);
+    padding: 6px 8px;
+    font-weight: 600;
+}
+QDialog#DownloadManagerDialog QProgressBar {
+    background: rgba(43, 43, 69, 5%);
+    border: 1px solid rgba(120, 150, 255, 26%);
+    border-radius: 7px;
+    color: #2b2b45;
+    text-align: center;
+    font-size: 11px;
+    min-height: 14px;
+    max-height: 14px;
+}
+QDialog#DownloadManagerDialog QProgressBar::chunk {
+    border-radius: 6px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 #7b5bff,
+                                stop:1 #35c2ff);
+}
+
+/* 设置页路径输入框：浅色主题跟随玻璃卡片 */
+QDialog#SettingsDialog QLineEdit {
+    background: rgba(255, 255, 255, 88%);
+    border: 1px solid rgba(120, 150, 255, 28%);
+    border-radius: 8px;
+    padding: 4px 8px;
+    color: #2b2b45;
+    selection-background-color: rgba(110, 92, 255, 35%);
+    selection-color: #1a1a2e;
+}
+QDialog#SettingsDialog QLineEdit:focus {
+    background: #ffffff;
+    border: 1px solid rgba(120, 150, 255, 65%);
 }

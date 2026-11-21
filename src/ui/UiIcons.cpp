@@ -201,6 +201,38 @@ QPixmap builtinPixmap(const QString &name, const QColor &color, int pixelSize)
         painter->setBrush(Qt::NoBrush);
         painter->drawArc(QRectF(24, 20, 22, 24), -55 * 16, 110 * 16);
         painter->drawArc(QRectF(25, 12, 34, 40), -50 * 16, 100 * 16);
+    } else if (name == QLatin1String("search")) {
+        painter->setBrush(Qt::NoBrush);
+        painter->drawEllipse(QPointF(27, 27), 12, 12);
+        painter->drawLine(QPointF(36, 36), QPointF(50, 50));
+    } else if (name == QLatin1String("cancel")) {
+        painter->drawLine(QPointF(20, 20), QPointF(44, 44));
+        painter->drawLine(QPointF(44, 20), QPointF(20, 44));
+    } else if (name == QLatin1String("page-prev")) {
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPolyline(makePolyline(
+            {QPointF(40, 15), QPointF(23, 32), QPointF(40, 49)}));
+    } else if (name == QLatin1String("page-next")) {
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPolyline(makePolyline(
+            {QPointF(24, 15), QPointF(41, 32), QPointF(24, 49)}));
+    } else if (name == QLatin1String("downloads")) {
+        painter->setBrush(Qt::NoBrush);
+        painter->drawLine(QPointF(32, 13), QPointF(32, 36));
+        painter->drawPolyline(makePolyline(
+            {QPointF(22, 28), QPointF(32, 39), QPointF(42, 28)}));
+        painter->drawPolyline(makePolyline(
+            {QPointF(16, 41), QPointF(16, 51), QPointF(48, 51), QPointF(48, 41)}));
+    } else if (name == QLatin1String("fullscreen-exit")) {
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPolyline(makePolyline(
+            {QPointF(26, 26), QPointF(26, 15), QPointF(15, 15)}));
+        painter->drawPolyline(makePolyline(
+            {QPointF(38, 26), QPointF(38, 15), QPointF(49, 15)}));
+        painter->drawPolyline(makePolyline(
+            {QPointF(38, 38), QPointF(38, 49), QPointF(49, 49)}));
+        painter->drawPolyline(makePolyline(
+            {QPointF(26, 38), QPointF(26, 49), QPointF(15, 49)}));
     } else {
         // 未知名称用圆点兜底，至少不会出现空按钮。
         painter->drawEllipse(QPointF(32, 32), 9, 9);

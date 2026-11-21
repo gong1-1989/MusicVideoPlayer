@@ -47,7 +47,7 @@ void PanelOverlayController::applyVisibility()
         positionControlOverlay();
 
     // 两侧都常显时没有任何贴边检测需求，停掉 120ms 定时器
-    if (m_sidebarAutoHide || m_controlsAutoHide) {
+    if (m_edgeDetectionEnabled && (m_sidebarAutoHide || m_controlsAutoHide)) {
         if (!m_edgeTimer->isActive())
             m_edgeTimer->start();
     } else {
@@ -66,8 +66,23 @@ void PanelOverlayController::reposition()
     positionControlOverlay();
 }
 
+void PanelOverlayController::setEdgeDetectionEnabled(bool enabled)
+{
+    if (m_edgeDetectionEnabled == enabled)
+        return;
+    m_edgeDetectionEnabled = enabled;
+    if (!enabled)
+        m_edgeTimer->stop();
+
+    // 全屏期间控制条归全屏窗口管理，恢复时按当前设置重新贴回主窗口
+    if (enabled)
+        applyVisibility();
+}
+
 void PanelOverlayController::updateEdgePanels()
 {
+    if (!m_edgeDetectionEnabled)
+        return;
     if (!m_sidebarAutoHide && !m_controlsAutoHide)
         return;
 
