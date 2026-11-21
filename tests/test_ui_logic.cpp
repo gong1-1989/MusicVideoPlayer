@@ -1,8 +1,17 @@
+#include "core/PlaybackController.h"
 #include "media/MediaItem.h"
 #include "net/HttpClient.h"
 #include "ui/LyricsController.h"
+#include "ui/PlaylistController.h"
 
+#include <QDir>
+#include <QFile>
 #include <QListWidget>
+#include <QListView>
+#include <QTemporaryDir>
+#include <QTabWidget>
+#include <QStandardPaths>
+
 #include <QPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -64,6 +73,7 @@ class UiLogicTest : public QObject
 
 private slots:
     void lyricsClearCancelsPendingRequest();
+    void playlistSaveFailureKeepsDirtyAndRetries();
 };
 
 void UiLogicTest::lyricsClearCancelsPendingRequest()
@@ -90,6 +100,61 @@ void UiLogicTest::lyricsClearCancelsPendingRequest()
     controller.clear();
     QTest::qWait(900);
     QCOMPARE(list.count(), 0);
+}
+
+void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    // 主路径用一个“文件”占位，QDir::mkpath 和 QSaveFile 都会失败；
+    // 备用路径在测试模式下隔离，再放一个同名目录让第一次保存彻底失败。
+    const QString fakePrimary = temp.filePath(QStringLiteral("not-a-dir"));
+    QFile blocker(fakePrimary);
+    QVERIFY(blocker.open(QIODevice::WriteOnly));
+    blocker.close();
+
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    qputenv("MVP_DATA_DIR", fakePrimary.toUtf8());
+    QStandardPaths::setTestModeEnabled(true);
+    const QString fallback = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                             + QStringLiteral("/playlists.json");
+    QVERIFY(QDir().mkpath(fallback));
+
+    PlaybackController player;
+    QTabWidget tabs;
+    // QTabWidget 会接管页面所有权；这里必须用堆对象，避免析构时重复释放栈对象。
+    QListView *musicView = new QListView;
+    QListView *videoView = new QListView;
+    tabs.addTab(musicView, QStringLiteral("音乐"));
+    tabs.addTab(videoView, QStringLiteral("视频"));
+
+    PlaylistController controller(&player, PlaylistUi{musicView, videoView, &tabs});
+
+    MediaItem song;
+    song.type = MediaType::Music;
+    song.title = QStringLiteral("未保存测试");
+    song.url = QUrl(QStringLiteral("https://example.com/song.mp3"));
+    song.online = true;
+
+    controller.addSearchItem(song, MediaType::Music);
+    QVERIFY(controller.hasUnsavedChanges());
+    QCOMPARE(tabs.tabText(0), QStringLiteral("音乐 *"));
+    QVERIFY(tabs.tabToolTip(0).contains(QStringLiteral("未保存")));
+
+    // 恢复备用路径后重试必须成功，并清除页签上的未保存标记。
+    QVERIFY(QDir(fallback).removeRecursively());
+    QVERIFY(controller.retrySave());
+    QVERIFY(!controller.hasUnsavedChanges());
+    QCOMPARE(tabs.tabText(0), QStringLiteral("音乐"));
+    QCOMPARE(tabs.tabText(1), QStringLiteral("视频"));
+
+    QFile::remove(fallback);
+    QStandardPaths::setTestModeEnabled(false);
+    if (oldDataDir.isEmpty())
+        qunsetenv("MVP_DATA_DIR");
+    else
+        qputenv("MVP_DATA_DIR", oldDataDir);
 }
 
 QTEST_MAIN(UiLogicTest)

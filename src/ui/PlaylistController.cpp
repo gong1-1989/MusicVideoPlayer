@@ -69,6 +69,8 @@ PlaylistController::PlaylistController(PlaybackController *player, const Playlis
 
     m_ui.musicView->setModel(m_musicModel);
     m_ui.videoView->setModel(m_videoModel);
+    m_musicTabTitle = m_ui.tabs->tabText(0);
+    m_videoTabTitle = m_ui.tabs->tabText(1);
 
     bindView(m_ui.musicView, m_musicModel, MediaType::Music);
     bindView(m_ui.videoView, m_videoModel, MediaType::Video);
@@ -140,12 +142,48 @@ void PlaylistController::restore()
 
 bool PlaylistController::save()
 {
-    if (PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items()))
+    if (PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
+        setDirty(false);
         return true;
+    }
 
     qCWarning(lcPlaylist) << "播放列表保存失败";
-    emit statusMessage(tr("播放列表保存失败：Data 目录不可写"));
+    // 不丢用户刚做的修改：界面保留，页签标 *，右键菜单提供重试。
+    setDirty(true);
+    emit statusMessage(tr("播放列表保存失败：Data 目录不可写；修改仍保留，可在列表右键“重试保存”"));
     return false;
+}
+
+bool PlaylistController::retrySave()
+{
+    if (!m_dirty)
+        return true;
+    if (!PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
+        qCWarning(lcPlaylist) << "播放列表重试保存仍失败";
+        emit statusMessage(tr("播放列表仍未保存：Data 目录不可写，修改继续保留"));
+        return false;
+    }
+    setDirty(false);
+    emit statusMessage(tr("播放列表已重新保存"));
+    return true;
+}
+
+void PlaylistController::setDirty(bool dirty)
+{
+    if (m_dirty == dirty)
+        return;
+    m_dirty = dirty;
+    refreshTabTitles();
+}
+
+void PlaylistController::refreshTabTitles()
+{
+    const QString suffix = m_dirty ? tr(" *") : QString();
+    m_ui.tabs->setTabText(0, m_musicTabTitle + suffix);
+    m_ui.tabs->setTabText(1, m_videoTabTitle + suffix);
+    const QString tip = m_dirty ? tr("有修改尚未保存，右键列表可重试保存") : QString();
+    m_ui.tabs->setTabToolTip(0, tip);
+    m_ui.tabs->setTabToolTip(1, tip);
 }
 
 void PlaylistController::ensurePlaylist()
@@ -304,6 +342,12 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     const QModelIndex index = view->indexAt(pos);
 
     QMenu menu(view);
+    if (m_dirty) {
+        // 保存失败后修改还在，这里给一个明确的恢复入口，而不是让用户重做操作。
+        QAction *retryAction = menu.addAction(tr("重试保存播放列表（未保存）"));
+        connect(retryAction, &QAction::triggered, this, &PlaylistController::retrySave);
+        menu.addSeparator();
+    }
     QAction *playAction = nullptr;
     QAction *removeAction = nullptr;
     if (index.isValid()) {

@@ -167,6 +167,7 @@ add_test(NAME mvp_storage COMMAND mvp_storage_tests)
 add_executable(mvp_ui_tests
     tests/test_ui_logic.cpp
     src/ui/LyricsController.cpp
+    src/ui/PlaylistController.cpp
     src/ui/ThemeManager.cpp
     src/ui/WindowChrome.cpp
 )

@@ -39,6 +39,9 @@ public:
 
     void restore();
     bool save();
+    /// 上次保存失败后保留内存修改；这里重试写盘，成功才清除未保存标记
+    bool retrySave();
+    bool hasUnsavedChanges() const { return m_dirty; }
     void ensurePlaylist();
 
     /// 搜索结果直接播放：已存在则定位，不存在则先加入并保存
@@ -62,11 +65,17 @@ private:
     void showContextMenu(MediaType type, QListView *view, PlaylistModel *model,
                          const QPoint &pos);
     void playRow(MediaType type, int row);
+    void setDirty(bool dirty);
+    void refreshTabTitles();
 
     PlaybackController *m_player = nullptr;
     PlaylistUi m_ui;
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
+    QString m_musicTabTitle;
+    QString m_videoTabTitle;
+    /// 保存失败后界面仍保留修改；页签加 * 并在右键菜单提供重试
+    bool m_dirty = false;
 };
 
 #endif // PLAYLISTCONTROLLER_H
