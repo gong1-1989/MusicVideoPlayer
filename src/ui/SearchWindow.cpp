@@ -6,6 +6,7 @@
 #include "ui/SearchPanelController.h"
 #include "ui/ThemeManager.h"
 
+#include <QApplication>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -24,6 +25,8 @@ SearchWindow::SearchWindow(SearchCoordinator *coordinator, SourceRegistry *regis
     setObjectName(QStringLiteral("SearchWindow"));
     setAttribute(Qt::WA_StyledBackground, true);
     setWindowTitle(tr("搜索发现"));
+    // 独立窗口默认拿到一个空白系统图标，和主窗口标题栏不一致；显式继承应用图标。
+    setWindowIcon(QApplication::windowIcon());
     setWindowModality(Qt::NonModal);
     resize(560, 640);
     setMinimumSize(440, 480);
@@ -44,8 +47,8 @@ SearchWindow::SearchWindow(SearchCoordinator *coordinator, SourceRegistry *regis
     ui.titleLabel = findChild<QLabel *>(QStringLiteral("label_searchTitle"));
     ui.pageLabel = findChild<QLabel *>(QStringLiteral("label_searchPage"));
     ui.pageInfoLabel = findChild<QLabel *>(QStringLiteral("label_searchPageInfo"));
-    // 筛选行由控制器在运行时插到搜索框下方；这里把窗口自身当容器，
-    // 布局顺序是品牌头、分割线、搜索行、提示、结果标题、结果列表、分页。
+    ui.filterHost = m_filterHost;
+    // 布局顺序：搜索行、筛选行、提示、结果标题、结果列表、状态、分页。
     ui.sidebar = this;
     m_controller = new SearchPanelController(coordinator, registry, http, ui, this);
 
@@ -86,6 +89,14 @@ void SearchWindow::buildUi()
     m_searchButton->setToolTip(tr("搜索"));
     searchRow->addWidget(m_searchButton);
     root->addLayout(searchRow);
+
+    // 筛选行固定宿主：控制器只往这里加控件，不再依赖根布局索引。
+    m_filterHost = new QWidget(this);
+    m_filterHost->setObjectName(QStringLiteral("searchFilterHost"));
+    auto *filterHostLayout = new QVBoxLayout(m_filterHost);
+    filterHostLayout->setContentsMargins(0, 0, 0, 0);
+    filterHostLayout->setSpacing(0);
+    root->addWidget(m_filterHost);
 
     // 联想列表是窗口内的普通子控件，不用 QCompleter 的顶层 popup。
     // 顶层 popup 在独立对话框中会抢焦点和鼠标，表现为整个窗口点不动。
@@ -198,6 +209,9 @@ void SearchWindow::focusSearch()
 void SearchWindow::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
+    // 窗口真正显示前 DWM 可能重新套用默认标题栏；显示后再上一次主题色，
+    // 保证和主窗口标题栏一致。
+    ThemeManager::instance().applyWindowChrome(this);
     QTimer::singleShot(0, this, [this] {
         if (m_edit != nullptr)
             m_edit->setFocus(Qt::ShortcutFocusReason);

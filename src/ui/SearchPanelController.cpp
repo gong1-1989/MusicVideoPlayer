@@ -461,12 +461,15 @@ void SearchPanelController::setupUi()
 
 void SearchPanelController::setupDiscoveryFeatures()
 {
-    // 类型/来源/品质筛选：插在搜索框与“搜索结果”标题之间，
-    // 不占搜索结果高度，也让用户搜完能马上收窄范围。
-    if (m_ui.sidebar != nullptr) {
-        if (auto *layout = qobject_cast<QVBoxLayout *>(m_ui.sidebar->layout());
+    // 类型/来源/品质筛选：固定放在搜索框正下方的宿主容器里。
+    // 不再按根布局索引插入，避免标题/品牌行增删后跑到窗口底部。
+    QWidget *filterHost = m_ui.filterHost;
+    if (filterHost == nullptr)
+        filterHost = m_ui.sidebar;
+    if (filterHost != nullptr) {
+        if (auto *layout = qobject_cast<QVBoxLayout *>(filterHost->layout());
             layout != nullptr) {
-            auto *filterBar = new QWidget(m_ui.sidebar);
+            auto *filterBar = new QWidget(filterHost);
             filterBar->setObjectName(QStringLiteral("searchFilterBar"));
             auto *filterLayout = new QGridLayout(filterBar);
             filterLayout->setContentsMargins(0, 2, 0, 2);
@@ -501,7 +504,10 @@ void SearchPanelController::setupDiscoveryFeatures()
             filterLayout->addWidget(m_sourceFilter, 1, 0, 1, 2);
             filterLayout->setColumnStretch(0, 1);
             filterLayout->setColumnStretch(1, 1);
-            layout->insertWidget(3, filterBar);
+            if (m_ui.filterHost != nullptr)
+                layout->addWidget(filterBar);
+            else
+                layout->insertWidget(3, filterBar);
 
             connect(m_typeFilter, &QComboBox::currentIndexChanged, this,
                     [this] { applyFilters(); });

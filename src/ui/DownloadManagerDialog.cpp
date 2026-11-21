@@ -2,8 +2,10 @@
 
 #include "download/DownloadManager.h"
 #include "download/MediaRemux.h"
+#include "ui/ThemeManager.h"
 
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QDesktopServices>
 #include <QFileInfo>
 #include <QFont>
@@ -11,8 +13,10 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPalette>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QUrl>
@@ -49,7 +53,15 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
     setObjectName(QStringLiteral("DownloadManagerDialog"));
     setWindowTitle(tr("下载管理"));
     setWindowFlag(Qt::WindowContextHelpButtonHint, false);
+    setAttribute(Qt::WA_StyledBackground, true);
+    setWindowIcon(QApplication::windowIcon());
     resize(920, 560);
+    ThemeManager::instance().applyWindowChrome(this);
+    connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
+            [this] {
+                ThemeManager::instance().applyWindowChrome(this);
+                applyHeaderStyle();
+            });
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(18, 16, 18, 16);
@@ -91,6 +103,7 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
     m_tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     m_tree->setMinimumHeight(260);
     root->addWidget(m_tree, 1);
+    applyHeaderStyle();
 
     const QString hint =
         MediaRemux::isAvailable()
@@ -138,6 +151,50 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
                 this, &DownloadManagerDialog::rebuild);
 
     rebuild();
+}
+
+void DownloadManagerDialog::applyHeaderStyle()
+{
+    if (m_tree == nullptr || m_tree->header() == nullptr)
+        return;
+
+    // 表头在部分 Windows/Qt 组合下拿不到带祖先选择器的 QSS 背景，
+    // 会出现灰白底 + 白字看不清。这里直接给 QHeaderView 设置完整样式，
+    // 同时写 palette 兜底，确保文字和底色始终有足够对比度。
+    const bool dark =
+        ThemeManager::instance().current().fadeColor.lightness() < 128;
+    const QColor background = dark ? QColor(0x1b, 0x21, 0x40)
+                                   : QColor(0xe7, 0xec, 0xff);
+    const QColor text = dark ? QColor(0xef, 0xf3, 0xff)
+                             : QColor(0x22, 0x28, 0x4a);
+    const QColor border = dark ? QColor(160, 190, 255, 52)
+                               : QColor(80, 110, 200, 38);
+
+    auto *header = m_tree->header();
+    header->setStyleSheet(
+        QStringLiteral(
+            "QHeaderView { background-color: %1; border: none; }"
+            "QHeaderView::section {"
+            " background-color: %1; color: %2; border: none;"
+            " border-right: 1px solid %3; border-bottom: 1px solid %3;"
+            " padding: 8px 10px; font-weight: 600; }")
+            .arg(background.name(), text.name(), border.name(QColor::HexArgb)));
+    QPalette palette = header->palette();
+    palette.setColor(QPalette::Button, background);
+    palette.setColor(QPalette::ButtonText, text);
+    palette.setColor(QPalette::Window, background);
+    palette.setColor(QPalette::WindowText, text);
+    header->setPalette(palette);
+    header->setAutoFillBackground(true);
+    header->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    header->setHighlightSections(false);
+}
+
+void DownloadManagerDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    // 显示后再套一次原生标题栏配色，和主窗口保持一致。
+    ThemeManager::instance().applyWindowChrome(this);
 }
 
 void DownloadManagerDialog::setStatusMessage(const QString &text)

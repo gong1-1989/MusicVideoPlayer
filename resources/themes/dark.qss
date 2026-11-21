@@ -754,12 +754,17 @@ QDialog#DownloadManagerDialog QTreeWidget::item:selected {
     background: rgba(110, 130, 255, 30%);
     color: #ffffff;
 }
-QDialog#DownloadManagerDialog QHeaderView::section {
-    background: rgba(110, 130, 255, 18%);
-    color: #aab6e8;
+QDialog#DownloadManagerDialog QHeaderView {
+    background-color: #151a32;
     border: none;
-    border-bottom: 1px solid rgba(150, 180, 255, 24%);
-    padding: 6px 8px;
+}
+QDialog#DownloadManagerDialog QHeaderView::section {
+    background-color: #202747;
+    color: #eef2ff;
+    border: none;
+    border-right: 1px solid rgba(160, 190, 255, 20%);
+    border-bottom: 1px solid rgba(160, 190, 255, 32%);
+    padding: 8px 10px;
     font-weight: 600;
 }
 QDialog#DownloadManagerDialog QProgressBar {

@@ -39,7 +39,9 @@ struct SearchPanelUi
     QLabel *pageInfoLabel = nullptr;
     /// 搜索框下方的历史/热门联想列表，作为搜索窗子控件内嵌显示
     QListWidget *suggestList = nullptr;
-    /// 左侧搜索栏容器：筛选行在运行时插到搜索框和“搜索结果”标题之间
+    /// 筛选行的固定宿主容器：避免按布局索引插入，增删标题/品牌行时不会错位
+    QWidget *filterHost = nullptr;
+    /// 左侧搜索栏容器（旧布局兼容）；优先使用 filterHost
     QWidget *sidebar = nullptr;
 };
 

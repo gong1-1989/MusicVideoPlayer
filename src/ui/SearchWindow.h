@@ -39,6 +39,7 @@ private:
 
     QLineEdit *m_edit = nullptr;
     QListWidget *m_suggestList = nullptr;
+    QWidget *m_filterHost = nullptr;
     QListView *m_list = nullptr;
     QPushButton *m_searchButton = nullptr;
     QLabel *m_searchHint = nullptr;

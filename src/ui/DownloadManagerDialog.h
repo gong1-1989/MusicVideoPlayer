@@ -9,6 +9,7 @@
 class DownloadManager;
 class QLabel;
 class QPushButton;
+class QShowEvent;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -23,7 +24,11 @@ public:
     /// 下载入队、完成、失败等过程提示在下载管理器内显示。
     void setStatusMessage(const QString &text);
 
+protected:
+    void showEvent(QShowEvent *event) override;
+
 private:
+    void applyHeaderStyle();
     void rebuild();
     void updateButtons();
     const DownloadJob *selectedJob() const;
