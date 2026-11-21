@@ -9,6 +9,8 @@
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
 #include "storage/StoragePaths.h"
+#include "stream/HlsPlaylist.h"
+#include "stream/StreamProxy.h"
 
 #include <QDir>
 #include <QElapsedTimer>
@@ -208,6 +210,7 @@ private slots:
     void downloadFailsOnShortContentLength();
     void downloadStopsAtInjectedByteLimit();
     void downloadRejectsShortHlsSegmentRange();
+    void streamProxyPreservesEncodedSegmentQuery();
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
     void externalAbortKillsProcessWithoutFinish();
@@ -446,6 +449,62 @@ void IntegrationTest::downloadRejectsShortHlsSegmentRange()
     QCOMPARE(failed.count(), 1);
     QVERIFY(failed.first().first().toString().contains(QStringLiteral("分片长度不完整")));
     QVERIFY(!QFile::exists(m_tempDir.filePath(QStringLiteral("short-list.ts"))));
+}
+
+void IntegrationTest::streamProxyPreservesEncodedSegmentQuery()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+
+    // 签名查询串故意包含 %26/%3D：代理如果把 query 再解码一次，会变成
+    // token=a&b=c，上游收到的签名就和播放列表里不一致。
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "seg.ts?token=a%26b%3Dc\n"
+        "#EXT-X-ENDLIST\n";
+
+    server.handler = [](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path.startsWith("/hls/seg.ts")) {
+            LocalHttpServer::respond(socket, 200, QByteArray(32, 's'), "video/mp2t");
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QUrl playlistUrl = server.url(QStringLiteral("/hls/list.m3u8"));
+    const QByteArray rewritten = HlsPlaylist::rewrite(
+        playlist, playlistUrl,
+        [&proxy](const QUrl &absolute) { return proxy.proxyUrlFor(absolute); });
+
+    QString segmentLine;
+    for (const QString &line : QString::fromUtf8(rewritten).split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty() && !trimmed.startsWith(QLatin1Char('#'))) {
+            segmentLine = trimmed;
+            break;
+        }
+    }
+    QVERIFY(!segmentLine.isEmpty());
+
+    const QUrl segmentUrl = QUrl::fromEncoded(segmentLine.toUtf8());
+    HttpClient http;
+    QNetworkReply *reply = http.get(segmentUrl);
+    QSignalSpy finished(reply, &QNetworkReply::finished);
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() > 0, 5000);
+    QVERIFY(HttpClient::isHttpSuccess(reply));
+    reply->deleteLater();
+
+    QCOMPARE(server.requests.size(), 1);
+    QCOMPARE(server.requests.first().path,
+             QByteArray("/hls/seg.ts?token=a%26b%3Dc"));
+    proxy.shutdown();
 }
 
 void IntegrationTest::searchTimeoutAbortsProvider()

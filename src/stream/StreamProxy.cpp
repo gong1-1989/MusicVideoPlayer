@@ -310,9 +310,14 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
 
     QUrl upstream = entry.url;
     if (!suffix.isEmpty()) {
-        QUrl relative = QUrl::fromEncoded(suffix.toUtf8());
-        if (!query.isEmpty())
-            relative.setQuery(QUrl::fromPercentEncoding(query.toUtf8()));
+        // suffix/query 都来自 HTTP 请求行，已经是百分号编码形态。query 不能
+        // 再做一次 fromPercentEncoding：签名参数里的 %26、%3D 会被还原成
+        // &、=，拼出的上游地址与签名不一致，分片会被 CDN 拒绝。
+        const QByteArray relativeTarget =
+            query.isEmpty()
+                ? suffix.toUtf8()
+                : (suffix + QLatin1Char('?') + query).toUtf8();
+        QUrl relative = QUrl::fromEncoded(relativeTarget);
         upstream = entry.url.resolved(relative);
 
         // suffix 只能在同一 host/端口/协议内换路径或文件名。否则
