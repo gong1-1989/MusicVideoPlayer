@@ -770,7 +770,7 @@ void DownloadTask::cancel()
     deleteLater();
 }
 
-void DownloadTask::setMaxBytesForTesting(qint64 bytes)
+void DownloadTask::setMaxBytes(qint64 bytes)
 {
     if (bytes > 0)
         m_maxBytes = bytes;

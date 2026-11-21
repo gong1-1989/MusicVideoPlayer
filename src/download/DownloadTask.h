@@ -41,8 +41,9 @@ public:
 
     void cancel();
 
-    /// 测试用：把单文件字节上限调小，验证超限失败路径；生产默认 8 GB。
-    void setMaxBytesForTesting(qint64 bytes);
+    /// 单个文件允许落盘的最大字节数；默认 NetLimits::kDownloadBytes，
+    /// 由调用方按设置页里的“单文件下载上限”覆盖。
+    void setMaxBytes(qint64 bytes);
 
 signals:
     /// 普通下载是字节数；HLS 合并是“已完成分片数 / 总分片数”，UI 统一按百分比显示。

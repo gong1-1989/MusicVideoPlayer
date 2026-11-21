@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QHash>
 #include <QObject>
+#include <QSet>
 #include <QString>
 
 #include <functional>
@@ -42,6 +43,10 @@ public:
     void stream(const QUrl &url, const QByteArray &range,
                 const QHash<QString, QString> &headers, const ReplyHandler &onReady);
 
+    /// 中止当前实例上所有在途请求。只应由“自己持有 HttpClient”的调用方使用，
+    /// 例如网页影视源：共享实例上调用会误伤其它搜索源的请求。
+    void abortAll();
+
     static bool isHttpSuccess(QNetworkReply *reply);
     static QString describeError(QNetworkReply *reply);
     /// 读取整个响应体；超过 limit 时不读取并置 exceeded，避免把超大响应
@@ -55,8 +60,10 @@ private:
     void fetchInternal(const QUrl &url, const QByteArray &range,
                        const QHash<QString, QString> &headers,
                        const ReplyHandler &onReady, int hop, bool deliverOnHeaders);
+    QNetworkReply *trackReply(QNetworkReply *reply);
 
     QNetworkAccessManager *m_nam;
+    QSet<QNetworkReply *> m_activeReplies;
 };
 
 #endif // HTTPCLIENT_H

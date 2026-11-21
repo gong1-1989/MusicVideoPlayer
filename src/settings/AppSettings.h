@@ -51,6 +51,11 @@ void setSearchPageSize(int size);
 QStringList probePaths(MediaType type);
 void setProbePaths(MediaType type, const QStringList &paths);
 
+// ---------------------------------------------------------------- 下载
+/// 单个下载任务允许落盘的最大体积（MB）。默认 8 GB，设置页可选 2/4/8/16 GB。
+int downloadLimitMb();
+void setDownloadLimitMb(int limitMb);
+
 // ---------------------------------------------------------------- 路径
 QString lastDir();
 void setLastDir(const QString &dir);

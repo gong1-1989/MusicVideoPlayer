@@ -79,6 +79,7 @@ void SettingsDialog::bindUi()
     m_volume = ui->slider_volume;
     m_volumeValue = ui->label_volumeValue;
     m_searchLimit = ui->combo_searchLimit;
+    m_downloadLimit = ui->combo_downloadLimit;
     m_sidebarAutoHide = ui->checkbox_sidebar;
     m_controlsAutoHide = ui->checkbox_controls;
     m_sourcesLabel = ui->label_sources;
@@ -124,6 +125,15 @@ void SettingsDialog::bindUi()
     m_searchLimit->setToolTip(
         tr("网页型影视源按这里的条数抓取（最多 50 条）；条数越大，单源耗时越长。"));
 
+    for (int limitMb : {2048, 4096, 8192, 16384}) {
+        const QString label = limitMb >= 1024
+            ? tr("%1 GB").arg(limitMb / 1024)
+            : tr("%1 MB").arg(limitMb);
+        m_downloadLimit->addItem(label, limitMb);
+    }
+    m_downloadLimit->setToolTip(
+        tr("单个文件超过该体积会停止下载并提示失败，避免异常大文件占满磁盘。"));
+
     connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
         m_volumeValue->setText(QStringLiteral("%1%").arg(value));
     });
@@ -148,6 +158,12 @@ void SettingsDialog::loadValues()
     const int limitIndex = m_searchLimit->findData(AppSettings::searchLimit());
     if (limitIndex >= 0)
         m_searchLimit->setCurrentIndex(limitIndex);
+
+    int downloadIndex = m_downloadLimit->findData(AppSettings::downloadLimitMb());
+    if (downloadIndex < 0)
+        downloadIndex = m_downloadLimit->findData(8192);
+    if (downloadIndex >= 0)
+        m_downloadLimit->setCurrentIndex(downloadIndex);
 
     m_sidebarAutoHide->setChecked(AppSettings::sidebarAutoHide());
     m_controlsAutoHide->setChecked(AppSettings::controlsAutoHide());
@@ -214,11 +230,13 @@ void SettingsDialog::accept()
     AppSettings::setWindowPresetId(m_windowSize->currentData().toString());
     AppSettings::setDefaultVolume(m_volume->value());
     AppSettings::setSearchLimit(m_searchLimit->currentData().toInt());
+    AppSettings::setDownloadLimitMb(m_downloadLimit->currentData().toInt());
     AppSettings::setSidebarAutoHide(m_sidebarAutoHide->isChecked());
     AppSettings::setControlsAutoHide(m_controlsAutoHide->isChecked());
 
     qCInfo(lcSettings) << "系统设置已保存：主题" << m_theme->currentData().toString()
                        << "窗口" << m_windowSize->currentData().toString() << "音量"
-                       << m_volume->value() << "单源条数" << m_searchLimit->currentData().toInt();
+                       << m_volume->value() << "单源条数" << m_searchLimit->currentData().toInt()
+                       << "下载上限" << m_downloadLimit->currentData().toInt() << "MB";
     QDialog::accept();
 }

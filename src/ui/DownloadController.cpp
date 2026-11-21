@@ -81,6 +81,8 @@ void DownloadController::download(const MediaItem &item)
     qCInfo(lcDownloadUi) << "开始下载" << item.displayName() << "到" << finalTarget
                        << (hls ? "（HLS 分片合并）" : "");
     auto *task = DownloadTask::start(m_http, downloadUrl, finalTarget, item.headers, this);
+    // start() 只是排了一个 0ms 的启动定时器，这里在事件循环前设置上限是安全的。
+    task->setMaxBytes(qint64(AppSettings::downloadLimitMb()) * 1024 * 1024);
     m_task = task;
 
     connect(task, &DownloadTask::progress, this, [this](qint64 received, qint64 total) {

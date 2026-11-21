@@ -12,6 +12,7 @@ const char kVolume[] = "playback/volume";
 const char kMode[] = "playback/mode";
 const char kSearchLimit[] = "search/limit";
 const char kSearchPageSize[] = "search/pageSize";
+const char kDownloadLimitMb[] = "download/limitMb";
 const char kProbePathsVideo[] = "search/probePaths/video";
 const char kProbePathsMusic[] = "search/probePaths/music";
 const char kLastDir[] = "paths/lastDir";
@@ -25,6 +26,7 @@ const char kDefaultWindowPreset[] = "auto";
 const int kDefaultVolume = 60;
 const int kDefaultSearchLimit = 20;
 const int kDefaultSearchPageSize = 20;
+const int kDefaultDownloadLimitMb = 8192;
 const int kDefaultMode = 0;
 
 QSettings settings()
@@ -159,6 +161,19 @@ int searchPageSize()
 void setSearchPageSize(int size)
 {
     settings().setValue(QLatin1String(kSearchPageSize), qBound(5, size, 200));
+}
+
+int downloadLimitMb()
+{
+    const int value =
+        settings().value(QLatin1String(kDownloadLimitMb), kDefaultDownloadLimitMb).toInt();
+    // 512 MB 兜底避免用户误填 0 导致所有下载立刻失败；上限放到 64 GB。
+    return qBound(512, value, 65536);
+}
+
+void setDownloadLimitMb(int limitMb)
+{
+    settings().setValue(QLatin1String(kDownloadLimitMb), qBound(512, limitMb, 65536));
 }
 
 QStringList probePaths(MediaType type)

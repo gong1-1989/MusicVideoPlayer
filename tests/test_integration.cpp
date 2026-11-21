@@ -1,10 +1,12 @@
 #include "download/DownloadTask.h"
 #include "net/ConfigSearchProvider.h"
 #include "net/HttpClient.h"
+#include "net/MaccmsWebProvider.h"
 #include "net/NetLimits.h"
 #include "net/SearchCoordinator.h"
 #include "net/SourceConfig.h"
 #include "net/SourceRegistry.h"
+#include "settings/AppSettings.h"
 #include "storage/StoragePaths.h"
 
 #include <QDir>
@@ -55,6 +57,7 @@ public:
     };
 
     QVector<Request> requests;
+    int disconnects = 0;
     std::function<void(const Request &, QTcpSocket *)> handler;
 
     bool start()
@@ -65,6 +68,7 @@ public:
             while (hasPendingConnections()) {
                 QTcpSocket *socket = nextPendingConnection();
                 connect(socket, &QTcpSocket::disconnected, this, [this, socket] {
+                    ++disconnects;
                     m_buffers.remove(socket);
                     socket->deleteLater();
                 });
@@ -203,8 +207,10 @@ private slots:
     void downloadStopsAtInjectedByteLimit();
     void downloadRejectsShortHlsSegmentRange();
     void searchTimeoutAbortsProvider();
+    void maccmsAbortClosesInflightRequest();
     void searchJsonOverLimitFails();
     void requestLogsRedactQuerySecrets();
+    void downloadLimitSettingClampsAndPersists();
 
 private:
     QTemporaryDir m_tempDir;
@@ -387,7 +393,7 @@ void IntegrationTest::downloadStopsAtInjectedByteLimit()
     QFile::remove(path);
     DownloadTask *task =
         DownloadTask::start(&http, server.url(QStringLiteral("/big.mp3")), path);
-    task->setMaxBytesForTesting(1024);
+    task->setMaxBytes(1024);
 
     QSignalSpy succeeded(task, &DownloadTask::succeeded);
     QSignalSpy failed(task, &DownloadTask::failed);
@@ -471,6 +477,33 @@ void IntegrationTest::searchTimeoutAbortsProvider()
     QCOMPARE(server.requests.size(), 1);
 }
 
+void IntegrationTest::maccmsAbortClosesInflightRequest()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    // 首页请求故意不响应；旧实现会一直挂到 QNAM 的 15 秒传输超时。
+    server.handler = [](const LocalHttpServer::Request &, QTcpSocket *) {};
+
+    SourceConfig config;
+    config.id = QStringLiteral("maccms_local");
+    config.name = QStringLiteral("本地网页源");
+    config.kind = QStringLiteral("builtin");
+    config.provider = QStringLiteral("maccms_web");
+    config.mediaType = MediaType::Video;
+    config.urlTemplate = server.url(QStringLiteral("/")).toString();
+
+    MaccmsWebProvider provider(config, nullptr);
+    provider.search(QStringLiteral("测试"), 5);
+    QTRY_COMPARE(server.requests.size(), 1);
+    QCOMPARE(server.requests.first().path, QByteArray("/"));
+
+    QElapsedTimer timer;
+    timer.start();
+    provider.abort();
+    QTRY_VERIFY_WITH_TIMEOUT(server.disconnects >= 1, 2500);
+    QVERIFY(timer.elapsed() < 2500);
+}
+
 void IntegrationTest::searchJsonOverLimitFails()
 {
     LocalHttpServer server;
@@ -526,6 +559,17 @@ void IntegrationTest::requestLogsRedactQuerySecrets()
     QVERIFY(all.contains(QStringLiteral("token=***")));
     QVERIFY(!all.contains(QStringLiteral("SECRET123")));
     QVERIFY(!all.contains(QStringLiteral("SIGNED")));
+}
+
+void IntegrationTest::downloadLimitSettingClampsAndPersists()
+{
+    const int original = AppSettings::downloadLimitMb();
+    AppSettings::setDownloadLimitMb(4096);
+    QCOMPARE(AppSettings::downloadLimitMb(), 4096);
+    // 误填 0 不能变成“所有下载立刻超限”，统一兜底到 512 MB。
+    AppSettings::setDownloadLimitMb(0);
+    QCOMPARE(AppSettings::downloadLimitMb(), 512);
+    AppSettings::setDownloadLimitMb(original);
 }
 
 QTEST_GUILESS_MAIN(IntegrationTest)

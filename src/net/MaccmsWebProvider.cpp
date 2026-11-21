@@ -246,13 +246,19 @@ MaccmsWebProvider::MaccmsWebProvider(const SourceConfig &config, HttpClient *htt
                                      QObject *parent)
     : SearchProviderBase(parent)
     , m_config(config)
-    , m_http(http)
+    // 网页源的请求链最长（首页→建议→搜索→详情→播放），超时/取消时必须能
+    // 单独中止，不能调用共享 HttpClient 的 abortAll() 误伤其它搜索源。
+    , m_http(new HttpClient(this))
 {
+    Q_UNUSED(http)
 }
 
 void MaccmsWebProvider::abort()
 {
+    // 先置 done，abort 同步触发的 finished 回调不会再启动下一跳请求。
     m_done = true;
+    if (m_http != nullptr)
+        m_http->abortAll();
 }
 
 void MaccmsWebProvider::search(const QString &keyword, int limit)

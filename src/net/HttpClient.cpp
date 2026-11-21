@@ -111,7 +111,7 @@ QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
     QNetworkRequest request = buildRequest(url, headers);
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
-    return m_nam->get(request);
+    return trackReply(m_nam->get(request));
 }
 
 QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body,
@@ -129,7 +129,7 @@ QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
         headers.value(QStringLiteral("Content-Type"),
                       QStringLiteral("application/x-www-form-urlencoded")).toUtf8();
     request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
-    return m_nam->post(request, body);
+    return trackReply(m_nam->post(request, body));
 }
 
 void HttpClient::fetch(const QUrl &url, const QByteArray &range, const ReplyHandler &onReady)
@@ -147,6 +147,28 @@ void HttpClient::stream(const QUrl &url, const QByteArray &range,
                         const QHash<QString, QString> &headers, const ReplyHandler &onReady)
 {
     fetchInternal(url, range, headers, onReady, 0, true);
+}
+
+QNetworkReply *HttpClient::trackReply(QNetworkReply *reply)
+{
+    if (reply == nullptr)
+        return nullptr;
+    m_activeReplies.insert(reply);
+    // finished 之后再从集合里摘掉；abortAll() 会先复制再清空，避免同步 finished
+    // 修改容器导致迭代器失效。
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply] { m_activeReplies.remove(reply); });
+    return reply;
+}
+
+void HttpClient::abortAll()
+{
+    const QSet<QNetworkReply *> replies = m_activeReplies;
+    m_activeReplies.clear();
+    for (QNetworkReply *reply : replies) {
+        if (reply != nullptr)
+            reply->abort();
+    }
 }
 
 void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
@@ -169,7 +191,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
 
     qCDebug(lcHttp) << "拉取" << redactUrl(url) << "分段" << range << "第" << hop << "跳";
 
-    QNetworkReply *reply = m_nam->get(request);
+    QNetworkReply *reply = trackReply(m_nam->get(request));
     auto delivered = std::make_shared<bool>(false);
 
     connect(reply, &QNetworkReply::metaDataChanged, this,
