@@ -67,6 +67,13 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
     m_summary->setWordWrap(true);
     root->addWidget(m_summary);
 
+    // 下载过程提示从主窗口控制条移到这里，和任务列表同屏显示。
+    m_statusLabel = new QLabel(this);
+    m_statusLabel->setObjectName(QStringLiteral("label_downloadStatus"));
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->hide();
+    root->addWidget(m_statusLabel);
+
     m_tree = new QTreeWidget(this);
     m_tree->setObjectName(QStringLiteral("downloadManagerTree"));
     m_tree->setColumnCount(5);
@@ -131,6 +138,15 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
                 this, &DownloadManagerDialog::rebuild);
 
     rebuild();
+}
+
+void DownloadManagerDialog::setStatusMessage(const QString &text)
+{
+    if (m_statusLabel == nullptr)
+        return;
+    m_statusLabel->setText(text);
+    m_statusLabel->setToolTip(text);
+    m_statusLabel->setVisible(!text.isEmpty());
 }
 
 void DownloadManagerDialog::rebuild()

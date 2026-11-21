@@ -13,6 +13,7 @@ class QListView;
 class QListWidget;
 class QPushButton;
 class QShowEvent;
+class QTimer;
 
 /// 独立搜索窗口：搜索框、历史/热门联想、筛选、结果与分页全部从主界面左侧移出。
 /// 主窗口只保留播放列表；点搜索结果播放时由 MainWindow 自动隐藏本窗口。
@@ -27,6 +28,8 @@ public:
 
     SearchPanelController *controller() const { return m_controller; }
     void focusSearch();
+    /// 搜索进度、失败原因和直链识别结果在搜索窗内显示，不再占用主窗口状态栏。
+    void setStatusMessage(const QString &text);
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -39,6 +42,8 @@ private:
     QListView *m_list = nullptr;
     QPushButton *m_searchButton = nullptr;
     QLabel *m_searchHint = nullptr;
+    QLabel *m_statusLabel = nullptr;
+    QTimer *m_statusTimer = nullptr;
     SearchPanelController *m_controller = nullptr;
 };
 

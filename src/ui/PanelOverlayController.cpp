@@ -174,8 +174,9 @@ void PanelOverlayController::positionSidebarOverlay()
         return;
 
     const int margin = 16;
-    // 侧栏 280 是舒适宽度；窗口更窄时必须跟着缩，不能横向超出窗口。
-    const int width = qMin(280, qMax(0, m_ui.centralWidget->width() - margin * 2));
+    // 侧栏宽度由字体/标签栏算出的最小宽度为准，窗口更窄时才跟着缩。
+    const int preferred = qMax(0, m_ui.sidebar->minimumWidth());
+    const int width = qMin(preferred, qMax(0, m_ui.centralWidget->width() - margin * 2));
     m_ui.sidebar->setGeometry(margin, margin, width,
                               qMax(0, m_ui.centralWidget->height() - margin * 2));
 }
@@ -188,7 +189,10 @@ void PanelOverlayController::positionControlOverlay()
     // 舞台是 centralwidget 的直接子控件，控制条挂在同一层，坐标可以直接对齐
     const QRect stage = m_ui.stage->geometry();
     const int margin = 8;
-    const int height = qBound(112, m_ui.transport->sizeHint().height(), 150);
+    // 控制条高度完全交给字号撑开的 sizeHint，不再用 150 的硬上限截断；
+    // 只限制不超过舞台高度，避免小窗口浮层盖住整幅画面。
+    const int maxHeight = qMax(112, stage.height() - margin * 2);
+    const int height = qBound(112, m_ui.transport->sizeHint().height(), maxHeight);
     const QRect target(stage.left() + margin, stage.bottom() - height - margin,
                        qMax(0, stage.width() - margin * 2), height);
     m_controlsRect = target;

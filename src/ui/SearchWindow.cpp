@@ -49,6 +49,15 @@ SearchWindow::SearchWindow(SearchCoordinator *coordinator, SourceRegistry *regis
     ui.sidebar = this;
     m_controller = new SearchPanelController(coordinator, registry, http, ui, this);
 
+    // 字体放大后搜索窗的固定 560x640 会把筛选行/状态行挤出底边；
+    // 等筛选行插入完成后按布局最小尺寸兜底，100% 字体下保持原尺寸不变。
+    QTimer::singleShot(0, this, [this] {
+        const QSize needed = minimumSizeHint();
+        setMinimumSize(qMax(440, needed.width()), qMax(480, needed.height()));
+        resize(qMax(width(), qMax(560, needed.width())),
+               qMax(height(), qMax(640, needed.height())));
+    });
+
     // 搜索一开始就把初始提示收起，把高度让给结果列表。
     connect(coordinator, &SearchCoordinator::searchStarted, this,
             [this] { m_searchHint->hide(); });
@@ -61,22 +70,6 @@ void SearchWindow::buildUi()
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(18, 18, 18, 16);
     root->setSpacing(12);
-
-    auto *header = new QHBoxLayout;
-    header->setSpacing(10);
-    auto *brand = new QLabel(tr("NEBULA  SEARCH"), this);
-    brand->setObjectName(QStringLiteral("label_searchBrand"));
-    header->addWidget(brand);
-    header->addStretch(1);
-    auto *subtitle = new QLabel(tr("搜索发现"), this);
-    subtitle->setObjectName(QStringLiteral("label_searchSubtitle"));
-    header->addWidget(subtitle);
-    root->addLayout(header);
-
-    auto *line = new QFrame(this);
-    line->setObjectName(QStringLiteral("brandLine"));
-    line->setFrameShape(QFrame::NoFrame);
-    root->addWidget(line);
 
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
@@ -123,6 +116,15 @@ void SearchWindow::buildUi()
     m_list->setMinimumHeight(220);
     root->addWidget(m_list, 1);
 
+    // 搜索进度和错误原来显示在主窗口进度条上方；搜索已经是独立窗口后，
+    // 这些信息应在搜索窗内就地反馈，主窗口只保留播放状态。
+    m_statusLabel = new QLabel(this);
+    m_statusLabel->setObjectName(QStringLiteral("label_searchStatus"));
+    m_statusLabel->setWordWrap(true);
+    m_statusLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    m_statusLabel->hide();
+    root->addWidget(m_statusLabel);
+
     auto *pager = new QFrame(this);
     pager->setObjectName(QStringLiteral("frame_searchPager"));
     pager->setFrameShape(QFrame::NoFrame);
@@ -157,9 +159,32 @@ void SearchWindow::buildUi()
     root->addWidget(pager);
 }
 
-void SearchWindow::focusSearch()
+void SearchWindow::setStatusMessage(const QString &text)
 {
-    show();
+    if (m_statusLabel == nullptr)
+        return;
+
+    m_statusLabel->setText(text);
+    m_statusLabel->setToolTip(text);
+    m_statusLabel->setVisible(!text.isEmpty());
+
+    if (m_statusTimer == nullptr) {
+        m_statusTimer = new QTimer(this);
+        m_statusTimer->setSingleShot(true);
+        connect(m_statusTimer, &QTimer::timeout, this, [this] {
+            m_statusLabel->clear();
+            m_statusLabel->setToolTip(QString());
+            m_statusLabel->hide();
+        });
+    }
+    if (text.isEmpty())
+        m_statusTimer->stop();
+    else
+        m_statusTimer->start(8000);
+}
+
+void SearchWindow::focusSearch()
+{    show();
     raise();
     activateWindow();
     QTimer::singleShot(0, this, [this] {

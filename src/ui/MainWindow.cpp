@@ -23,6 +23,7 @@
 #include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QCoreApplication>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QGuiApplication>
 #include <QLabel>
@@ -35,6 +36,7 @@
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSlider>
+#include <QTabBar>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -73,16 +75,16 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 下载对话框、HLS 后缀处理、任务进度与结果提示交给控制器
     m_downloads = new DownloadController(m_http, this, this);
-    connect(m_downloads, &DownloadController::statusMessage, this,
-            [this](const QString &text) { setNetworkStatus(text); });
 
     // 搜索整体从左侧拆成独立窗口：主界面只保留播放列表，
     // 搜索窗口在点搜索结果播放时自动隐藏，由侧栏搜索按钮再次打开。
     m_searchWindow = new SearchWindow(m_coordinator, m_registry, m_http, this);
     m_searchPanel = m_searchWindow->controller();
 
-    connect(m_searchPanel, &SearchPanelController::statusMessage, this,
-            [this](const QString &text) { setNetworkStatus(text); });
+    // 搜索进度、解析失败和直链识别结果都在搜索窗内显示；
+    // 主窗口控制条只保留播放/列表状态，避免两个独立窗口的信息又挤回底部。
+    connect(m_searchPanel, &SearchPanelController::statusMessage,
+            m_searchWindow, &SearchWindow::setStatusMessage);
     connect(m_searchPanel, &SearchPanelController::mediaActivated, this,
             [this](const MediaItem &item) {
                 if (m_searchWindow != nullptr)
@@ -215,6 +217,7 @@ MainWindow::MainWindow(QWidget *parent)
                                tr("下载任务"), 20);
                 UiIcons::apply(ui->btn_volume, QStringLiteral("volume"), tr("音量"), 20);
                 QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
+                QTimer::singleShot(0, this, &MainWindow::updateAdaptiveMetrics);
                 m_lyrics->refreshHighlight();
             });
 
@@ -233,6 +236,8 @@ MainWindow::MainWindow(QWidget *parent)
     setupConnections();
     m_settings->restore();
     m_playlists->restore();
+    // 主题/字体缩放已经在 restore 中应用，等样式 polish 完再按实际字体尺寸排版。
+    QTimer::singleShot(0, this, &MainWindow::updateAdaptiveMetrics);
     m_panels->applyVisibility();
 }
 
@@ -303,30 +308,6 @@ void MainWindow::showSearchWindow()
         m_searchWindow->setProperty("placed", true);
     }
     m_searchWindow->focusSearch();
-}
-
-void MainWindow::setNetworkStatus(const QString &text)
-{
-    ui->label_network->setText(text);
-    // 状态栏空间有限，完整原因放悬停提示，正文不挤占播放状态
-    ui->label_network->setToolTip(text);
-    ui->label_network->setVisible(!text.isEmpty());
-
-    // 搜索/下载提示是过程性消息，不能一直留在控制条上。
-    // 8 秒后自动收起；期间有新消息会重新计时，避免旧提示和播放/定位状态叠在一起。
-    if (m_networkStatusTimer == nullptr) {
-        m_networkStatusTimer = new QTimer(this);
-        m_networkStatusTimer->setSingleShot(true);
-        connect(m_networkStatusTimer, &QTimer::timeout, this, [this] {
-            ui->label_network->clear();
-            ui->label_network->setToolTip(QString());
-            ui->label_network->hide();
-        });
-    }
-    if (text.isEmpty())
-        m_networkStatusTimer->stop();
-    else
-        m_networkStatusTimer->start(8000);
 }
 
 void MainWindow::on_btn_settings_clicked()
@@ -484,6 +465,39 @@ void MainWindow::updateControlBarCentering()
     ui->layout_controls->setColumnMinimumWidth(0, auxWidth);
     ui->layout_controls->setColumnMinimumWidth(2, auxWidth);
     ui->layout_controls->invalidate();
+}
+
+void MainWindow::updateAdaptiveMetrics()
+{
+    if (ui == nullptr)
+        return;
+
+    // 左侧栏宽度由标签栏实际字体宽度决定：不同字体缩放下，
+    // “音乐列表 / 视频列表”必须完整显示，不能靠固定 260 去硬撑。
+    const QFontMetrics tabMetrics(ui->tab_media->tabBar()->font());
+    const QFontMetrics titleMetrics(ui->label_playlistTitle->font());
+    const QMargins margins = ui->layout_sidebar->contentsMargins();
+    const int tabBarWidth = ui->tab_media->tabBar()->sizeHint().width();
+    const int titleWidth = titleMetrics.horizontalAdvance(ui->label_playlistTitle->text());
+    const int contentWidth = qMax(tabBarWidth, titleWidth) + margins.left() + margins.right()
+                             + tabMetrics.height() * 2;
+    const int widthCap = qMax(240, width() / 3);
+    const int sidebarWidth = qMin(qMax(220, contentWidth), widthCap);
+    ui->panelSidebar->setMinimumWidth(sidebarWidth);
+    ui->panelSidebar->setMaximumWidth(sidebarWidth + tabMetrics.height() * 2);
+
+    // 标签页最小高度跟着标签栏字体走，避免大字号下标签被压扁。
+    ui->tab_media->setMinimumHeight(
+        qMax(96, ui->tab_media->tabBar()->sizeHint().height()
+                     + tabMetrics.height() * 2 + 16));
+
+    // 底部区域按自身 sizeHint（状态文字、进度条、56px 播放键、间距和边距）
+    // 决定最小高度，字体放大时不会被固定高度截断。
+    ui->panelTransport->setMinimumHeight(
+        qMax(112, ui->panelTransport->sizeHint().height()));
+
+    if (m_panels != nullptr)
+        m_panels->reposition();
 }
 
 void MainWindow::on_btn_fullscreen_clicked()

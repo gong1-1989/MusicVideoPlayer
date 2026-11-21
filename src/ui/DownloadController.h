@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QString>
 
 class DownloadManager;
 class DownloadManagerDialog;
@@ -36,6 +37,7 @@ private:
     QWidget *m_dialogParent;
     DownloadManager *m_manager = nullptr;
     QPointer<DownloadManagerDialog> m_dialog;
+    QString m_lastStatus;
 };
 
 #endif // DOWNLOADCONTROLLER_H

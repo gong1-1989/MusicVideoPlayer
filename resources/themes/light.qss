@@ -63,11 +63,6 @@ QFrame#panelTransport[fullscreen="true"] {
 }
 
 /* ------------------------------------------------ 文字层级 */
-QLabel#label_brand {
-    color: #6a4bff;
-    font-size: 15px;
-    font-weight: 700;
-}
 
 QFrame#brandLine {
     border: none;
@@ -274,15 +269,11 @@ QWidget#SearchWindow {
     color: #24243a;
 }
 
-QLabel#label_searchBrand {
-    color: #3f36b0;
-    font-size: 16px;
-    font-weight: 700;
-}
-
-QLabel#label_searchSubtitle {
-    color: rgba(43, 43, 69, 55%);
+QLabel#label_searchStatus,
+QLabel#label_downloadStatus {
+    color: rgba(38, 60, 120, 85%);
     font-size: 12px;
+    padding: 2px 4px;
 }
 
 QLabel#label_searchHint {

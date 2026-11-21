@@ -20,6 +20,8 @@ class DownloadManagerDialog : public QDialog
 
 public:
     explicit DownloadManagerDialog(DownloadManager *manager, QWidget *parent = nullptr);
+    /// 下载入队、完成、失败等过程提示在下载管理器内显示。
+    void setStatusMessage(const QString &text);
 
 private:
     void rebuild();
@@ -34,6 +36,7 @@ private:
     DownloadManager *m_manager = nullptr;
     QTreeWidget *m_tree = nullptr;
     QLabel *m_summary = nullptr;
+    QLabel *m_statusLabel = nullptr;
     QPushButton *m_openFile = nullptr;
     QPushButton *m_openFolder = nullptr;
     QPushButton *m_retry = nullptr;

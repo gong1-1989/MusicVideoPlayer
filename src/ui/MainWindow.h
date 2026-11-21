@@ -54,8 +54,6 @@ private slots:
 
 private:
     void setupConnections();
-    /// 搜索/下载类提示单独放一个标签，避免反复覆盖播放与恢复状态
-    void setNetworkStatus(const QString &text);
     void showSearchWindow();
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
@@ -65,6 +63,8 @@ private:
     void showVolumePopup();
     /// 让控制条左右两列等宽，保证中间播放键组落在面板真正的中线
     void updateControlBarCentering();
+    /// 左侧栏宽度、标签页高度和底部控制条高度随字体缩放动态调整
+    void updateAdaptiveMetrics();
     /// 显示后把窗口夹回当前屏幕可用区；尺寸由窗口预设/用户拖动决定，不再按 150% 特判
     void clampToAvailableScreen();
     /// Qt 的 frameGeometry 不含 Windows 不可见缩放边框，最后用原生外框兜底
@@ -89,7 +89,6 @@ private:
     QFrame *m_volumePopup = nullptr;
     QLabel *m_volumeLabel = nullptr;
     MusicVisualWidget *m_musicVisual = nullptr;
-    QTimer *m_networkStatusTimer = nullptr;
 };
 
 #endif // MAINWINDOW_H

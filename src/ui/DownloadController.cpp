@@ -19,6 +19,13 @@ DownloadController::DownloadController(HttpClient *http, QWidget *dialogParent, 
 {
     connect(m_manager, &DownloadManager::statusMessage,
             this, &DownloadController::statusMessage);
+    // 下载管理器可能还没打开；先把最新提示缓存下来，打开窗口时补显示。
+    connect(this, &DownloadController::statusMessage, this,
+            [this](const QString &message) {
+                m_lastStatus = message;
+                if (m_dialog != nullptr)
+                    m_dialog->setStatusMessage(message);
+            });
     connect(m_manager, &DownloadManager::jobCompleted,
             this, &DownloadController::itemDownloaded);
 }
@@ -76,6 +83,8 @@ void DownloadController::openManager()
     auto *dialog = new DownloadManagerDialog(m_manager, m_dialogParent);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     m_dialog = dialog;
+    if (!m_lastStatus.isEmpty())
+        dialog->setStatusMessage(m_lastStatus);
     dialog->show();
 }
 
