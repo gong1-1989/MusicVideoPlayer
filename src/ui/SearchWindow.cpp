@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QPushButton>
 #include <QShowEvent>
 #include <QTimer>
@@ -35,6 +36,7 @@ SearchWindow::SearchWindow(SearchCoordinator *coordinator, SourceRegistry *regis
     SearchPanelUi ui;
     ui.list = m_list;
     ui.edit = m_edit;
+    ui.suggestList = m_suggestList;
     ui.searchButton = m_searchButton;
     ui.pager = findChild<QWidget *>(QStringLiteral("frame_searchPager"));
     ui.prevButton = findChild<QPushButton *>(QStringLiteral("btn_searchPrev"));
@@ -91,6 +93,17 @@ void SearchWindow::buildUi()
     m_searchButton->setToolTip(tr("搜索"));
     searchRow->addWidget(m_searchButton);
     root->addLayout(searchRow);
+
+    // 联想列表是窗口内的普通子控件，不用 QCompleter 的顶层 popup。
+    // 顶层 popup 在独立对话框中会抢焦点和鼠标，表现为整个窗口点不动。
+    m_suggestList = new QListWidget(this);
+    m_suggestList->setObjectName(QStringLiteral("list_searchSuggestions"));
+    m_suggestList->setFocusPolicy(Qt::NoFocus);
+    m_suggestList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_suggestList->setUniformItemSizes(true);
+    m_suggestList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_suggestList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_suggestList->hide();
 
     m_searchHint = new QLabel(tr("输入关键词开始搜索，支持历史/热门联想与粘贴链接解析"), this);
     m_searchHint->setObjectName(QStringLiteral("label_searchHint"));

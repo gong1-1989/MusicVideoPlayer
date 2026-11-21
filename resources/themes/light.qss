@@ -164,7 +164,7 @@ QComboBox#combo_searchQuality::drop-down {
     width: 16px;
 }
 
-QListView#searchSuggestions {
+QListWidget#list_searchSuggestions {
     background: #ffffff;
     border: 1px solid rgba(140, 130, 220, 40%);
     border-radius: 10px;
@@ -173,6 +173,17 @@ QListView#searchSuggestions {
     outline: none;
     selection-background-color: rgba(123, 91, 255, 18%);
     selection-color: #2b2b45;
+}
+
+QListWidget#list_searchSuggestions::item {
+    padding: 7px 10px;
+    border-radius: 8px;
+}
+
+QListWidget#list_searchSuggestions::item:hover,
+QListWidget#list_searchSuggestions::item:selected {
+    background: rgba(123, 91, 255, 14%);
+    color: #1f1f36;
 }
 
 /* ------------------------------------------------ 通用按钮 */

@@ -10,6 +10,7 @@ class SearchPanelController;
 class QLabel;
 class QLineEdit;
 class QListView;
+class QListWidget;
 class QPushButton;
 class QShowEvent;
 
@@ -34,6 +35,7 @@ private:
     void buildUi();
 
     QLineEdit *m_edit = nullptr;
+    QListWidget *m_suggestList = nullptr;
     QListView *m_list = nullptr;
     QPushButton *m_searchButton = nullptr;
     QLabel *m_searchHint = nullptr;

@@ -4,6 +4,7 @@
 #include "media/MediaItem.h"
 
 #include <QObject>
+#include <QStringList>
 #include <QVector>
 
 class PlaylistModel;
@@ -11,15 +12,15 @@ class SearchCoordinator;
 class SourceRegistry;
 class HttpClient;
 class QComboBox;
-class QCompleter;
 class QEvent;
 class QLabel;
 class QLineEdit;
 class QListView;
+class QListWidget;
+class QListWidgetItem;
 class QModelIndex;
 class QPoint;
 class QPushButton;
-class QStringListModel;
 class QStyledItemDelegate;
 class QUrl;
 class QWidget;
@@ -36,6 +37,8 @@ struct SearchPanelUi
     QLabel *titleLabel = nullptr;
     QLabel *pageLabel = nullptr;
     QLabel *pageInfoLabel = nullptr;
+    /// 搜索框下方的历史/热门联想列表，作为搜索窗子控件内嵌显示
+    QListWidget *suggestList = nullptr;
     /// 左侧搜索栏容器：筛选行在运行时插到搜索框和“搜索结果”标题之间
     QWidget *sidebar = nullptr;
 };
@@ -69,6 +72,10 @@ private:
     /// 历史/热门联想、类型/来源/品质筛选、粘贴直链识别
     void setupDiscoveryFeatures();
     void rebuildSuggestions();
+    void updateSuggestions(bool showAll = false);
+    void updateSuggestionGeometry();
+    void hideSuggestions();
+    void applySuggestion(QListWidgetItem *item);
     void rememberKeyword(const QString &keyword);
     void applyFilters(bool resetPage = true);
     bool tryHandlePastedLink(const QString &text);
@@ -94,8 +101,8 @@ private:
     QComboBox *m_typeFilter = nullptr;
     QComboBox *m_sourceFilter = nullptr;
     QComboBox *m_qualityFilter = nullptr;
-    QCompleter *m_completer = nullptr;
-    QStringListModel *m_suggestModel = nullptr;
+    /// 联想候选词库；不再使用 QCompleter 的原生弹出窗口，避免顶层 popup 抢焦点
+    QStringList m_suggestions;
 
     /// 完整结果留在内存，筛选后的可见结果再按页切片
     QVector<MediaItem> m_results;

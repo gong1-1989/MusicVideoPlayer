@@ -14,8 +14,8 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
-#include <QCompleter>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHash>
@@ -26,16 +26,18 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QMenu>
 #include <QModelIndex>
 #include <QMouseEvent>
 #include <QNetworkReply>
 #include <QPainter>
 #include <QPointer>
+#include <QPoint>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
-#include <QStringListModel>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QStyleOptionViewItem>
@@ -390,8 +392,7 @@ void SearchPanelController::setupUi()
             this, &SearchPanelController::handleActivated);
 
     connect(m_coordinator, &SearchCoordinator::searchStarted, this, [this] {
-        if (m_completer != nullptr && m_completer->popup() != nullptr)
-            m_completer->popup()->hide();
+        hideSuggestions();
         m_ui.searchButton->setEnabled(true);
         applyButtonIcons(true);
         emit statusMessage(tr("搜索中…"));
@@ -511,29 +512,16 @@ void SearchPanelController::setupDiscoveryFeatures()
         }
     }
 
-    // 历史 + 热门 + 当前结果标题组成联想词库。QCompleter 自带弹窗保留输入焦点，
-    // 比自绘浮层更稳，也不会一弹出就让输入框失焦。
-    m_suggestModel = new QStringListModel(this);
-    m_completer = new QCompleter(m_suggestModel, this);
-    m_completer->setCaseSensitivity(Qt::CaseInsensitive);
-    m_completer->setFilterMode(Qt::MatchContains);
-    m_completer->setCompletionMode(QCompleter::PopupCompletion);
-    m_completer->setMaxVisibleItems(8);
-    if (m_completer->popup() != nullptr) {
-        m_completer->popup()->setObjectName(QStringLiteral("searchSuggestions"));
-        m_completer->popup()->setMinimumWidth(qMax(180, m_ui.edit->width()));
+    // 历史 + 热门 + 当前结果标题组成联想词库。联想列表是搜索窗内的普通子控件，
+    // 不使用 QCompleter 的顶层 popup：独立对话框里 popup 会变成最上层窗口，
+    // 抢走焦点和鼠标并吞掉点击，用户看到的就是整个搜索窗无响应。
+    connect(m_ui.edit, &QLineEdit::textChanged, this, [this] { updateSuggestions(false); });
+    if (m_ui.suggestList != nullptr) {
+        connect(m_ui.suggestList, &QListWidget::itemClicked, this,
+                [this](QListWidgetItem *item) { applySuggestion(item); });
     }
-    m_ui.edit->setCompleter(m_completer);
-    // QCompleter 的弹出列表会抓鼠标：如果等点击时才因失焦关闭，
-    // 那一次点击会被弹窗吞掉，分页/列表要点两下。这里在所有控件上监听鼠标移动，
-    // 指针一离开输入框和联想列表就先收起弹窗，下一次点击就能直接落到目标控件。
-    qApp->installEventFilter(this);
-    connect(m_completer, QOverload<const QString &>::of(&QCompleter::activated), this,
-            [this](const QString &text) {
-                m_ui.edit->setText(text);
-                m_ui.edit->setCursorPosition(text.size());
-                toggleSearch();
-            });
+    if (m_ui.sidebar != nullptr)
+        m_ui.sidebar->installEventFilter(this);
 
     rebuildSuggestions();
     // setupUi 阶段筛选下拉还没创建，源名在这里补一次，避免“来源”框空白。
@@ -542,9 +530,6 @@ void SearchPanelController::setupDiscoveryFeatures()
 
 void SearchPanelController::rebuildSuggestions()
 {
-    if (m_suggestModel == nullptr)
-        return;
-
     QStringList words = AppSettings::searchHistory();
     static const QStringList hot = {
         QStringLiteral("周杰伦"), QStringLiteral("经典老歌"), QStringLiteral("华语流行"),
@@ -563,9 +548,78 @@ void SearchPanelController::rebuildSuggestions()
         if (words.size() >= 40)
             break;
     }
-    m_suggestModel->setStringList(words);
-    if (m_completer != nullptr)
-        m_completer->setCompletionPrefix(m_ui.edit->text().trimmed());
+    m_suggestions = words;
+    // 打开窗口时是程序聚焦，不弹历史/热门；用户用鼠标点进输入框时才展开。
+    updateSuggestions(false);
+}
+
+void SearchPanelController::updateSuggestions(bool showAll)
+{
+    if (m_ui.suggestList == nullptr || m_ui.edit == nullptr)
+        return;
+
+    const QString prefix = m_ui.edit->text().trimmed();
+    if (prefix.isEmpty() && !showAll) {
+        hideSuggestions();
+        return;
+    }
+
+    QStringList matches;
+    for (const QString &word : std::as_const(m_suggestions)) {
+        if (prefix.isEmpty() || word.contains(prefix, Qt::CaseInsensitive))
+            matches.append(word);
+        if (matches.size() >= 8)
+            break;
+    }
+
+    if (matches.isEmpty()) {
+        hideSuggestions();
+        return;
+    }
+
+    m_ui.suggestList->clear();
+    for (const QString &word : std::as_const(matches))
+        m_ui.suggestList->addItem(word);
+    updateSuggestionGeometry();
+    m_ui.suggestList->show();
+    m_ui.suggestList->raise();
+}
+
+void SearchPanelController::updateSuggestionGeometry()
+{
+    if (m_ui.suggestList == nullptr || m_ui.edit == nullptr || m_ui.sidebar == nullptr)
+        return;
+
+    const QPoint topLeft =
+        m_ui.edit->mapTo(m_ui.sidebar, QPoint(0, m_ui.edit->height() + 4));
+    int rowHeight = m_ui.suggestList->sizeHintForRow(0);
+    if (rowHeight <= 0)
+        rowHeight = 34;
+    int height = m_ui.suggestList->count() * rowHeight + 12;
+    height = qMin(height, 8 * rowHeight + 12);
+    height = qMin(height, m_ui.sidebar->height() - topLeft.y() - 8);
+    m_ui.suggestList->setGeometry(topLeft.x(), topLeft.y(), m_ui.edit->width(), height);
+}
+
+void SearchPanelController::hideSuggestions()
+{
+    if (m_ui.suggestList != nullptr)
+        m_ui.suggestList->hide();
+}
+
+void SearchPanelController::applySuggestion(QListWidgetItem *item)
+{
+    if (item == nullptr || m_ui.edit == nullptr)
+        return;
+    const QString text = item->text();
+    hideSuggestions();
+    {
+        // 填词过程不要再触发一次联想刷新，否则列表会在搜索前闪回来。
+        QSignalBlocker blocker(m_ui.edit);
+        m_ui.edit->setText(text);
+        m_ui.edit->setCursorPosition(text.size());
+    }
+    toggleSearch();
 }
 
 void SearchPanelController::rememberKeyword(const QString &keyword)
@@ -728,8 +782,7 @@ void SearchPanelController::applyButtonIcons(bool busy)
 
 void SearchPanelController::toggleSearch()
 {
-    if (m_completer != nullptr && m_completer->popup() != nullptr)
-        m_completer->popup()->hide();
+    hideSuggestions();
     if (m_coordinator->isBusy()) {
         cancelSearch();
         return;
@@ -745,8 +798,7 @@ void SearchPanelController::toggleSearch()
     if (tryHandlePastedLink(keyword))
         return;
 
-    if (m_completer != nullptr && m_completer->popup() != nullptr)
-        m_completer->popup()->hide();
+    hideSuggestions();
     rememberKeyword(keyword);
     m_coordinator->search(keyword, AppSettings::searchLimit());
 }
@@ -796,34 +848,26 @@ void SearchPanelController::setAreaVisible(bool visible)
 
 bool SearchPanelController::eventFilter(QObject *watched, QEvent *event)
 {
-    if (event->type() == QEvent::MouseMove && m_completer != nullptr
-        && m_completer->popup() != nullptr && m_completer->popup()->isVisible()) {
-        const QPoint globalPos = static_cast<QMouseEvent *>(event)->globalPosition().toPoint();
-        const QRect popupRect(m_completer->popup()->mapToGlobal(QPoint(0, 0)),
-                             m_completer->popup()->size());
-        const QRect editRect(m_ui.edit->mapToGlobal(QPoint(0, 0)), m_ui.edit->size());
-        if (!popupRect.contains(globalPos) && !editRect.contains(globalPos))
-            m_completer->popup()->hide();
+    if (watched == m_ui.sidebar
+        && (event->type() == QEvent::Resize || event->type() == QEvent::Show)
+        && m_ui.suggestList != nullptr && m_ui.suggestList->isVisible()) {
+        updateSuggestionGeometry();
     }
 
     if (watched == m_ui.edit) {
-        if (event->type() == QEvent::FocusIn && m_completer != nullptr) {
-            // 空输入也展示历史+热门，用户点一下就能选，不必先打字。
-            QTimer::singleShot(0, this, [this] {
-                if (m_ui.edit->hasFocus() && m_completer != nullptr) {
-                    m_completer->setCompletionPrefix(m_ui.edit->text());
-                    m_completer->complete();
-                }
-            });
-        } else if (event->type() == QEvent::FocusOut && m_completer != nullptr
-                   && m_completer->popup() != nullptr) {
-            // 点分页/结果列表时先收起联想，避免 QCompleter 在失焦时把高亮项
-            // 当成用户选择，出现“点下一页却换了搜索词”的误触。
-            m_completer->popup()->hide();
+        if (event->type() == QEvent::FocusIn) {
+            // 只有鼠标点进输入框才展开历史/热门；打开窗口时的程序聚焦不弹列表。
+            if (static_cast<QFocusEvent *>(event)->reason() == Qt::MouseFocusReason)
+                updateSuggestions(true);
+        } else if (event->type() == QEvent::MouseButtonPress
+                   && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
+            // 输入框已经持有焦点时再点一次不会再发 FocusIn，这里补一次展开。
+            updateSuggestions(true);
+        } else if (event->type() == QEvent::FocusOut) {
+            hideSuggestions();
         } else if (event->type() == QEvent::KeyPress
-                   && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape
-                   && m_completer != nullptr && m_completer->popup() != nullptr) {
-            m_completer->popup()->hide();
+                   && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
+            hideSuggestions();
         }
     }
     if (watched == m_ui.list->viewport()
