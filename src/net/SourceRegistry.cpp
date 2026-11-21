@@ -363,11 +363,12 @@ bool SourceRegistry::save()
         return true;
     };
 
-    // 正常情况主路径和备用路径都写，保证主路径以后失效时备用不是旧快照；
-    // 备用写失败不影响本次保存成功，只记录警告。主路径写失败才真正降级。
-    const bool primaryOk = writeTarget(primary);
+    // 先写备用、最后写主路径：加载时按 mtime 选最新有效文件，主路径最后
+    // 落盘才能稳定压过备用副本。若反过来先主后备用，正常保存后备用往往
+    // 更新，启动时会优先读备用，PlaylistStore/本类还会误报“主路径较旧”。
     const bool fallbackOk = (fallback.isEmpty() || fallback == primary)
         ? true : writeTarget(fallback);
+    const bool primaryOk = writeTarget(primary);
 
     if (primaryOk) {
         m_storagePath = primary;

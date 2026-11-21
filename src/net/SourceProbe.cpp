@@ -505,12 +505,6 @@ void Prober::probeNextCandidate()
         const QString errorText = success ? QString() : HttpClient::describeError(reply);
         reply->deleteLater();
 
-        if (tooLarge) {
-            recordAttempt(probeUrl, status, tr("响应超过 2 MB 上限"));
-            probeNextCandidate();
-            return;
-        }
-
         if (!success) {
             if (status == 0)
                 ++m_connFail;
@@ -519,6 +513,14 @@ void Prober::probeNextCandidate()
             else if (status == 404)
                 ++m_notFound;
             recordAttempt(probeUrl, status, errorText.isEmpty() ? tr("HTTP 失败") : errorText);
+            probeNextCandidate();
+            return;
+        }
+
+        if (tooLarge) {
+            // 超限只对 2xx 正文成立；404/500 的大错误页已在上面按 HTTP 状态
+            // 记录，不能把真实的 404/403 覆盖成“响应过大”。
+            recordAttempt(probeUrl, status, tr("响应超过 2 MB 上限"));
             probeNextCandidate();
             return;
         }

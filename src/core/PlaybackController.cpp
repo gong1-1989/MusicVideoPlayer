@@ -101,18 +101,41 @@ PlaybackController::PlaybackController(QObject *parent)
 PlaybackController::~PlaybackController()
 {
     m_proxyReady = false;
-    if (m_proxyThread->isRunning()) {
-        // shutdown 必须回到代理线程执行，确保 QTcpServer 和所有 reply
-        // 在各自线程里关闭；这里不会与播放器的 Demuxer 等待互相阻塞。
-        QMetaObject::invokeMethod(m_proxy, [this] { m_proxy->shutdown(); },
-                                  Qt::BlockingQueuedConnection);
-        m_proxyThread->quit();
-        if (!m_proxyThread->wait(3000)) {
-            qCWarning(lcPlayer) << "流转代理线程未在 3 秒内退出，强制终止";
-            m_proxyThread->terminate();
-            m_proxyThread->wait(500);
-        }
+
+    QThread *proxyThread = m_proxyThread;
+    StreamProxy *proxy = m_proxy;
+    if (proxyThread == nullptr || !proxyThread->isRunning()) {
+        m_proxy = nullptr;
+        return;
     }
+
+    // 旧实现用 BlockingQueuedConnection 从 GUI 线程等代理线程；代理一旦卡在
+    // 网络回调或析构里，退出流程会无限等待。这里改为把 shutdown 和 quit
+    // 投递到代理线程自己的事件循环，最多等 3 秒。
+    //
+    // 超时后不再调用 QThread::terminate()：强制终止可能发生在互斥锁、网络
+    // 回调或 deleteLater 中间，轻则泄漏，重则崩溃。线程还在跑时也不能让
+    // PlaybackController 的析构连带 delete 运行中的 QThread，所以把线程对象
+    // 从父子关系里摘掉，留给进程退出回收。
+    const bool queued = proxy != nullptr
+        && QMetaObject::invokeMethod(
+               proxy,
+               [proxy, proxyThread] {
+                   proxy->shutdown();
+                   proxyThread->quit();
+               },
+               Qt::QueuedConnection);
+    if (!queued)
+        qCWarning(lcPlayer) << "无法投递流转代理关闭任务，线程保持运行";
+
+    if (!proxyThread->wait(3000)) {
+        qCWarning(lcPlayer) << "流转代理线程未在 3 秒内退出，放弃强制终止";
+        proxyThread->setParent(nullptr);
+        m_proxyThread = nullptr;
+        m_proxy = nullptr;
+        return;
+    }
+
     m_proxy = nullptr;
 }
 

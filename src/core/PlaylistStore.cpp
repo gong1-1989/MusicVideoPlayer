@@ -49,7 +49,13 @@ bool writeFile(const QString &path, const QByteArray &payload)
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
         return false;
-    file.write(payload);
+    const qint64 written = file.write(payload);
+    if (written != payload.size()) {
+        qCWarning(lcStore) << "播放列表写入不完整：" << path
+                           << "，已写入" << written << "字节，应为" << payload.size();
+        file.cancelWriting();
+        return false;
+    }
     if (!file.commit()) {
         qCWarning(lcStore) << "播放列表写入失败：" << path << "：" << file.errorString();
         return false;
@@ -182,9 +188,12 @@ bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
 
     const QString primary = primaryPath();
     const QString fallback = fallbackPath();
-    const bool primaryOk = writeFile(primary, payload);
+    // 先写备用、最后写主路径：load 按 mtime 选最新有效文件，主路径最后
+    // 落盘才能在正常保存时稳定胜出。旧顺序会让备用副本几乎总是更新，
+    // 启动时读到备用路径，并误报“主播放列表不可用或较旧”。
     const bool fallbackOk = (fallback.isEmpty() || fallback == primary)
         ? true : writeFile(fallback, payload);
+    const bool primaryOk = writeFile(primary, payload);
 
     if (primaryOk) {
         qCInfo(lcStore) << "播放列表已保存（音乐" << music.size() << "条、视频" << video.size()

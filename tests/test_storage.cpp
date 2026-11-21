@@ -64,12 +64,14 @@ private slots:
     void cleanupTestCase();
 
     void playlistRoundTrip();
+    void playlistSaveWritesPrimaryLast();
     void playlistCorruptFileBacksUp();
     void playlistFallsBackToNewerCopy();
     void playlistReadsFallbackWhenPrimaryMissing();
     void playlistIgnoresCorruptNewerPrimary();
     void playlistIgnoresCorruptNewerFallback();
     void sourceRegistrySeedsAndPersists();
+    void sourceRegistryReloadPrefersPrimary();
     void sourceRegistryCorruptFileBacksUp();
     void sourceRegistryFallsBackWhenPrimaryUnwritable();
 
@@ -155,6 +157,24 @@ void StorageTest::playlistRoundTrip()
     QVERIFY(videoItems.first().online);
     QCOMPARE(videoItems.first().sourceId, video.sourceId);
     QCOMPARE(videoItems.first().year, video.year);
+}
+
+void StorageTest::playlistSaveWritesPrimaryLast()
+{
+    const QString primary = StoragePaths::dataFile(QStringLiteral("playlists.json"));
+    const QString fallback = fallbackFilePath();
+    QVERIFY(!fallback.isEmpty());
+    QVERIFY(fallback != primary);
+
+    QVERIFY(PlaylistStore::saveAll({makeMusic(QStringLiteral("主备顺序"))}, {}));
+    QVERIFY(QFile::exists(primary));
+    QVERIFY(QFile::exists(fallback));
+    // 主路径必须最后落盘，否则加载时按 mtime 选最新会优先读到备用副本。
+    QVERIFY(QFileInfo(primary).lastModified() >= QFileInfo(fallback).lastModified());
+
+    const QVector<MediaItem> items = PlaylistStore::load(MediaType::Music);
+    QCOMPARE(items.size(), 1);
+    QCOMPARE(items.first().title, QStringLiteral("主备顺序"));
 }
 
 void StorageTest::playlistCorruptFileBacksUp()
@@ -309,6 +329,26 @@ void StorageTest::sourceRegistrySeedsAndPersists()
     } else {
         QVERIFY(restored.cookie.isEmpty());
     }
+}
+
+void StorageTest::sourceRegistryReloadPrefersPrimary()
+{
+    const QString primary = StoragePaths::dataFile(QStringLiteral("sources.json"));
+    const QString fallback = sourceFallbackFilePath();
+    QVERIFY(!fallback.isEmpty());
+    QVERIFY(fallback != primary);
+
+    SourceRegistry registry;
+    QVERIFY(registry.load());
+    QVERIFY(registry.save());
+    QCOMPARE(registry.storagePath(), primary);
+    QVERIFY(QFile::exists(fallback));
+    // 和播放列表一样：主路径最后写，下一次 load 才会稳定选主路径。
+    QVERIFY(QFileInfo(primary).lastModified() >= QFileInfo(fallback).lastModified());
+
+    SourceRegistry reloaded;
+    QVERIFY(reloaded.load());
+    QCOMPARE(reloaded.storagePath(), primary);
 }
 
 void StorageTest::sourceRegistryCorruptFileBacksUp()

@@ -363,6 +363,16 @@ void MaccmsWebProvider::requestHtml(
                       bool tooLarge = false;
                       const QByteArray raw =
                           HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
+                      // 先判 HTTP 状态，再判大小：404/500 的大错误页不能被
+                      // “超过 4 MB”覆盖掉真实状态码。
+                      if (!HttpClient::isHttpSuccess(reply)) {
+                          qCDebug(lcWeb) << "请求失败"
+                                       << HttpClient::redactUrl(reply->url())
+                                       << HttpClient::describeError(reply);
+                          reply->deleteLater();
+                          callback(false, QString());
+                          return;
+                      }
                       if (tooLarge) {
                           qCWarning(lcWeb) << "页面超过" << NetLimits::kHtmlBytes
                                            << "字节上限："
@@ -371,10 +381,9 @@ void MaccmsWebProvider::requestHtml(
                           callback(false, QString());
                           return;
                       }
-                      if (!HttpClient::isHttpSuccess(reply) || raw.isEmpty()) {
-                          qCDebug(lcWeb) << "请求失败"
-                                       << HttpClient::redactUrl(reply->url())
-                                       << HttpClient::describeError(reply);
+                      if (raw.isEmpty()) {
+                          qCDebug(lcWeb) << "页面为空："
+                                       << HttpClient::redactUrl(reply->url());
                           reply->deleteLater();
                           callback(false, QString());
                           return;
@@ -554,11 +563,15 @@ void MaccmsWebProvider::trySearch(int strategy)
             bool tooLarge = false;
             const QByteArray raw =
                 HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
+            if (!HttpClient::isHttpSuccess(reply)) {
+                fail(HttpClient::describeError(reply));
+                return;
+            }
             if (tooLarge) {
                 fail(tr("搜索结果超过 4 MB 上限"));
                 return;
             }
-            if (!HttpClient::isHttpSuccess(reply) || raw.isEmpty()) {
+            if (raw.isEmpty()) {
                 fail(tr("请求失败"));
                 return;
             }
@@ -582,11 +595,15 @@ void MaccmsWebProvider::trySearch(int strategy)
             bool tooLarge = false;
             const QByteArray raw =
                 HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
+            if (!HttpClient::isHttpSuccess(reply)) {
+                fail(HttpClient::describeError(reply));
+                return;
+            }
             if (tooLarge) {
                 fail(tr("搜索结果超过 4 MB 上限"));
                 return;
             }
-            if (!HttpClient::isHttpSuccess(reply) || raw.isEmpty()) {
+            if (raw.isEmpty()) {
                 fail(tr("请求失败"));
                 return;
             }
