@@ -1,4 +1,5 @@
 #include "net/ExternalSearchProvider.h"
+#include "net/NetLimits.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -83,6 +84,14 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
                 if (error == QProcess::FailedToStart)
                     onFailedToStart();
             });
+    // 解析器输出直接进内存解析；这里在数据到达时就设上限，
+    // 避免子进程持续输出把缓冲区顶大。
+    connect(m_process, &QProcess::readyReadStandardOutput, this, [this] {
+        if (m_done || m_process == nullptr)
+            return;
+        if (m_process->bytesAvailable() > NetLimits::kJsonBytes)
+            finish(tr("解析器输出超过 2 MB 上限"));
+    });
 
     m_timer = new QTimer(this);
     m_timer->setSingleShot(true);
@@ -126,7 +135,12 @@ void ExternalSearchProvider::onProcessFinished(int exitCode, QProcess::ExitStatu
         return;
     }
 
-    parseOutput(m_process->readAllStandardOutput());
+    const QByteArray output = m_process->readAllStandardOutput();
+    if (output.size() > NetLimits::kJsonBytes) {
+        finish(tr("解析器输出超过 2 MB 上限"));
+        return;
+    }
+    parseOutput(output);
 }
 
 void ExternalSearchProvider::parseOutput(const QByteArray &output)

@@ -2,6 +2,7 @@
 
 #include "net/ConfigMapper.h"
 #include "net/HttpClient.h"
+#include "net/NetLimits.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -157,7 +158,15 @@ void ConfigSearchProvider::onReplyFinished()
         return;
     }
 
-    const QByteArray payload = reply->readAll();
+    bool tooLarge = false;
+    const QByteArray payload =
+        HttpClient::readAllLimited(reply, NetLimits::kJsonBytes, &tooLarge);
+    if (tooLarge) {
+        qCWarning(lcProvider) << m_config.id << "搜索响应超过"
+                              << NetLimits::kJsonBytes << "字节上限";
+        emit finished(m_config.id, {}, 0, tr("响应超过 2 MB 上限"));
+        return;
+    }
     // 成功路径也把状态码/字节数/耗时写进日志，排障时不必再猜响应大小
     qCInfo(lcProvider) << m_config.id << "搜索响应 HTTP" << httpStatus << payload.size()
                        << "字节，用时" << elapsedMs << "ms";
@@ -390,7 +399,16 @@ void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index, qin
         return;
     }
 
-    const QByteArray payload = reply->readAll();
+    bool tooLarge = false;
+    const QByteArray payload =
+        HttpClient::readAllLimited(reply, NetLimits::kJsonBytes, &tooLarge);
+    if (tooLarge) {
+        qCWarning(lcProvider) << m_config.id << "详情响应超过"
+                              << NetLimits::kJsonBytes << "字节上限";
+        ++m_filtered;
+        launchDetails();
+        return;
+    }
     qCInfo(lcProvider) << m_config.id << "详情" << index << "HTTP" << httpStatus
                        << payload.size() << "字节，用时" << elapsedMs << "ms";
     QJsonParseError parseError{};

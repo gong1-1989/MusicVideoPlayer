@@ -1,6 +1,7 @@
 #include "stream/StreamProxy.h"
 #include "stream/HlsSeekWindow.h"
 #include "net/HttpClient.h"
+#include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
 #include "util/PlaylistSniffer.h"
 
@@ -1301,8 +1302,17 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
             return;
         }
 
-        const QByteArray body = reply->readAll();
+        bool tooLarge = false;
+        const QByteArray body =
+            HttpClient::readAllLimited(reply, NetLimits::kPlaylistBytes, &tooLarge);
         const QUrl finalUrl = reply->url();
+        if (tooLarge) {
+            qCWarning(lcProxy) << "播放列表超过" << NetLimits::kPlaylistBytes
+                               << "字节上限：" << HttpClient::redactUrl(finalUrl);
+            replyError(socket, 502, QStringLiteral("playlist too large"));
+            reply->deleteLater();
+            return;
+        }
         if (!PlaylistSniffer::bodyIsPlaylist(body)) {
             qCWarning(lcProxy) << "播放列表正文不是 m3u8：" << HttpClient::redactUrl(finalUrl);
             replyError(socket, 404, QStringLiteral("playlist unavailable"));

@@ -224,6 +224,20 @@ bool HttpClient::isHttpSuccess(QNetworkReply *reply)
     return code >= 200 && code < 300;
 }
 
+QByteArray HttpClient::readAllLimited(QNetworkReply *reply, qint64 limit, bool *exceeded)
+{
+    if (exceeded != nullptr)
+        *exceeded = false;
+    if (reply == nullptr)
+        return {};
+    if (limit >= 0 && reply->bytesAvailable() > limit) {
+        if (exceeded != nullptr)
+            *exceeded = true;
+        return {};
+    }
+    return reply->readAll();
+}
+
 QString HttpClient::describeError(QNetworkReply *reply)
 {
     if (!reply)

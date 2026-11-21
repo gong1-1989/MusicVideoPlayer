@@ -42,6 +42,7 @@ qt_add_library(mvp_core STATIC
     src/util/TimeFormat.cpp
     src/net/HttpClient.h
     src/net/HttpClient.cpp
+    src/net/NetLimits.h
     src/net/SourceConfig.h
     src/net/SourceConfig.cpp
     src/net/ConfigMapper.h

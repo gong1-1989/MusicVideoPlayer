@@ -1,6 +1,7 @@
 #include "lyrics/LyricsService.h"
 
 #include "net/HttpClient.h"
+#include "net/NetLimits.h"
 
 #include <QFile>
 #include <QJsonDocument>
@@ -108,7 +109,14 @@ void LyricsService::onFinished(int generation)
         return;
     }
 
-    const QByteArray payload = reply->readAll();
+    bool tooLarge = false;
+    const QByteArray payload =
+        HttpClient::readAllLimited(reply, NetLimits::kJsonBytes, &tooLarge);
+    if (tooLarge) {
+        qCWarning(lcLyrics) << "歌词响应超过" << NetLimits::kJsonBytes << "字节上限";
+        emit lyricsFailed(tr("歌词响应超过 2 MB 上限"));
+        return;
+    }
     if (payload.isEmpty()) {
         emit lyricsReady(QVector<LrcLine>());
         return;

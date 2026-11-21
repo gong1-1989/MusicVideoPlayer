@@ -1,4 +1,5 @@
 #include "stream/HlsPlaylist.h"
+#include "net/NetLimits.h"
 
 #include <QDateTime>
 #include <QHash>
@@ -62,6 +63,10 @@ QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
                 && segment.scheme() != QLatin1String("https"))) {
             hasNonHttp = true;
         } else {
+            // 分片数量异常多时不做预取规划，播放仍可直接走代理列表，
+            // 避免为超大列表维护 starts/segments 两份数组。
+            if (segments.size() >= NetLimits::kPlaylistSegments)
+                return {};
             segments.append(segment);
             starts.append(cumulativeMs);
         }

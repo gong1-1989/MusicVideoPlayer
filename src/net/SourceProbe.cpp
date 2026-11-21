@@ -2,6 +2,7 @@
 
 #include "net/ConfigSearchProvider.h"
 #include "net/HttpClient.h"
+#include "net/NetLimits.h"
 
 #include <QHash>
 #include <QJsonArray>
@@ -360,9 +361,12 @@ void Prober::fetchHome()
                 m_site = finalUrl;
                 m_redirectOrigin = originOf(finalUrl);
             }
-            if (HttpClient::isHttpSuccess(reply)) {
+            bool tooLarge = false;
+            const QByteArray raw =
+                HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
+            if (HttpClient::isHttpSuccess(reply) && !tooLarge) {
                 m_homeOk = true;
-                const QString html = QString::fromUtf8(reply->readAll());
+                const QString html = QString::fromUtf8(raw);
                 const QRegularExpression titleRe(QStringLiteral("(?is)<title[^>]*>(.*?)</title>"));
                 const QRegularExpressionMatch match = titleRe.match(html);
                 if (match.hasMatch()) {
@@ -494,10 +498,18 @@ void Prober::probeNextCandidate()
             m_activeReply = nullptr;
 
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QByteArray payload = reply->readAll();
+        bool tooLarge = false;
+        const QByteArray payload =
+            HttpClient::readAllLimited(reply, NetLimits::kJsonBytes, &tooLarge);
         const bool success = HttpClient::isHttpSuccess(reply);
         const QString errorText = success ? QString() : HttpClient::describeError(reply);
         reply->deleteLater();
+
+        if (tooLarge) {
+            recordAttempt(probeUrl, status, tr("响应超过 2 MB 上限"));
+            probeNextCandidate();
+            return;
+        }
 
         if (!success) {
             if (status == 0)

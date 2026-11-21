@@ -11,6 +11,7 @@
 #include "stream/HlsSeekWindow.h"
 #include "stream/StreamCacheStore.h"
 #include "stream/StreamRange.h"
+#include "net/NetLimits.h"
 #include "stream/StreamTokenRegistry.h"
 #include "util/HeaderPolicy.h"
 #include "util/PlaylistSniffer.h"
@@ -498,6 +499,7 @@ private slots:
     void streamProxyFallsBackWhenHlsRangeIgnored();
     void hlsPlaylistParsesAndIndexes();
     void hlsPlaylistRewritesUris();
+    void hlsPlaylistRejectsTooManySegments();
     void streamTokensReuseByUrlAndHeaders();
     void streamCacheStoreCountsRangeParts();
     void streamRangeParsesHeadersAndSplitsParts();
@@ -1396,6 +1398,28 @@ void CoreLogicTest::hlsPlaylistRewritesUris()
     QVERIFY(text.contains(QStringLiteral("http://127.0.0.1:1234/stream/token/seg1.ts")));
     QVERIFY(!text.contains(QStringLiteral("seg1.ts\nseg1.ts")));
 }
+
+void CoreLogicTest::hlsPlaylistRejectsTooManySegments()
+{
+    const QUrl playlistUrl(QStringLiteral("https://cdn.test/a/list.m3u8"));
+    QByteArray body = "#EXTM3U\n";
+    for (int i = 0; i <= NetLimits::kPlaylistSegments; ++i) {
+        body += "#EXTINF:1,\n";
+        body += "seg" + QByteArray::number(i) + ".ts\n";
+    }
+    QVERIFY(HlsPlaylist::parse(body, playlistUrl).isNull());
+
+    body = "#EXTM3U\n";
+    for (int i = 0; i < NetLimits::kPlaylistSegments; ++i) {
+        body += "#EXTINF:1,\n";
+        body += "seg" + QByteArray::number(i) + ".ts\n";
+    }
+    const QSharedPointer<HlsPlaylist::Info> info = HlsPlaylist::parse(body, playlistUrl);
+    QVERIFY(!info.isNull());
+    QCOMPARE(info->segments.size(), NetLimits::kPlaylistSegments);
+    QCOMPARE(info->totalMs, qint64(NetLimits::kPlaylistSegments) * 1000);
+}
+
 
 void CoreLogicTest::streamTokensReuseByUrlAndHeaders()
 {

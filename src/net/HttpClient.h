@@ -44,6 +44,10 @@ public:
 
     static bool isHttpSuccess(QNetworkReply *reply);
     static QString describeError(QNetworkReply *reply);
+    /// 读取整个响应体；超过 limit 时不读取并置 exceeded，避免把超大响应
+    /// 整段复制进内存。调用方需自行把 exceeded 转成用户可见错误。
+    static QByteArray readAllLimited(QNetworkReply *reply, qint64 limit,
+                                     bool *exceeded = nullptr);
     /// 日志里隐藏签名/令牌类 query，只保留参数名
     static QString redactUrl(const QUrl &url);
 

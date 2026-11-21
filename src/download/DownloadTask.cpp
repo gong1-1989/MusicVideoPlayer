@@ -1,6 +1,7 @@
 #include "download/DownloadTask.h"
 
 #include "net/HttpClient.h"
+#include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
 #include "util/PlaylistSniffer.h"
 
@@ -206,11 +207,17 @@ void DownloadTask::onPlaylistFinished(QNetworkReply *reply)
         return;
     }
 
-    const QByteArray body = reply->readAll();
+    bool tooLarge = false;
+    const QByteArray body =
+        HttpClient::readAllLimited(reply, NetLimits::kPlaylistBytes, &tooLarge);
     const QUrl baseUrl = reply->url();
     m_reply = nullptr;
     reply->deleteLater();
 
+    if (tooLarge) {
+        fail(tr("播放列表超过 4 MB 上限"));
+        return;
+    }
     if (body.isEmpty()) {
         fail(tr("播放列表为空"));
         return;
@@ -483,6 +490,11 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         segment.url = segmentUrl;
         segment.range = pendingRange;
         pendingRange.clear();
+        if (m_segments.size() >= NetLimits::kPlaylistSegments) {
+            if (error != nullptr)
+                *error = tr("分片数量超过 %1 上限").arg(NetLimits::kPlaylistSegments);
+            return false;
+        }
         m_segments.append(segment);
     }
 
@@ -646,6 +658,10 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
     if (chunk.isEmpty())
         return;
 
+    if (m_bytesWritten + chunk.size() > NetLimits::kDownloadBytes) {
+        fail(tr("文件超过 8 GB 上限，已停止下载"));
+        return;
+    }
     if (!m_file->write(chunk)) {
         fail(tr("写入文件失败：%1").arg(m_file->errorString()));
         return;

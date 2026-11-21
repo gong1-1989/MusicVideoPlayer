@@ -1,6 +1,7 @@
 #include "net/MaccmsWebProvider.h"
 
 #include "net/HttpClient.h"
+#include "net/NetLimits.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -341,7 +342,17 @@ void MaccmsWebProvider::requestHtml(
                           callback(false, QString());
                           return;
                       }
-                      const QByteArray raw = reply->readAll();
+                      bool tooLarge = false;
+                      const QByteArray raw =
+                          HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
+                      if (tooLarge) {
+                          qCWarning(lcWeb) << "页面超过" << NetLimits::kHtmlBytes
+                                           << "字节上限："
+                                           << HttpClient::redactUrl(reply->url());
+                          reply->deleteLater();
+                          callback(false, QString());
+                          return;
+                      }
                       if (!HttpClient::isHttpSuccess(reply) || raw.isEmpty()) {
                           qCDebug(lcWeb) << "请求失败"
                                        << HttpClient::redactUrl(reply->url())
@@ -364,8 +375,10 @@ void MaccmsWebProvider::fetchRoot()
                       if (self.isNull())
                           return;
                       if (reply != nullptr) {
-                          const QByteArray raw = reply->readAll();
-                          if (HttpClient::isHttpSuccess(reply) && !raw.isEmpty())
+                          bool tooLarge = false;
+                          const QByteArray raw = HttpClient::readAllLimited(
+                              reply, NetLimits::kHtmlBytes, &tooLarge);
+                          if (!tooLarge && HttpClient::isHttpSuccess(reply) && !raw.isEmpty())
                               self->m_rootLength = decodeHtml(raw).size();
                           reply->deleteLater();
                       }
@@ -389,8 +402,10 @@ void MaccmsWebProvider::trySuggest()
                       QByteArray raw;
                       bool ok = false;
                       if (reply != nullptr) {
-                          raw = reply->readAll();
-                          ok = HttpClient::isHttpSuccess(reply);
+                          bool tooLarge = false;
+                          raw = HttpClient::readAllLimited(reply, NetLimits::kJsonBytes,
+                                                           &tooLarge);
+                          ok = !tooLarge && HttpClient::isHttpSuccess(reply);
                           reply->deleteLater();
                       }
                       QJsonParseError parseError{};
@@ -507,7 +522,13 @@ void MaccmsWebProvider::trySearch(int strategy)
             reply->deleteLater();
             if (self.isNull())
                 return;
-            const QByteArray raw = reply->readAll();
+            bool tooLarge = false;
+            const QByteArray raw =
+                HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
+            if (tooLarge) {
+                fail(tr("搜索结果超过 4 MB 上限"));
+                return;
+            }
             if (!HttpClient::isHttpSuccess(reply) || raw.isEmpty()) {
                 fail(tr("请求失败"));
                 return;
@@ -529,7 +550,13 @@ void MaccmsWebProvider::trySearch(int strategy)
             reply->deleteLater();
             if (self.isNull())
                 return;
-            const QByteArray raw = reply->readAll();
+            bool tooLarge = false;
+            const QByteArray raw =
+                HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
+            if (tooLarge) {
+                fail(tr("搜索结果超过 4 MB 上限"));
+                return;
+            }
             if (!HttpClient::isHttpSuccess(reply) || raw.isEmpty()) {
                 fail(tr("请求失败"));
                 return;
