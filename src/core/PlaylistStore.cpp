@@ -10,9 +10,6 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QSaveFile>
-#include <QStandardPaths>
-#include <QStringList>
-#include <limits>
 #include <utility>
 
 Q_LOGGING_CATEGORY(lcStore, "mvp.store")
@@ -27,16 +24,10 @@ QString keyFor(MediaType type)
     return QString::fromLatin1(type == MediaType::Video ? kVideoKey : kMusicKey);
 }
 
-/// 程序目录下的 Data/，和 log/ 同级；安装目录不可写时退回用户数据目录
+/// 播放列表只存程序目录下的 Data/，不再写用户 AppData
 QString primaryPath()
 {
     return StoragePaths::dataFile(QStringLiteral("playlists.json"));
-}
-
-QString fallbackPath()
-{
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    return dir.isEmpty() ? QString() : dir + QStringLiteral("/playlists.json");
 }
 
 bool writeFile(const QString &path, const QByteArray &payload)
@@ -77,8 +68,8 @@ QString backupCorrupt(const QString &path)
     return QFile::copy(path, backup) ? backup : QString();
 }
 
-/// 读取一个播放列表文件；文件不存在、打不开或损坏都返回 false。
-/// 解析成功时允许空列表（有效状态），以便主备两份按 mtime 比较。
+/// 读取播放列表文件；文件不存在、打不开或损坏都返回 false。
+/// 解析成功时允许空列表（有效状态）。
 bool readPlaylistFile(const QString &path, MediaType type, QVector<MediaItem> *items)
 {
     if (items == nullptr)
@@ -128,49 +119,10 @@ QString filePath()
 
 QVector<MediaItem> load(MediaType type)
 {
-    const QString primary = primaryPath();
-    const QString fallback = fallbackPath();
-
-    // 主路径存在但不可写时，新数据会落到 fallback，而主路径还留着旧文件。
-    // 只“主路径不存在才读 fallback”会把旧列表读回来，所以两份都读，
-    // 在都有效的情况下选 mtime 较新的那一份。
-    QVector<MediaItem> bestItems;
-    qint64 bestMtime = std::numeric_limits<qint64>::min();
-    QString bestPath;
-    bool foundValid = false;
-
-    QStringList candidates;
-    candidates.append(primary);
-    if (!fallback.isEmpty() && fallback != primary)
-        candidates.append(fallback);
-
-    for (const QString &path : candidates) {
-        if (path.isEmpty() || !QFile::exists(path))
-            continue;
-
-        QVector<MediaItem> items;
-        if (!readPlaylistFile(path, type, &items))
-            continue;
-
-        const qint64 mtime = QFileInfo(path).lastModified().toMSecsSinceEpoch();
-        if (!foundValid || mtime > bestMtime) {
-            bestItems = items;
-            bestMtime = mtime;
-            bestPath = path;
-            foundValid = true;
-        }
-    }
-
-    if (!foundValid)
-        return {};
-
-    if (bestPath != primary) {
-        qCInfo(lcStore) << (QFile::exists(primary)
-                                ? "主播放列表不可用或较旧，改读备用路径："
-                                : "从旧位置读取播放列表：")
-                        << bestPath;
-    }
-    return bestItems;
+    QVector<MediaItem> items;
+    if (readPlaylistFile(primaryPath(), type, &items))
+        return items;
+    return {};
 }
 
 bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
@@ -187,29 +139,13 @@ bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
     const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
 
     const QString primary = primaryPath();
-    const QString fallback = fallbackPath();
-    // 先写备用、最后写主路径：load 按 mtime 选最新有效文件，主路径最后
-    // 落盘才能在正常保存时稳定胜出。旧顺序会让备用副本几乎总是更新，
-    // 启动时读到备用路径，并误报“主播放列表不可用或较旧”。
-    const bool fallbackOk = (fallback.isEmpty() || fallback == primary)
-        ? true : writeFile(fallback, payload);
-    const bool primaryOk = writeFile(primary, payload);
-
-    if (primaryOk) {
+    if (writeFile(primary, payload)) {
         qCInfo(lcStore) << "播放列表已保存（音乐" << music.size() << "条、视频" << video.size()
                         << "条）到" << primary;
-        if (!fallbackOk)
-            qCWarning(lcStore) << "主播放列表已保存，但备用路径写入失败：" << fallback;
         return true;
     }
 
-    // 程序目录只读（例如装进 Program Files）时退回用户数据目录，不让保存静默失败
-    if (fallbackOk && !fallback.isEmpty() && fallback != primary) {
-        qCWarning(lcStore) << "无法写入" << primary << "，改用备用路径" << fallback;
-        return true;
-    }
-
-    qCWarning(lcStore) << "播放列表保存失败，主路径和备用路径均不可写";
+    qCWarning(lcStore) << "播放列表保存失败：" << primary;
     return false;
 }
 

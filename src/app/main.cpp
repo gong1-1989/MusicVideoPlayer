@@ -11,7 +11,6 @@
 #include <QLoggingCategory>
 #include <QMutex>
 #include <QMutexLocker>
-#include <QStandardPaths>
 #include <QStyleFactory>
 #include <QTimer>
 #include <QTranslator>
@@ -81,7 +80,7 @@ void messageHandler(QtMsgType type, const QMessageLogContext &context, const QSt
         QMutexLocker locker(&g_logMutex);
 
         if (g_logFile == nullptr) {
-            // 日志放在程序目录下的 log/，不写用户 C 盘；目录不可写时退回用户数据目录
+            // 日志只放程序目录下的 log/，不再回退用户 AppData
             const QString appDir = QCoreApplication::applicationDirPath();
             const QString localDir = QDir(appDir).filePath(QStringLiteral("log"));
             QDir().mkpath(localDir);
@@ -95,17 +94,6 @@ void messageHandler(QtMsgType type, const QMessageLogContext &context, const QSt
             if (!g_logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
                 delete g_logFile;
                 g_logFile = nullptr;
-
-                const QString fallbackDir =
-                    QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-                QDir().mkpath(fallbackDir);
-                const QString fallbackPath =
-                    QDir(fallbackDir).filePath(QStringLiteral("MusicVideoPlayer.log"));
-                if (QFileInfo(fallbackPath).size() >= kMaxLogBytes)
-                    rotateLog(fallbackPath);
-                g_logFile = new QFile(fallbackPath);
-                if (g_logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
-                    g_logPath = fallbackPath;
             } else {
                 g_logPath = localPath;
             }

@@ -40,7 +40,7 @@ signals:
 private:
     QVector<SourceConfig> m_sources;
     QString m_lastError;
-    /// 本次实际读写的路径：正常是 Data/sources.json，主目录不可写时是用户数据目录。
+    /// 实际读写的路径；当前固定为程序目录下的 Data/sources.json。
     QString m_storagePath;
 };
 

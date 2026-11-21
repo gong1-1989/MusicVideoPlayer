@@ -10,7 +10,6 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QSaveFile>
-#include <QStandardPaths>
 
 Q_LOGGING_CATEGORY(lcRegistry, "mvp.sources")
 
@@ -165,13 +164,6 @@ QString primaryDir()
     return StoragePaths::dataDir();
 }
 
-/// 安装目录只读时的备用位置，和播放列表保持同一套策略。
-QString fallbackSourcePath()
-{
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    return dir.isEmpty() ? QString() : dir + QStringLiteral("/sources.json");
-}
-
 /// 损坏的源配置先改名备份，绝不能直接补种子覆盖用户原文件。
 QString backupCorruptFile(const QString &path)
 {
@@ -206,62 +198,47 @@ bool SourceRegistry::load()
     m_storagePath.clear();
 
     const QString primary = QDir(primaryDir()).filePath(QStringLiteral("sources.json"));
-    const QString fallback = fallbackSourcePath();
-    QStringList candidates;
-    candidates.append(primary);
-    if (!fallback.isEmpty() && fallback != primary)
-        candidates.append(fallback);
-
     QString selectedPath;
     QJsonArray selectedArray;
-    qint64 selectedMtime = -1;
-    QString newestExisting;
-    qint64 newestExistingMtime = -1;
-    QStringList parseErrors;
+    QString parseErrorReason;
 
-    // 主备两份都读，选最新且可解析的一份；主目录只读时新数据落在用户数据目录。
-    for (const QString &path : candidates) {
-        const QFileInfo info(path);
-        if (!info.exists() || !info.isFile())
-            continue;
-        const qint64 mtime = info.lastModified().toMSecsSinceEpoch();
-        if (mtime > newestExistingMtime) {
-            newestExistingMtime = mtime;
-            newestExisting = path;
-        }
-
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly)) {
-            parseErrors.append(tr("%1：%2").arg(path, file.errorString()));
-            continue;
-        }
-        QJsonParseError parseError{};
-        const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
-        if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
-            const QString reason = parseError.error != QJsonParseError::NoError
-                                       ? parseError.errorString()
-                                       : tr("根节点不是数组");
-            parseErrors.append(tr("%1：%2").arg(path, reason));
-            continue;
-        }
-        if (mtime > selectedMtime) {
-            selectedMtime = mtime;
-            selectedPath = path;
-            selectedArray = document.array();
+    // 源配置只读程序目录下的 Data/sources.json，不再回退用户 AppData。
+    const QFileInfo info(primary);
+    if (info.exists()) {
+        if (!info.isFile()) {
+            parseErrorReason = tr("%1：不是普通文件").arg(primary);
+        } else {
+            QFile file(primary);
+            if (!file.open(QIODevice::ReadOnly)) {
+                parseErrorReason = tr("%1：%2").arg(primary, file.errorString());
+            } else {
+                QJsonParseError parseError{};
+                const QJsonDocument document =
+                    QJsonDocument::fromJson(file.readAll(), &parseError);
+                if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+                    const QString reason = parseError.error != QJsonParseError::NoError
+                                               ? parseError.errorString()
+                                               : tr("根节点不是数组");
+                    parseErrorReason = tr("%1：%2").arg(primary, reason);
+                } else {
+                    selectedPath = primary;
+                    selectedArray = document.array();
+                }
+            }
         }
     }
 
     if (selectedPath.isEmpty()) {
-        if (!newestExisting.isEmpty()) {
-            const QString reason = parseErrors.join(QStringLiteral("；"));
-            const QString backup = backupCorruptFile(newestExisting);
+        if (!parseErrorReason.isEmpty()) {
+            const QString backup = backupCorruptFile(primary);
             if (backup.isEmpty()) {
-                m_lastError = tr("源配置已损坏（%1），且无法备份原文件；未覆盖原文件。").arg(reason);
+                m_lastError = tr("源配置已损坏（%1），且无法备份原文件；未覆盖原文件。")
+                                  .arg(parseErrorReason);
                 qCWarning(lcRegistry) << m_lastError;
                 return false;
             }
             m_lastError = tr("源配置已损坏（%1），原文件已备份为 %2，已恢复预置源。")
-                              .arg(reason)
+                              .arg(parseErrorReason)
                               .arg(QFileInfo(backup).fileName());
             qCWarning(lcRegistry) << m_lastError;
         }
@@ -338,7 +315,6 @@ bool SourceRegistry::save()
     const QByteArray payload = QJsonDocument(array).toJson(QJsonDocument::Indented);
 
     const QString primary = QDir(primaryDir()).filePath(QStringLiteral("sources.json"));
-    const QString fallback = fallbackSourcePath();
     QStringList errors;
 
     auto writeTarget = [&](const QString &path) {
@@ -363,23 +339,11 @@ bool SourceRegistry::save()
         return true;
     };
 
-    // 先写备用、最后写主路径：加载时按 mtime 选最新有效文件，主路径最后
-    // 落盘才能稳定压过备用副本。若反过来先主后备用，正常保存后备用往往
-    // 更新，启动时会优先读备用，PlaylistStore/本类还会误报“主路径较旧”。
-    const bool fallbackOk = (fallback.isEmpty() || fallback == primary)
-        ? true : writeTarget(fallback);
+    // 只写程序目录下的 Data/sources.json；不再双写或回退用户 AppData。
     const bool primaryOk = writeTarget(primary);
 
     if (primaryOk) {
         m_storagePath = primary;
-        if (!fallbackOk)
-            qCWarning(lcRegistry) << "源配置已写入主路径，但备用路径写入失败："
-                                  << fallback << errors.join(QStringLiteral("；"));
-        return true;
-    }
-    if (fallbackOk && !fallback.isEmpty() && fallback != primary) {
-        m_storagePath = fallback;
-        qCWarning(lcRegistry) << "主数据目录不可写，源配置已改用备用路径" << fallback;
         return true;
     }
 

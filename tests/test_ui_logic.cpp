@@ -4,13 +4,11 @@
 #include "ui/LyricsController.h"
 #include "ui/PlaylistController.h"
 
-#include <QDir>
 #include <QFile>
 #include <QListWidget>
 #include <QListView>
 #include <QTemporaryDir>
 #include <QTabWidget>
-#include <QStandardPaths>
 
 #include <QPointer>
 #include <QTcpServer>
@@ -107,8 +105,8 @@ void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
 
-    // 主路径用一个“文件”占位，QDir::mkpath 和 QSaveFile 都会失败；
-    // 备用路径在测试模式下隔离，再放一个同名目录让第一次保存彻底失败。
+    // 主路径用一个“文件”占位，QDir::mkpath 和 QSaveFile 都会失败。
+    // 现在只写程序目录，没有备用路径兜底，保存应当直接失败。
     const QString fakePrimary = temp.filePath(QStringLiteral("not-a-dir"));
     QFile blocker(fakePrimary);
     QVERIFY(blocker.open(QIODevice::WriteOnly));
@@ -116,10 +114,6 @@ void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()
 
     const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
     qputenv("MVP_DATA_DIR", fakePrimary.toUtf8());
-    QStandardPaths::setTestModeEnabled(true);
-    const QString fallback = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
-                             + QStringLiteral("/playlists.json");
-    QVERIFY(QDir().mkpath(fallback));
 
     PlaybackController player;
     QTabWidget tabs;
@@ -142,15 +136,13 @@ void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()
     QCOMPARE(tabs.tabText(0), QStringLiteral("音乐 *"));
     QVERIFY(tabs.tabToolTip(0).contains(QStringLiteral("未保存")));
 
-    // 恢复备用路径后重试必须成功，并清除页签上的未保存标记。
-    QVERIFY(QDir(fallback).removeRecursively());
+    // 数据目录恢复可写后重试必须成功，并清除页签上的未保存标记。
+    qputenv("MVP_DATA_DIR", temp.path().toUtf8());
     QVERIFY(controller.retrySave());
     QVERIFY(!controller.hasUnsavedChanges());
     QCOMPARE(tabs.tabText(0), QStringLiteral("音乐"));
     QCOMPARE(tabs.tabText(1), QStringLiteral("视频"));
 
-    QFile::remove(fallback);
-    QStandardPaths::setTestModeEnabled(false);
     if (oldDataDir.isEmpty())
         qunsetenv("MVP_DATA_DIR");
     else

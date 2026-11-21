@@ -30,12 +30,13 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 
 ## 数据目录
 
-用户数据放在**程序根目录**（exe 所在目录）下的 `Data/`：
+用户数据只放在**程序根目录**（exe 所在目录）下，不再写系统用户数据目录：
 
-- `playlists.json`：音乐 / 视频播放列表
-- `sources.json`：搜索源配置
+- `Data/playlists.json`：音乐 / 视频播放列表
+- `Data/sources.json`：搜索源配置
+- `log/MusicVideoPlayer.log`：运行日志，单文件超过 8 MB 轮转为 `.1`
 
-运行日志放在 exe 同级的 `log/MusicVideoPlayer.log`，单文件超过 8 MB 轮转为 `.1`；当 `log/` 不可写时，回退到系统用户数据目录（`QStandardPaths::AppDataLocation`）下的同名日志文件。
+程序目录不可写时，保存会直接失败并在界面提示，不会偷偷改写到 `QStandardPaths::AppDataLocation`。
 
 测试专用：设置环境变量 `MVP_DATA_DIR` 可把数据目录指向临时路径，单元测试用它避免碰真实数据。
 
