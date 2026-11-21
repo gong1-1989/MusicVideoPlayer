@@ -2,6 +2,7 @@
 
 #include "net/HttpClient.h"
 #include "util/HeaderPolicy.h"
+#include "util/PlaylistSniffer.h"
 
 #include <QDateTime>
 #include <QFileInfo>
@@ -89,8 +90,7 @@ QString DownloadTask::sanitizeFileName(const QString &name, const QString &suffi
 
 bool DownloadTask::looksLikeHls(const QUrl &url)
 {
-    return url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive)
-        || url.toString().contains(QLatin1String(".m3u8"), Qt::CaseInsensitive);
+    return PlaylistSniffer::metadataIndicatesPlaylist(url, QString());
 }
 
 void DownloadTask::startRequest()
@@ -290,7 +290,7 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         *isMaster = false;
 
     const QString text = QString::fromUtf8(body);
-    if (!text.contains(QLatin1String("#EXTM3U"))) {
+    if (!PlaylistSniffer::bodyIsPlaylist(body)) {
         if (error != nullptr)
             *error = tr("服务器返回的不是 m3u8 播放列表（可能是网页或错误页）");
         return false;
@@ -759,17 +759,12 @@ bool DownloadTask::isPlaylistReply(QNetworkReply *reply)
         return false;
     const QString type =
         reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
-    if (type.contains(QLatin1String("mpegurl")))
-        return true;
-    if (reply->url().path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive))
+    if (PlaylistSniffer::metadataIndicatesPlaylist(reply->url(), type))
         return true;
     // 部分源把 m3u8 以 text/plain 返回，且签名地址没有 .m3u8 后缀。
-    // 这类响应先按播放列表处理；解析失败会明确报“不是播放列表”，
+    // 这类响应先按播放列表处理；解析正文时再用 #EXTM3U 确认，
     // 不会把 m3u8 文本当成媒体字节写进目标文件。
-    if (type.startsWith(QLatin1String("text/plain")))
-        return true;
-    return type.isEmpty()
-        && reply->url().toString().contains(QLatin1String(".m3u8"), Qt::CaseInsensitive);
+    return type.startsWith(QLatin1String("text/plain"));
 }
 
 bool DownloadTask::isMediaContentType(const QString &contentType)

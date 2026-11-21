@@ -2,6 +2,7 @@
 #include "stream/HlsSeekWindow.h"
 #include "net/HttpClient.h"
 #include "util/HeaderPolicy.h"
+#include "util/PlaylistSniffer.h"
 
 #include <QDateTime>
 #include <QHash>
@@ -99,12 +100,19 @@ bool isPlaylistResponse(QNetworkReply *reply)
 {
     const QString type =
         reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
-    if (type.contains(QLatin1String("mpegurl")))
+    if (PlaylistSniffer::metadataIndicatesPlaylist(reply->url(), type))
         return true;
-    if (reply->url().path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive))
-        return true;
-    return type.isEmpty()
-        && reply->url().toString().contains(QLatin1String(".m3u8"), Qt::CaseInsensitive);
+    // 签名 HLS 常见：地址没有 .m3u8、Content-Type 是 text/plain。
+    // 先按播放列表读取正文，再由 #EXTM3U 做最终确认；不是播放列表会明确失败，
+    // 不会把网页/错误文本缓存成媒体。
+    return type.startsWith(QLatin1String("text/plain"));
+}
+
+/// FFmpeg 对播放列表会带 `Range: bytes=0-`，只是想拿全文。
+/// 其它明确区间不能按播放列表处理，否则会拿到半截 m3u8。
+bool isOpenEndedRange(const QString &spec)
+{
+    return spec.trimmed().compare(QLatin1String("bytes=0-"), Qt::CaseInsensitive) == 0;
 }
 
 /// 同一个视频的 master 列表和子列表通常共享目录，最多再差一层码率目录。
@@ -484,12 +492,20 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
 
         // HEAD/带 Range 的播放列表不做正文改写，避免破坏 206 语义；
         // 正常 GET 播放列表则把每个 URI 都映射到代理，绝对地址也不会绕过鉴权头。
+        // FFmpeg 的 `bytes=0-` 等价于要全文，可以安全改写；明确区间则拒绝。
         if (!isHead && isPlaylistResponse(reply)) {
-            if (!hasRange) {
+            if (!hasRange || isOpenEndedRange(request.range)) {
                 attachPlaylist(client, reply, headers);
-                return;
+            } else {
+                qCWarning(lcProxy) << "播放列表不支持指定区间" << request.range
+                                   << HttpClient::redactUrl(upstream);
+                replyError(client, 400, QStringLiteral("playlist range unsupported"));
+                reply->abort();
+                reply->deleteLater();
             }
-        } else if (!isHead && status == 200) {
+            return;
+        }
+        if (!isHead && status == 200) {
             // 只有“上游忽略 Range、返回完整 200”才值得缓存。上游已经回 206
             // 说明它自己支持分段，保持原样透传即可，不额外占内存。
             const QVariant lengthHeader = reply->header(QNetworkRequest::ContentLengthHeader);
@@ -1519,7 +1535,7 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
 
         const QByteArray body = reply->readAll();
         const QUrl finalUrl = reply->url();
-        if (!body.contains("#EXTM3U")) {
+        if (!PlaylistSniffer::bodyIsPlaylist(body)) {
             qCWarning(lcProxy) << "播放列表正文不是 m3u8：" << HttpClient::redactUrl(finalUrl);
             replyError(socket, 404, QStringLiteral("playlist unavailable"));
             reply->deleteLater();

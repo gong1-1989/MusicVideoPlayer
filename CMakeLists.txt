@@ -34,6 +34,8 @@ endfunction()
 qt_add_library(mvp_core STATIC
     src/media/MediaItem.h
     src/util/HeaderPolicy.h
+    src/util/PlaylistSniffer.h
+    src/util/PlaylistSniffer.cpp
     src/util/SecretStore.h
     src/util/SecretStore.cpp
     src/util/TimeFormat.h

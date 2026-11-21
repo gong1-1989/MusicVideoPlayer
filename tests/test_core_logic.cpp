@@ -7,6 +7,7 @@
 #include "stream/StreamProxy.h"
 #include "stream/HlsSeekWindow.h"
 #include "util/HeaderPolicy.h"
+#include "util/PlaylistSniffer.h"
 #include "util/SecretStore.h"
 #include "util/TimeFormat.h"
 
@@ -67,7 +68,7 @@ public:
 
                     socket->setProperty("responded", true);
                     QByteArray response = "HTTP/1.1 200 OK\r\n"
-                                          "Content-Type: audio/mpeg\r\n"
+                                          "Content-Type: " + contentType + "\r\n"
                                           "Accept-Ranges: none\r\n"
                                           "Content-Length: "
                                           + QByteArray::number(body.size())
@@ -83,6 +84,7 @@ public:
     QByteArray body;
     int requestCount = 0;
     QString lastRange;
+    QByteArray contentType = QByteArrayLiteral("audio/mpeg");
 };
 
 /// 模拟真正支持 206 的 HLS 分片源站。代理对 `bytes=0-` 的 .ts 请求会先
@@ -370,11 +372,13 @@ private slots:
     void sourceConfigNormalizesTimeout();
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
+    void playlistSnifferRecognizesBody();
     void downloadHlsVerifiesSegmentsAndMapRange();
     void configMapperReadsNestedPaths();
     void configMapperBoolRulesDoNotMixWithNumbers();
     void configMapperSplitsEpisodesAndResolvesUrls();
     void streamProxySlicesRangeFromCache();
+    void streamProxyHandlesSuffixlessTextPlaylist();
     void seekPrefetchWindowFollowsPlaylistIndex();
     void streamProxyMultiRangeForHlsSegment();
     void streamProxyFallsBackWhenHlsRangeIgnored();
@@ -711,6 +715,25 @@ void CoreLogicTest::httpLogUrlRedactsSignature()
     QVERIFY(pathText.contains(QStringLiteral("video.mp4")));
 }
 
+void CoreLogicTest::playlistSnifferRecognizesBody()
+{
+    QVERIFY(PlaylistSniffer::metadataIndicatesPlaylist(
+        QUrl(QStringLiteral("https://cdn.example.com/a/index.m3u8")), QString()));
+    QVERIFY(PlaylistSniffer::metadataIndicatesPlaylist(
+        QUrl(QStringLiteral("https://cdn.example.com/signed/abc")),
+        QStringLiteral("application/vnd.apple.mpegurl")));
+    QVERIFY(!PlaylistSniffer::metadataIndicatesPlaylist(
+        QUrl(QStringLiteral("https://cdn.example.com/signed/abc")),
+        QStringLiteral("text/plain")));
+
+    QVERIFY(PlaylistSniffer::bodyIsPlaylist(QByteArrayLiteral("#EXTM3U\n#EXTINF:1,\na.ts\n")));
+    QVERIFY(PlaylistSniffer::bodyIsPlaylist(
+        QByteArrayLiteral("\xEF\xBB\xBF  \r\n#EXTM3U\n#EXTINF:1,\na.ts\n")));
+    QVERIFY(!PlaylistSniffer::bodyIsPlaylist(QByteArrayLiteral("<html>not a playlist</html>")));
+    QVERIFY(!PlaylistSniffer::bodyIsPlaylist(
+        QByteArrayLiteral("#EXTINF:1,\na.ts\n#EXTM3U\n")));
+}
+
 void CoreLogicTest::headerPolicyStripsSecretsAcrossHost()
 {
     QHash<QString, QString> headers;
@@ -903,6 +926,53 @@ void CoreLogicTest::streamProxySlicesRangeFromCache()
     QVERIFY2(head.startsWith("HTTP/1.1 416"), head.constData());
     QVERIFY(head.contains("Content-Range: bytes */1000"));
     QCOMPARE(body.size(), 0);
+    QCOMPARE(upstream.requestCount, 1);
+}
+
+void CoreLogicTest::streamProxyHandlesSuffixlessTextPlaylist()
+{
+    // 签名 HLS 常见形态：地址没有 .m3u8，Content-Type 只是 text/plain。
+    // 代理必须在 bytes=0- 时仍拉全文并改写分片，不能把原始 m3u8 当媒体缓存。
+    RangeIgnoringServer upstream;
+    upstream.contentType = QByteArrayLiteral("text/plain; charset=utf-8");
+    upstream.body = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXTINF:1,\n"
+        "seg0.ts\n"
+        "#EXTINF:1,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n");
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QString upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/signed/playlist?token=abc")
+            .arg(upstream.serverPort());
+    const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl));
+    QVERIFY(local.isValid());
+
+    QTcpSocket socket;
+    socket.connectToHost(local.host(), quint16(local.port()));
+    QVERIFY(socket.waitForConnected(3000));
+
+    QByteArray request = "GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                         "Host: 127.0.0.1\r\n"
+                         "Range: bytes=0-\r\n"
+                         "Connection: close\r\n\r\n";
+    socket.write(request);
+    socket.flush();
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(readProxyResponse(&socket, &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 200"), head.constData());
+    QVERIFY(head.contains("Content-Type: text/plain"));
+    QVERIFY(body.contains("#EXTM3U"));
+    QVERIFY(body.contains("/stream/"));
     QCOMPARE(upstream.requestCount, 1);
 }
 
