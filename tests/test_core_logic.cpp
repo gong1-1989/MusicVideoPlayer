@@ -1,18 +1,24 @@
 #include "lyrics/LrcParser.h"
+#include "download/DownloadTask.h"
 #include "media/MediaItem.h"
 #include "net/ConfigMapper.h"
 #include "net/HttpClient.h"
 #include "net/SourceConfig.h"
 #include "stream/StreamProxy.h"
 #include "stream/HlsSeekWindow.h"
+#include "util/HeaderPolicy.h"
 #include "util/TimeFormat.h"
 
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTest>
@@ -158,6 +164,136 @@ public:
     QList<QPair<qint64, qint64>> ranges;
 };
 
+/// 本地 HLS 下载源：主播放列表带 EXT-X-MAP 的 BYTERANGE，分片支持 206。
+/// 用来验证 DownloadTask 的 init 段范围、分片长度校验和 .mp4→.ts 切换。
+class HlsDownloadServer : public QTcpServer
+{
+public:
+    explicit HlsDownloadServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        initBody = QByteArrayLiteral("INIT-SEGMENT-BYTES-0123456789");
+        segment0 = proxyTestBody(100);
+        segment1 = proxyTestBody(100);
+        playlist = QByteArrayLiteral(
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:7\n"
+            "#EXT-X-TARGETDURATION:1\n"
+            "#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"10@0\"\n"
+            "#EXTINF:1,\n"
+            "seg0.ts\n"
+            "#EXTINF:1,\n"
+            "seg1.ts\n"
+            "#EXT-X-ENDLIST\n");
+
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("responded").toBool())
+                        return;
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+
+                    const QByteArray head = pending.left(headEnd);
+                    const QByteArray requestLine = head.split('\n').value(0).trimmed();
+                    const QByteArray path = requestLine.split(' ').value(1);
+                    qint64 start = 0;
+                    qint64 end = -1;
+                    bool hasRange = false;
+                    for (const QByteArray &line : head.split('\n')) {
+                        if (!line.toLower().startsWith("range:"))
+                            continue;
+                        const QByteArray value = line.mid(6).trimmed();
+                        if (!value.startsWith("bytes="))
+                            continue;
+                        const int dash = value.indexOf('-');
+                        if (dash <= 6)
+                            continue;
+                        start = value.mid(6, dash - 6).toLongLong();
+                        const QByteArray tail = value.mid(dash + 1);
+                        if (!tail.isEmpty())
+                            end = tail.toLongLong();
+                        hasRange = true;
+                    }
+
+                    QByteArray content;
+                    QByteArray contentType;
+                    if (path == "/index.m3u8") {
+                        content = playlist;
+                        contentType = "application/vnd.apple.mpegurl";
+                    } else if (path == "/init.mp4") {
+                        content = initBody;
+                        contentType = "video/mp4";
+                        initRangeStart = start;
+                        initRangeEnd = end;
+                        initRangeReceived = hasRange;
+                    } else if (path == "/seg0.ts") {
+                        content = segment0;
+                        contentType = "video/mp2t";
+                    } else if (path == "/seg1.ts") {
+                        content = segment1;
+                        contentType = "video/mp2t";
+                    } else {
+                        socket->setProperty("responded", true);
+                        socket->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
+                                      "Connection: close\r\n\r\n");
+                        QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                        return;
+                    }
+
+                    if (hasRange) {
+                        end = (end < 0 || end >= content.size()) ? content.size() - 1 : end;
+                        if (start < 0 || start > end) {
+                            socket->setProperty("responded", true);
+                            socket->write("HTTP/1.1 416 Range Not Satisfiable\r\n"
+                                          "Content-Range: bytes */"
+                                          + QByteArray::number(content.size())
+                                          + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                            QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                            return;
+                        }
+                        const QByteArray part = content.mid(int(start), int(end - start + 1));
+                        QByteArray response = "HTTP/1.1 206 Partial Content\r\n"
+                                              "Content-Type: " + contentType + "\r\n"
+                                              "Content-Range: bytes "
+                                              + QByteArray::number(start) + '-'
+                                              + QByteArray::number(end) + '/'
+                                              + QByteArray::number(content.size())
+                                              + "\r\nContent-Length: "
+                                              + QByteArray::number(part.size())
+                                              + "\r\nConnection: close\r\n\r\n" + part;
+                        socket->setProperty("responded", true);
+                        socket->write(response);
+                    } else {
+                        QByteArray response = "HTTP/1.1 200 OK\r\n"
+                                              "Content-Type: " + contentType + "\r\n"
+                                              "Content-Length: "
+                                              + QByteArray::number(content.size())
+                                              + "\r\nConnection: close\r\n\r\n" + content;
+                        socket->setProperty("responded", true);
+                        socket->write(response);
+                    }
+                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QByteArray playlist;
+    QByteArray initBody;
+    QByteArray segment0;
+    QByteArray segment1;
+    bool initRangeReceived = false;
+    qint64 initRangeStart = -1;
+    qint64 initRangeEnd = -1;
+};
+
 bool readProxyResponse(QTcpSocket *socket, QByteArray *head, QByteArray *body,
                        int timeoutMs = 5000)
 {
@@ -231,6 +367,8 @@ private slots:
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
     void httpLogUrlRedactsSignature();
+    void headerPolicyStripsSecretsAcrossHost();
+    void downloadHlsVerifiesSegmentsAndMapRange();
     void configMapperReadsNestedPaths();
     void configMapperBoolRulesDoNotMixWithNumbers();
     void configMapperSplitsEpisodesAndResolvesUrls();
@@ -296,6 +434,8 @@ void CoreLogicTest::mediaItemJsonRoundTrip()
     item.webUrl = QUrl(QStringLiteral("https://example.com/page"));
     item.sourceId = QStringLiteral("src");
     item.headers.insert(QStringLiteral("Referer"), QStringLiteral("https://example.com/"));
+    item.headers.insert(QStringLiteral("Cookie"), QStringLiteral("sid=secret"));
+    item.headers.insert(QStringLiteral("Authorization"), QStringLiteral("Bearer secret"));
     item.online = true;
     item.durationMs = 12345;
     item.posterUrl = QUrl(QStringLiteral("https://example.com/p.jpg"));
@@ -303,6 +443,11 @@ void CoreLogicTest::mediaItemJsonRoundTrip()
     item.area = QStringLiteral("中国大陆");
     item.genre = QStringLiteral("测试");
     item.description = QStringLiteral("简介");
+
+    const QByteArray payload =
+        QJsonDocument(mediaItemToJson(item)).toJson(QJsonDocument::Compact);
+    QVERIFY(!payload.contains("sid=secret"));
+    QVERIFY(!payload.contains("Bearer secret"));
 
     const MediaItem restored = mediaItemFromJson(mediaItemToJson(item));
 
@@ -314,7 +459,10 @@ void CoreLogicTest::mediaItemJsonRoundTrip()
     QCOMPARE(restored.lyricUrl, item.lyricUrl);
     QCOMPARE(restored.webUrl, item.webUrl);
     QCOMPARE(restored.sourceId, item.sourceId);
-    QVERIFY(restored.headers == item.headers);
+    QCOMPARE(restored.headers.value(QStringLiteral("Referer")),
+             QStringLiteral("https://example.com/"));
+    QVERIFY(!restored.headers.contains(QStringLiteral("Cookie")));
+    QVERIFY(!restored.headers.contains(QStringLiteral("Authorization")));
     QCOMPARE(restored.online, item.online);
     QCOMPARE(restored.durationMs, item.durationMs);
     QCOMPARE(restored.posterUrl, item.posterUrl);
@@ -486,15 +634,85 @@ void CoreLogicTest::sourceConfigNormalizesTimeout()
 void CoreLogicTest::httpLogUrlRedactsSignature()
 {
     const QString text = HttpClient::redactUrl(
-        QUrl(QStringLiteral("https://cdn.example.com/a.m3u8?id=42&sign=abc123&token=xyz&key=kk")));
+        QUrl(QStringLiteral("https://cdn.example.com/a.m3u8?id=42&sign=abc123&token=xyz&key=kk&vuutv=vv")));
     const QUrlQuery query{QUrl(text)};
 
     QCOMPARE(query.queryItemValue(QStringLiteral("id")), QStringLiteral("42"));
     QCOMPARE(query.queryItemValue(QStringLiteral("sign")), QStringLiteral("***"));
     QCOMPARE(query.queryItemValue(QStringLiteral("token")), QStringLiteral("***"));
     QCOMPARE(query.queryItemValue(QStringLiteral("key")), QStringLiteral("***"));
+    QCOMPARE(query.queryItemValue(QStringLiteral("vuutv")), QStringLiteral("***"));
     QVERIFY(!text.contains(QStringLiteral("abc123")));
     QVERIFY(!text.contains(QStringLiteral("xyz")));
+
+    const QString pathText = HttpClient::redactUrl(QUrl(QStringLiteral(
+        "https://cdn.example.com/sign/0123456789abcdef0123456789abcdef/video.mp4")));
+    QVERIFY(!pathText.contains(QStringLiteral("0123456789abcdef0123456789abcdef")));
+    QVERIFY(pathText.contains(QStringLiteral("video.mp4")));
+}
+
+void CoreLogicTest::headerPolicyStripsSecretsAcrossHost()
+{
+    QHash<QString, QString> headers;
+    headers.insert(QStringLiteral("Referer"), QStringLiteral("https://source.example/"));
+    headers.insert(QStringLiteral("Cookie"), QStringLiteral("sid=secret"));
+    headers.insert(QStringLiteral("Authorization"), QStringLiteral("Bearer secret"));
+    headers.insert(QStringLiteral("User-Agent"), QStringLiteral("MVP"));
+
+    const QHash<QString, QString> sameHost =
+        HeaderPolicy::sanitizedForTarget(QUrl(QStringLiteral("https://source.example/a.m3u8")),
+                                         headers);
+    QVERIFY(sameHost.contains(QStringLiteral("Cookie")));
+    QVERIFY(sameHost.contains(QStringLiteral("Authorization")));
+
+    const QHash<QString, QString> crossHost =
+        HeaderPolicy::sanitizedForTarget(QUrl(QStringLiteral("https://cdn.example/seg.ts")),
+                                         headers);
+    QVERIFY(!crossHost.contains(QStringLiteral("Cookie")));
+    QVERIFY(!crossHost.contains(QStringLiteral("Authorization")));
+    QCOMPARE(crossHost.value(QStringLiteral("Referer")),
+             QStringLiteral("https://source.example/"));
+
+    const QHash<QString, QString> downgrade =
+        HeaderPolicy::sanitizedForTarget(QUrl(QStringLiteral("http://source.example/a")),
+                                         headers);
+    QVERIFY(!downgrade.contains(QStringLiteral("Cookie")));
+}
+
+void CoreLogicTest::downloadHlsVerifiesSegmentsAndMapRange()
+{
+    HlsDownloadServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString target = dir.filePath(QStringLiteral("movie.mp4"));
+
+    HttpClient http;
+    const QUrl url(QStringLiteral("http://127.0.0.1:%1/index.m3u8")
+                       .arg(server.serverPort()));
+    DownloadTask *task = DownloadTask::start(&http, url, target);
+    QVERIFY(task != nullptr);
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 8000);
+    QCOMPARE(failed.count(), 0);
+    QVERIFY(succeeded.count() == 1);
+
+    // 目标原本是 .mp4，识别为播放列表后必须实际落到 .ts。
+    const QString output = dir.filePath(QStringLiteral("movie.ts"));
+    QVERIFY2(QFile::exists(output), qPrintable(output));
+    QFile file(output);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.size(), qint64(server.initBody.mid(0, 10).size()
+                                 + server.segment0.size() + server.segment1.size()));
+    QCOMPARE(file.readAll(), server.initBody.mid(0, 10) + server.segment0 + server.segment1);
+
+    // EXT-X-MAP 的 BYTERANGE="10@0" 必须变成 bytes=0-9，而不是整段 init。
+    QVERIFY(server.initRangeReceived);
+    QCOMPARE(server.initRangeStart, qint64(0));
+    QCOMPARE(server.initRangeEnd, qint64(9));
 }
 
 void CoreLogicTest::configMapperReadsNestedPaths()

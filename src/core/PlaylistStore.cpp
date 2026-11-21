@@ -11,6 +11,8 @@
 #include <QLoggingCategory>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QStringList>
+#include <limits>
 #include <utility>
 
 Q_LOGGING_CATEGORY(lcStore, "mvp.store")
@@ -55,6 +57,60 @@ bool writeFile(const QString &path, const QByteArray &payload)
     return true;
 }
 
+/// 损坏文件先备份；时间戳带毫秒并检查重名，避免连续两次 load 生成同名备份。
+QString backupCorrupt(const QString &path)
+{
+    const QString stamp =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddHHmmss-zzz"));
+    QString backup = path + QStringLiteral(".corrupt-") + stamp;
+    int suffix = 1;
+    while (QFileInfo::exists(backup)) {
+        backup = path + QStringLiteral(".corrupt-") + stamp
+            + QStringLiteral("-") + QString::number(suffix++);
+    }
+    return QFile::copy(path, backup) ? backup : QString();
+}
+
+/// 读取一个播放列表文件；文件不存在、打不开或损坏都返回 false。
+/// 解析成功时允许空列表（有效状态），以便主备两份按 mtime 比较。
+bool readPlaylistFile(const QString &path, MediaType type, QVector<MediaItem> *items)
+{
+    if (items == nullptr)
+        return false;
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+
+    const QByteArray payload = file.readAll();
+    file.close();
+    QJsonParseError parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        const QString backup = backupCorrupt(path);
+        if (!backup.isEmpty())
+            qCWarning(lcStore) << "playlists.json 已损坏，原文件备份为" << backup;
+        else
+            qCWarning(lcStore) << "playlists.json 已损坏，且无法备份原文件：" << path;
+        return false;
+    }
+
+    const QJsonArray array = doc.object().value(keyFor(type)).toArray();
+    items->clear();
+    items->reserve(array.size());
+    for (const QJsonValue &value : array) {
+        if (!value.isObject())
+            continue;
+        MediaItem item = mediaItemFromJson(value.toObject());
+        if (!item.isValid())
+            continue;
+        // 类型以所在分区为准，避免手工改文件后串区
+        item.type = type;
+        items->append(item);
+    }
+    return true;
+}
+
 } // namespace
 
 namespace PlaylistStore {
@@ -66,51 +122,49 @@ QString filePath()
 
 QVector<MediaItem> load(MediaType type)
 {
-    QVector<MediaItem> items;
+    const QString primary = primaryPath();
+    const QString fallback = fallbackPath();
 
-    QString path = primaryPath();
-    if (!QFile::exists(path)) {
-        // 旧版本把列表放在 C 盘 AppData，首次运行时做一次无缝迁移读取
-        const QString legacy = fallbackPath();
-        if (!legacy.isEmpty() && QFile::exists(legacy)) {
-            qCInfo(lcStore) << "从旧位置读取播放列表：" << legacy;
-            path = legacy;
+    // 主路径存在但不可写时，新数据会落到 fallback，而主路径还留着旧文件。
+    // 只“主路径不存在才读 fallback”会把旧列表读回来，所以两份都读，
+    // 在都有效的情况下选 mtime 较新的那一份。
+    QVector<MediaItem> bestItems;
+    qint64 bestMtime = std::numeric_limits<qint64>::min();
+    QString bestPath;
+    bool foundValid = false;
+
+    QStringList candidates;
+    candidates.append(primary);
+    if (!fallback.isEmpty() && fallback != primary)
+        candidates.append(fallback);
+
+    for (const QString &path : candidates) {
+        if (path.isEmpty() || !QFile::exists(path))
+            continue;
+
+        QVector<MediaItem> items;
+        if (!readPlaylistFile(path, type, &items))
+            continue;
+
+        const qint64 mtime = QFileInfo(path).lastModified().toMSecsSinceEpoch();
+        if (!foundValid || mtime > bestMtime) {
+            bestItems = items;
+            bestMtime = mtime;
+            bestPath = path;
+            foundValid = true;
         }
     }
 
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return items;
+    if (!foundValid)
+        return {};
 
-    const QByteArray payload = file.readAll();
-    file.close();
-    QJsonParseError parseError{};
-    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        // 损坏的播放列表先备份，再按空列表启动；避免下一次保存把原文件彻底覆盖。
-        const QString backup =
-            path + QStringLiteral(".corrupt-")
-            + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddHHmmss"));
-        if (QFile::copy(path, backup))
-            qCWarning(lcStore) << "playlists.json 已损坏，原文件备份为" << backup;
-        else
-            qCWarning(lcStore) << "playlists.json 已损坏，且无法备份原文件：" << path;
-        return items;
+    if (bestPath != primary) {
+        qCInfo(lcStore) << (QFile::exists(primary)
+                                ? "主播放列表不可用或较旧，改读备用路径："
+                                : "从旧位置读取播放列表：")
+                        << bestPath;
     }
-
-    const QJsonArray array = doc.object().value(keyFor(type)).toArray();
-    items.reserve(array.size());
-    for (const QJsonValue &value : array) {
-        if (!value.isObject())
-            continue;
-        MediaItem item = mediaItemFromJson(value.toObject());
-        if (!item.isValid())
-            continue;
-        // 类型以所在分区为准，避免手工改文件后串区
-        item.type = type;
-        items.append(item);
-    }
-    return items;
+    return bestItems;
 }
 
 bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
@@ -140,13 +194,6 @@ bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
 
     qCWarning(lcStore) << "播放列表保存失败，主路径和备用路径均不可写";
     return false;
-}
-
-bool save(MediaType type, const QVector<MediaItem> &items)
-{
-    if (type == MediaType::Music)
-        return saveAll(items, load(MediaType::Video));
-    return saveAll(load(MediaType::Music), items);
 }
 
 } // namespace PlaylistStore

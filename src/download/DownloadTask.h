@@ -75,14 +75,23 @@ private:
                        bool *isMaster, QString *error);
     static bool isPlaylistReply(QNetworkReply *reply);
     static bool isMediaContentType(const QString &contentType);
+    static bool parseContentRange(const QByteArray &value, qint64 *start, qint64 *end);
+    static qint64 expectedRangeBytes(const QByteArray &range);
+    bool switchToHlsFile();
 
     HttpClient *m_http;
     QUrl m_url;
+    QUrl m_originUrl;
     QString m_filePath;
     QHash<QString, QString> m_headers;
     QPointer<QNetworkReply> m_reply;
     QPointer<QSaveFile> m_file;
     bool m_done = false;
+
+    qint64 m_bytesWritten = 0;
+    qint64 m_expectedBytes = -1;
+    qint64 m_segmentBytes = 0;
+    qint64 m_segmentExpected = -1;
 
     bool m_isHls = false;
     QVector<Segment> m_segments;

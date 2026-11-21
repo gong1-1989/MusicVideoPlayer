@@ -1,6 +1,7 @@
 #include "stream/StreamProxy.h"
 #include "stream/HlsSeekWindow.h"
 #include "net/HttpClient.h"
+#include "util/HeaderPolicy.h"
 
 #include <QDateTime>
 #include <QHash>
@@ -269,7 +270,9 @@ QUrl StreamProxy::proxyUrlFor(const QUrl &upstream, const QHash<QString, QString
     const QString token = QString::number(QRandomGenerator::global()->generate64(), 16);
     Upstream entry;
     entry.url = upstream;
-    entry.headers = headers;
+    // token 可能对应播放列表，也可能对应 CDN 分片。按目标 host 过滤敏感头：
+    // 播放列表在源站时保留 Cookie，分片换到 CDN 时自动剥掉。
+    entry.headers = HeaderPolicy::sanitizedForTarget(upstream, headers);
     entry.createdAtMs = QDateTime::currentMSecsSinceEpoch();
     m_tokens.insert(token, entry);
     // 末尾的斜杠很关键：m3u8 里的相对分片会按“目录”解析，
@@ -373,7 +376,7 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
 
     const Upstream entry = m_tokens.value(token);
     if (entry.url.isEmpty() || !entry.url.isValid()) {
-        qCWarning(lcProxy) << "流转令牌未知：" << token;
+        qCWarning(lcProxy) << "流转令牌未知，前缀：" << token.left(6);
         replyError(client, 404, QStringLiteral("Not Found"));
         return;
     }

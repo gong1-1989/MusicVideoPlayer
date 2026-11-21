@@ -334,7 +334,8 @@ void Prober::recordAttempt(const QString &url, int status, const QString &note)
     attempt.status = status;
     attempt.note = note;
     m_result.attempts.append(attempt);
-    qCInfo(lcProbe) << "试探" << status << note << url;
+    qCInfo(lcProbe) << "试探" << status << note
+                    << HttpClient::redactUrl(QUrl(url));
 }
 
 void Prober::fetchHome()
@@ -624,7 +625,7 @@ void Prober::probeNextCandidate()
 
 void Prober::validate(const SourceConfig &config, const QString &keyword)
 {
-    qCInfo(lcProbe) << "校验配置" << config.urlTemplate << config.fields;
+    qCInfo(lcProbe) << "校验配置" << config.id << config.name;
 
     ConfigSearchProvider *provider = new ConfigSearchProvider(config, m_http, this);
     m_validator = provider;

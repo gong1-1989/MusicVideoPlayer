@@ -8,9 +8,34 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QStringList>
 #include <QLoggingCategory>
 
 Q_LOGGING_CATEGORY(lcDownloadUi, "mvp.download")
+
+namespace {
+
+// 以前非 HLS 视频一律存成 .mp4、音乐一律 .mp3，FLV/WebM/M4A/FLAC
+// 会被错误改名，播放器和其他工具按扩展名解码时可能失败。
+QString mediaSuffixFor(const QUrl &url, MediaType type)
+{
+    const QString suffix = QFileInfo(url.path()).suffix().toLower();
+    static const QStringList videoSuffixes = {
+        QStringLiteral("mp4"), QStringLiteral("m4v"), QStringLiteral("mov"),
+        QStringLiteral("flv"), QStringLiteral("webm"), QStringLiteral("mkv"),
+        QStringLiteral("avi"), QStringLiteral("ts")
+    };
+    static const QStringList audioSuffixes = {
+        QStringLiteral("mp3"), QStringLiteral("m4a"), QStringLiteral("aac"),
+        QStringLiteral("flac"), QStringLiteral("ogg"), QStringLiteral("oga"),
+        QStringLiteral("opus"), QStringLiteral("wav"), QStringLiteral("wma")
+    };
+    if (videoSuffixes.contains(suffix) || audioSuffixes.contains(suffix))
+        return suffix;
+    return type == MediaType::Video ? QStringLiteral("mp4") : QStringLiteral("mp3");
+}
+
+} // namespace
 
 DownloadController::DownloadController(HttpClient *http, QWidget *dialogParent, QObject *parent)
     : QObject(parent)
@@ -30,9 +55,7 @@ void DownloadController::download(const MediaItem &item)
 
     const QUrl downloadUrl = preferredPlaybackUrl(item);
     const bool hls = DownloadTask::looksLikeHls(downloadUrl);
-    const QString suffix = hls ? QStringLiteral("ts")
-                               : (item.type == MediaType::Video ? QStringLiteral("mp4")
-                                                                : QStringLiteral("mp3"));
+    const QString suffix = hls ? QStringLiteral("ts") : mediaSuffixFor(downloadUrl, item.type);
     const QString filter = hls ? tr("视频文件 (*.ts *.mp4)")
                                : tr("媒体文件 (*.%1)").arg(suffix);
     const QString suggested =

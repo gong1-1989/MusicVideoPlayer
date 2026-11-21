@@ -10,6 +10,8 @@
 #include <QStringList>
 #include <QUrl>
 
+#include "util/HeaderPolicy.h"
+
 enum class MediaType {
     Music,
     Video
@@ -29,7 +31,7 @@ struct MediaItem
     QUrl lyricUrl;
     QUrl webUrl;                    // 原始页面，便于回看来源
     QString sourceId;               // 来自哪个搜索源（本地文件为空）
-    QHash<QString, QString> headers; // 播放/下载要补的请求头（Referer、Cookie 等）
+    QHash<QString, QString> headers; // 播放/下载要补的请求头（Referer 等；敏感头按目标 host 过滤）
     bool online = false;
     qint64 durationMs = 0;
 
@@ -161,9 +163,10 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
         object.insert(QStringLiteral("webUrl"), item.webUrl.toString());
     if (!item.sourceId.isEmpty())
         object.insert(QStringLiteral("sourceId"), item.sourceId);
-    if (!item.headers.isEmpty()) {
+    const QHash<QString, QString> safeHeaders = HeaderPolicy::persistedHeaders(item.headers);
+    if (!safeHeaders.isEmpty()) {
         QJsonObject headers;
-        for (auto it = item.headers.cbegin(); it != item.headers.cend(); ++it)
+        for (auto it = safeHeaders.cbegin(); it != safeHeaders.cend(); ++it)
             headers.insert(it.key(), it.value());
         object.insert(QStringLiteral("headers"), headers);
     }
@@ -202,8 +205,12 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
     item.webUrl = QUrl(object.value(QStringLiteral("webUrl")).toString());
     item.sourceId = object.value(QStringLiteral("sourceId")).toString();
     const QJsonObject headers = object.value(QStringLiteral("headers")).toObject();
-    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it)
-        item.headers.insert(it.key(), it.value().toString());
+    for (auto it = headers.constBegin(); it != headers.constEnd(); ++it) {
+        // 旧版列表可能把 Cookie/Authorization 明文写进来了，读取时直接丢弃，
+        // 避免历史数据继续把凭据带进内存和下一次保存。
+        if (!HeaderPolicy::isSensitiveHeader(it.key()))
+            item.headers.insert(it.key(), it.value().toString());
+    }
     item.online = object.value(QStringLiteral("online")).toBool();
     item.durationMs = static_cast<qint64>(object.value(QStringLiteral("duration")).toDouble());
     item.posterUrl = QUrl(object.value(QStringLiteral("posterUrl")).toString());

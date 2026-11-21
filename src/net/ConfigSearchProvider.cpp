@@ -12,6 +12,8 @@
 #include <QRegularExpression>
 #include <QUrl>
 
+#include "util/HeaderPolicy.h"
+
 Q_LOGGING_CATEGORY(lcProvider, "mvp.net.provider")
 
 using namespace ConfigMapper;
@@ -97,10 +99,12 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
         emit finished(m_config.id, {}, 0, tr("搜索地址无效"));
         return;
     }
+    m_originUrl = requestUrl;
 
     QHash<QString, QString> headers = m_config.headers;
     if (!m_config.cookie.isEmpty())
         headers.insert(QStringLiteral("Cookie"), m_config.cookie);
+    headers = HeaderPolicy::sanitizedForTarget(requestUrl, headers, m_originUrl);
 
     qCInfo(lcProvider) << "搜索" << m_config.id << HttpClient::redactUrl(requestUrl);
 
@@ -161,7 +165,8 @@ void ConfigSearchProvider::onReplyFinished()
     const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
     if (parseError.error != QJsonParseError::NoError) {
         qCWarning(lcProvider) << m_config.id << "返回的不是 JSON：" << parseError.errorString()
-                              << payload.left(120);
+                              << payload.size() << "字节，Content-Type："
+                              << reply->header(QNetworkRequest::ContentTypeHeader).toString();
         emit finished(m_config.id, {}, 0, tr("响应不是 JSON 数据"));
         return;
     }
@@ -336,6 +341,8 @@ void ConfigSearchProvider::launchDetails()
         QHash<QString, QString> headers = m_config.headers;
         if (!m_config.cookie.isEmpty())
             headers.insert(QStringLiteral("Cookie"), m_config.cookie);
+        // 详情接口可能被配置到另一个 host；只把凭据留给搜索源站。
+        headers = HeaderPolicy::sanitizedForTarget(requestUrl, headers, m_originUrl);
 
         QNetworkReply *reply = m_http->get(requestUrl, QByteArray(), headers);
         if (reply == nullptr) {

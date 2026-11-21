@@ -41,6 +41,7 @@ private:
     int m_limit = 20;
     bool m_done = false;
     QUrl m_baseUrl;
+    QUrl m_originUrl;               // 搜索接口的源站，用于裁剪 Cookie/Authorization
     QElapsedTimer m_searchTimer;
 
     QVector<MediaItem> m_result;

@@ -2,12 +2,50 @@
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+
+namespace {
+
+QString fallbackFilePath()
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return dir.isEmpty() ? QString() : dir + QStringLiteral("/playlists.json");
+}
+
+bool writePlaylist(const QString &path, const QString &key, const QVector<MediaItem> &items)
+{
+    QJsonObject root;
+    QJsonArray array;
+    for (const MediaItem &item : items)
+        array.append(mediaItemToJson(item));
+    root.insert(key, array);
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return false;
+    return file.write(QJsonDocument(root).toJson(QJsonDocument::Compact)) >= 0;
+}
+
+MediaItem makeMusic(const QString &title)
+{
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = title;
+    item.url = QUrl(QStringLiteral("https://example.com/%1.mp3").arg(title));
+    return item;
+}
+
+} // namespace
 
 class StorageTest : public QObject
 {
@@ -20,6 +58,8 @@ private slots:
 
     void playlistRoundTrip();
     void playlistCorruptFileBacksUp();
+    void playlistFallsBackToNewerCopy();
+    void playlistReadsFallbackWhenPrimaryMissing();
     void sourceRegistrySeedsAndPersists();
     void sourceRegistryCorruptFileBacksUp();
 
@@ -30,6 +70,9 @@ private:
 void StorageTest::initTestCase()
 {
     QVERIFY(m_tempDir.isValid());
+    QCoreApplication::setOrganizationName(QStringLiteral("MusicVideoPlayerTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("MusicVideoPlayerTest"));
+    QStandardPaths::setTestModeEnabled(true);
     qputenv("MVP_DATA_DIR", m_tempDir.path().toUtf8());
     QVERIFY(QDir(StoragePaths::dataDir()).exists()
             || QDir().mkpath(StoragePaths::dataDir()));
@@ -39,10 +82,17 @@ void StorageTest::init()
 {
     QVERIFY(QDir(StoragePaths::dataDir()).removeRecursively());
     QVERIFY(QDir().mkpath(StoragePaths::dataDir()));
+    const QString fallback = fallbackFilePath();
+    if (!fallback.isEmpty())
+        QFile::remove(fallback);
 }
 
 void StorageTest::cleanupTestCase()
 {
+    const QString fallback = fallbackFilePath();
+    if (!fallback.isEmpty())
+        QFile::remove(fallback);
+    QStandardPaths::setTestModeEnabled(false);
     qunsetenv("MVP_DATA_DIR");
 }
 
@@ -105,6 +155,44 @@ void StorageTest::playlistCorruptFileBacksUp()
         QDir(StoragePaths::dataDir())
             .entryList({QStringLiteral("playlists.json.corrupt-*")}, QDir::Files);
     QCOMPARE(backups.size(), 1);
+}
+
+void StorageTest::playlistFallsBackToNewerCopy()
+{
+    const QString primary = StoragePaths::dataFile(QStringLiteral("playlists.json"));
+    const QString fallback = fallbackFilePath();
+    QVERIFY(!fallback.isEmpty());
+    QVERIFY(fallback != primary);
+
+    QVERIFY(writePlaylist(primary, QStringLiteral("music"),
+                          {makeMusic(QStringLiteral("旧列表"))}));
+    // 模拟主路径可读但不可写：之后的新数据落在 fallback，主路径保留旧文件。
+    // 明确把主文件时间调旧，避免 FAT/NTFS 时间戳精度影响判断。
+    QFile oldFile(primary);
+    QVERIFY(oldFile.open(QIODevice::ReadWrite));
+    QVERIFY(oldFile.setFileTime(QDateTime::currentDateTime().addSecs(-10),
+                                QFileDevice::FileModificationTime));
+    oldFile.close();
+    QVERIFY(writePlaylist(fallback, QStringLiteral("music"),
+                          {makeMusic(QStringLiteral("新列表"))}));
+
+    const QVector<MediaItem> items = PlaylistStore::load(MediaType::Music);
+    QCOMPARE(items.size(), 1);
+    QCOMPARE(items.first().title, QStringLiteral("新列表"));
+}
+
+void StorageTest::playlistReadsFallbackWhenPrimaryMissing()
+{
+    const QString primary = StoragePaths::dataFile(QStringLiteral("playlists.json"));
+    const QString fallback = fallbackFilePath();
+    QVERIFY(!fallback.isEmpty());
+    QVERIFY(!QFile::exists(primary));
+    QVERIFY(writePlaylist(fallback, QStringLiteral("music"),
+                          {makeMusic(QStringLiteral("备用列表"))}));
+
+    const QVector<MediaItem> items = PlaylistStore::load(MediaType::Music);
+    QCOMPARE(items.size(), 1);
+    QCOMPARE(items.first().title, QStringLiteral("备用列表"));
 }
 
 void StorageTest::sourceRegistrySeedsAndPersists()

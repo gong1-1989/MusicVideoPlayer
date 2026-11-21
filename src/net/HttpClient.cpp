@@ -5,11 +5,12 @@
 #include <QNetworkCookieJar>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QSet>
 #include <QUrl>
 #include <QUrlQuery>
 
 #include <memory>
+
+#include "util/HeaderPolicy.h"
 
 Q_LOGGING_CATEGORY(lcHttp, "mvp.net")
 
@@ -27,24 +28,12 @@ bool isAllowedScheme(const QUrl &url)
     return url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https");
 }
 
-/// 跨 host 重定向时剥离鉴权头，避免 Cookie/Authorization 被带到第三方 CDN。
+/// 跨 host 或 https→http 降级时剥离鉴权头，避免 Cookie/Authorization
+/// 被带到第三方 CDN 或明文连接。
 QHash<QString, QString> headersForRedirect(const QHash<QString, QString> &headers,
                                            const QUrl &from, const QUrl &to)
 {
-    if (from.host().compare(to.host(), Qt::CaseInsensitive) == 0)
-        return headers;
-
-    static const QSet<QString> sensitive = {
-        QStringLiteral("cookie"),
-        QStringLiteral("authorization"),
-        QStringLiteral("proxy-authorization"),
-        QStringLiteral("x-api-key")};
-    QHash<QString, QString> safe;
-    for (auto it = headers.cbegin(); it != headers.cend(); ++it) {
-        if (!sensitive.contains(it.key().toLower()))
-            safe.insert(it.key(), it.value());
-    }
-    return safe;
+    return HeaderPolicy::sanitizedForTarget(to, headers, from);
 }
 
 bool isSafeHeader(const QString &name, const QByteArray &value)
@@ -84,9 +73,10 @@ QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &ext
     }
 
     // 各搜索源自定义的头放在最后，允许覆盖上面的默认值。
-    // Cookie 统一交给 QNetworkCookieJar：它只按域名/路径回传，不会像全局 Cookie
-    // 头那样在跨 host 重定向时被带到第三方 CDN。
-    for (auto it = extra.cbegin(); it != extra.cend(); ++it) {
+    // 敏感头（Cookie/Authorization 等）只允许发往 Referer/Origin 对应的源站；
+    // 跨 host 或 https→http 降级时统一剥离，避免直链/分片把凭据带到第三方。
+    const QHash<QString, QString> safeHeaders = HeaderPolicy::sanitizedForTarget(url, extra);
+    for (auto it = safeHeaders.cbegin(); it != safeHeaders.cend(); ++it) {
         const QString key = it.key();
         const QByteArray value = it.value().toUtf8();
         if (!isSafeHeader(key, value)) {
@@ -255,6 +245,34 @@ QString HttpClient::redactUrl(const QUrl &url)
     if (!copy.password().isEmpty())
         copy.setPassword(QStringLiteral("***"));
 
+    // 有些 CDN 把签名放在路径段里，只处理 query 不够。
+    // 保留文件名和短目录，长度较长且不含扩展名的段按签名/令牌打码。
+    const QStringList rawSegments = copy.path().split(QLatin1Char('/'), Qt::KeepEmptyParts);
+    QStringList safeSegments;
+    safeSegments.reserve(rawSegments.size());
+    bool redactNext = false;
+    for (const QString &segment : rawSegments) {
+        const QString lower = segment.toLower();
+        const bool namedSecret = lower == QLatin1String("sign")
+            || lower == QLatin1String("signature")
+            || lower == QLatin1String("token")
+            || lower == QLatin1String("auth")
+            || lower == QLatin1String("session")
+            || lower == QLatin1String("credential");
+        const bool longOpaque = segment.size() >= 20
+            && !segment.contains(QLatin1Char('.'))
+            && !segment.contains(QLatin1Char('%'))
+            && !segment.contains(QLatin1Char(' '));
+        if (redactNext || (longOpaque && !namedSecret)) {
+            safeSegments.append(QStringLiteral("***"));
+            redactNext = false;
+            continue;
+        }
+        safeSegments.append(segment);
+        redactNext = namedSecret;
+    }
+    copy.setPath(safeSegments.join(QLatin1Char('/')));
+
     if (!copy.hasQuery())
         return copy.toString();
 
@@ -270,6 +288,10 @@ QString HttpClient::redactUrl(const QUrl &url)
                                || key.contains(QLatin1String("password"))
                                || key.contains(QLatin1String("expire"))
                                || key.contains(QLatin1String("nonce"))
+                               || key.contains(QLatin1String("session"))
+                               || key.contains(QLatin1String("credential"))
+                               || key.contains(QLatin1String("vkey"))
+                               || key.contains(QLatin1String("vuutv"))
                                || key == QLatin1String("key")
                                || key == QLatin1String("timestamp");
         clean.addQueryItem(item.first, sensitive ? QStringLiteral("***") : item.second);

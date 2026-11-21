@@ -343,7 +343,8 @@ void MaccmsWebProvider::requestHtml(
                       }
                       const QByteArray raw = reply->readAll();
                       if (!HttpClient::isHttpSuccess(reply) || raw.isEmpty()) {
-                          qCDebug(lcWeb) << "请求失败" << reply->url().toString()
+                          qCDebug(lcWeb) << "请求失败"
+                                       << HttpClient::redactUrl(reply->url())
                                        << HttpClient::describeError(reply);
                           reply->deleteLater();
                           callback(false, QString());
@@ -878,7 +879,7 @@ void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
         item.genre = job->candidate.genre;
         item.description = job->candidate.description;
 
-        qCInfo(lcWeb) << "取到直链" << item.title << media.toString();
+        qCInfo(lcWeb) << "取到直链" << item.title << HttpClient::redactUrl(media);
         self->finishJob(job, true, item);
     });
 }

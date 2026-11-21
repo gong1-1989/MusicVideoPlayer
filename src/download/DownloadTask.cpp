@@ -1,6 +1,7 @@
 #include "download/DownloadTask.h"
 
 #include "net/HttpClient.h"
+#include "util/HeaderPolicy.h"
 
 #include <QDateTime>
 #include <QFileInfo>
@@ -17,7 +18,12 @@ Q_LOGGING_CATEGORY(lcDownload, "mvp.download")
 namespace {
 
 const QRegularExpression kUriAttribute(QStringLiteral("URI=\"([^\"]*)\""));
+const QRegularExpression kByteRangeAttribute(QStringLiteral("BYTERANGE=\"([^\"]*)\""));
 const QRegularExpression kBandwidth(QStringLiteral("BANDWIDTH=(\\d+)"));
+const QRegularExpression kContentRange(QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/"),
+                                       QRegularExpression::CaseInsensitiveOption);
+const QRegularExpression kRequestRange(QStringLiteral("^bytes=(\\d+)-(\\d+)$"),
+                                        QRegularExpression::CaseInsensitiveOption);
 
 QUrl resolveUrl(const QUrl &base, const QString &raw)
 {
@@ -37,6 +43,7 @@ DownloadTask::DownloadTask(HttpClient *http,
     : QObject(parent)
     , m_http(http)
     , m_url(url)
+    , m_originUrl(url)
     , m_filePath(filePath)
     , m_headers(headers)
 {
@@ -104,7 +111,9 @@ void DownloadTask::startRequest()
     }
 
     QPointer<DownloadTask> self(this);
-    m_http->stream(m_url, QByteArray(), m_headers, [self](QNetworkReply *reply) {
+    const QHash<QString, QString> headers =
+        HeaderPolicy::sanitizedForTarget(m_url, m_headers, m_originUrl);
+    m_http->stream(m_url, QByteArray(), headers, [self](QNetworkReply *reply) {
         if (self.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -139,6 +148,12 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
 
     if (isPlaylistReply(reply)) {
         m_isHls = true;
+        // 响应体是播放列表，不是媒体字节；之前按 URL 猜的 .mp4/.mp3
+        // 扩展名要改成 .ts，否则合并出来的是 TS 容器却挂着 MP4 后缀。
+        if (!switchToHlsFile())
+            return;
+        m_expectedBytes = -1;
+        m_bytesWritten = 0;
         connect(reply, &QNetworkReply::finished, this, [this, reply] {
             onPlaylistFinished(reply);
         });
@@ -153,6 +168,14 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
         fail(tr("下载链接返回的是网页/接口数据（%1），不是音视频").arg(contentType));
         return;
     }
+
+    const QVariant length = reply->header(QNetworkRequest::ContentLengthHeader);
+    const QByteArray encoding = reply->rawHeader(QByteArrayLiteral("Content-Encoding"));
+    m_expectedBytes = (length.isValid() && (encoding.isEmpty()
+                                            || encoding.compare("identity", Qt::CaseInsensitive) == 0))
+        ? length.toLongLong()
+        : -1;
+    m_bytesWritten = 0;
 
     connect(reply, &QNetworkReply::readyRead, this, [this, reply] {
         if (!m_done)
@@ -236,7 +259,9 @@ void DownloadTask::startPlaylistFetch(const QUrl &url, int hop)
 
     m_playlistHop = hop;
     QPointer<DownloadTask> self(this);
-    m_http->stream(url, QByteArray(), m_headers, [self](QNetworkReply *reply) {
+    const QHash<QString, QString> headers =
+        HeaderPolicy::sanitizedForTarget(url, m_headers, m_originUrl);
+    m_http->stream(url, QByteArray(), headers, [self](QNetworkReply *reply) {
         if (self.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -409,7 +434,35 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
                         *error = tr("初始化分片地址无效");
                     return false;
                 }
-                m_segments.append({mapUrl, QByteArray()});
+
+                // #EXT-X-MAP 也可能带 BYTERANGE="length@offset"；只取 URI
+                // 会把整个 init 段都拼进去，fMP4 的 moov 索引会错位。
+                QByteArray mapRange;
+                const QRegularExpressionMatch rangeMatch =
+                    kByteRangeAttribute.match(line);
+                if (rangeMatch.hasMatch()) {
+                    const QString value = rangeMatch.captured(1).trimmed();
+                    const QStringList parts = value.split(QLatin1Char('@'));
+                    bool lengthOk = false;
+                    const qint64 length = parts.value(0).toLongLong(&lengthOk);
+                    qint64 offset = 0;
+                    if (parts.size() > 1) {
+                        bool offsetOk = false;
+                        offset = parts.value(1).toLongLong(&offsetOk);
+                        if (!offsetOk || offset < 0)
+                            lengthOk = false;
+                    }
+                    if (!lengthOk || length <= 0) {
+                        if (error != nullptr)
+                            *error = tr("初始化分片字节范围无效：%1").arg(value);
+                        return false;
+                    }
+                    mapRange = QStringLiteral("bytes=%1-%2")
+                                   .arg(offset)
+                                   .arg(offset + length - 1)
+                                   .toUtf8();
+                }
+                m_segments.append({mapUrl, mapRange});
             }
             continue;
         }
@@ -446,8 +499,12 @@ void DownloadTask::startNextSegment()
     }
 
     const Segment segment = m_segments.at(m_segmentIndex);
+    m_segmentBytes = 0;
+    m_segmentExpected = expectedRangeBytes(segment.range);
     QPointer<DownloadTask> self(this);
-    m_http->stream(segment.url, segment.range, m_headers, [self, segment](QNetworkReply *reply) {
+    const QHash<QString, QString> headers =
+        HeaderPolicy::sanitizedForTarget(segment.url, m_headers, m_originUrl);
+    m_http->stream(segment.url, segment.range, headers, [self, segment](QNetworkReply *reply) {
         if (self.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -472,10 +529,38 @@ void DownloadTask::startNextSegment()
             self->fail(HttpClient::describeError(reply));
             return;
         }
+        if (segment.range.isEmpty()) {
+            const QVariant length = reply->header(QNetworkRequest::ContentLengthHeader);
+            const QByteArray encoding = reply->rawHeader(QByteArrayLiteral("Content-Encoding"));
+            self->m_segmentExpected =
+                (length.isValid() && (encoding.isEmpty()
+                                      || encoding.compare("identity", Qt::CaseInsensitive) == 0))
+                ? length.toLongLong()
+                : -1;
+        }
         if (!segment.range.isEmpty()
             && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() != 206) {
             self->fail(QObject::tr("服务器没有按字节范围返回分片，已取消以避免生成损坏文件"));
             return;
+        }
+        if (!segment.range.isEmpty()) {
+            qint64 start = -1;
+            qint64 end = -1;
+            const QByteArray contentRange =
+                reply->rawHeader(QByteArrayLiteral("Content-Range"));
+            if (!parseContentRange(contentRange, &start, &end)) {
+                self->fail(QObject::tr("分片缺少有效的 Content-Range，已取消"));
+                return;
+            }
+            const QRegularExpressionMatch requestMatch =
+                kRequestRange.match(QString::fromLatin1(segment.range));
+            if (requestMatch.hasMatch()
+                && (start != requestMatch.captured(1).toLongLong()
+                    || end != requestMatch.captured(2).toLongLong())) {
+                self->fail(QObject::tr("服务器返回了错误的字节范围（%1），已取消")
+                               .arg(QString::fromLatin1(contentRange)));
+                return;
+            }
         }
 
         self->connect(reply, &QNetworkReply::readyRead, self.data(), [self, reply] {
@@ -511,6 +596,15 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
     if (m_done)
         return;
 
+    if (m_segmentExpected >= 0 && m_segmentBytes != m_segmentExpected) {
+        fail(tr("分片长度不完整：期望 %1 字节，实际 %2 字节")
+                 .arg(m_segmentExpected)
+                 .arg(m_segmentBytes));
+        return;
+    }
+
+    m_segmentExpected = -1;
+    m_segmentBytes = 0;
     ++m_segmentIndex;
     emit progress(m_segmentIndex, m_segments.size());
     startNextSegment();
@@ -533,6 +627,13 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
     if (m_done)
         return;
 
+    if (m_expectedBytes >= 0 && m_bytesWritten != m_expectedBytes) {
+        fail(tr("下载长度不完整：期望 %1 字节，实际 %2 字节")
+                 .arg(m_expectedBytes)
+                 .arg(m_bytesWritten));
+        return;
+    }
+
     commitFile();
 }
 
@@ -549,6 +650,35 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
         fail(tr("写入文件失败：%1").arg(m_file->errorString()));
         return;
     }
+    m_bytesWritten += chunk.size();
+    m_segmentBytes += chunk.size();
+}
+
+bool DownloadTask::switchToHlsFile()
+{
+    if (m_filePath.endsWith(QLatin1String(".ts"), Qt::CaseInsensitive))
+        return true;
+
+    const int slash = m_filePath.lastIndexOf(QLatin1Char('/'));
+    const int dot = m_filePath.lastIndexOf(QLatin1Char('.'));
+    QString base = m_filePath;
+    if (dot > slash && dot >= 0)
+        base = m_filePath.left(dot);
+    const QString newPath = base + QStringLiteral(".ts");
+
+    if (!m_file.isNull()) {
+        m_file->cancelWriting();
+        m_file->deleteLater();
+        m_file.clear();
+    }
+
+    m_filePath = newPath;
+    m_file = new QSaveFile(newPath, this);
+    if (!m_file->open(QIODevice::WriteOnly)) {
+        fail(tr("无法写入文件：%1").arg(m_file->errorString()));
+        return false;
+    }
+    return true;
 }
 
 void DownloadTask::commitFile()
@@ -633,13 +763,18 @@ bool DownloadTask::isPlaylistReply(QNetworkReply *reply)
         return true;
     if (reply->url().path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive))
         return true;
+    // 部分源把 m3u8 以 text/plain 返回，且签名地址没有 .m3u8 后缀。
+    // 这类响应先按播放列表处理；解析失败会明确报“不是播放列表”，
+    // 不会把 m3u8 文本当成媒体字节写进目标文件。
+    if (type.startsWith(QLatin1String("text/plain")))
+        return true;
     return type.isEmpty()
         && reply->url().toString().contains(QLatin1String(".m3u8"), Qt::CaseInsensitive);
 }
 
 bool DownloadTask::isMediaContentType(const QString &contentType)
 {
-    const QString type = contentType.toLower();
+    const QString type = contentType.toLower().trimmed();
     if (type.isEmpty())
         return true;
     if (type.startsWith(QLatin1String("audio/"))
@@ -647,10 +782,40 @@ bool DownloadTask::isMediaContentType(const QString &contentType)
         || type.contains(QLatin1String("octet-stream"))
         || type.contains(QLatin1String("mpegurl")))
         return true;
-    if (type.startsWith(QLatin1String("text/"))
-        || type.contains(QLatin1String("json"))
-        || type.contains(QLatin1String("xml"))
-        || type.contains(QLatin1String("html")))
+    // 网页、接口 JSON/XML、图片、PDF 都不是音视频，不能落成媒体文件。
+    return false;
+}
+
+bool DownloadTask::parseContentRange(const QByteArray &value, qint64 *start, qint64 *end)
+{
+    if (value.isEmpty() || start == nullptr || end == nullptr)
         return false;
+    const QRegularExpressionMatch match = kContentRange.match(QString::fromLatin1(value));
+    if (!match.hasMatch())
+        return false;
+    bool startOk = false;
+    bool endOk = false;
+    const qint64 first = match.captured(1).toLongLong(&startOk);
+    const qint64 last = match.captured(2).toLongLong(&endOk);
+    if (!startOk || !endOk || first < 0 || last < first)
+        return false;
+    *start = first;
+    *end = last;
     return true;
+}
+
+qint64 DownloadTask::expectedRangeBytes(const QByteArray &range)
+{
+    if (range.isEmpty())
+        return 0;
+    const QRegularExpressionMatch match = kRequestRange.match(QString::fromLatin1(range));
+    if (!match.hasMatch())
+        return -1;
+    bool startOk = false;
+    bool endOk = false;
+    const qint64 start = match.captured(1).toLongLong(&startOk);
+    const qint64 end = match.captured(2).toLongLong(&endOk);
+    if (!startOk || !endOk || end < start)
+        return -1;
+    return end - start + 1;
 }

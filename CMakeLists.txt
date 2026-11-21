@@ -33,6 +33,7 @@ endfunction()
 # 播放/播放列表/网络/歌词/下载全部沉到 mvp_core，界面层只做装配。
 qt_add_library(mvp_core STATIC
     src/media/MediaItem.h
+    src/util/HeaderPolicy.h
     src/util/TimeFormat.h
     src/util/TimeFormat.cpp
     src/net/HttpClient.h

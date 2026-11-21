@@ -13,7 +13,6 @@ namespace PlaylistStore {
 QString filePath();
 
 QVector<MediaItem> load(MediaType type);
-bool save(MediaType type, const QVector<MediaItem> &items);
 
 /// 一次写入两类列表，避免两次读改写互相覆盖
 bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video);

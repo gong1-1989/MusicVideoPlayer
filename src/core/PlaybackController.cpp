@@ -1,5 +1,6 @@
 #include "core/PlaybackController.h"
 
+#include "net/HttpClient.h"
 #include "stream/StreamProxy.h"
 
 #include <QAudioOutput>
@@ -88,7 +89,8 @@ PlaybackController::PlaybackController(QObject *parent)
 
     connect(m_proxy, &StreamProxy::sourceUnavailable, this,
             [this](const QUrl &upstream, const QString &contentType) {
-                qCWarning(lcPlayer) << "音源不可用：" << upstream.toString() << contentType;
+                qCWarning(lcPlayer) << "音源不可用："
+                                   << HttpClient::redactUrl(upstream) << contentType;
                 // 只记录原因，不在这里 emit：QMediaPlayer 随后一定会发 errorOccurred，
                 // 否则同一次失败会在界面弹两次。
                 m_unavailableReason =
@@ -188,7 +190,8 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
 
     m_player->setSource(source);
     m_player->play();
-    qCInfo(lcPlayer) << "开始播放" << row << item.displayName() << source.toString();
+    qCInfo(lcPlayer) << "开始播放" << row << item.displayName()
+                     << (item.online ? "在线代理" : "本地文件");
     emit currentItemChanged(item, row);
 }
 
