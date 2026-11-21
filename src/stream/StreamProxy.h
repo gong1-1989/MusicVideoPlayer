@@ -37,6 +37,17 @@ public:
     bool isListening() const;
     int port() const;
 
+    /// 诊断用快照：缓存条目、计费字节（含尚未合并的 Range 分段）和预取占用。
+    /// 回归测试用它确认缓存淘汰不会漏掉 rangeParts 或遗留预取槽位。
+    struct CacheStats
+    {
+        int entries = 0;
+        qint64 bytes = 0;
+        int activePrefetches = 0;
+        int rangePrefetches = 0;
+    };
+    CacheStats cacheStats() const;
+
     /// 关闭监听、终止所有上游请求并清空缓存。
     /// 只应在代理所属线程调用；PlaybackController 用阻塞队列调用它。
     void shutdown();
@@ -145,6 +156,7 @@ private:
     void dropCacheEntry(const QString &key);
 
     QByteArray buildCacheHead(const CacheEntry &entry, int status, qint64 start, qint64 end) const;
+    static qint64 cacheEntryBytes(const CacheEntry &entry);
     static bool parseRange(const QString &value, qint64 total, qint64 *start, qint64 *end);
     static QString cacheKeyFor(const QUrl &upstream, const QHash<QString, QString> &headers);
 

@@ -167,6 +167,110 @@ public:
     QList<QPair<qint64, qint64>> ranges;
 };
 
+/// 缓存淘汰回归源：播放列表有 10 个分片，预取请求只回 206 头和 1KB 正文后挂住；
+/// 普通媒体请求返回小文件，用来把缓存条目数推过 24 条上限。
+class PrefetchEvictionServer : public QTcpServer
+{
+public:
+    explicit PrefetchEvictionServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        playlist = QByteArrayLiteral(
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            "#EXT-X-TARGETDURATION:5\n"
+            "#EXTINF:5,\n"
+            "slow0.ts\n"
+            "#EXTINF:5,\n"
+            "slow1.ts\n"
+            "#EXTINF:5,\n"
+            "slow2.ts\n"
+            "#EXTINF:5,\n"
+            "slow3.ts\n"
+            "#EXTINF:5,\n"
+            "slow4.ts\n"
+            "#EXTINF:5,\n"
+            "slow5.ts\n"
+            "#EXTINF:5,\n"
+            "slow6.ts\n"
+            "#EXTINF:5,\n"
+            "slow7.ts\n"
+            "#EXTINF:5,\n"
+            "slow8.ts\n"
+            "#EXTINF:5,\n"
+            "slow9.ts\n"
+            "#EXT-X-ENDLIST\n");
+
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("responded").toBool())
+                        return;
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+
+                    const QByteArray requestLine =
+                        pending.left(headEnd).split('\n').value(0).trimmed();
+                    const QByteArray path = requestLine.split(' ').value(1);
+                    socket->setProperty("responded", true);
+
+                    if (path == "/hls/index.m3u8") {
+                        QByteArray response = "HTTP/1.1 200 OK\r\n"
+                                              "Content-Type: application/vnd.apple.mpegurl\r\n"
+                                              "Content-Length: "
+                                              + QByteArray::number(playlist.size())
+                                              + "\r\nConnection: close\r\n\r\n" + playlist;
+                        socket->write(response);
+                        QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                        return;
+                    }
+
+                    if (path.startsWith("/hls/slow")) {
+                        const QString name = QString::fromUtf8(path.mid(5));
+                        if (!slowRequests.contains(name))
+                            slowRequests.append(name);
+                        // 头声明 16KB，只发 1KB 后保持连接：rangeParts 里会有数据，
+                        // 但该分片永远不会完成，模拟“预取进行中被缓存淘汰”。
+                        QByteArray response = "HTTP/1.1 206 Partial Content\r\n"
+                                              "Content-Type: video/mp2t\r\n"
+                                              "Content-Range: bytes 0-16383/200000\r\n"
+                                              "Content-Length: 16384\r\n\r\n";
+                        socket->write(response + QByteArray(1024, 's'));
+                        return;
+                    }
+
+                    if (path.startsWith("/media/")) {
+                        ++mediaRequests;
+                        const QByteArray body(1000, 'm');
+                        QByteArray response = "HTTP/1.1 200 OK\r\n"
+                                              "Content-Type: audio/mpeg\r\n"
+                                              "Content-Length: "
+                                              + QByteArray::number(body.size())
+                                              + "\r\nConnection: close\r\n\r\n" + body;
+                        socket->write(response);
+                        QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                        return;
+                    }
+
+                    socket->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
+                                  "Connection: close\r\n\r\n");
+                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QByteArray playlist;
+    QStringList slowRequests;
+    int mediaRequests = 0;
+};
+
 /// 本地 HLS 下载源：主播放列表带 EXT-X-MAP 的 BYTERANGE，分片支持 206。
 /// 用来验证 DownloadTask 的 init 段范围、分片长度校验和 .mp4→.ts 切换。
 class HlsDownloadServer : public QTcpServer
@@ -379,6 +483,7 @@ private slots:
     void configMapperSplitsEpisodesAndResolvesUrls();
     void streamProxySlicesRangeFromCache();
     void streamProxyHandlesSuffixlessTextPlaylist();
+    void streamProxyEvictsPrefetchWithoutLeakingSlots();
     void seekPrefetchWindowFollowsPlaylistIndex();
     void streamProxyMultiRangeForHlsSegment();
     void streamProxyFallsBackWhenHlsRangeIgnored();
@@ -974,6 +1079,63 @@ void CoreLogicTest::streamProxyHandlesSuffixlessTextPlaylist()
     QVERIFY(body.contains("#EXTM3U"));
     QVERIFY(body.contains("/stream/"));
     QCOMPARE(upstream.requestCount, 1);
+}
+
+void CoreLogicTest::streamProxyEvictsPrefetchWithoutLeakingSlots()
+{
+    PrefetchEvictionServer upstream;
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QString playlistUrl =
+        QStringLiteral("http://127.0.0.1:%1/hls/index.m3u8").arg(upstream.serverPort());
+    const QUrl localPlaylist = proxy.proxyUrlFor(QUrl(playlistUrl));
+    QVERIFY(localPlaylist.isValid());
+
+    auto fetch = [](const QUrl &local, QByteArray *head, QByteArray *body) {
+        QTcpSocket socket;
+        socket.connectToHost(local.host(), quint16(local.port()));
+        if (!socket.waitForConnected(3000))
+            return false;
+        QByteArray request = "GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                             "Host: 127.0.0.1\r\n"
+                             "Connection: close\r\n\r\n";
+        socket.write(request);
+        socket.flush();
+        return readProxyResponse(&socket, head, body);
+    };
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(fetch(localPlaylist, &head, &body));
+    QVERIFY(body.contains("/stream/"));
+
+    // 深拖动预取会创建 4 条多连接 Range 条目；源站只回 1KB 后挂住，
+    // 这些条目会长期占用缓存，但字节必须计入 cacheStats()。
+    proxy.prefetchForSeek(QUrl(playlistUrl), {}, 0);
+    QTRY_VERIFY_WITH_TIMEOUT(proxy.cacheStats().rangePrefetches >= 1, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(proxy.cacheStats().bytes >= 1024, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(upstream.slowRequests.size() >= 1, 3000);
+
+    // 再用 30 个普通媒体请求把缓存推过 24 条上限，淘汰最老的预取条目。
+    // 若预取槽位没有归还，队列里的 slow4.ts 永远不会被发起。
+    for (int i = 0; i < 30; ++i) {
+        const QString mediaUrl =
+            QStringLiteral("http://127.0.0.1:%1/media/%2.mp3")
+                .arg(upstream.serverPort())
+                .arg(i);
+        const QUrl local = proxy.proxyUrlFor(QUrl(mediaUrl));
+        QVERIFY(local.isValid());
+        QVERIFY(fetch(local, &head, &body));
+    }
+
+    QTRY_VERIFY_WITH_TIMEOUT(upstream.slowRequests.contains(QStringLiteral("slow4.ts")),
+                             5000);
+    const StreamProxy::CacheStats stats = proxy.cacheStats();
+    QVERIFY2(stats.entries <= 24, qPrintable(QString::number(stats.entries)));
+    QVERIFY2(stats.activePrefetches <= 4, qPrintable(QString::number(stats.activePrefetches)));
 }
 
 void CoreLogicTest::seekPrefetchWindowFollowsPlaylistIndex()

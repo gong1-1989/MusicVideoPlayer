@@ -2000,12 +2000,12 @@ void StreamProxy::pruneCache(const QString &keepKey)
         }
         if (!active && entry->lastUsedMs > 0 && entry->lastUsedMs < now - kCacheIdleMs)
             drop.append(it.key());
-        totalBytes += entry->data.size();
+        totalBytes += cacheEntryBytes(*entry);
     }
     for (const QString &key : std::as_const(drop)) {
         const QSharedPointer<CacheEntry> entry = m_cache.value(key);
         if (!entry.isNull())
-            totalBytes -= entry->data.size();
+            totalBytes -= cacheEntryBytes(*entry);
         dropCacheEntry(key);
     }
 
@@ -2031,9 +2031,28 @@ void StreamProxy::pruneCache(const QString &keepKey)
         }
         if (oldestKey.isEmpty())
             break;
-        totalBytes -= m_cache.value(oldestKey)->data.size();
+        totalBytes -= cacheEntryBytes(*m_cache.value(oldestKey));
         dropCacheEntry(oldestKey);
     }
+}
+
+qint64 StreamProxy::cacheEntryBytes(const CacheEntry &entry)
+{
+    qint64 bytes = entry.data.size();
+    for (auto it = entry.rangeParts.cbegin(); it != entry.rangeParts.cend(); ++it)
+        bytes += it.value().size();
+    return bytes;
+}
+
+StreamProxy::CacheStats StreamProxy::cacheStats() const
+{
+    CacheStats stats;
+    stats.entries = int(m_cache.size());
+    for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it)
+        stats.bytes += cacheEntryBytes(*it.value());
+    stats.activePrefetches = m_prefetchActive;
+    stats.rangePrefetches = int(m_rangePrefetchKeys.size());
+    return stats;
 }
 
 void StreamProxy::dropCacheEntry(const QString &key)
@@ -2042,6 +2061,7 @@ void StreamProxy::dropCacheEntry(const QString &key)
     if (entry.isNull())
         return;
 
+    const bool wasPrefetch = entry->prefetch;
     if (entry->reply != nullptr) {
         entry->reply->abort();
         entry->reply->deleteLater();
@@ -2055,6 +2075,8 @@ void StreamProxy::dropCacheEntry(const QString &key)
     }
     entry->rangeReplies.clear();
     entry->rangePending.clear();
+    entry->rangeParts.clear();
+    entry->rangePartEnds.clear();
     for (const QPointer<QTcpSocket> &client : std::as_const(entry->clients)) {
         if (!client.isNull() && client->state() == QAbstractSocket::ConnectedState)
             client->disconnectFromHost();
@@ -2062,6 +2084,10 @@ void StreamProxy::dropCacheEntry(const QString &key)
     entry->clients.clear();
     entry->data.clear();
     qCDebug(lcProxy) << "流转缓存淘汰" << key.left(32);
+    // 预取条目被缓存淘汰时也必须归还并发槽位，否则后续 seek 预取会一直
+    // 以为并发还满着，m_rangePrefetchKeys 残留还会阻止同 key 重新预取。
+    if (wasPrefetch)
+        finishRangePrefetch(key, entry);
 }
 
 QByteArray StreamProxy::buildCacheHead(const CacheEntry &entry, int status, qint64 start,
