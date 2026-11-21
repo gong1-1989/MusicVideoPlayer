@@ -130,6 +130,9 @@ void PlaylistController::restore()
         }
     }
 
+    // 提示数量必须和模型实际显示的一致；旧列表里的重复条目先按同一规则去掉。
+    music = dedupeMediaItems(music);
+    video = dedupeMediaItems(video);
     m_musicModel->setItems(music);
     m_videoModel->setItems(video);
 
@@ -301,6 +304,10 @@ void PlaylistController::bindView(QListView *view, PlaylistModel *model, MediaTy
 void PlaylistController::removeRow(MediaType type, int row)
 {
     PlaylistModel *model = modelFor(type);
+    // 越界 row 不能先取 item，否则公开入口会把默认空条目当真实名字。
+    if (row < 0 || row >= model->rowCount())
+        return;
+
     const QString name = model->itemAt(row).displayName();
     const bool removingCurrent = m_player->playlist() == model && m_player->currentRow() == row;
 

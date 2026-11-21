@@ -159,9 +159,10 @@ void PanelOverlayController::positionSidebarOverlay()
         return;
 
     const int margin = 16;
-    const int width = 280;
+    // 侧栏 280 是舒适宽度；窗口更窄时必须跟着缩，不能横向超出窗口。
+    const int width = qMin(280, qMax(0, m_ui.centralWidget->width() - margin * 2));
     m_ui.sidebar->setGeometry(margin, margin, width,
-                              qMax(240, m_ui.centralWidget->height() - margin * 2));
+                              qMax(0, m_ui.centralWidget->height() - margin * 2));
 }
 
 void PanelOverlayController::positionControlOverlay()
@@ -174,7 +175,7 @@ void PanelOverlayController::positionControlOverlay()
     const int margin = 8;
     const int height = qBound(112, m_ui.transport->sizeHint().height(), 150);
     const QRect target(stage.left() + margin, stage.bottom() - height - margin,
-                       qMax(240, stage.width() - margin * 2), height);
+                       qMax(0, stage.width() - margin * 2), height);
     m_controlsRect = target;
     m_ui.transport->setGeometry(target);
     m_ui.transport->raise();

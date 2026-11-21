@@ -259,16 +259,13 @@ void PlaybackController::seek(qint64 ms)
     if (!hasCurrentItem())
         return;
 
-    // 拖动时不再预取：实测 FFmpeg 的 HLS seek 会先回退约 9 片，
-    // 预取这些分片会和播放器自己的请求抢同一条慢源连接，单路都可能超时；
-    // 深拖动只保留 UI 的“定位中”等待提示，正常播放仍由 positionChanged 预取后续分片。
-    // 这里把预取基准同步到目标位置，避免位置跳到目标后立刻又预取目标片，
-    // 和 FFmpeg 正在回退读取的分片抢带宽。
+    // 预取窗口由 StreamProxy 统一管理（目标片起 target..target+9，4 片并发、
+    // 每片 4 路 Range）；UI 只负责把“定位中”讲清楚，不在这里重复调度。
+    // 这里只同步预取基准位置，避免位置跳到目标后立刻又预取目标片。
     m_lastPrefetchPosition = ms;
     m_player->setPosition(ms);
 
-    // 只预取目标片之后 1-2 片，且由代理单连接、延迟起步；
-    // 目标片本身仍交给播放器的多连接 Range 请求，避免重复占带宽。
+    // 目标片本身仍交给播放器/代理的多连接 Range 请求，避免重复占带宽。
     const MediaItem item = currentItem();
     const QUrl playbackUrl = preferredPlaybackUrl(item);
     if (m_proxyReady && m_proxy != nullptr && item.online && isHlsUrl(playbackUrl)) {

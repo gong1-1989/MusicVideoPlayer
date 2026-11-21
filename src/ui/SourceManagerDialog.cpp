@@ -11,6 +11,7 @@
 #include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
+#include <QSaveFile>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QGroupBox>
@@ -147,9 +148,15 @@ void SourceManagerDialog::bindUi()
     ui->layout_body->setStretch(1, 1);
     // 源列表独自吃掉左栏剩余高度，底部操作按钮固定不动
     ui->layout_left->setStretch(0, 1);
-    ui->leftBox->setMinimumWidth(240);
-    ui->leftBox->setMaximumWidth(320);
-    ui->scroll_form->setMinimumWidth(420);
+    // 左栏/表单的“舒适宽度”在窄屏或 150% 缩放下必须让位，否则窗口会被最小宽度顶出屏幕。
+    const int availableWidth = QGuiApplication::primaryScreen()
+                                   ? QGuiApplication::primaryScreen()->availableGeometry().width()
+                                   : 1280;
+    const int leftMin = qMin(240, qMax(120, availableWidth / 4));
+    ui->leftBox->setMinimumWidth(leftMin);
+    ui->leftBox->setMaximumWidth(qMax(leftMin, qMin(320, availableWidth / 3)));
+    ui->scroll_form->setMinimumWidth(
+        qMin(420, qMax(220, availableWidth - leftMin - 48)));
     // .ui 里给编辑区写的初始尺寸只是设计时占位，运行时必须能被滚动区压缩
     ui->rightBox->setMinimumSize(0, 0);
 
@@ -1014,11 +1021,16 @@ bool SourceManagerDialog::writeSourcesToFile(const QVector<SourceConfig> &source
     for (const SourceConfig &config : sources)
         array.append(sourceConfigToJson(config));
 
-    QFile file(path);
+    const QByteArray payload = QJsonDocument(array).toJson(QJsonDocument::Indented);
+    // 导出中途取消/断电不能留下半截 JSON，和项目其它持久化路径统一用原子写。
+    QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return false;
-    file.write(QJsonDocument(array).toJson(QJsonDocument::Indented));
-    return true;
+    if (file.write(payload) != payload.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
 }
 
 bool SourceManagerDialog::readSourcesFromFile(QVector<SourceConfig> *sources, const QString &path,

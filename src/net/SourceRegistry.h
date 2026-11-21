@@ -6,8 +6,8 @@
 #include <QObject>
 #include <QVector>
 
-/// 搜索源仓库：Data/sources.json 是唯一事实来源。
-/// 首次运行写入预置源（网易云 + 一个 iTunes 示例），之后完全由用户增删改。
+/// 搜索源仓库：优先使用 Data/sources.json，安装目录不可写时退回用户数据目录。
+/// 首次运行写入预置源，之后完全由用户增删改。
 class SourceRegistry : public QObject
 {
     Q_OBJECT
@@ -40,6 +40,8 @@ signals:
 private:
     QVector<SourceConfig> m_sources;
     QString m_lastError;
+    /// 本次实际读写的路径：正常是 Data/sources.json，主目录不可写时是用户数据目录。
+    QString m_storagePath;
 };
 
 #endif // SOURCEREGISTRY_H

@@ -22,6 +22,12 @@ QString fallbackFilePath()
     return dir.isEmpty() ? QString() : dir + QStringLiteral("/playlists.json");
 }
 
+QString sourceFallbackFilePath()
+{
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    return dir.isEmpty() ? QString() : dir + QStringLiteral("/sources.json");
+}
+
 bool writePlaylist(const QString &path, const QString &key, const QVector<MediaItem> &items)
 {
     QJsonObject root;
@@ -63,6 +69,7 @@ private slots:
     void playlistReadsFallbackWhenPrimaryMissing();
     void sourceRegistrySeedsAndPersists();
     void sourceRegistryCorruptFileBacksUp();
+    void sourceRegistryFallsBackWhenPrimaryUnwritable();
 
 private:
     QTemporaryDir m_tempDir;
@@ -264,6 +271,42 @@ void StorageTest::sourceRegistryCorruptFileBacksUp()
     SourceRegistry reloaded;
     QVERIFY(reloaded.load());
     QVERIFY(reloaded.lastError().isEmpty());
+}
+
+void StorageTest::sourceRegistryFallsBackWhenPrimaryUnwritable()
+{
+    const QString fallback = sourceFallbackFilePath();
+    QVERIFY(!fallback.isEmpty());
+    QFile::remove(fallback);
+
+    QTemporaryDir blocked;
+    QVERIFY(blocked.isValid());
+    // 把主数据目录指向普通文件，mkpath/打开都会失败，模拟安装目录只读。
+    const QString blocker = QDir(blocked.path()).filePath(QStringLiteral("blocked"));
+    QFile file(blocker);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("blocked");
+    file.close();
+
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    qputenv("MVP_DATA_DIR", blocker.toUtf8());
+
+    SourceRegistry registry;
+    QVERIFY(registry.load());
+    QCOMPARE(registry.storagePath(), fallback);
+    QVERIFY(QFile::exists(fallback));
+    QCOMPARE(registry.enabledCount(), 3);
+
+    SourceRegistry reloaded;
+    QVERIFY(reloaded.load());
+    QCOMPARE(reloaded.storagePath(), fallback);
+    QCOMPARE(reloaded.enabledCount(), 3);
+
+    if (oldDataDir.isEmpty())
+        qunsetenv("MVP_DATA_DIR");
+    else
+        qputenv("MVP_DATA_DIR", oldDataDir);
+    QFile::remove(fallback);
 }
 
 QTEST_GUILESS_MAIN(StorageTest)

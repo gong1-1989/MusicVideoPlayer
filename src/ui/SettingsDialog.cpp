@@ -42,10 +42,11 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
 
     setWindowTitle(tr("系统设置"));
     setModal(true);
-    setMinimumWidth(720);
 
     const QRect available = screen() != nullptr ? screen()->availableGeometry()
                                                 : QRect(0, 0, 1280, 800);
+    // 720 是舒适宽度，不是硬下限；窄屏上必须让窗口还能完整落在屏幕内。
+    setMinimumWidth(qMin(720, qMax(320, available.width() - 20)));
     // 滚动区允许被压缩到 0，否则布局最小高度会把窗口顶出屏幕，底部按钮再次不可达
     ui->scroll_content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     ui->scroll_content->setMinimumHeight(0);
