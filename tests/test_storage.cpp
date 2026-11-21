@@ -67,6 +67,8 @@ private slots:
     void playlistCorruptFileBacksUp();
     void playlistFallsBackToNewerCopy();
     void playlistReadsFallbackWhenPrimaryMissing();
+    void playlistIgnoresCorruptNewerPrimary();
+    void playlistIgnoresCorruptNewerFallback();
     void sourceRegistrySeedsAndPersists();
     void sourceRegistryCorruptFileBacksUp();
     void sourceRegistryFallsBackWhenPrimaryUnwritable();
@@ -201,6 +203,60 @@ void StorageTest::playlistReadsFallbackWhenPrimaryMissing()
     const QVector<MediaItem> items = PlaylistStore::load(MediaType::Music);
     QCOMPARE(items.size(), 1);
     QCOMPARE(items.first().title, QStringLiteral("备用列表"));
+}
+
+void StorageTest::playlistIgnoresCorruptNewerPrimary()
+{
+    const QString primary = StoragePaths::dataFile(QStringLiteral("playlists.json"));
+    const QString fallback = fallbackFilePath();
+    QVERIFY(!fallback.isEmpty());
+
+    QVERIFY(writePlaylist(fallback, QStringLiteral("music"),
+                          {makeMusic(QStringLiteral("备用有效列表"))}));
+    QFile fallbackFile(fallback);
+    QVERIFY(fallbackFile.open(QIODevice::ReadWrite));
+    QVERIFY(fallbackFile.setFileTime(QDateTime::currentDateTime().addSecs(-10),
+                                     QFileDevice::FileModificationTime));
+    fallbackFile.close();
+
+    QFile corrupt(primary);
+    QVERIFY(corrupt.open(QIODevice::WriteOnly | QIODevice::Text));
+    corrupt.write("{ broken but newer");
+    corrupt.close();
+
+    const QVector<MediaItem> items = PlaylistStore::load(MediaType::Music);
+    QCOMPARE(items.size(), 1);
+    QCOMPARE(items.first().title, QStringLiteral("备用有效列表"));
+    QCOMPARE(QDir(StoragePaths::dataDir())
+                 .entryList({QStringLiteral("playlists.json.corrupt-*")}, QDir::Files)
+                 .size(),
+             1);
+}
+
+void StorageTest::playlistIgnoresCorruptNewerFallback()
+{
+    const QString primary = StoragePaths::dataFile(QStringLiteral("playlists.json"));
+    const QString fallback = fallbackFilePath();
+    QVERIFY(!fallback.isEmpty());
+
+    QVERIFY(writePlaylist(primary, QStringLiteral("music"),
+                          {makeMusic(QStringLiteral("主路径有效列表"))}));
+    QFile primaryFile(primary);
+    QVERIFY(primaryFile.open(QIODevice::ReadWrite));
+    QVERIFY(primaryFile.setFileTime(QDateTime::currentDateTime().addSecs(-10),
+                                    QFileDevice::FileModificationTime));
+    primaryFile.close();
+
+    QDir().mkpath(QFileInfo(fallback).absolutePath());
+    QFile corrupt(fallback);
+    QVERIFY(corrupt.open(QIODevice::WriteOnly | QIODevice::Text));
+    corrupt.write("{ newer fallback is broken");
+    corrupt.close();
+
+    const QVector<MediaItem> items = PlaylistStore::load(MediaType::Music);
+    QCOMPARE(items.size(), 1);
+    QCOMPARE(items.first().title, QStringLiteral("主路径有效列表"));
+    QFile::remove(fallback);
 }
 
 void StorageTest::sourceRegistrySeedsAndPersists()

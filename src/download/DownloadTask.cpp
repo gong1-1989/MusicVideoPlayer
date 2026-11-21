@@ -658,8 +658,8 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
     if (chunk.isEmpty())
         return;
 
-    if (m_bytesWritten + chunk.size() > NetLimits::kDownloadBytes) {
-        fail(tr("文件超过 8 GB 上限，已停止下载"));
+    if (m_bytesWritten + chunk.size() > m_maxBytes) {
+        fail(tr("文件超过 %1 MB 上限，已停止下载").arg(m_maxBytes / (1024 * 1024)));
         return;
     }
     if (!m_file->write(chunk)) {
@@ -722,6 +722,11 @@ void DownloadTask::fail(const QString &message)
     if (m_done)
         return;
 
+    // 必须先置 done 再 abort：abort() 会同步发出 finished，若此时 m_done
+    // 仍为 false，onDirectFinished 会把“取消”再当成一次失败，导致 UI 收到
+    // 两条 failed（集成测试已复现：字节超限时先报 Operation canceled）。
+    m_done = true;
+
     if (!m_reply.isNull()) {
         QNetworkReply *reply = m_reply.data();
         m_reply = nullptr;
@@ -736,13 +741,17 @@ void DownloadTask::fail(const QString &message)
 
     qCWarning(lcDownload) << "下载失败：" << message;
     emit failed(message);
-    finish();
+    emit finished();
+    deleteLater();
 }
 
 void DownloadTask::cancel()
 {
     if (m_done)
         return;
+
+    // 与 fail() 同理：先置 done，避免 abort 同步触发的 finished 再报一次失败。
+    m_done = true;
 
     if (!m_reply.isNull()) {
         QNetworkReply *reply = m_reply.data();
@@ -757,7 +766,14 @@ void DownloadTask::cancel()
     }
 
     emit failed(tr("下载已取消"));
-    finish();
+    emit finished();
+    deleteLater();
+}
+
+void DownloadTask::setMaxBytesForTesting(qint64 bytes)
+{
+    if (bytes > 0)
+        m_maxBytes = bytes;
 }
 
 void DownloadTask::finish()

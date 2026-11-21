@@ -1,6 +1,8 @@
 #ifndef DOWNLOADTASK_H
 #define DOWNLOADTASK_H
 
+#include "net/NetLimits.h"
+
 #include <QByteArray>
 #include <QHash>
 #include <QObject>
@@ -38,6 +40,9 @@ public:
     static bool looksLikeHls(const QUrl &url);
 
     void cancel();
+
+    /// 测试用：把单文件字节上限调小，验证超限失败路径；生产默认 8 GB。
+    void setMaxBytesForTesting(qint64 bytes);
 
 signals:
     /// 普通下载是字节数；HLS 合并是“已完成分片数 / 总分片数”，UI 统一按百分比显示。
@@ -92,6 +97,7 @@ private:
     qint64 m_expectedBytes = -1;
     qint64 m_segmentBytes = 0;
     qint64 m_segmentExpected = -1;
+    qint64 m_maxBytes = NetLimits::kDownloadBytes;
 
     bool m_isHls = false;
     QVector<Segment> m_segments;

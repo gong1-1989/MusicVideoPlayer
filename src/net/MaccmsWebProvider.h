@@ -29,6 +29,7 @@ public:
     MaccmsWebProvider(const SourceConfig &config, HttpClient *http, QObject *parent = nullptr);
 
     void search(const QString &keyword, int limit) override;
+    void abort() override;
 
 private:
     struct Candidate

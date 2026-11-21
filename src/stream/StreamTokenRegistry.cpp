@@ -88,8 +88,12 @@ void StreamTokenRegistry::prune()
         m_pruneCounter = 0;
     }
 
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const qint64 expireBefore = now - kIdleExpireMs;
+    pruneAt(QDateTime::currentMSecsSinceEpoch());
+}
+
+void StreamTokenRegistry::pruneAt(qint64 nowMs)
+{
+    const qint64 expireBefore = nowMs - kIdleExpireMs;
     for (auto it = m_tokens.begin(); it != m_tokens.end();) {
         if (it->lastUsedMs > 0 && it->lastUsedMs < expireBefore) {
             if (m_tokenByKey.value(it->cacheKey) == it.key())

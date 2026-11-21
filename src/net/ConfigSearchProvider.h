@@ -24,6 +24,7 @@ public:
     const SourceConfig &config() const { return m_config; }
 
     void search(const QString &keyword, int limit) override;
+    void abort() override;
 
 private:
     void onReplyFinished();

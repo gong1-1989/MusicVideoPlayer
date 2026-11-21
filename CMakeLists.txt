@@ -154,7 +154,7 @@ target_link_libraries(MusicVideoPlayer PRIVATE
 mvp_enable_warnings(MusicVideoPlayer)
 
 # ---------------------------------------------------------------- 回归测试
-# 只锁纯逻辑/序列化/解析；涉及网络、GUI、进程的路径留给后续集成测试。
+# 只锁纯逻辑/序列化/解析；涉及网络、GUI、进程的路径放在下面的集成测试。
 add_executable(mvp_tests tests/test_core_logic.cpp)
 target_link_libraries(mvp_tests PRIVATE
     mvp_core
@@ -162,6 +162,17 @@ target_link_libraries(mvp_tests PRIVATE
 )
 mvp_enable_warnings(mvp_tests)
 add_test(NAME mvp_core_logic COMMAND mvp_tests)
+
+# 跨模块集成：真实 QNetworkAccessManager + 本地 QTcpServer，验证重定向头、
+# 下载失败/超限、搜索超时中止、响应上限和日志脱敏。
+add_executable(mvp_integration tests/test_integration.cpp)
+target_link_libraries(mvp_integration PRIVATE
+    mvp_core
+    Qt6::Test
+)
+mvp_enable_warnings(mvp_integration)
+add_test(NAME mvp_integration COMMAND mvp_integration)
+set_tests_properties(mvp_integration PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # 存储层：真实文件读写、损坏备份、迁移/种子行为，全部隔离在临时 Data 目录
 add_executable(mvp_storage_tests tests/test_storage.cpp)

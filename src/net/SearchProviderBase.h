@@ -20,6 +20,9 @@ public:
 
     virtual void search(const QString &keyword, int limit) = 0;
 
+    /// 协调器判定超时/取消时调用：中止在途请求或子进程，不再发 finished。
+    virtual void abort() {}
+
 signals:
     /// error 为空表示成功；失败时 items 为空
     void finished(const QString &sourceId, const QVector<MediaItem> &items, int filtered,

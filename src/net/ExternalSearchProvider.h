@@ -25,6 +25,7 @@ public:
     explicit ExternalSearchProvider(const SourceConfig &config, QObject *parent = nullptr);
 
     void search(const QString &keyword, int limit) override;
+    void abort() override;
 
 private:
     void onProcessFinished(int exitCode, QProcess::ExitStatus status);

@@ -36,6 +36,8 @@ public:
     /// 过期清理：512 条以下每 64 次扫一遍，空闲 2 小时后过期，
     /// 极端增长时丢最老四分之一。
     void prune();
+    /// 测试用：按指定时间做一次完整过期扫描，不受“每 64 次”计数器限制。
+    void pruneAt(qint64 nowMs);
 
 private:
     QHash<QString, Upstream> m_tokens;

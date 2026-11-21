@@ -185,6 +185,7 @@ void SearchCoordinator::onSourceTimeout(SearchProviderBase *provider)
     }
 
     disconnect(provider, nullptr, this, nullptr);
+    provider->abort();
     provider->deleteLater();
 
     if (task.sourceIndex >= 0 && task.sourceIndex < m_errors.size()) {
@@ -224,6 +225,7 @@ void SearchCoordinator::onGlobalTimeout()
         }
         if (task.provider != nullptr) {
             disconnect(task.provider, nullptr, this, nullptr);
+            task.provider->abort();
             task.provider->deleteLater();
         }
     }
@@ -322,6 +324,7 @@ void SearchCoordinator::cancel()
         }
         if (task.provider != nullptr) {
             disconnect(task.provider, nullptr, this, nullptr);
+            task.provider->abort();
             task.provider->deleteLater();
         }
     }

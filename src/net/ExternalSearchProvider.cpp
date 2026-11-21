@@ -103,6 +103,15 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
     m_process->start(resolveCommand(m_config.command), arguments);
 }
 
+void ExternalSearchProvider::abort()
+{
+    m_done = true;
+    if (m_timer != nullptr)
+        m_timer->stop();
+    if (m_process != nullptr && m_process->state() != QProcess::NotRunning)
+        m_process->kill();
+}
+
 void ExternalSearchProvider::onFailedToStart()
 {
     finish(tr("解析器启动失败：%1（检查命令路径或运行时是否安装）")

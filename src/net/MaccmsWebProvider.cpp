@@ -250,6 +250,11 @@ MaccmsWebProvider::MaccmsWebProvider(const SourceConfig &config, HttpClient *htt
 {
 }
 
+void MaccmsWebProvider::abort()
+{
+    m_done = true;
+}
+
 void MaccmsWebProvider::search(const QString &keyword, int limit)
 {
     m_keyword = keyword.trimmed();
@@ -336,8 +341,15 @@ void MaccmsWebProvider::requestHtml(
     QPointer<MaccmsWebProvider> self(this);
     m_http->fetch(url, QByteArray(), requestHeaders(),
                   [self, callback](QNetworkReply *reply) {
-                      if (self.isNull())
+                      if (self.isNull()) {
+                          // 源已被超时/取消销毁，迟到的响应必须自己收尾，
+                          // 否则 reply 会一直挂在共享的 HttpClient 上。
+                          if (reply != nullptr) {
+                              reply->abort();
+                              reply->deleteLater();
+                          }
                           return;
+                      }
                       if (reply == nullptr) {
                           callback(false, QString());
                           return;
@@ -372,8 +384,13 @@ void MaccmsWebProvider::fetchRoot()
     QPointer<MaccmsWebProvider> self(this);
     m_http->fetch(QUrl(m_root), QByteArray(), requestHeaders(),
                   [self](QNetworkReply *reply) {
-                      if (self.isNull())
+                      if (self.isNull()) {
+                          if (reply != nullptr) {
+                              reply->abort();
+                              reply->deleteLater();
+                          }
                           return;
+                      }
                       if (reply != nullptr) {
                           bool tooLarge = false;
                           const QByteArray raw = HttpClient::readAllLimited(
@@ -397,8 +414,13 @@ void MaccmsWebProvider::trySuggest()
     QPointer<MaccmsWebProvider> self(this);
     m_http->fetch(url, QByteArray(), requestHeaders(),
                   [self](QNetworkReply *reply) {
-                      if (self.isNull())
+                      if (self.isNull()) {
+                          if (reply != nullptr) {
+                              reply->abort();
+                              reply->deleteLater();
+                          }
                           return;
+                      }
                       QByteArray raw;
                       bool ok = false;
                       if (reply != nullptr) {

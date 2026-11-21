@@ -18,6 +18,7 @@
 #include "util/SecretStore.h"
 #include "util/TimeFormat.h"
 
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -501,6 +502,7 @@ private slots:
     void hlsPlaylistRewritesUris();
     void hlsPlaylistRejectsTooManySegments();
     void streamTokensReuseByUrlAndHeaders();
+    void streamTokensExpireByIdleClock();
     void streamCacheStoreCountsRangeParts();
     void streamRangeParsesHeadersAndSplitsParts();
     void streamRangeAppendsAndMergesConsecutive();
@@ -1455,6 +1457,20 @@ void CoreLogicTest::streamTokensReuseByUrlAndHeaders()
     QVERIFY(!tokens.lookup(QStringLiteral("unknown"), &restored));
 
     tokens.clear();
+    QCOMPARE(tokens.size(), 0);
+}
+
+void CoreLogicTest::streamTokensExpireByIdleClock()
+{
+    StreamTokenRegistry tokens;
+    const QUrl upstream(QStringLiteral("https://cdn.test/b/seg2.ts"));
+    tokens.registerFor(upstream, {}, 4567);
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    tokens.pruneAt(now + 3600 * 1000);
+    QCOMPARE(tokens.size(), 1);
+
+    tokens.pruneAt(now + 2 * 3600 * 1000 + 1000);
     QCOMPARE(tokens.size(), 0);
 }
 

@@ -132,6 +132,17 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
             &ConfigSearchProvider::onReplyFinished);
 }
 
+void ConfigSearchProvider::abort()
+{
+    m_done = true;
+    if (m_reply != nullptr) {
+        QNetworkReply *reply = m_reply.data();
+        m_reply = nullptr;
+        reply->abort();
+        reply->deleteLater();
+    }
+}
+
 void ConfigSearchProvider::onReplyFinished()
 {
     if (m_done)
