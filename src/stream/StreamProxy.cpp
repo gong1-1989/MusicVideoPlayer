@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <utility>
 
 Q_LOGGING_CATEGORY(lcProxy, "mvp.stream")
@@ -313,6 +314,27 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
         if (!query.isEmpty())
             relative.setQuery(QUrl::fromPercentEncoding(query.toUtf8()));
         upstream = entry.url.resolved(relative);
+
+        // suffix 只能在同一 host/端口/协议内换路径或文件名。否则
+        // `//evil/`、`http://evil/` 会把带 Referer/Cookie 的 token 请求
+        // 切到第三方；即使 token 随机，也不该保留这个越权入口。
+        const auto effectivePort = [](const QUrl &url) {
+            if (url.port() >= 0)
+                return url.port();
+            return url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) == 0
+                ? 443 : 80;
+        };
+        const bool sameAuthority =
+            upstream.scheme().compare(entry.url.scheme(), Qt::CaseInsensitive) == 0
+            && upstream.host().compare(entry.url.host(), Qt::CaseInsensitive) == 0
+            && effectivePort(upstream) == effectivePort(entry.url)
+            && upstream.userInfo() == entry.url.userInfo();
+        if (!sameAuthority) {
+            qCWarning(lcProxy) << "流转令牌试图切换 host：" << HttpClient::redactUrl(upstream)
+                               << "原地址" << HttpClient::redactUrl(entry.url);
+            replyError(client, 400, QStringLiteral("Bad stream path"));
+            return;
+        }
     }
     if (upstream.isEmpty() || !upstream.isValid()) {
         replyError(client, 400, QStringLiteral("Bad stream path"));
@@ -1282,8 +1304,12 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
                                  const QHash<QString, QString> &headers)
 {
     QPointer<QTcpSocket> guard(client);
+    auto finished = std::make_shared<bool>(false);
 
-    auto finish = [this, guard, reply, headers] {
+    auto finish = [this, guard, reply, headers, finished] {
+        if (*finished)
+            return;
+        *finished = true;
         qCDebug(lcProxy) << "播放列表收尾：客户端在线" << !guard.isNull()
                          << "成功" << HttpClient::isHttpSuccess(reply)
                          << "已结束" << reply->isFinished();
@@ -1343,6 +1369,9 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
     };
 
     connect(reply, &QNetworkReply::finished, this, finish);
+    // m3u8 是文本，不是音视频；识别出来后立刻限制接收量，
+    // 避免恶意/异常站点用超大播放列表把代理内存撑满。
+    HttpClient::limitReplySize(reply, NetLimits::kPlaylistBytes);
     if (reply->isFinished())
         finish();
 }

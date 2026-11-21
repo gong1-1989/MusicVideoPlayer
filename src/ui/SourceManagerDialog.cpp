@@ -1,6 +1,7 @@
 #include "ui/SourceManagerDialog.h"
 
 #include "net/HttpClient.h"
+#include "net/NetLimits.h"
 #include "net/SearchCoordinator.h"
 #include "net/SearchProviderBase.h"
 #include "net/SourceRegistry.h"
@@ -218,7 +219,7 @@ void SourceManagerDialog::bindUi()
     m_type->addItem(tr("视频"), QStringLiteral("video"));
 
     m_kind->addItem(tr("配置驱动（JSON 接口）"), QStringLiteral("config"));
-    m_kind->addItem(tr("内置实现（需要签名）"), QStringLiteral("builtin"));
+    m_kind->addItem(tr("内置实现"), QStringLiteral("builtin"));
     m_kind->addItem(tr("外部解析器进程"), QStringLiteral("external"));
 
     m_provider->addItem(tr("网页型影视（内置抓取）"), QStringLiteral("maccms_web"));
@@ -421,6 +422,19 @@ void SourceManagerDialog::updateKindUi()
     if (m_detailGroup != nullptr)
         m_detailGroup->setVisible(isConfig);
 
+    // 当前唯一的内置网页源只返回影视结果；类型固定为视频，避免列表里
+    // 显示“音乐·内置”，实际搜到的却全是视频。
+    if (isWebSource && m_type != nullptr) {
+        const int videoIndex = m_type->findData(QStringLiteral("video"));
+        if (videoIndex >= 0 && m_type->currentIndex() != videoIndex)
+            m_type->setCurrentIndex(videoIndex);
+        m_type->setEnabled(false);
+        m_type->setToolTip(tr("网页型影视源只支持视频类型。"));
+    } else if (m_type != nullptr) {
+        m_type->setEnabled(true);
+        m_type->setToolTip(QString());
+    }
+
     // 从其他类型切到外部解析器时，列表里的勾选状态同步为停用，
     // 避免界面上看起来已启用、保存后却悄悄变成停用的错位。
     if (isExternal && m_currentRow >= 0 && m_currentRow < m_drafts.size()
@@ -455,6 +469,10 @@ SourceConfig SourceManagerDialog::readForm() const
     const bool wasExternal = config.kind == QLatin1String("external");
     config.kind = m_kind->currentData().toString();
     config.provider = m_provider->currentData().toString();
+    if (config.kind == QLatin1String("builtin")
+        && config.provider == QLatin1String("maccms_web")) {
+        config.mediaType = MediaType::Video;
+    }
     // 新改成外部解析器的源默认停用，必须到列表里勾选并确认命令后才能参与搜索。
     if (config.kind == QLatin1String("external") && !wasExternal)
         config.enabled = false;
@@ -800,7 +818,7 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
                     self->reloadList(row >= 0 ? row : self->m_currentRow);
                 });
         provider->search(keyword, 3);
-    });
+    }, NetLimits::kHtmlBytes);
 }
 
 void SourceManagerDialog::onDuplicate()

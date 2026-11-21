@@ -446,7 +446,7 @@ void Prober::fetchHome()
         }
 
         probeNextCandidate();
-    });
+    }, NetLimits::kHtmlBytes);
 }
 
 void Prober::probeNextCandidate()

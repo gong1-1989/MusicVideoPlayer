@@ -127,7 +127,7 @@
                <string>label_hint</string>
               </property>
               <property name="text">
-               <string>切换后立即生效，无需重启。</string>
+               <string>点击“保存”后立即生效，无需重启；点击“取消”不会改变当前主题。</string>
               </property>
              </widget>
             </item>

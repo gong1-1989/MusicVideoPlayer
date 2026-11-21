@@ -180,17 +180,25 @@ bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
 
     const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
 
-    if (writeFile(primaryPath(), payload)) {
+    const QString primary = primaryPath();
+    const QString fallback = fallbackPath();
+    const bool primaryOk = writeFile(primary, payload);
+    const bool fallbackOk = (fallback.isEmpty() || fallback == primary)
+        ? true : writeFile(fallback, payload);
+
+    if (primaryOk) {
         qCInfo(lcStore) << "播放列表已保存（音乐" << music.size() << "条、视频" << video.size()
-                        << "条）到" << primaryPath();
+                        << "条）到" << primary;
+        if (!fallbackOk)
+            qCWarning(lcStore) << "主播放列表已保存，但备用路径写入失败：" << fallback;
         return true;
     }
 
     // 程序目录只读（例如装进 Program Files）时退回用户数据目录，不让保存静默失败
-    const QString fallback = fallbackPath();
-    qCWarning(lcStore) << "无法写入" << primaryPath() << "，改用备用路径" << fallback;
-    if (writeFile(fallback, payload))
+    if (fallbackOk && !fallback.isEmpty() && fallback != primary) {
+        qCWarning(lcStore) << "无法写入" << primary << "，改用备用路径" << fallback;
         return true;
+    }
 
     qCWarning(lcStore) << "播放列表保存失败，主路径和备用路径均不可写";
     return false;

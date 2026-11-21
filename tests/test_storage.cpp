@@ -95,6 +95,9 @@ void StorageTest::init()
     const QString fallback = fallbackFilePath();
     if (!fallback.isEmpty())
         QFile::remove(fallback);
+    const QString sourceFallback = sourceFallbackFilePath();
+    if (!sourceFallback.isEmpty())
+        QFile::remove(sourceFallback);
 }
 
 void StorageTest::cleanupTestCase()
@@ -102,6 +105,9 @@ void StorageTest::cleanupTestCase()
     const QString fallback = fallbackFilePath();
     if (!fallback.isEmpty())
         QFile::remove(fallback);
+    const QString sourceFallback = sourceFallbackFilePath();
+    if (!sourceFallback.isEmpty())
+        QFile::remove(sourceFallback);
     QStandardPaths::setTestModeEnabled(false);
     qunsetenv("MVP_DATA_DIR");
 }

@@ -5,8 +5,10 @@
 #include <QNetworkCookieJar>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QtGlobal>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QVariant>
 
 #include <memory>
 
@@ -17,6 +19,31 @@ Q_LOGGING_CATEGORY(lcHttp, "mvp.net")
 namespace {
 
 constexpr int kMaxRedirects = 5;
+const char kLimitBytesProperty[] = "mvpReplyLimitBytes";
+const char kLimitExceededProperty[] = "mvpReplyLimitExceeded";
+const char kLimitHookedProperty[] = "mvpReplyLimitHooked";
+
+void abortReplyIfOverLimit(QNetworkReply *reply)
+{
+    if (reply == nullptr)
+        return;
+    const qint64 limit = reply->property(kLimitBytesProperty).toLongLong();
+    if (limit <= 0 || reply->property(kLimitExceededProperty).toBool())
+        return;
+
+    // QNetworkReply 没有公开“已接收总字节”的 getter；普通 fetch 在 finished
+    // 前不读正文，所以 bytesAvailable 就是当前累积在 reply 里的量。流式接口
+    // 只有识别出播放列表后才设上限，调用方同样没有提前消费正文。
+    const qint64 received = reply->bytesAvailable();
+    if (received <= limit)
+        return;
+
+    reply->setProperty(kLimitExceededProperty, true);
+    qCWarning(lcHttp) << "响应接收超过" << limit << "字节上限，主动中止："
+                      << HttpClient::redactUrl(reply->url());
+    reply->abort();
+}
+
 
 bool isRedirectStatus(int status)
 {
@@ -105,23 +132,23 @@ HttpClient::HttpClient(QObject *parent)
 }
 
 QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
-                               const QHash<QString, QString> &headers)
+                               const QHash<QString, QString> &headers, qint64 maxBytes)
 {
     qCDebug(lcHttp) << "GET" << redactUrl(url) << "分段" << range;
     QNetworkRequest request = buildRequest(url, headers);
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
-    return trackReply(m_nam->get(request));
+    return trackReply(m_nam->get(request), maxBytes);
 }
 
 QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body,
-                                    const QHash<QString, QString> &headers)
+                                    const QHash<QString, QString> &headers, qint64 maxBytes)
 {
-    return postJson(url, body, headers);
+    return postJson(url, body, headers, maxBytes);
 }
 
 QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
-                                    const QHash<QString, QString> &headers)
+                                    const QHash<QString, QString> &headers, qint64 maxBytes)
 {
     qCDebug(lcHttp) << "POST" << redactUrl(url) << "请求体" << body.size() << "字节";
     QNetworkRequest request = buildRequest(url, headers);
@@ -129,7 +156,7 @@ QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
         headers.value(QStringLiteral("Content-Type"),
                       QStringLiteral("application/x-www-form-urlencoded")).toUtf8();
     request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
-    return trackReply(m_nam->post(request, body));
+    return trackReply(m_nam->post(request, body), maxBytes);
 }
 
 void HttpClient::fetch(const QUrl &url, const QByteArray &range, const ReplyHandler &onReady)
@@ -140,16 +167,23 @@ void HttpClient::fetch(const QUrl &url, const QByteArray &range, const ReplyHand
 void HttpClient::fetch(const QUrl &url, const QByteArray &range,
                        const QHash<QString, QString> &headers, const ReplyHandler &onReady)
 {
-    fetchInternal(url, range, headers, onReady, 0, false);
+    fetch(url, range, headers, onReady, NetLimits::kJsonBytes);
+}
+
+void HttpClient::fetch(const QUrl &url, const QByteArray &range,
+                       const QHash<QString, QString> &headers, const ReplyHandler &onReady,
+                       qint64 maxBytes)
+{
+    fetchInternal(url, range, headers, onReady, 0, false, maxBytes);
 }
 
 void HttpClient::stream(const QUrl &url, const QByteArray &range,
                         const QHash<QString, QString> &headers, const ReplyHandler &onReady)
 {
-    fetchInternal(url, range, headers, onReady, 0, true);
+    fetchInternal(url, range, headers, onReady, 0, true, 0);
 }
 
-QNetworkReply *HttpClient::trackReply(QNetworkReply *reply)
+QNetworkReply *HttpClient::trackReply(QNetworkReply *reply, qint64 maxBytes)
 {
     if (reply == nullptr)
         return nullptr;
@@ -158,7 +192,29 @@ QNetworkReply *HttpClient::trackReply(QNetworkReply *reply)
     // 修改容器导致迭代器失效。
     connect(reply, &QNetworkReply::finished, this,
             [this, reply] { m_activeReplies.remove(reply); });
+    if (maxBytes > 0)
+        limitReplySize(reply, maxBytes);
     return reply;
+}
+
+void HttpClient::limitReplySize(QNetworkReply *reply, qint64 maxBytes)
+{
+    if (reply == nullptr || maxBytes <= 0)
+        return;
+
+    // 同一条 reply 可能从多个调用点追加上限，永远取更严格的那个。
+    const qint64 existing = reply->property(kLimitBytesProperty).toLongLong();
+    if (existing <= 0 || maxBytes < existing)
+        reply->setProperty(kLimitBytesProperty, maxBytes);
+
+    if (!reply->property(kLimitHookedProperty).toBool()) {
+        reply->setProperty(kLimitHookedProperty, true);
+        connect(reply, &QNetworkReply::downloadProgress, reply,
+                [reply](qint64, qint64) { abortReplyIfOverLimit(reply); });
+        connect(reply, &QNetworkReply::readyRead, reply,
+                [reply] { abortReplyIfOverLimit(reply); });
+    }
+    abortReplyIfOverLimit(reply);
 }
 
 void HttpClient::abortAll()
@@ -173,7 +229,8 @@ void HttpClient::abortAll()
 
 void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
                                const QHash<QString, QString> &headers,
-                               const ReplyHandler &onReady, int hop, bool deliverOnHeaders)
+                               const ReplyHandler &onReady, int hop, bool deliverOnHeaders,
+                               qint64 maxBytes)
 {
     if (hop > kMaxRedirects || !isAllowedScheme(url)) {
         qCWarning(lcHttp) << "重定向链被拒绝：" << redactUrl(url) << "第" << hop << "跳";
@@ -191,11 +248,12 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
 
     qCDebug(lcHttp) << "拉取" << redactUrl(url) << "分段" << range << "第" << hop << "跳";
 
-    QNetworkReply *reply = trackReply(m_nam->get(request));
+    QNetworkReply *reply = trackReply(m_nam->get(request), maxBytes);
     auto delivered = std::make_shared<bool>(false);
 
     connect(reply, &QNetworkReply::metaDataChanged, this,
-            [this, reply, url, range, headers, onReady, hop, delivered, deliverOnHeaders] {
+            [this, reply, url, range, headers, onReady, hop, delivered, deliverOnHeaders,
+             maxBytes] {
         if (*delivered)
             return;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -222,7 +280,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
         }
         qCInfo(lcHttp) << "重定向" << status << redactUrl(url) << "->" << redactUrl(next);
         const QHash<QString, QString> nextHeaders = headersForRedirect(headers, url, next);
-        fetchInternal(next, range, nextHeaders, onReady, hop + 1, deliverOnHeaders);
+        fetchInternal(next, range, nextHeaders, onReady, hop + 1, deliverOnHeaders, maxBytes);
     });
 
     connect(reply, &QNetworkReply::finished, this,
@@ -237,7 +295,14 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
 
 bool HttpClient::isHttpSuccess(QNetworkReply *reply)
 {
-    if (!reply || reply->error() != QNetworkReply::NoError)
+    if (!reply)
+        return false;
+    // 在途上限触发 abort() 后，error() 会是 OperationCanceledError；
+    // 这类响应的正文被保证截断，交给 readAllLimited 报“超限”，
+    // 避免上层再误报成普通网络错误。
+    if (reply->property(kLimitExceededProperty).toBool())
+        return true;
+    if (reply->error() != QNetworkReply::NoError)
         return false;
     const QVariant status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
     if (!status.isValid())
@@ -252,7 +317,9 @@ QByteArray HttpClient::readAllLimited(QNetworkReply *reply, qint64 limit, bool *
         *exceeded = false;
     if (reply == nullptr)
         return {};
-    if (limit >= 0 && reply->bytesAvailable() > limit) {
+    if (limit >= 0
+        && (reply->property(kLimitExceededProperty).toBool()
+            || reply->bytesAvailable() > limit)) {
         if (exceeded != nullptr)
             *exceeded = true;
         return {};

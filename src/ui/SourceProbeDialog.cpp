@@ -76,7 +76,7 @@ SourceProbeDialog::SourceProbeDialog(HttpClient *http, MediaType type, const QSt
     // 必须在 bindUi() 之后才能碰成员指针：m_type 等在这里才被赋值
     bindUi();
 
-    m_type->addItem(tr("影视"), QStringLiteral("video"));
+    m_type->addItem(tr("视频"), QStringLiteral("video"));
     m_type->addItem(tr("音乐"), QStringLiteral("music"));
 
     m_type->setCurrentIndex(type == MediaType::Video ? 0 : 1);
@@ -318,9 +318,12 @@ void SourceProbeDialog::onProbeFinished(const SourceProbe::Result &result)
         m_type->setCurrentIndex(detectedIndex);
 
     QString status = tr("探测成功，确认无误后点“保存这个源”。");
-    if (switched || result.autoDetected) {
+    if (switched) {
         status += tr("已自动识别为%1，类型已切换。")
-                      .arg(result.mediaType == MediaType::Video ? tr("影视") : tr("音乐"));
+                      .arg(result.mediaType == MediaType::Video ? tr("视频") : tr("音乐"));
+    } else if (result.autoDetected) {
+        status += tr("已识别为%1，与当前选择一致。")
+                      .arg(result.mediaType == MediaType::Video ? tr("视频") : tr("音乐"));
     }
     m_status->setText(status);
     m_nameLabel->setText(result.config.name);

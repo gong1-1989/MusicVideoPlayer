@@ -339,37 +339,46 @@ bool SourceRegistry::save()
 
     const QString primary = QDir(primaryDir()).filePath(QStringLiteral("sources.json"));
     const QString fallback = fallbackSourcePath();
-    QStringList targets;
-    if (!m_storagePath.isEmpty())
-        targets.append(m_storagePath);
-    if (!targets.contains(primary))
-        targets.append(primary);
-    if (!fallback.isEmpty() && fallback != primary && !targets.contains(fallback))
-        targets.append(fallback);
-
     QStringList errors;
-    for (const QString &path : targets) {
+
+    auto writeTarget = [&](const QString &path) {
         if (path.isEmpty())
-            continue;
+            return false;
         QDir().mkpath(QFileInfo(path).absolutePath());
 
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly)) {
             errors.append(tr("%1：%2").arg(path, file.errorString()));
-            continue;
+            return false;
         }
         if (file.write(payload) != payload.size()) {
             errors.append(tr("%1：写入不完整").arg(path));
             file.cancelWriting();
-            continue;
+            return false;
         }
         if (!file.commit()) {
             errors.append(tr("%1：%2").arg(path, file.errorString()));
-            continue;
+            return false;
         }
-        if (path != primary)
-            qCWarning(lcRegistry) << "主数据目录不可写，源配置已改用备用路径" << path;
-        m_storagePath = path;
+        return true;
+    };
+
+    // 正常情况主路径和备用路径都写，保证主路径以后失效时备用不是旧快照；
+    // 备用写失败不影响本次保存成功，只记录警告。主路径写失败才真正降级。
+    const bool primaryOk = writeTarget(primary);
+    const bool fallbackOk = (fallback.isEmpty() || fallback == primary)
+        ? true : writeTarget(fallback);
+
+    if (primaryOk) {
+        m_storagePath = primary;
+        if (!fallbackOk)
+            qCWarning(lcRegistry) << "源配置已写入主路径，但备用路径写入失败："
+                                  << fallback << errors.join(QStringLiteral("；"));
+        return true;
+    }
+    if (fallbackOk && !fallback.isEmpty() && fallback != primary) {
+        m_storagePath = fallback;
+        qCWarning(lcRegistry) << "主数据目录不可写，源配置已改用备用路径" << fallback;
         return true;
     }
 

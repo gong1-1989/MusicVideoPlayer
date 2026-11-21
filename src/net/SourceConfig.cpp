@@ -61,8 +61,9 @@ bool SourceConfig::isValid() const
 
     if (kind == QLatin1String("builtin")) {
         // 内置实现见 createSearchProvider()：目前只剩网页型影视（内置抓取）
-        if (provider == QLatin1String("maccms_web"))
-            return !urlTemplate.trimmed().isEmpty();
+        if (provider == QLatin1String("maccms_web")) {
+            return mediaType == MediaType::Video && !urlTemplate.trimmed().isEmpty();
+        }
         return false;
     }
 
@@ -94,6 +95,8 @@ QString SourceConfig::validationError() const
 
     if (kind == QLatin1String("builtin")) {
         if (provider == QLatin1String("maccms_web")) {
+            if (mediaType != MediaType::Video)
+                return QObject::tr("网页型影视源只支持视频类型");
             if (urlTemplate.trimmed().isEmpty())
                 return QObject::tr("网页型影视源没填站点地址");
             const QString scheme = QUrl(urlTemplate).scheme();
@@ -213,6 +216,12 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
                            : MediaType::Music;
     config.kind = object.value(QStringLiteral("kind")).toString(QStringLiteral("config"));
     config.provider = object.value(QStringLiteral("provider")).toString();
+    // 旧的网页型影视源可能没写 mediaType；既然实现固定返回视频结果，
+    // 读取时就把它归一到视频，避免配置被新校验判为无效。
+    if (config.kind == QLatin1String("builtin")
+        && config.provider == QLatin1String("maccms_web")) {
+        config.mediaType = MediaType::Video;
+    }
     config.command = object.value(QStringLiteral("command")).toString();
     config.arguments = object.value(QStringLiteral("arguments")).toString();
     // 未填写或过小的值都视为“自动”，由 SearchCoordinator 按源类型/条数分配；

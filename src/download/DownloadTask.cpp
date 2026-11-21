@@ -158,6 +158,9 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
         connect(reply, &QNetworkReply::finished, this, [this, reply] {
             onPlaylistFinished(reply);
         });
+        // 播放列表不是媒体字节，必须在接收过程中就设上限；
+        // 否则异常大的 m3u8 仍会先被 QNetworkReply 缓冲。
+        HttpClient::limitReplySize(reply, NetLimits::kPlaylistBytes);
         if (reply->isFinished())
             onPlaylistFinished(reply);
         return;

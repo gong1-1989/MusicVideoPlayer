@@ -34,7 +34,8 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 
 - `playlists.json`：音乐 / 视频播放列表
 - `sources.json`：搜索源配置
-- `log/MusicVideoPlayer.log`：运行日志，单文件超过 8 MB 轮转为 `.1`
+
+运行日志放在 exe 同级的 `log/MusicVideoPlayer.log`，单文件超过 8 MB 轮转为 `.1`；当 `log/` 不可写时，回退到系统用户数据目录（`QStandardPaths::AppDataLocation`）下的同名日志文件。
 
 测试专用：设置环境变量 `MVP_DATA_DIR` 可把数据目录指向临时路径，单元测试用它避免碰真实数据。
 
@@ -45,7 +46,7 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 - 分片请求先发 16 KB 探测 Range，再按 4 路 Range 拆分；上游忽略 Range、不返回 206 时自动回退单路透传。
 - 深拖动时，代理按播放列表索引定位目标分片，预取 `targetIndex..targetIndex+9`，每片 4 路 Range、同时 4 片流水预取。实测 600 秒目标从约 6.5 秒降到约 4.5 秒；同条件关闭预取约 5.5 秒。
 - 预取窗口必须用播放列表索引，不能用文件名反推：播放列表索引 152 可能对应文件 `0000143.ts`，按文件名偏移会导致整段预取错位。
-- 网络响应设统一上限：JSON 与外部解析器输出 2 MB、HTML 4 MB、HLS 播放列表 4 MB 且最多 1 万片；单个下载文件默认超过 8 GB 停止，可在系统设置里改为 2/4/8/16 GB。超限按失败处理并写日志，避免异常源把内存或磁盘吃满。
+- 网络响应设统一上限：JSON 与外部解析器输出 2 MB、HTML 4 MB、HLS 播放列表 4 MB 且最多 1 万片；单个下载文件默认超过 8 GB 停止，可在系统设置里改为 2/4/8/16 GB。普通请求在接收过程中累计超过上限会立即中止，不等响应收完；超限按失败处理并写日志，避免异常源把内存或磁盘吃满。
 - 公开 MP4 样例源（`https://dpaste.org/9mnUE/raw`）仅用于验收 MP4 直链与拖动，默认停用，避免静态样例污染正常搜索结果。
 
 ## 测试
@@ -54,7 +55,7 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 ctest --test-dir build/Desktop_Qt_6_10_1_MinGW_64_bit_Debug --output-on-failure
 ```
 
-包含 `mvp_core_logic`（时间格式、LRC 解析、条目/源配置校验、日志 URL 脱敏、HLS 分片多连接 Range 与 206 回退）、`mvp_storage`（播放列表与搜索源持久化、损坏文件备份）与 `mvp_ui_logic`（歌词切歌取消、播放列表保存失败重试）。
+包含 `mvp_core_logic`（时间格式、LRC 解析、条目/源配置校验、日志 URL 脱敏、HLS 分片多连接 Range 与 206 回退）、`mvp_integration`（本地 HTTP 服务、重定向密钥剥离、下载完整性、搜索超时/中止、响应上限）、`mvp_storage`（播放列表与搜索源持久化、损坏文件备份）与 `mvp_ui_logic`（歌词切歌取消、播放列表保存失败重试）。
 
 ## 搜索源
 
@@ -64,7 +65,7 @@ ctest --test-dir build/Desktop_Qt_6_10_1_MinGW_64_bit_Debug --output-on-failure
 - `kind=builtin`：内置解析器（当前为 maccms 网页源）；网易云、Audius、iTunes 等仍由配置描述
 - `kind=external`：调用本机外部程序，默认关闭，需要显式开启
 
-搜索条数由界面“每页显示条数”控制，默认 20 条（可选 10/20/30/50）；网页影视源会按条数自动放宽单源超时。源配置里的 `timeoutMs` 为 0 表示自动预算，大于 0 时配置型、网页型和外部源都按该值限时。
+每个源实际抓取条数由系统设置“搜索条数”控制（配置键 `search/limit`，默认 20，范围 1–100；设置界面提供 10/20/30/50，配置文件里的其它值会作为“当前配置”保留）。主界面的“每页显示条数”只控制结果分页（配置键 `search/pageSize`，默认 20，范围 5–200），不改变每个源抓取多少条。网页影视源在 `timeoutMs=0` 时会按搜索条数自动放宽单源超时；`timeoutMs>0` 时配置型、网页型和外部源都按该值限时。
 
 ## 目录
 

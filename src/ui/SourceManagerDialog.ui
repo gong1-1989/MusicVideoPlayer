@@ -51,7 +51,7 @@
       <bool>true</bool>
      </property>
      <property name="text">
-      <string>每个源是一份配置：搜索地址 + 结果路径 + 字段对应，填好后用“试搜”确认。需要签名的站点（B站、QQ音乐等）无法用配置描述。</string>
+      <string>每个源是一份配置：搜索地址 + 结果路径 + 字段对应，填好后用“试搜”确认。需要专属签名或登录态的平台（如部分音乐、视频站点）通常无法用配置描述，需要改用外部解析器。</string>
      </property>
     </widget>
    </item>
@@ -164,7 +164,7 @@
              <string>更新</string>
             </property>
             <property name="toolTip">
-             <string>一键更新：对当前选中的源重新探测，成功后再确认写入</string>
+             <string>重新探测当前选中的源，或刷新内置网页源的站点状态；探测成功后再确认写入</string>
             </property>
            </widget>
           </item>
@@ -240,7 +240,7 @@
               <item row="1" column="0">
                <widget class="QLabel" name="label_captionType">
                 <property name="text">
-                 <string>类型</string>
+                 <string>媒体类型</string>
                 </property>
                </widget>
               </item>
@@ -291,7 +291,7 @@
                     <string>label_hint</string>
                    </property>
                    <property name="text">
-                    <string>搜索走 wbi 签名；影视仅免费集可直链</string>
+                    <string>只解析站点页面，不需要专属签名；当前只返回影视/视频结果。</string>
                    </property>
                   </widget>
                  </item>
@@ -661,7 +661,7 @@ Referer: https://example.com/</string>
               <item row="11" column="0">
                <widget class="QLabel" name="label_captionGenre">
                 <property name="text">
-                 <string>类型</string>
+                 <string>题材/分类</string>
                 </property>
                </widget>
               </item>

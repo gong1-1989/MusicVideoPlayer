@@ -59,6 +59,8 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
 {
     m_done = false;
     m_filtered = 0;
+    m_stderrBytes = 0;
+    m_stderrTail.clear();
 
     if (m_config.command.trimmed().isEmpty()) {
         finish(tr("没有配置解析器命令"));
@@ -91,6 +93,23 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
             return;
         if (m_process->bytesAvailable() > NetLimits::kJsonBytes)
             finish(tr("解析器输出超过 2 MB 上限"));
+    });
+    // stderr 过去只在进程结束时读，持续输出的错误日志会一直堆在
+    // QProcess 内部缓冲区。这里边到边丢并计总字节，超限就中止。
+    connect(m_process, &QProcess::readyReadStandardError, this, [this] {
+        if (m_done || m_process == nullptr)
+            return;
+        const QByteArray chunk = m_process->readAllStandardError();
+        m_stderrBytes += chunk.size();
+        if (!chunk.isEmpty()) {
+            // 只保留末尾 240 字符给失败提示；前面的内容随时丢弃，
+            // 避免 stderr 在 QProcess 缓冲区里无限增长。
+            m_stderrTail += QString::fromUtf8(chunk);
+            if (m_stderrTail.size() > 240)
+                m_stderrTail = m_stderrTail.right(240);
+        }
+        if (m_stderrBytes > NetLimits::kJsonBytes)
+            finish(tr("解析器错误输出超过 2 MB 上限"));
     });
 
     m_timer = new QTimer(this);
@@ -136,8 +155,7 @@ void ExternalSearchProvider::onProcessFinished(int exitCode, QProcess::ExitStatu
         m_timer->stop();
 
     if (status != QProcess::NormalExit || exitCode != 0) {
-        const QString stderrText =
-            QString::fromUtf8(m_process->readAllStandardError()).trimmed().left(240);
+        const QString stderrText = m_stderrTail.trimmed().left(240);
         finish(tr("解析器退出码 %1%2")
                    .arg(exitCode)
                    .arg(stderrText.isEmpty() ? QString() : QStringLiteral("：") + stderrText));

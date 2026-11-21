@@ -153,7 +153,7 @@ bool PlaylistController::save()
     qCWarning(lcPlaylist) << "播放列表保存失败";
     // 不丢用户刚做的修改：界面保留，页签标 *，右键菜单提供重试。
     setDirty(true);
-    emit statusMessage(tr("播放列表保存失败：Data 目录不可写；修改仍保留，可在列表右键“重试保存”"));
+    emit statusMessage(tr("播放列表保存失败：主/备用存储都未能写入（可能是磁盘空间不足或目录不可写）；修改仍保留，可在列表右键“重试保存”"));
     return false;
 }
 
@@ -163,7 +163,7 @@ bool PlaylistController::retrySave()
         return true;
     if (!PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
         qCWarning(lcPlaylist) << "播放列表重试保存仍失败";
-        emit statusMessage(tr("播放列表仍未保存：Data 目录不可写，修改继续保留"));
+        emit statusMessage(tr("播放列表仍未保存：主/备用存储都未能写入，修改继续保留"));
         return false;
     }
     setDirty(false);

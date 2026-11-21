@@ -381,7 +381,7 @@ void MaccmsWebProvider::requestHtml(
                       }
                       reply->deleteLater();
                       callback(true, decodeHtml(raw));
-                  });
+                  }, NetLimits::kHtmlBytes);
 }
 
 void MaccmsWebProvider::fetchRoot()
@@ -406,7 +406,7 @@ void MaccmsWebProvider::fetchRoot()
                           reply->deleteLater();
                       }
                       self->trySuggest();
-                  });
+                  }, NetLimits::kHtmlBytes);
 }
 
 void MaccmsWebProvider::trySuggest()
@@ -541,7 +541,8 @@ void MaccmsWebProvider::trySearch(int strategy)
     case 3: { // 苹果CMS v8 表单搜索
         QNetworkReply *reply =
             m_http->postForm(siteUrl(QStringLiteral("index.php?m=vod-search")),
-                             QByteArray("wd=") + m_keywordEncoded.toUtf8(), requestHeaders());
+                             QByteArray("wd=") + m_keywordEncoded.toUtf8(), requestHeaders(),
+                             NetLimits::kHtmlBytes);
         if (reply == nullptr) {
             fail(tr("请求未发出"));
             break;
@@ -569,7 +570,7 @@ void MaccmsWebProvider::trySearch(int strategy)
         QNetworkReply *reply = m_http->postForm(
             siteUrl(QStringLiteral("e/search/index.php")),
             QByteArray("show=title&tempid=1&keyboard=") + m_keywordEncoded.toUtf8(),
-            requestHeaders());
+            requestHeaders(), NetLimits::kHtmlBytes);
         if (reply == nullptr) {
             fail(tr("请求未发出"));
             break;

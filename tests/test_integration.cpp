@@ -212,6 +212,7 @@ private slots:
     void maccmsAbortClosesInflightRequest();
     void externalAbortKillsProcessWithoutFinish();
     void searchJsonOverLimitFails();
+    void responseLimitAbortsInflight();
     void requestLogsRedactQuerySecrets();
     void downloadLimitSettingClampsAndPersists();
 
@@ -534,6 +535,30 @@ void IntegrationTest::externalAbortKillsProcessWithoutFinish()
     QTRY_COMPARE_WITH_TIMEOUT(process->state(), QProcess::NotRunning, 2500);
     QTest::qWait(100);
     QVERIFY(!finished);
+}
+
+void IntegrationTest::responseLimitAbortsInflight()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray huge(6 * 1024 * 1024, 'x');
+    server.handler = [huge](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 200, huge, "application/json");
+    };
+
+    HttpClient http;
+    QNetworkReply *reply = http.get(server.url(QStringLiteral("/huge")));
+    QVERIFY(reply != nullptr);
+    QSignalSpy finished(reply, &QNetworkReply::finished);
+    if (!reply->isFinished())
+        QVERIFY(finished.wait(5000));
+    QVERIFY(reply->property("mvpReplyLimitExceeded").toBool());
+
+    bool tooLarge = false;
+    const QByteArray body = HttpClient::readAllLimited(reply, NetLimits::kJsonBytes, &tooLarge);
+    QVERIFY(tooLarge);
+    QVERIFY(body.isEmpty());
+    reply->deleteLater();
 }
 
 void IntegrationTest::searchJsonOverLimitFails()

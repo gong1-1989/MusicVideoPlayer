@@ -123,7 +123,8 @@ void SettingsDialog::bindUi()
     for (int limit : {10, 20, 30, 50})
         m_searchLimit->addItem(tr("%1 条").arg(limit), limit);
     m_searchLimit->setToolTip(
-        tr("网页型影视源按这里的条数抓取（最多 50 条）；条数越大，单源耗时越长。"));
+        tr("所有搜索源都按这里的条数抓取；条数越大，单源耗时越长。界面提供 10/20/30/50 条，"
+           "配置文件里的其它值会作为“当前配置”保留。"));
 
     for (int limitMb : {2048, 4096, 8192, 16384}) {
         const QString label = limitMb >= 1024
@@ -156,12 +157,25 @@ void SettingsDialog::loadValues()
     m_volumeValue->setText(QStringLiteral("%1%").arg(m_volume->value()));
 
     const int limitIndex = m_searchLimit->findData(AppSettings::searchLimit());
-    if (limitIndex >= 0)
+    if (limitIndex >= 0) {
         m_searchLimit->setCurrentIndex(limitIndex);
+    } else {
+        // 兼容手工改过配置或旧版本的值：不要静默落回 10 条，
+        // 否则用户一保存就把真实配置改掉了。
+        const int current = AppSettings::searchLimit();
+        m_searchLimit->addItem(tr("%1 条（当前配置）").arg(current), current);
+        m_searchLimit->setCurrentIndex(m_searchLimit->count() - 1);
+    }
 
-    int downloadIndex = m_downloadLimit->findData(AppSettings::downloadLimitMb());
-    if (downloadIndex < 0)
-        downloadIndex = m_downloadLimit->findData(8192);
+    const int downloadLimit = AppSettings::downloadLimitMb();
+    int downloadIndex = m_downloadLimit->findData(downloadLimit);
+    if (downloadIndex < 0) {
+        const QString label = (downloadLimit >= 1024 && downloadLimit % 1024 == 0)
+            ? tr("%1 GB（当前配置）").arg(downloadLimit / 1024)
+            : tr("%1 MB（当前配置）").arg(downloadLimit);
+        m_downloadLimit->addItem(label, downloadLimit);
+        downloadIndex = m_downloadLimit->count() - 1;
+    }
     if (downloadIndex >= 0)
         m_downloadLimit->setCurrentIndex(downloadIndex);
 
