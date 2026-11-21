@@ -87,6 +87,10 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const MediaItem &item) {
                 if (m_searchWindow != nullptr)
                     m_searchWindow->hide();
+                // 搜索窗作为独立顶层窗口关闭后，主动把焦点还给主窗，
+                // 避免用户下一次点击侧栏搜索按钮时第一下只起到激活窗口的作用。
+                raise();
+                activateWindow();
                 playSearchItem(item);
             });
     connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
