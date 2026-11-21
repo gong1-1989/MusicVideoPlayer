@@ -115,23 +115,6 @@ bool isOpenEndedRange(const QString &spec)
     return spec.trimmed().compare(QLatin1String("bytes=0-"), Qt::CaseInsensitive) == 0;
 }
 
-/// 同一个视频的 master 列表和子列表通常共享目录，最多再差一层码率目录。
-/// 预取回退到“最近解析的媒体列表”时，必须过这一关，避免拿上一部视频的分片索引。
-bool samePlaylistScope(const QUrl &a, const QUrl &b)
-{
-    if (a.host().compare(b.host(), Qt::CaseInsensitive) != 0)
-        return false;
-
-    const auto directory = [](const QUrl &url) {
-        const QString path = url.path();
-        const int slash = path.lastIndexOf(QLatin1Char('/'));
-        return slash >= 0 ? path.left(slash + 1) : QStringLiteral("/");
-    };
-    const QString left = directory(a);
-    const QString right = directory(b);
-    return left.startsWith(right) || right.startsWith(left);
-}
-
 QByteArray statusReason(int status)
 {
     switch (status) {
@@ -279,54 +262,7 @@ QUrl StreamProxy::proxyUrlFor(const QUrl &upstream, const QHash<QString, QString
 {
     if (!isListening() && !start())
         return QUrl();
-    if (!upstream.isValid() || upstream.isEmpty())
-        return QUrl();
-
-    pruneTokens();
-
-    const QString token = QString::number(QRandomGenerator::global()->generate64(), 16);
-    Upstream entry;
-    entry.url = upstream;
-    // token 可能对应播放列表，也可能对应 CDN 分片。按目标 host 过滤敏感头：
-    // 播放列表在源站时保留 Cookie，分片换到 CDN 时自动剥掉。
-    entry.headers = HeaderPolicy::sanitizedForTarget(upstream, headers);
-    entry.createdAtMs = QDateTime::currentMSecsSinceEpoch();
-    m_tokens.insert(token, entry);
-    // 末尾的斜杠很关键：m3u8 里的相对分片会按“目录”解析，
-    // 少了它 /stream/<token>/000001.ts 会被播放器解析成 /stream/000001.ts。
-    return QUrl(QStringLiteral("http://127.0.0.1:%1/stream/%2/")
-                    .arg(m_server->serverPort())
-                    .arg(token));
-}
-
-void StreamProxy::pruneTokens()
-{
-    if (m_tokens.size() < 512)
-        return;
-
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const qint64 expireBefore = now - 6LL * 60 * 60 * 1000;
-    for (auto it = m_tokens.begin(); it != m_tokens.end();) {
-        if (it->createdAtMs > 0 && it->createdAtMs < expireBefore)
-            it = m_tokens.erase(it);
-        else
-            ++it;
-    }
-
-    // 极端情况下（一个超长播放列表反复刷新）仍超过上限，丢最老的四分之一。
-    if (m_tokens.size() > 4096) {
-        QList<QPair<qint64, QString>> byAge;
-        byAge.reserve(m_tokens.size());
-        for (auto it = m_tokens.cbegin(); it != m_tokens.cend(); ++it)
-            byAge.append({it->createdAtMs, it.key()});
-        std::sort(byAge.begin(), byAge.end(),
-                  [](const QPair<qint64, QString> &a, const QPair<qint64, QString> &b) {
-                      return a.first < b.first;
-                  });
-        const int removeCount = m_tokens.size() / 4;
-        for (int i = 0; i < removeCount && i < byAge.size(); ++i)
-            m_tokens.remove(byAge.at(i).second);
-    }
+    return m_tokens.registerFor(upstream, headers, m_server->serverPort());
 }
 
 void StreamProxy::onNewConnection()
@@ -391,8 +327,8 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     const QString token = slash < 0 ? rest : rest.left(slash);
     const QString suffix = slash < 0 ? QString() : rest.mid(slash + 1);
 
-    const Upstream entry = m_tokens.value(token);
-    if (entry.url.isEmpty() || !entry.url.isValid()) {
+    StreamTokenRegistry::Upstream entry;
+    if (!m_tokens.lookup(token, &entry) || entry.url.isEmpty() || !entry.url.isValid()) {
         qCWarning(lcProxy) << "流转令牌未知，前缀：" << token.left(6);
         replyError(client, 404, QStringLiteral("Not Found"));
         return;
@@ -946,80 +882,12 @@ QString StreamProxy::cacheKeyFor(const QUrl &upstream,
 void StreamProxy::rememberPlaylist(const QByteArray &body, const QUrl &playlistUrl,
                                    const QHash<QString, QString> &headers)
 {
-    const QString source = QString::fromUtf8(body);
     qCDebug(lcProxy) << "HLS 分片索引输入" << body.size() << "字节"
                      << HttpClient::redactUrl(playlistUrl);
-    QStringList lines = source.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
-    for (QString &line : lines) {
-        if (line.endsWith(QLatin1Char('\r')))
-            line.chop(1);
-    }
 
-    QUrl base = playlistUrl;
-    QList<QUrl> segments;
-    QList<qint64> starts;
-    qint64 cumulativeMs = 0;
-    double pendingDuration = -1.0;
-    bool hasByteRange = false;
-    bool hasNonHttp = false;
-
-    for (const QString &raw : std::as_const(lines)) {
-        const QString line = raw.trimmed();
-        if (line.isEmpty())
-            continue;
-
-        if (line.startsWith(QLatin1String("#EXT-X-BASE:"))) {
-            const QString value = line.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
-            const QUrl next = base.resolved(QUrl(value));
-            if (next.isValid())
-                base = next;
-            continue;
-        }
-
-        if (line.startsWith(QLatin1String("#EXTINF:"))) {
-            const QString value =
-                line.mid(QStringLiteral("#EXTINF:").size()).section(QLatin1Char(','), 0, 0);
-            bool ok = false;
-            const double seconds = value.trimmed().toDouble(&ok);
-            pendingDuration = ok && seconds > 0.0 ? seconds : -1.0;
-            continue;
-        }
-
-        if (line.startsWith(QLatin1String("#EXT-X-BYTERANGE:"))) {
-            hasByteRange = true;
-            continue;
-        }
-
-        if (line.startsWith(QLatin1Char('#')))
-            continue;
-
-        if (pendingDuration < 0.0)
-            continue; // 这是 master playlist 的变体地址，不是媒体分片
-
-        const QUrl segment = base.resolved(QUrl(line));
-        if (!segment.isValid()
-            || (segment.scheme() != QLatin1String("http")
-                && segment.scheme() != QLatin1String("https"))) {
-            hasNonHttp = true;
-        } else {
-            segments.append(segment);
-            starts.append(cumulativeMs);
-        }
-        cumulativeMs += qRound64(pendingDuration * 1000.0);
-        pendingDuration = -1.0;
-    }
-
-    if (segments.isEmpty())
+    const QSharedPointer<PlaylistInfo> info = HlsPlaylist::parse(body, playlistUrl);
+    if (info.isNull())
         return;
-
-    auto info = QSharedPointer<PlaylistInfo>::create();
-    info->source = playlistUrl;
-    info->segments = segments;
-    info->starts = starts;
-    info->totalMs = cumulativeMs;
-    info->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
-    // 带 BYTERANGE 的播放列表无法只靠 URL 缓存整段，直接关掉预取，避免重复下载。
-    info->prefetchable = !hasByteRange && !hasNonHttp;
 
     const QString key = cacheKeyFor(playlistUrl, headers);
     m_playlists.insert(key, info);
@@ -1042,34 +910,13 @@ void StreamProxy::rememberPlaylist(const QByteArray &body, const QUrl &playlistU
             m_playlists.remove(oldestKey);
     }
 
-    qCDebug(lcProxy) << "HLS 分片索引" << segments.size() << "片，总时长"
-                     << cumulativeMs << "ms，可预取" << info->prefetchable;
-    if (segments.size() > 143) {
-        qCDebug(lcProxy) << "HLS 分片抽样：0" << segments.at(0)
-                         << "143" << segments.at(143) << "起始" << starts.at(143)
-                         << "152" << segments.at(152) << "起始" << starts.at(152);
+    qCDebug(lcProxy) << "HLS 分片索引" << info->segments.size() << "片，总时长"
+                     << info->totalMs << "ms，可预取" << info->prefetchable;
+    if (info->segments.size() > 143) {
+        qCDebug(lcProxy) << "HLS 分片抽样：0" << info->segments.at(0)
+                         << "143" << info->segments.at(143) << "起始" << info->starts.at(143)
+                         << "152" << info->segments.at(152) << "起始" << info->starts.at(152);
     }
-}
-
-int StreamProxy::segmentIndexAt(const PlaylistInfo &info, qint64 positionMs) const
-{
-    if (info.starts.isEmpty())
-        return -1;
-    if (positionMs <= info.starts.first())
-        return 0;
-    if (positionMs >= info.starts.last())
-        return info.starts.size() - 1;
-
-    int low = 0;
-    int high = info.starts.size(); // 上界取不到
-    while (low + 1 < high) {
-        const int mid = (low + high) / 2;
-        if (info.starts.at(mid) <= positionMs)
-            low = mid;
-        else
-            high = mid;
-    }
-    return low;
 }
 
 const StreamProxy::PlaylistInfo *StreamProxy::playlistFor(
@@ -1085,7 +932,7 @@ const StreamProxy::PlaylistInfo *StreamProxy::playlistFor(
     if (!m_lastPlaylistKey.isEmpty()) {
         const auto last = m_playlists.constFind(m_lastPlaylistKey);
         if (last != m_playlists.cend() && last.value()->prefetchable
-            && samePlaylistScope(last.value()->source, playlistUrl))
+            && HlsPlaylist::sameScope(last.value()->source, playlistUrl))
             return last.value().data();
     }
     return nullptr;
@@ -1101,7 +948,7 @@ void StreamProxy::prefetchForSeek(const QUrl &playlistUrl,
     if (info == nullptr)
         return;
 
-    const int targetIndex = segmentIndexAt(*info, targetMs);
+    const int targetIndex = HlsPlaylist::segmentIndexAt(*info, targetMs);
     if (targetIndex < 0)
         return;
 
@@ -1165,7 +1012,7 @@ void StreamProxy::prefetchForPosition(const QUrl &playlistUrl,
     // 正常播放只预取后面几片，单路即可；和前台抢带宽的收益不如稳定出画。
     m_prefetchConcurrency = 1;
 
-    const int current = segmentIndexAt(*info, positionMs);
+    const int current = HlsPlaylist::segmentIndexAt(*info, positionMs);
     if (current < 0)
         return;
 
@@ -1575,92 +1422,9 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
 QByteArray StreamProxy::rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
                                         const QHash<QString, QString> &headers)
 {
-    const QString source = QString::fromUtf8(body);
-    const bool crlf = source.contains(QLatin1String("\r\n"));
-    QStringList lines = source.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
-    for (QString &line : lines) {
-        if (line.endsWith(QLatin1Char('\r')))
-            line.chop(1);
-    }
-
-    QUrl base = playlistUrl;
-    QHash<QString, QString> tokenCache;
-
-    auto proxyFor = [this, &base, &headers, &tokenCache](const QString &raw) -> QString {
-        const QString uri = raw.trimmed();
-        if (uri.isEmpty())
-            return raw;
-
-        const QUrl absolute = base.resolved(QUrl(uri));
-        if (!absolute.isValid()
-            || (absolute.scheme() != QLatin1String("http")
-                && absolute.scheme() != QLatin1String("https"))) {
-            return raw; // data:、skd: 等非 HTTP 资源原样保留
-        }
-
-        const QString key = absolute.toString(QUrl::FullyEncoded);
-        if (tokenCache.contains(key))
-            return tokenCache.value(key);
-
-        const QUrl proxy = proxyUrlFor(absolute, headers);
-        if (!proxy.isValid())
-            return raw;
-
-        // proxyUrlFor 返回的是“目录”形式（/stream/<token>/）。如果把整个分片地址
-        // 直接换成这个目录，FFmpeg 会把同一个目录当成所有分片反复请求，最终报
-        // “URL ... is not in allowed_segment_extensions”。必须把分片文件名带回路径，
-        // 再由 handleClient 把后缀拼到 token 对应的绝对地址上。
-        QString value = proxy.toString(QUrl::FullyEncoded);
-        const QString fileName = absolute.fileName(QUrl::FullyEncoded);
-        if (!fileName.isEmpty())
-            value += fileName;
-        const QString query = absolute.query(QUrl::FullyEncoded);
-        if (!query.isEmpty())
-            value += QLatin1Char('?') + query;
-        tokenCache.insert(key, value);
-        return value;
-    };
-
-    static const QRegularExpression uriAttribute(QStringLiteral("URI=\"([^\"]*)\""));
-    for (QString &line : lines) {
-        const QString trimmed = line.trimmed();
-        if (trimmed.isEmpty())
-            continue;
-
-        if (!trimmed.startsWith(QLatin1Char('#'))) {
-            line = proxyFor(trimmed);
-            continue;
-        }
-
-        if (trimmed.startsWith(QLatin1String("#EXT-X-BASE:"))) {
-            const QString value =
-                trimmed.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
-            const QUrl next = base.resolved(QUrl(value));
-            if (next.isValid())
-                base = next;
-            line = trimmed;
-            continue;
-        }
-
-        if (!trimmed.contains(QLatin1String("URI=")))
-            continue;
-
-        // #EXT-X-KEY / #EXT-X-MAP / #EXT-X-MEDIA / LL-HLS 的 PART 等都带 URI 属性，
-        // 不重写的话播放器会直接去 CDN 取 key/init 段，丢掉 Referer/Cookie。
-        QString rewritten;
-        int last = 0;
-        QRegularExpressionMatchIterator it = uriAttribute.globalMatch(line);
-        while (it.hasNext()) {
-            const QRegularExpressionMatch match = it.next();
-            rewritten += line.mid(last, match.capturedStart(1) - last);
-            rewritten += proxyFor(match.captured(1));
-            last = match.capturedEnd(1);
-        }
-        rewritten += line.mid(last);
-        line = rewritten;
-    }
-
-    return lines.join(crlf ? QStringLiteral("\r\n") : QStringLiteral("\n")).toUtf8();
+    return HlsPlaylist::rewrite(
+        body, playlistUrl,
+        [this, &headers](const QUrl &absolute) { return proxyUrlFor(absolute, headers); });
 }
 
 void StreamProxy::attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream)

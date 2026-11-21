@@ -7,6 +7,7 @@
 #include "net/SourceConfig.h"
 #include "net/SearchCoordinator.h"
 #include "stream/StreamProxy.h"
+#include "stream/HlsPlaylist.h"
 #include "stream/HlsSeekWindow.h"
 #include "util/HeaderPolicy.h"
 #include "util/PlaylistSniffer.h"
@@ -492,6 +493,8 @@ private slots:
     void seekPrefetchWindowFollowsPlaylistIndex();
     void streamProxyMultiRangeForHlsSegment();
     void streamProxyFallsBackWhenHlsRangeIgnored();
+    void hlsPlaylistParsesAndIndexes();
+    void hlsPlaylistRewritesUris();
 };
 
 void CoreLogicTest::timeFormat()
@@ -1319,6 +1322,72 @@ void CoreLogicTest::streamProxyFallsBackWhenHlsRangeIgnored()
     // 首片探测收到 200 后必须回退单路，不能把客户端挂在 multiRange 上等超时。
     QTRY_COMPARE_WITH_TIMEOUT(upstream.requestCount, 2, 5000);
     QCOMPARE(upstream.lastRange, QStringLiteral("bytes=0-"));
+}
+
+void CoreLogicTest::hlsPlaylistParsesAndIndexes()
+{
+    const QByteArray body =
+        "#EXTM3U\n"
+        "#EXT-X-BASE:https://cdn.test/a/\n"
+        "#EXTINF:4,\n"
+        "seg1.ts\n"
+        "#EXTINF:2.5,\n"
+        "../b/seg2.ts?x=1\n";
+    const QSharedPointer<HlsPlaylist::Info> info =
+        HlsPlaylist::parse(body, QUrl(QStringLiteral("https://origin.test/path/list.m3u8")));
+    QVERIFY(!info.isNull());
+    QCOMPARE(info->segments.size(), 2);
+    QCOMPARE(info->segments.at(0),
+             QUrl(QStringLiteral("https://cdn.test/a/seg1.ts")));
+    QCOMPARE(info->segments.at(1),
+             QUrl(QStringLiteral("https://cdn.test/b/seg2.ts?x=1")));
+    QCOMPARE(info->starts.at(0), qint64(0));
+    QCOMPARE(info->starts.at(1), qint64(4000));
+    QCOMPARE(info->totalMs, qint64(6500));
+    QVERIFY(info->prefetchable);
+
+    QCOMPARE(HlsPlaylist::segmentIndexAt(*info, -1), 0);
+    QCOMPARE(HlsPlaylist::segmentIndexAt(*info, 3999), 0);
+    QCOMPARE(HlsPlaylist::segmentIndexAt(*info, 4000), 1);
+    QCOMPARE(HlsPlaylist::segmentIndexAt(*info, 9999), 1);
+
+    QVERIFY(HlsPlaylist::sameScope(
+        QUrl(QStringLiteral("https://cdn.test/a/list.m3u8")),
+        QUrl(QStringLiteral("https://cdn.test/a/720/index.m3u8"))));
+    QVERIFY(!HlsPlaylist::sameScope(
+        QUrl(QStringLiteral("https://cdn.test/a/list.m3u8")),
+        QUrl(QStringLiteral("https://other.test/a/list.m3u8"))));
+
+    const QByteArray byteRange =
+        "#EXTM3U\n"
+        "#EXTINF:4,\n"
+        "#EXT-X-BYTERANGE:100@0\n"
+        "seg.ts\n";
+    const QSharedPointer<HlsPlaylist::Info> ranged =
+        HlsPlaylist::parse(byteRange, QUrl(QStringLiteral("https://cdn.test/a/list.m3u8")));
+    QVERIFY(!ranged.isNull());
+    QVERIFY(!ranged->prefetchable);
+}
+
+void CoreLogicTest::hlsPlaylistRewritesUris()
+{
+    const QUrl playlistUrl(QStringLiteral("https://cdn.test/a/list.m3u8"));
+    const QByteArray body =
+        "#EXTM3U\n"
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n"
+        "#EXTINF:4,\n"
+        "seg1.ts\n";
+
+    const QByteArray rewritten = HlsPlaylist::rewrite(
+        body, playlistUrl, [](const QUrl &absolute) {
+            Q_UNUSED(absolute)
+            return QUrl(QStringLiteral("http://127.0.0.1:1234/stream/token/"));
+        });
+
+    const QString text = QString::fromUtf8(rewritten);
+    QVERIFY(text.contains(QStringLiteral("URI=\"http://127.0.0.1:1234/stream/token/key.bin\"")));
+    QVERIFY(text.contains(QStringLiteral("http://127.0.0.1:1234/stream/token/seg1.ts")));
+    QVERIFY(!text.contains(QStringLiteral("seg1.ts\nseg1.ts")));
 }
 
 QTEST_GUILESS_MAIN(CoreLogicTest)

@@ -1,6 +1,9 @@
 #ifndef STREAMPROXY_H
 #define STREAMPROXY_H
 
+#include "stream/HlsPlaylist.h"
+#include "stream/StreamTokenRegistry.h"
+
 #include <QByteArray>
 #include <QHash>
 #include <QList>
@@ -88,15 +91,7 @@ private:
     /// 上游忽略 Range 时，拖动请求由这里的缓冲区切片返回 206。
     struct CacheEntry;
 
-    struct PlaylistInfo
-    {
-        QUrl source;
-        QList<QUrl> segments;
-        QList<qint64> starts;
-        qint64 totalMs = 0;
-        qint64 lastUsedMs = 0;
-        bool prefetchable = false;
-    };
+    using PlaylistInfo = HlsPlaylist::Info;
 
     struct PrefetchJob
     {
@@ -166,7 +161,6 @@ private:
     /// 解析原始 m3u8，记录每个媒体分片的起始时间和地址；只处理完整分片播放列表。
     void rememberPlaylist(const QByteArray &body, const QUrl &playlistUrl,
                           const QHash<QString, QString> &headers);
-    int segmentIndexAt(const PlaylistInfo &info, qint64 positionMs) const;
     const PlaylistInfo *playlistFor(const QUrl &playlistUrl,
                                     const QHash<QString, QString> &headers) const;
 
@@ -186,22 +180,14 @@ private:
     /// 否则绝对地址会绕过代理，丢掉 Referer/Cookie，相对地址则会丢 token。
     QByteArray rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
                                const QHash<QString, QString> &headers);
-    void pruneTokens();
 
     QByteArray buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const;
     static Request parseRequest(const QByteArray &payload);
     static QByteArray guessContentType(const QUrl &upstream);
 
-    struct Upstream
-    {
-        QUrl url;
-        QHash<QString, QString> headers;
-        qint64 createdAtMs = 0;
-    };
-
     HttpClient *m_http;
     QTcpServer *m_server;
-    QHash<QString, Upstream> m_tokens;
+    StreamTokenRegistry m_tokens;
     QHash<QString, QSharedPointer<CacheEntry>> m_cache;
     QHash<QString, QSharedPointer<PlaylistInfo>> m_playlists;
     QString m_lastPlaylistKey;

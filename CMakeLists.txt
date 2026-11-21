@@ -67,6 +67,10 @@ qt_add_library(mvp_core STATIC
     src/download/DownloadTask.cpp
     src/stream/StreamProxy.h
     src/stream/StreamProxy.cpp
+    src/stream/HlsPlaylist.h
+    src/stream/HlsPlaylist.cpp
+    src/stream/StreamTokenRegistry.h
+    src/stream/StreamTokenRegistry.cpp
     src/core/PlaylistModel.h
     src/core/PlaylistModel.cpp
     src/core/PlaylistStore.h
