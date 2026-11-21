@@ -191,8 +191,13 @@ void SettingsDialog::bindUi()
     connect(m_browseDownloadDir, &QPushButton::clicked, this, [this] {
         const QString dir = QFileDialog::getExistingDirectory(
             this, tr("选择默认下载目录"), m_downloadDir->text());
-        if (!dir.isEmpty())
+        if (!dir.isEmpty()) {
             m_downloadDir->setText(QDir::cleanPath(dir));
+            m_downloadDir->setCursorPosition(0);
+            m_downloadDir->setToolTip(
+                tr("当前目录：%1\n下载任务直接保存到这个目录，不再弹路径选择；同名文件会自动加序号。")
+                    .arg(QDir::cleanPath(dir)));
+        }
     });
     connect(ui->btn_cancel, &QPushButton::clicked, this, &QDialog::reject);
     connect(ui->btn_save, &QPushButton::clicked, this, &SettingsDialog::accept);
@@ -242,6 +247,10 @@ void SettingsDialog::loadValues()
         m_downloadLimit->setCurrentIndex(downloadIndex);
 
     m_downloadDir->setText(AppSettings::downloadDir());
+    m_downloadDir->setCursorPosition(0);
+    m_downloadDir->setToolTip(
+        tr("当前目录：%1\n下载任务直接保存到这个目录，不再弹路径选择；同名文件会自动加序号。")
+            .arg(AppSettings::downloadDir()));
 
     m_sidebarAutoHide->setChecked(AppSettings::sidebarAutoHide());
     m_controlsAutoHide->setChecked(AppSettings::controlsAutoHide());

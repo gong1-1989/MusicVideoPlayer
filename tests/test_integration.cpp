@@ -213,6 +213,7 @@ private slots:
     void downloadStopsAtInjectedByteLimit();
     void downloadRejectsShortHlsSegmentRange();
     void downloadResumesFromPartialFileWithRange();
+    void downloadHlsMergesAndRemuxes();
     void mediaRemuxConvertsTsToMp4();
     void streamProxyPreservesEncodedSegmentQuery();
     void searchTimeoutAbortsProvider();
@@ -501,6 +502,82 @@ void IntegrationTest::downloadResumesFromPartialFileWithRange()
 
     QCOMPARE(server.requests.size(), 1);
     QCOMPARE(server.requests.first().headers.value("range"), QByteArray("bytes=300-"));
+}
+
+void IntegrationTest::downloadHlsMergesAndRemuxes()
+{
+    if (!MediaRemux::isAvailable())
+        QSKIP("未找到 ffmpeg，跳过 HLS 合并转封装测试");
+
+    const QString ffmpeg = MediaRemux::ffmpegExecutable();
+    const QString sourceTs = m_tempDir.filePath(QStringLiteral("hls-source.ts"));
+    QFile::remove(sourceTs);
+    QProcess generator;
+    generator.start(ffmpeg, {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                             QStringLiteral("-loglevel"), QStringLiteral("error"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("testsrc=size=160x90:rate=25"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("sine=frequency=440"),
+                             QStringLiteral("-t"), QStringLiteral("2"),
+                             QStringLiteral("-c:v"), QStringLiteral("mpeg2video"),
+                             QStringLiteral("-c:a"), QStringLiteral("mp2"),
+                             QStringLiteral("-f"), QStringLiteral("mpegts"), sourceTs});
+    QVERIFY(generator.waitForFinished(30000));
+    QCOMPARE(generator.exitCode(), 0);
+    QFile tsFile(sourceTs);
+    QVERIFY(tsFile.open(QIODevice::ReadOnly));
+    const QByteArray tsBytes = tsFile.readAll();
+    QVERIFY(tsBytes.size() > 1024);
+    const int split = tsBytes.size() / 2;
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "seg0.ts\n"
+        "#EXTINF:1.0,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n";
+    server.handler = [playlist, tsBytes, split](const LocalHttpServer::Request &request,
+                                                QTcpSocket *socket) {
+        if (request.path == "/hls/index.m3u8") {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+        } else if (request.path == "/hls/seg0.ts") {
+            LocalHttpServer::respond(socket, 200, tsBytes.left(split), "video/mp2t");
+        } else if (request.path == "/hls/seg1.ts") {
+            LocalHttpServer::respond(socket, 200, tsBytes.mid(split), "video/mp2t");
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    HttpClient http;
+    const QString mergedTs = m_tempDir.filePath(QStringLiteral("hls-merged.ts"));
+    const QString mp4Path = m_tempDir.filePath(QStringLiteral("hls-merged.mp4"));
+    QFile::remove(mergedTs);
+    QFile::remove(mp4Path);
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/hls/index.m3u8")), mergedTs);
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 10000);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(succeeded.count(), 1);
+    QVERIFY(task->isHls());
+    QCOMPARE(server.requests.size(), 3);
+    QCOMPARE(QFileInfo(mergedTs).size(), tsBytes.size());
+
+    MediaRemux remux;
+    QSignalSpy finished(&remux, &MediaRemux::finished);
+    remux.remuxToMp4(mergedTs, mp4Path);
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() > 0, 30000);
+    QCOMPARE(finished.first().at(0).toBool(), true);
+    QVERIFY(QFileInfo(mp4Path).size() > 0);
 }
 
 void IntegrationTest::mediaRemuxConvertsTsToMp4()
