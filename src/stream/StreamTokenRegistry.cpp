@@ -11,8 +11,15 @@
 
 namespace {
 constexpr qint64 kIdleExpireMs = 2LL * 60 * 60 * 1000;
+/// 刚登记/刚使用的令牌在保留期内绝不淘汰。长 VOD 播放列表（例如 2 秒一片、
+/// 两个多小时的正片会有 4000 多个分片）会在一次重写中瞬间登记几千个 token；
+/// 如果按容量立刻淘汰，列表里已经写出去的 URL 会指向已删除 token，播放器请求
+/// 开头分片时全部 404（FFmpeg 报 Invalid data found when processing input）。
+constexpr qint64 kMinRetentionMs = 10LL * 60 * 1000;
 constexpr int kPruneSmallEvery = 64;
-constexpr int kMaxTokens = 4096;
+/// 正常播放列表上限是 10000 个分片，容量必须覆盖一整个长列表，再加主列表/
+/// 音轨/字幕等附加 URL，避免一次重写就触发淘汰。
+constexpr int kMaxTokens = 16384;
 } // namespace
 
 void StreamTokenRegistry::clear()
@@ -79,14 +86,11 @@ bool StreamTokenRegistry::lookup(const QString &token, Upstream *upstream)
 
 void StreamTokenRegistry::prune()
 {
-    // 小规模时不必每次登记都全表扫描；长时间不播放也要让空闲 token 自然过期。
-    if (m_tokens.size() < 512) {
-        if (++m_pruneCounter < kPruneSmallEvery)
-            return;
-        m_pruneCounter = 0;
-    } else {
-        m_pruneCounter = 0;
-    }
+    // 每登记 64 个 token 才扫一次全表。长播放列表一次会登记几千个 token，
+    // 旧实现超过 512 后每次登记都全表扫描，复杂度接近 O(n²)。
+    if (++m_pruneCounter < kPruneSmallEvery)
+        return;
+    m_pruneCounter = 0;
 
     pruneAt(QDateTime::currentMSecsSinceEpoch());
 }
@@ -104,12 +108,17 @@ void StreamTokenRegistry::pruneAt(qint64 nowMs)
         }
     }
 
-    // 极端情况下（一个超长播放列表反复刷新）仍超过上限，丢最老的四分之一。
+    // 极端情况下（一个超长播放列表反复刷新）仍超过上限，只丢“已经过保留期”的
+    // 最老四分之一。保留期内的 token 可能正被刚返回的播放列表引用，淘汰它们
+    // 会让播放器请求开头分片时拿不到上游地址。宁可短暂超限，也不能拆正在用的列表。
     if (m_tokens.size() > kMaxTokens) {
+        const qint64 freshAfter = nowMs - kMinRetentionMs;
         QList<QPair<qint64, QString>> byAge;
         byAge.reserve(m_tokens.size());
-        for (auto it = m_tokens.cbegin(); it != m_tokens.cend(); ++it)
-            byAge.append({it->lastUsedMs, it.key()});
+        for (auto it = m_tokens.cbegin(); it != m_tokens.cend(); ++it) {
+            if (it->lastUsedMs <= 0 || it->lastUsedMs < freshAfter)
+                byAge.append({it->lastUsedMs, it.key()});
+        }
         std::sort(byAge.begin(), byAge.end(),
                   [](const QPair<qint64, QString> &a, const QPair<qint64, QString> &b) {
                       return a.first < b.first;

@@ -503,6 +503,7 @@ private slots:
     void hlsPlaylistRejectsTooManySegments();
     void streamTokensReuseByUrlAndHeaders();
     void streamTokensExpireByIdleClock();
+    void streamTokensKeepFreshTokensBeyondCapacity();
     void streamCacheStoreCountsRangeParts();
     void streamRangeParsesHeadersAndSplitsParts();
     void streamRangeAppendsAndMergesConsecutive();
@@ -1471,6 +1472,39 @@ void CoreLogicTest::streamTokensExpireByIdleClock()
     QCOMPARE(tokens.size(), 1);
 
     tokens.pruneAt(now + 2 * 3600 * 1000 + 1000);
+    QCOMPARE(tokens.size(), 0);
+}
+
+void CoreLogicTest::streamTokensKeepFreshTokensBeyondCapacity()
+{
+    StreamTokenRegistry tokens;
+    QUrl first;
+    QUrl last;
+    // 2 秒一片的长 VOD 正片会有几千个分片；这里故意超过容量上限，
+    // 模拟“一次重写登记完整张播放列表”，开头分片的 token 不能被淘汰。
+    for (int i = 0; i < 20000; ++i) {
+        const QUrl upstream =
+            QUrl(QStringLiteral("https://cdn.test/long/seg%1.ts").arg(i));
+        const QUrl proxied = tokens.registerFor(upstream, {}, 4567);
+        if (i == 0)
+            first = proxied;
+        last = proxied;
+    }
+    QVERIFY(first.isValid());
+    QVERIFY(last.isValid());
+
+    auto tokenOf = [](const QUrl &url) {
+        return url.path().mid(QStringLiteral("/stream/").size())
+            .section(QLatin1Char('/'), 0, 0);
+    };
+    StreamTokenRegistry::Upstream restored;
+    QVERIFY(tokens.lookup(tokenOf(first), &restored));
+    QCOMPARE(restored.url, QUrl(QStringLiteral("https://cdn.test/long/seg0.ts")));
+    QVERIFY(tokens.lookup(tokenOf(last), &restored));
+    QCOMPARE(tokens.size(), 20000);
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    tokens.pruneAt(now + 3 * 3600 * 1000);
     QCOMPARE(tokens.size(), 0);
 }
 

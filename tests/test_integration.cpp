@@ -216,6 +216,7 @@ private slots:
     void downloadHlsMergesAndRemuxes();
     void mediaRemuxConvertsTsToMp4();
     void streamProxyPreservesEncodedSegmentQuery();
+    void streamProxyServesFirstSegmentOfLongPlaylist();
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
     void externalAbortKillsProcessWithoutFinish();
@@ -671,6 +672,58 @@ void IntegrationTest::streamProxyPreservesEncodedSegmentQuery()
     QCOMPARE(server.requests.size(), 1);
     QCOMPARE(server.requests.first().path,
              QByteArray("/hls/seg.ts?token=a%26b%3Dc"));
+    proxy.shutdown();
+}
+
+void IntegrationTest::streamProxyServesFirstSegmentOfLongPlaylist()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path.startsWith("/hls/seg")) {
+            LocalHttpServer::respond(socket, 200, QByteArray(64, 's'), "video/mp2t");
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    // 复刻正片级长播放列表：2 秒一片、6000 片。旧令牌池只有 4096 个位置，
+    // 重写后开头分片的 token 已被淘汰，播放器请求第一片就会 404。
+    QByteArray playlist = "#EXTM3U\n#EXT-X-VERSION:3\n"
+                          "#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n";
+    for (int i = 0; i < 6000; ++i) {
+        playlist += "#EXTINF:2.0,\nseg";
+        playlist += QByteArray::number(i);
+        playlist += ".ts\n";
+    }
+    playlist += "#EXT-X-ENDLIST\n";
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+    const QUrl playlistUrl = server.url(QStringLiteral("/hls/long.m3u8"));
+    const QByteArray rewritten = HlsPlaylist::rewrite(
+        playlist, playlistUrl,
+        [&proxy](const QUrl &absolute) { return proxy.proxyUrlFor(absolute); });
+
+    QString firstSegment;
+    for (const QString &line : QString::fromUtf8(rewritten).split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty() && !trimmed.startsWith(QLatin1Char('#'))) {
+            firstSegment = trimmed;
+            break;
+        }
+    }
+    QVERIFY(!firstSegment.isEmpty());
+
+    HttpClient http;
+    QNetworkReply *reply = http.get(QUrl::fromEncoded(firstSegment.toUtf8()));
+    QSignalSpy finished(reply, &QNetworkReply::finished);
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() > 0, 5000);
+    QVERIFY(HttpClient::isHttpSuccess(reply));
+    reply->deleteLater();
+
+    QCOMPARE(server.requests.size(), 1);
+    QCOMPARE(server.requests.first().path, QByteArray("/hls/seg0.ts"));
     proxy.shutdown();
 }
 
