@@ -122,6 +122,13 @@ inline QUrl preferredPlaybackUrl(const MediaItem &item)
     return item.url;
 }
 
+/// UI 是否应该按 HLS 处理定位等待：必须看实际播放地址，而不是原始 URL。
+/// 原始地址是 m3u8、但备选有 mp4 时，播放器走 mp4，不应该进入分片定位。
+inline bool playbackIsHls(const MediaItem &item)
+{
+    return isHlsUrl(preferredPlaybackUrl(item));
+}
+
 /// 去重用的身份标识：
 /// - 本地文件看路径；
 /// - 在线条目优先看原始网页地址（稳定），再带上标题——

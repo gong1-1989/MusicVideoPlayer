@@ -154,6 +154,9 @@ private:
                      QNetworkReply *reply);
     void pruneCache(const QString &keepKey = QString());
     void dropCacheEntry(const QString &key);
+    /// 先断开 reply 到代理的所有信号再 abort：QNetworkReply::abort() 可能同步
+    /// 发出 finished，回调会重入正在清理的 rangeReplies/m_cache 列表。
+    void abortReplySilently(QNetworkReply *reply);
 
     QByteArray buildCacheHead(const CacheEntry &entry, int status, qint64 start, qint64 end) const;
     static qint64 cacheEntryBytes(const CacheEntry &entry);

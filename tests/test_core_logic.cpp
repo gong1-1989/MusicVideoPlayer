@@ -592,23 +592,28 @@ void CoreLogicTest::preferredPlaybackUrlSelectsProgressive()
                                 QStringLiteral("https://example.com/video.flv")};
     QCOMPARE(preferredPlaybackUrl(hlsPrimary),
              QUrl(QStringLiteral("https://example.com/video.mp4")));
+    // 实际播放 mp4 时不能按 HLS 进入“定位中”，即使原始 URL 是 m3u8。
+    QVERIFY(!playbackIsHls(hlsPrimary));
 
     MediaItem progressivePrimary;
     progressivePrimary.type = MediaType::Video;
     progressivePrimary.url = QUrl(QStringLiteral("https://example.com/video.flv"));
     progressivePrimary.alternateUrls = {QStringLiteral("https://example.com/video.m3u8")};
     QCOMPARE(preferredPlaybackUrl(progressivePrimary), progressivePrimary.url);
+    QVERIFY(!playbackIsHls(progressivePrimary));
 
     MediaItem hlsOnly = hlsPrimary;
     hlsOnly.alternateUrls = {QStringLiteral("https://example.com/video.m3u8"),
                              QStringLiteral("https://cdn.example.com/not-a-video")};
     QCOMPARE(preferredPlaybackUrl(hlsOnly), hlsOnly.url);
+    QVERIFY(playbackIsHls(hlsOnly));
 
     MediaItem music;
     music.type = MediaType::Music;
     music.url = QUrl(QStringLiteral("https://example.com/song.mp3"));
     music.alternateUrls = {QStringLiteral("https://example.com/song.mp4")};
     QCOMPARE(preferredPlaybackUrl(music), music.url);
+    QVERIFY(!playbackIsHls(music));
 }
 
 void CoreLogicTest::mediaItemValidity()

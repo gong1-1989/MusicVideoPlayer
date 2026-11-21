@@ -163,6 +163,22 @@ target_link_libraries(mvp_storage_tests PRIVATE
 mvp_enable_warnings(mvp_storage_tests)
 add_test(NAME mvp_storage COMMAND mvp_storage_tests)
 
+# 歌词控制器：真实 QWidget 环境，验证切歌后旧请求不会再回填歌词面板
+add_executable(mvp_ui_tests
+    tests/test_ui_logic.cpp
+    src/ui/LyricsController.cpp
+    src/ui/ThemeManager.cpp
+    src/ui/WindowChrome.cpp
+)
+target_link_libraries(mvp_ui_tests PRIVATE
+    mvp_core
+    Qt6::Test
+    Qt6::Widgets
+)
+mvp_enable_warnings(mvp_ui_tests)
+add_test(NAME mvp_ui_logic COMMAND mvp_ui_tests)
+set_tests_properties(mvp_ui_logic PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # 主题样式表嵌入资源，ThemeManager 从 :/themes/<id>.qss 加载
 qt_add_resources(MusicVideoPlayer "app_themes"
     PREFIX "/themes"

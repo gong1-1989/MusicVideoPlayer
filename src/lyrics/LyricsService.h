@@ -29,10 +29,11 @@ signals:
     void lyricsFailed(const QString &message);
 
 private:
-    void onFinished();
+    void onFinished(int generation);
 
     HttpClient *m_http;
     QPointer<QNetworkReply> m_reply;
+    int m_generation = 0;
 };
 
 #endif // LYRICSSERVICE_H

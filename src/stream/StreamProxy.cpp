@@ -209,6 +209,18 @@ StreamProxy::~StreamProxy()
     shutdown();
 }
 
+void StreamProxy::abortReplySilently(QNetworkReply *reply)
+{
+    if (reply == nullptr)
+        return;
+    // abort() 会同步触发 finished；这里先断掉本代理的回调，
+    // 避免回调在 shutdown/dropCacheEntry/failRangeEntry 的清理循环里
+    // 再改 rangeReplies、rangeParts 或 m_cache，造成迭代器失效/重入。
+    QObject::disconnect(reply, nullptr, this, nullptr);
+    reply->abort();
+    reply->deleteLater();
+}
+
 void StreamProxy::shutdown()
 {
     m_listening.store(false);
@@ -218,15 +230,12 @@ void StreamProxy::shutdown()
 
     for (const auto &entry : std::as_const(m_cache)) {
         if (entry->reply != nullptr) {
-            entry->reply->abort();
-            entry->reply->deleteLater();
+            abortReplySilently(entry->reply);
             entry->reply = nullptr;
         }
         for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
-            if (!reply.isNull()) {
-                reply->abort();
-                reply->deleteLater();
-            }
+            if (!reply.isNull())
+                abortReplySilently(reply.data());
         }
         entry->rangeReplies.clear();
     }
@@ -914,10 +923,8 @@ void StreamProxy::failRangeEntry(const QString &key,
     entry->failed = true;
     entry->pending = false;
     for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
-        if (!reply.isNull()) {
-            reply->abort();
-            reply->deleteLater();
-        }
+        if (!reply.isNull())
+            abortReplySilently(reply.data());
     }
     entry->rangeReplies.clear();
     entry->rangePending.clear();
@@ -1461,10 +1468,8 @@ void StreamProxy::cancelPrefetch()
     for (const QString &key : keys) {
         QNetworkReply *reply = m_prefetchReplies.take(key);
         m_prefetchStartedMs.remove(key);
-        if (reply != nullptr) {
-            reply->abort();
-            reply->deleteLater();
-        }
+        if (reply != nullptr)
+            abortReplySilently(reply);
     }
 
     // 多连接 Range 预取不在 m_prefetchReplies 里，必须按 key 单独中止；
@@ -1474,10 +1479,8 @@ void StreamProxy::cancelPrefetch()
         const QSharedPointer<CacheEntry> entry = m_cache.value(key);
         if (!entry.isNull()) {
             for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
-                if (!reply.isNull()) {
-                    reply->abort();
-                    reply->deleteLater();
-                }
+                if (!reply.isNull())
+                    abortReplySilently(reply.data());
             }
             entry->rangeReplies.clear();
             entry->rangePending.clear();
@@ -2062,16 +2065,20 @@ void StreamProxy::dropCacheEntry(const QString &key)
         return;
 
     const bool wasPrefetch = entry->prefetch;
+    bool wasTrackedPrefetch = false;
     if (entry->reply != nullptr) {
-        entry->reply->abort();
-        entry->reply->deleteLater();
+        const auto prefetchIt = m_prefetchReplies.find(key);
+        if (prefetchIt != m_prefetchReplies.end() && prefetchIt.value() == entry->reply) {
+            m_prefetchReplies.erase(prefetchIt);
+            m_prefetchStartedMs.remove(key);
+            wasTrackedPrefetch = true;
+        }
+        abortReplySilently(entry->reply);
         entry->reply = nullptr;
     }
     for (const QPointer<QNetworkReply> &reply : std::as_const(entry->rangeReplies)) {
-        if (!reply.isNull()) {
-            reply->abort();
-            reply->deleteLater();
-        }
+        if (!reply.isNull())
+            abortReplySilently(reply.data());
     }
     entry->rangeReplies.clear();
     entry->rangePending.clear();
@@ -2088,6 +2095,10 @@ void StreamProxy::dropCacheEntry(const QString &key)
     // 以为并发还满着，m_rangePrefetchKeys 残留还会阻止同 key 重新预取。
     if (wasPrefetch)
         finishRangePrefetch(key, entry);
+    else if (wasTrackedPrefetch) {
+        m_prefetchActive = qMax(0, m_prefetchActive - 1);
+        startNextPrefetch();
+    }
 }
 
 QByteArray StreamProxy::buildCacheHead(const CacheEntry &entry, int status, qint64 start,

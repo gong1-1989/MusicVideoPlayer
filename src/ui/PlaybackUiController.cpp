@@ -187,8 +187,9 @@ bool PlaybackUiController::isHlsItem() const
 {
     if (!m_player->hasCurrentItem())
         return false;
-    const QUrl url = m_player->currentItem().url;
-    return url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive);
+    // 判断实际播放地址：条目原始 URL 可能是 HLS，但备选有 MP4 时会优先播 MP4，
+    // 这时不能进入 HLS 的“定位中”等待。
+    return playbackIsHls(m_player->currentItem());
 }
 
 void PlaybackUiController::playPressed()

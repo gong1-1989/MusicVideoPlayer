@@ -55,8 +55,11 @@ void LyricsService::load(const QUrl &url)
     if (m_http == nullptr)
         return;
 
+    const int generation = m_generation;
     m_reply = m_http->get(url);
-    connect(m_reply, &QNetworkReply::finished, this, &LyricsService::onFinished);
+    connect(m_reply, &QNetworkReply::finished, this, [this, generation] {
+        onFinished(generation);
+    });
 }
 
 void LyricsService::loadLocalFile(const QString &filePath)
@@ -76,6 +79,9 @@ void LyricsService::loadLocalFile(const QString &filePath)
 
 void LyricsService::cancel()
 {
+    // 每次取消都让旧请求的世代号失效，即使 abort 之后的 finished 回调
+    // 迟到，也不会把旧歌词塞进新条目的面板。
+    ++m_generation;
     if (m_reply.isNull())
         return;
     QNetworkReply *reply = m_reply.data();
@@ -84,14 +90,14 @@ void LyricsService::cancel()
     reply->deleteLater();
 }
 
-void LyricsService::onFinished()
+void LyricsService::onFinished(int generation)
 {
     QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
     if (!reply)
         return;
     reply->deleteLater();
 
-    if (reply != m_reply)
+    if (generation != m_generation || reply != m_reply)
         return;
     m_reply = nullptr;
 

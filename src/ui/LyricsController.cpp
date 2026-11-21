@@ -85,6 +85,8 @@ void LyricsController::hidePanel()
 
 void LyricsController::clear()
 {
+    // 切到无歌词条目或视频时必须取消旧请求，否则旧歌词回来会覆盖新条目面板。
+    m_service->cancel();
     m_lines.clear();
     m_index = -1;
     m_lastPosition = 0;
