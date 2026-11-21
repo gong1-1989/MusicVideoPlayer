@@ -2,6 +2,7 @@
 #define STREAMPROXY_H
 
 #include "stream/HlsPlaylist.h"
+#include "stream/StreamCacheStore.h"
 #include "stream/StreamTokenRegistry.h"
 
 #include <QByteArray>
@@ -89,7 +90,7 @@ private:
 
     /// 一条上游 200 响应在本地内存里的副本。
     /// 上游忽略 Range 时，拖动请求由这里的缓冲区切片返回 206。
-    struct CacheEntry;
+    using CacheEntry = StreamCacheEntry;
 
     using PlaylistInfo = HlsPlaylist::Info;
 
@@ -154,7 +155,6 @@ private:
     void abortReplySilently(QNetworkReply *reply);
 
     QByteArray buildCacheHead(const CacheEntry &entry, int status, qint64 start, qint64 end) const;
-    static qint64 cacheEntryBytes(const CacheEntry &entry);
     static bool parseRange(const QString &value, qint64 total, qint64 *start, qint64 *end);
     static QString cacheKeyFor(const QUrl &upstream, const QHash<QString, QString> &headers);
 
@@ -188,7 +188,7 @@ private:
     HttpClient *m_http;
     QTcpServer *m_server;
     StreamTokenRegistry m_tokens;
-    QHash<QString, QSharedPointer<CacheEntry>> m_cache;
+    StreamCacheStore m_cache;
     QHash<QString, QSharedPointer<PlaylistInfo>> m_playlists;
     QString m_lastPlaylistKey;
 

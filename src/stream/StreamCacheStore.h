@@ -1,0 +1,78 @@
+#ifndef STREAMCACHESTORE_H
+#define STREAMCACHESTORE_H
+
+#include <QByteArray>
+#include <QHash>
+#include <QList>
+#include <QPointer>
+#include <QSet>
+#include <QSharedPointer>
+#include <QString>
+
+class QNetworkReply;
+class QTcpSocket;
+
+/// Range 默认连接数，和 StreamProxy 的分片策略保持一致。
+inline constexpr int kStreamCacheDefaultRangeConnections = 4;
+
+/// 一条上游 200 响应在本地内存里的副本。
+/// 上游忽略 Range 时，拖动请求由这里的缓冲区切片返回 206。
+struct StreamCacheEntry
+{
+    QByteArray data;
+    qint64 total = -1;
+    bool complete = false;
+    bool failed = false;
+    // 预取请求已占位但响应头还没到。播放器这时命中缓存不能另开一条上游，
+    // 否则同一片会重复下载，反而把刚腾出的带宽又吃掉。
+    bool pending = false;
+    QByteArray contentType;
+    qint64 lastUsedMs = 0;
+    QNetworkReply *reply = nullptr;
+    QList<QPointer<QTcpSocket>> clients;
+    // 多连接 Range 下载：各分片先按起始偏移暂存，凑齐连续前缀后再并入
+    // data 供播放器顺序读取。rangeReplies 用来在换片/淘汰时统一中止。
+    bool multiRange = false;
+    // 预取条目由 HLS 流水预取创建，完成后要归还预取并发槽位。
+    bool prefetch = false;
+    int rangeConnections = kStreamCacheDefaultRangeConnections;
+    QHash<qint64, QByteArray> rangeParts;
+    QHash<qint64, qint64> rangePartEnds;
+    QSet<qint64> rangePending;
+    QSet<qint64> rangeRetried;
+    QList<QPointer<QNetworkReply>> rangeReplies;
+};
+
+/// 缓存条目容器。只负责存取和统计，网络回调与 socket 转发仍由 StreamProxy 管。
+class StreamCacheStore
+{
+public:
+    using Entry = StreamCacheEntry;
+    using value_type = QSharedPointer<Entry>;
+    using const_iterator = QHash<QString, value_type>::const_iterator;
+    using iterator = QHash<QString, value_type>::iterator;
+
+    void clear() { m_entries.clear(); }
+    int size() const { return m_entries.size(); }
+    bool isEmpty() const { return m_entries.isEmpty(); }
+
+    value_type value(const QString &key) const { return m_entries.value(key); }
+    bool contains(const QString &key) const { return m_entries.contains(key); }
+    void insert(const QString &key, const value_type &entry) { m_entries.insert(key, entry); }
+    int remove(const QString &key) { return m_entries.remove(key); }
+    value_type take(const QString &key) { return m_entries.take(key); }
+
+    const_iterator cbegin() const { return m_entries.cbegin(); }
+    const_iterator cend() const { return m_entries.cend(); }
+    const_iterator begin() const { return m_entries.cbegin(); }
+    const_iterator end() const { return m_entries.cend(); }
+    iterator begin() { return m_entries.begin(); }
+    iterator end() { return m_entries.end(); }
+
+    static qint64 bytes(const Entry &entry);
+
+private:
+    QHash<QString, value_type> m_entries;
+};
+
+#endif // STREAMCACHESTORE_H

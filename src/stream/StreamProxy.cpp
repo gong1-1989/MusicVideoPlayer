@@ -50,7 +50,7 @@ constexpr qint64 kCacheWriteChunk = 256LL * 1024;
 // HLS 分片多连接 Range：目标片通常几百 KB。首片 16KB 只用于探测总长，
 // 剩余按 4 路均分。实测从 4 路加到 8 路，10 片总耗时只从 11.58s 降到 11.53s，
 // 说明瓶颈是每片的请求往返与顺序打开，而不是单片刻度；多开连接只会增加源站压力。
-constexpr int kRangeMaxConnections = 4;
+constexpr int kRangeMaxConnections = kStreamCacheDefaultRangeConnections;
 constexpr qint64 kRangeProbeBytes = 16LL * 1024;
 constexpr qint64 kRangeMinPartBytes = 24LL * 1024;
 constexpr qint64 kRangeMaxSegmentBytes = 8LL * 1024 * 1024;
@@ -144,34 +144,6 @@ QByteArray statusReason(int status)
 }
 
 } // namespace
-
-struct StreamProxy::CacheEntry
-{
-    QByteArray data;
-    qint64 total = -1;
-    bool complete = false;
-    bool failed = false;
-    // 预取请求已占位但响应头还没到。播放器这时命中缓存不能另开一条上游，
-    // 否则同一片会重复下载，反而把刚腾出的带宽又吃掉。
-    bool pending = false;
-    QByteArray contentType;
-    qint64 lastUsedMs = 0;
-    QNetworkReply *reply = nullptr;
-    QList<QPointer<QTcpSocket>> clients;
-    // 多连接 Range 下载：各分片先按起始偏移暂存，凑齐连续前缀后再并入
-    // data 供播放器顺序读取。rangeReplies 用来在换片/淘汰时统一中止。
-    bool multiRange = false;
-    // 预取条目由 HLS 流水预取创建，完成后要归还预取并发槽位。
-    bool prefetch = false;
-    // 目标片用 4 路，预取也用 4 路；字段化是为了以后按源站能力调整，
-    // 不再让所有条目共用同一个全局连接数。
-    int rangeConnections = kRangeMaxConnections;
-    QHash<qint64, QByteArray> rangeParts;
-    QHash<qint64, qint64> rangePartEnds;
-    QSet<qint64> rangePending;
-    QSet<qint64> rangeRetried;
-    QList<QPointer<QNetworkReply>> rangeReplies;
-};
 
 StreamProxy::StreamProxy(QObject *parent)
     : QObject(parent)
@@ -1762,12 +1734,12 @@ void StreamProxy::pruneCache(const QString &keepKey)
         }
         if (!active && entry->lastUsedMs > 0 && entry->lastUsedMs < now - kCacheIdleMs)
             drop.append(it.key());
-        totalBytes += cacheEntryBytes(*entry);
+        totalBytes += StreamCacheStore::bytes(*entry);
     }
     for (const QString &key : std::as_const(drop)) {
         const QSharedPointer<CacheEntry> entry = m_cache.value(key);
         if (!entry.isNull())
-            totalBytes -= cacheEntryBytes(*entry);
+            totalBytes -= StreamCacheStore::bytes(*entry);
         dropCacheEntry(key);
     }
 
@@ -1793,17 +1765,9 @@ void StreamProxy::pruneCache(const QString &keepKey)
         }
         if (oldestKey.isEmpty())
             break;
-        totalBytes -= cacheEntryBytes(*m_cache.value(oldestKey));
+        totalBytes -= StreamCacheStore::bytes(*m_cache.value(oldestKey));
         dropCacheEntry(oldestKey);
     }
-}
-
-qint64 StreamProxy::cacheEntryBytes(const CacheEntry &entry)
-{
-    qint64 bytes = entry.data.size();
-    for (auto it = entry.rangeParts.cbegin(); it != entry.rangeParts.cend(); ++it)
-        bytes += it.value().size();
-    return bytes;
 }
 
 StreamProxy::CacheStats StreamProxy::cacheStats() const
@@ -1811,7 +1775,7 @@ StreamProxy::CacheStats StreamProxy::cacheStats() const
     CacheStats stats;
     stats.entries = int(m_cache.size());
     for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it)
-        stats.bytes += cacheEntryBytes(*it.value());
+        stats.bytes += StreamCacheStore::bytes(*it.value());
     stats.activePrefetches = m_prefetchActive;
     stats.rangePrefetches = int(m_rangePrefetchKeys.size());
     return stats;

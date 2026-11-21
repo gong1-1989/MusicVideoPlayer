@@ -9,6 +9,7 @@
 #include "stream/StreamProxy.h"
 #include "stream/HlsPlaylist.h"
 #include "stream/HlsSeekWindow.h"
+#include "stream/StreamCacheStore.h"
 #include "stream/StreamTokenRegistry.h"
 #include "util/HeaderPolicy.h"
 #include "util/PlaylistSniffer.h"
@@ -497,6 +498,7 @@ private slots:
     void hlsPlaylistParsesAndIndexes();
     void hlsPlaylistRewritesUris();
     void streamTokensReuseByUrlAndHeaders();
+    void streamCacheStoreCountsRangeParts();
 };
 
 void CoreLogicTest::timeFormat()
@@ -1427,6 +1429,31 @@ void CoreLogicTest::streamTokensReuseByUrlAndHeaders()
 
     tokens.clear();
     QCOMPARE(tokens.size(), 0);
+}
+
+void CoreLogicTest::streamCacheStoreCountsRangeParts()
+{
+    StreamCacheStore store;
+    auto entry = QSharedPointer<StreamCacheEntry>::create();
+    entry->data = QByteArray(10, 'a');
+    entry->rangeParts.insert(0, QByteArray(5, 'b'));
+    entry->rangeParts.insert(5, QByteArray(3, 'c'));
+    entry->rangePartEnds.insert(0, 4);
+    entry->rangePartEnds.insert(5, 7);
+    QCOMPARE(StreamCacheStore::bytes(*entry), qint64(18));
+
+    store.insert(QStringLiteral("k"), entry);
+    QCOMPARE(store.size(), 1);
+    QVERIFY(store.contains(QStringLiteral("k")));
+    QCOMPARE(store.value(QStringLiteral("k")), entry);
+
+    const auto taken = store.take(QStringLiteral("k"));
+    QCOMPARE(taken, entry);
+    QVERIFY(store.isEmpty());
+
+    store.insert(QStringLiteral("k2"), entry);
+    store.clear();
+    QVERIFY(store.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(CoreLogicTest)
