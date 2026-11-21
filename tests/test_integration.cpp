@@ -1,5 +1,6 @@
 #include "download/DownloadTask.h"
 #include "net/ConfigSearchProvider.h"
+#include "net/ExternalSearchProvider.h"
 #include "net/HttpClient.h"
 #include "net/MaccmsWebProvider.h"
 #include "net/NetLimits.h"
@@ -15,6 +16,7 @@
 #include <QHostAddress>
 #include <QLoggingCategory>
 #include <QNetworkReply>
+#include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTcpServer>
@@ -208,6 +210,7 @@ private slots:
     void downloadRejectsShortHlsSegmentRange();
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
+    void externalAbortKillsProcessWithoutFinish();
     void searchJsonOverLimitFails();
     void requestLogsRedactQuerySecrets();
     void downloadLimitSettingClampsAndPersists();
@@ -502,6 +505,35 @@ void IntegrationTest::maccmsAbortClosesInflightRequest()
     provider.abort();
     QTRY_VERIFY_WITH_TIMEOUT(server.disconnects >= 1, 2500);
     QVERIFY(timer.elapsed() < 2500);
+}
+
+void IntegrationTest::externalAbortKillsProcessWithoutFinish()
+{
+    SourceConfig config;
+    config.id = QStringLiteral("external_slow");
+    config.name = QStringLiteral("慢解析器");
+    config.kind = QStringLiteral("external");
+    config.command = QStringLiteral("cmd.exe");
+    // 不重定向输出，避免 cmd 对 > 的参数解析差异；ping 30 次足够让进程活着。
+    config.arguments = QStringLiteral("/c ping 127.0.0.1 -n 30");
+    config.timeoutMs = 30000;
+
+    ExternalSearchProvider provider(config);
+    bool finished = false;
+    connect(&provider, &SearchProviderBase::finished, this,
+            [&finished](const QString &, const QVector<MediaItem> &, int, const QString &) {
+                finished = true;
+            });
+
+    provider.search(QStringLiteral("测试"), 5);
+    QProcess *process = provider.findChild<QProcess *>();
+    QVERIFY(process != nullptr);
+    QTRY_COMPARE_WITH_TIMEOUT(process->state(), QProcess::Running, 3000);
+
+    provider.abort();
+    QTRY_COMPARE_WITH_TIMEOUT(process->state(), QProcess::NotRunning, 2500);
+    QTest::qWait(100);
+    QVERIFY(!finished);
 }
 
 void IntegrationTest::searchJsonOverLimitFails()
