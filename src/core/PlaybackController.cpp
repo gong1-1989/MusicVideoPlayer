@@ -296,17 +296,24 @@ void PlaybackController::updateLoops()
     m_player->setLoops(m_mode == Mode::SingleLoop ? QMediaPlayer::Infinite : 1);
 }
 
-QString PlaybackController::modeText() const
+QString PlaybackController::modeText(bool compact) const
 {
-    switch (m_mode) {
+    return modeDisplayText(m_mode, compact);
+}
+
+QString PlaybackController::modeDisplayText(Mode mode, bool compact)
+{
+    // 紧凑布局只缩短文案，模式含义必须由同一个 switch 决定，
+    // 避免 MainWindow 在窄屏时把单曲/随机写回“列表循环”。
+    switch (mode) {
     case Mode::ListLoop:
-        return tr("列表循环");
+        return compact ? tr("循环") : tr("列表循环");
     case Mode::SingleLoop:
-        return tr("单曲循环");
+        return compact ? tr("单曲") : tr("单曲循环");
     case Mode::Random:
-        return tr("随机播放");
+        return compact ? tr("随机") : tr("随机播放");
     }
-    return tr("列表循环");
+    return compact ? tr("循环") : tr("列表循环");
 }
 
 void PlaybackController::setVolumePercent(int percent)

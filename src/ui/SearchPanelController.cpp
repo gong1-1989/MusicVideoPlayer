@@ -397,7 +397,9 @@ int SearchPanelController::pageCount() const
 
 void SearchPanelController::showResults(const QVector<MediaItem> &items)
 {
-    m_results = items;
+    // 页数、标题和分页切片必须基于去重后的结果；PlaylistModel::setItems()
+    // 还会去重，若这里保留原始条数，会出现“共 N 条但列表更少/空页”。
+    m_results = dedupeMediaItems(items);
     m_page = 0;
     setAreaVisible(true);
     applyPage();

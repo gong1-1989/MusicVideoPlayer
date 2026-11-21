@@ -235,5 +235,16 @@ void PlaybackUiController::modePressed()
 
 void PlaybackUiController::refreshModeButton()
 {
-    m_ui.mode->setText(m_player->modeText());
+    const QString fullText = m_player->modeText();
+    // 短文案也由 PlaybackController 按当前模式生成，UI 不再自行判 mode。
+    m_ui.mode->setText(m_player->modeText(m_compactMode));
+    m_ui.mode->setToolTip(fullText);
+}
+
+void PlaybackUiController::setCompactMode(bool compact)
+{
+    if (m_compactMode == compact)
+        return;
+    m_compactMode = compact;
+    refreshModeButton();
 }

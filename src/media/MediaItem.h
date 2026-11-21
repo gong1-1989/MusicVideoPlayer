@@ -6,9 +6,11 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMetaType>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
+#include <QVector>
 
 #include "util/HeaderPolicy.h"
 
@@ -147,6 +149,23 @@ inline QString mediaIdentity(const MediaItem &item)
     QUrl bare = item.url;
     bare.setQuery(QString());
     return QStringLiteral("url:") + bare.toString();
+}
+
+/// 按 mediaIdentity 保序去重。搜索结果分页和播放列表恢复必须用同一规则，
+/// 否则模型里隐藏了跨源重复项，标题/页数仍按原始条数计算。
+inline QVector<MediaItem> dedupeMediaItems(const QVector<MediaItem> &items)
+{
+    QVector<MediaItem> unique;
+    unique.reserve(items.size());
+    QSet<QString> seen;
+    for (const MediaItem &item : items) {
+        const QString identity = mediaIdentity(item);
+        if (seen.contains(identity))
+            continue;
+        seen.insert(identity);
+        unique.append(item);
+    }
+    return unique;
 }
 
 // 持久化用：播放列表要跨会话保留，这里只做字段级序列化，不引入额外格式文件

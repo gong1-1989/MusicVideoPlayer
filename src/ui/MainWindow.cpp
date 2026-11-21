@@ -369,8 +369,9 @@ void MainWindow::updateControlBarLayout()
     ui->btn_mode->setMinimumWidth(compact ? 64 : 86);
     ui->btn_fullscreen->setMinimumWidth(compact ? 54 : 60);
     ui->btn_settings->setMinimumWidth(compact ? 52 : 58);
-    // 窄屏用两字“循环”，完整含义保留在悬停提示里，避免文字溢出按钮边界
-    ui->btn_mode->setText(compact ? tr("循环") : tr("列表循环"));
+    // 窄屏只缩短文案，完整模式名与悬停提示由播放条按当前 mode 统一刷新，
+    // 不能在这里写死“列表循环”，否则单曲/随机会被布局改回错误文字。
+    m_transport->setCompactMode(compact);
     ui->spacer_controls->changeSize(compact ? 8 : 24, 20, QSizePolicy::Expanding);
     ui->layout_controls->invalidate();
 }

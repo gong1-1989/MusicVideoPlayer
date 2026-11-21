@@ -38,6 +38,9 @@ public:
     /// 当前播放项失效（如列表行被删除）时，把进度、时间和歌词一起清零
     void clear();
 
+    /// 窄窗口只缩短文案，不能覆写当前播放模式；完整文案始终放进悬停提示
+    void setCompactMode(bool compact);
+
 signals:
     void statusMessage(const QString &message);
     void currentItemChanged(const MediaItem &item, int row);
@@ -57,6 +60,8 @@ private:
     VideoSurface *m_surface;
     LyricsController *m_lyrics;
     bool m_userSeeking = false;
+    /// 紧凑布局只影响模式按钮显示短文案，模式本身仍由 PlaybackController 决定
+    bool m_compactMode = false;
     /// 正在等待画面追上的 seek 目标；小于 0 表示没有待确认的定位
     qint64 m_seekTarget = -1;
     /// 每次定位递增，用来让上一轮的超时回调失效

@@ -1,4 +1,5 @@
 #include "lyrics/LrcParser.h"
+#include "core/PlaybackController.h"
 #include "download/DownloadTask.h"
 #include "media/MediaItem.h"
 #include "net/ConfigMapper.h"
@@ -470,6 +471,8 @@ private slots:
     void preferredPlaybackUrlSelectsProgressive();
     void mediaItemValidity();
     void mediaIdentityUsesStableWebUrl();
+    void dedupeItemsKeepsFirstOccurrence();
+    void playbackModeTextMatchesCompactLabels();
     void sourceConfigJsonRoundTrip();
     void sourceConfigSecretsNotPlaintext();
     void sourceConfigRejectsIncompleteConfig();
@@ -654,6 +657,52 @@ void CoreLogicTest::mediaIdentityUsesStableWebUrl()
     MediaItem noWeb2 = noWeb;
     noWeb2.url = QUrl(QStringLiteral("https://cdn.example.com/a.mp4?token=new"));
     QCOMPARE(mediaIdentity(noWeb), mediaIdentity(noWeb2));
+}
+
+void CoreLogicTest::dedupeItemsKeepsFirstOccurrence()
+{
+    MediaItem first;
+    first.online = true;
+    first.title = QStringLiteral("第一集");
+    first.webUrl = QUrl(QStringLiteral("https://example.com/detail/1"));
+    first.url = QUrl(QStringLiteral("https://cdn.example.com/a.mp4?token=old"));
+
+    MediaItem duplicate = first;
+    duplicate.url = QUrl(QStringLiteral("https://cdn.example.com/b.mp4?token=new"));
+    duplicate.artist = QStringLiteral("另一个源");
+
+    MediaItem nextEpisode = first;
+    nextEpisode.title = QStringLiteral("第二集");
+
+    MediaItem localA;
+    localA.url = QUrl::fromLocalFile(QStringLiteral("/tmp/a.mp3"));
+    MediaItem localDuplicate = localA;
+    localDuplicate.title = QStringLiteral("同名文件");
+
+    const QVector<MediaItem> unique = dedupeMediaItems(
+        {first, duplicate, nextEpisode, localA, localDuplicate});
+    QCOMPARE(unique.size(), 3);
+    // 保留第一次出现的 URL，分页里展示的仍是原始结果顺序
+    QCOMPARE(unique.at(0).url, first.url);
+    QCOMPARE(unique.at(1).title, QStringLiteral("第二集"));
+    QCOMPARE(unique.at(2).url, localA.url);
+}
+
+void CoreLogicTest::playbackModeTextMatchesCompactLabels()
+{
+    using Mode = PlaybackController::Mode;
+    QCOMPARE(PlaybackController::modeDisplayText(Mode::ListLoop, false),
+             QStringLiteral("列表循环"));
+    QCOMPARE(PlaybackController::modeDisplayText(Mode::ListLoop, true),
+             QStringLiteral("循环"));
+    QCOMPARE(PlaybackController::modeDisplayText(Mode::SingleLoop, false),
+             QStringLiteral("单曲循环"));
+    QCOMPARE(PlaybackController::modeDisplayText(Mode::SingleLoop, true),
+             QStringLiteral("单曲"));
+    QCOMPARE(PlaybackController::modeDisplayText(Mode::Random, false),
+             QStringLiteral("随机播放"));
+    QCOMPARE(PlaybackController::modeDisplayText(Mode::Random, true),
+             QStringLiteral("随机"));
 }
 
 void CoreLogicTest::sourceConfigJsonRoundTrip()

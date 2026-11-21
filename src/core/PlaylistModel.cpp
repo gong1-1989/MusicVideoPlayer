@@ -98,13 +98,8 @@ void PlaylistModel::clear()
 void PlaylistModel::setItems(const QVector<MediaItem> &items)
 {
     beginResetModel();
-    m_items.clear();
     // 旧版本存下来的列表里可能已经有重复条目，恢复时一并清理
-    for (const MediaItem &item : items) {
-        if (indexOf(item) >= 0)
-            continue;
-        m_items.append(item);
-    }
+    m_items = dedupeMediaItems(items);
     endResetModel();
 }
 
