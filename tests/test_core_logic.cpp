@@ -10,6 +10,7 @@
 #include "stream/HlsPlaylist.h"
 #include "stream/HlsSeekWindow.h"
 #include "stream/StreamCacheStore.h"
+#include "stream/StreamRange.h"
 #include "stream/StreamTokenRegistry.h"
 #include "util/HeaderPolicy.h"
 #include "util/PlaylistSniffer.h"
@@ -499,6 +500,8 @@ private slots:
     void hlsPlaylistRewritesUris();
     void streamTokensReuseByUrlAndHeaders();
     void streamCacheStoreCountsRangeParts();
+    void streamRangeParsesHeadersAndSplitsParts();
+    void streamRangeAppendsAndMergesConsecutive();
 };
 
 void CoreLogicTest::timeFormat()
@@ -1454,6 +1457,70 @@ void CoreLogicTest::streamCacheStoreCountsRangeParts()
     store.insert(QStringLiteral("k2"), entry);
     store.clear();
     QVERIFY(store.isEmpty());
+}
+
+void CoreLogicTest::streamRangeParsesHeadersAndSplitsParts()
+{
+    qint64 start = -1;
+    qint64 end = -1;
+    qint64 total = -1;
+    QVERIFY(StreamRange::parseContentRange(QByteArrayLiteral("bytes 100-199/500"), &start, &end,
+                                           &total));
+    QCOMPARE(start, qint64(100));
+    QCOMPARE(end, qint64(199));
+    QCOMPARE(total, qint64(500));
+    QVERIFY(!StreamRange::parseContentRange(QByteArrayLiteral("bytes 100-200/200"), &start,
+                                            &end, &total));
+    QVERIFY(!StreamRange::parseContentRange(QByteArrayLiteral("bytes */500"), &start, &end,
+                                            &total));
+
+    QVERIFY(StreamRange::parseRange(QStringLiteral("bytes=0-99"), 500, &start, &end));
+    QCOMPARE(start, qint64(0));
+    QCOMPARE(end, qint64(99));
+    QVERIFY(StreamRange::parseRange(QStringLiteral("bytes=400-"), 500, &start, &end));
+    QCOMPARE(end, qint64(499));
+    QVERIFY(StreamRange::parseRange(QStringLiteral("bytes=-100"), 500, &start, &end));
+    QCOMPARE(start, qint64(400));
+    QVERIFY(StreamRange::parseRange(QStringLiteral("bytes=0-1000"), 500, &start, &end));
+    QCOMPARE(end, qint64(499));
+    QVERIFY(!StreamRange::parseRange(QStringLiteral("bytes=0-1,5-6"), 500, &start, &end));
+    QVERIFY(!StreamRange::parseRange(QStringLiteral("bytes=-0"), 500, &start, &end));
+    QVERIFY(!StreamRange::parseRange(QStringLiteral("bytes=5-4"), 500, &start, &end));
+    QVERIFY(!StreamRange::parseRange(QStringLiteral("bytes=0-99"), 0, &start, &end));
+
+    const QList<StreamRange::Part> parts = StreamRange::split(1000, 0, 4, 100);
+    QCOMPARE(parts.size(), 4);
+    QCOMPARE(parts.at(0).start, qint64(0));
+    QCOMPARE(parts.at(0).end, qint64(249));
+    QCOMPARE(parts.at(3).start, qint64(750));
+    QCOMPARE(parts.at(3).end, qint64(999));
+
+    const QList<StreamRange::Part> tail = StreamRange::split(100, 50, 2, 100);
+    QCOMPARE(tail.size(), 1);
+    QCOMPARE(tail.at(0).start, qint64(50));
+    QCOMPARE(tail.at(0).end, qint64(99));
+    QVERIFY(StreamRange::split(100, 100, 2, 100).isEmpty());
+}
+
+void CoreLogicTest::streamRangeAppendsAndMergesConsecutive()
+{
+    auto entry = QSharedPointer<StreamCacheEntry>::create();
+    entry->total = 10;
+    StreamRange::append(*entry, 0, 4, QByteArrayLiteral("aa"));
+    StreamRange::append(*entry, 0, 4, QByteArrayLiteral("bbb"));
+    QCOMPARE(entry->rangeParts.value(0), QByteArrayLiteral("aabbb"));
+
+    QVERIFY(!StreamRange::mergeConsecutive(*entry));
+    QCOMPARE(entry->data, QByteArrayLiteral("aabbb"));
+
+    StreamRange::append(*entry, 5, 9, QByteArrayLiteral("abcdefg"));
+    QCOMPARE(entry->rangeParts.value(5), QByteArrayLiteral("abcde"));
+
+    QVERIFY(StreamRange::mergeConsecutive(*entry));
+    QCOMPARE(entry->data, QByteArrayLiteral("aabbbabcde"));
+    QVERIFY(entry->complete);
+    QVERIFY(entry->rangeParts.isEmpty());
+    QVERIFY(entry->rangePartEnds.isEmpty());
 }
 
 QTEST_GUILESS_MAIN(CoreLogicTest)

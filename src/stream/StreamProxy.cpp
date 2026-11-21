@@ -481,33 +481,6 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
     });
 }
 
-bool StreamProxy::parseContentRange(const QByteArray &value, qint64 *start, qint64 *end,
-                                    qint64 *total)
-{
-    if (start == nullptr || end == nullptr || total == nullptr)
-        return false;
-    static const QRegularExpression pattern(
-        QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/(\\d+)$"),
-        QRegularExpression::CaseInsensitiveOption);
-    const QRegularExpressionMatch match = pattern.match(QString::fromLatin1(value).trimmed());
-    if (!match.hasMatch())
-        return false;
-    bool okStart = false;
-    bool okEnd = false;
-    bool okTotal = false;
-    const qint64 first = match.captured(1).toLongLong(&okStart);
-    const qint64 last = match.captured(2).toLongLong(&okEnd);
-    const qint64 size = match.captured(3).toLongLong(&okTotal);
-    if (!okStart || !okEnd || !okTotal || size <= 0 || first < 0 || last < first
-        || last >= size) {
-        return false;
-    }
-    *start = first;
-    *end = last;
-    *total = size;
-    return true;
-}
-
 bool StreamProxy::isHlsSegmentUrl(const QUrl &url) const
 {
     const QString path = url.path().toLower();
@@ -659,7 +632,8 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
     qint64 partStart = -1;
     qint64 partEnd = -1;
     qint64 total = -1;
-    if (!parseContentRange(reply->rawHeader("Content-Range"), &partStart, &partEnd, &total)
+    if (!StreamRange::parseContentRange(reply->rawHeader("Content-Range"), &partStart, &partEnd,
+                                        &total)
         || partStart != requestedStart) {
         if (probe) {
             qCWarning(lcProxy) << "HLS 分片首片 Content-Range 无效，回退单路"
@@ -703,14 +677,11 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
         if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
             serveFromCache(client, entry, cacheKey, request.range, true);
 
-        const qint64 partSize =
-            qMax(kRangeMinPartBytes, (total + connections - 1) / connections);
-        qint64 next = partEnd + 1;
-        while (next < total) {
-            const qint64 end = qMin(total - 1, next + partSize - 1);
-            startRangePart(entry, cacheKey, upstream, headers, next, end, false, nullptr,
-                           Request());
-            next = end + 1;
+        const QList<StreamRange::Part> parts =
+            StreamRange::split(total, partEnd + 1, connections, kRangeMinPartBytes);
+        for (const StreamRange::Part &part : parts) {
+            startRangePart(entry, cacheKey, upstream, headers, part.start, part.end, false,
+                           nullptr, Request());
         }
         pruneCache(cacheKey);
     } else if (partEnd > requestedEnd || total != entry->total) {
@@ -740,19 +711,13 @@ void StreamProxy::readRangePartIntoCache(const QSharedPointer<CacheEntry> &entry
     if (entry.isNull() || reply == nullptr || !entry->multiRange || start > end)
         return;
     const qint64 expected = end - start + 1;
-    QByteArray &buffer = entry->rangeParts[start];
-    if (buffer.size() >= expected)
+    if (entry->rangeParts.value(start).size() >= expected)
         return;
 
     const QByteArray chunk = reply->readAll();
     if (chunk.isEmpty())
         return;
-    const qint64 remain = expected - buffer.size();
-    if (chunk.size() > remain)
-        buffer.append(chunk.left(static_cast<int>(remain)));
-    else
-        buffer.append(chunk);
-    entry->rangePartEnds.insert(start, end);
+    StreamRange::append(*entry, start, end, chunk);
     entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
 }
 
@@ -762,21 +727,7 @@ void StreamProxy::mergeRangeParts(const QString &key,
     if (entry.isNull() || m_cache.value(key) != entry)
         return;
 
-    while (true) {
-        const qint64 start = entry->data.size();
-        const auto part = entry->rangeParts.find(start);
-        if (part == entry->rangeParts.end())
-            break;
-        const qint64 end = entry->rangePartEnds.value(start, -1);
-        if (end < start || part.value().size() < end - start + 1)
-            break;
-        entry->data.append(part.value());
-        entry->rangeParts.erase(part);
-        entry->rangePartEnds.remove(start);
-    }
-
-    if (entry->total >= 0 && entry->data.size() >= entry->total)
-        entry->complete = true;
+    StreamRange::mergeConsecutive(*entry);
     pumpCache(key, entry);
     if (entry->complete)
         finishRangePrefetch(key, entry);
@@ -1441,60 +1392,6 @@ void StreamProxy::flushUpstream(QTcpSocket *client, QNetworkReply *reply, const 
         client->write(chunk);
 }
 
-bool StreamProxy::parseRange(const QString &value, qint64 total, qint64 *start, qint64 *end)
-{
-    if (start == nullptr || end == nullptr || total <= 0)
-        return false;
-
-    const QString trimmed = value.trimmed();
-    if (!trimmed.startsWith(QLatin1String("bytes="), Qt::CaseInsensitive))
-        return false;
-
-    const QString spec = trimmed.mid(6).trimmed();
-    // 多段 Range（bytes=0-1,5-6）无法用单个切片表达，返回 false 让
-    // serveFromCache 退化成 200 全量。
-    if (spec.contains(QLatin1Char(',')))
-        return false;
-
-    const int dash = spec.indexOf(QLatin1Char('-'));
-    if (dash < 0)
-        return false;
-
-    const QString left = spec.left(dash).trimmed();
-    const QString right = spec.mid(dash + 1).trimmed();
-
-    qint64 first = 0;
-    qint64 last = 0;
-    if (left.isEmpty()) {
-        // bytes=-N：最后 N 个字节
-        if (right.isEmpty())
-            return false;
-        bool ok = false;
-        const qint64 suffix = right.toLongLong(&ok);
-        if (!ok || suffix <= 0)
-            return false;
-        first = qMax<qint64>(0, total - suffix);
-        last = total - 1;
-    } else {
-        bool ok = false;
-        first = left.toLongLong(&ok);
-        if (!ok || first < 0)
-            return false;
-        if (right.isEmpty()) {
-            last = total - 1;
-        } else {
-            last = right.toLongLong(&ok);
-            if (!ok || last < first)
-                return false;
-            last = qMin(last, total - 1);
-        }
-    }
-
-    *start = first;
-    *end = last;
-    return true;
-}
-
 bool StreamProxy::serveFromCache(QTcpSocket *client, const QSharedPointer<CacheEntry> &entry,
                                  const QString &cacheKey, const QString &rangeHeader,
                                  bool hasRange)
@@ -1510,7 +1407,7 @@ bool StreamProxy::serveFromCache(QTcpSocket *client, const QSharedPointer<CacheE
         // 预取请求还在等响应头，长度未知时先按 200 全量挂住播放器；
         // 播放器发来的 Range 等拿到长度后再由 pumpCache 补成完整响应。
         hasRange = false;
-    } else if (hasRange && !parseRange(rangeHeader, entry->total, &start, &end)) {
+    } else if (hasRange && !StreamRange::parseRange(rangeHeader, entry->total, &start, &end)) {
         // 多段 Range 等无法用单段缓存表达的请求，退回“忽略 Range 的 200 全量”，
         // 总比把客户端挂住好；播放器实际只会发单段。
         hasRange = false;

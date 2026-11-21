@@ -3,6 +3,7 @@
 
 #include "stream/HlsPlaylist.h"
 #include "stream/StreamCacheStore.h"
+#include "stream/StreamRange.h"
 #include "stream/StreamTokenRegistry.h"
 
 #include <QByteArray>
@@ -131,8 +132,6 @@ private:
     void mergeRangeParts(const QString &key, const QSharedPointer<CacheEntry> &entry);
     void failRangeEntry(const QString &key, const QSharedPointer<CacheEntry> &entry,
                         const QString &reason);
-    static bool parseContentRange(const QByteArray &value, qint64 *start, qint64 *end,
-                                  qint64 *total);
     void attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
     void attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
                         const QHash<QString, QString> &headers);
@@ -155,7 +154,6 @@ private:
     void abortReplySilently(QNetworkReply *reply);
 
     QByteArray buildCacheHead(const CacheEntry &entry, int status, qint64 start, qint64 end) const;
-    static bool parseRange(const QString &value, qint64 total, qint64 *start, qint64 *end);
     static QString cacheKeyFor(const QUrl &upstream, const QHash<QString, QString> &headers);
 
     /// 解析原始 m3u8，记录每个媒体分片的起始时间和地址；只处理完整分片播放列表。

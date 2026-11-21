@@ -69,6 +69,8 @@ qt_add_library(mvp_core STATIC
     src/stream/StreamProxy.cpp
     src/stream/StreamCacheStore.h
     src/stream/StreamCacheStore.cpp
+    src/stream/StreamRange.h
+    src/stream/StreamRange.cpp
     src/stream/HlsPlaylist.h
     src/stream/HlsPlaylist.cpp
     src/stream/StreamTokenRegistry.h
