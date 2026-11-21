@@ -33,7 +33,8 @@ struct SourceConfig
 
     QString command;                        // kind=external：可执行文件
     QString arguments;                      // 支持 {keyword} {limit}
-    int timeoutMs = 8000;
+    /// 0 表示按源类型/条数自动分配预算；大于 0 时所有源类型都按该值限时。
+    int timeoutMs = 0;
 
     QString itemsPath;                      // 例如 result.songs，空表示根就是数组
     // 字段映射：id / title / artist / durationMs / streamUrl / lyricUrl / webUrl

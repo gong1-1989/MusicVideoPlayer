@@ -5,6 +5,7 @@
 #include "net/ConfigMapper.h"
 #include "net/HttpClient.h"
 #include "net/SourceConfig.h"
+#include "net/SearchCoordinator.h"
 #include "stream/StreamProxy.h"
 #include "stream/HlsSeekWindow.h"
 #include "util/HeaderPolicy.h"
@@ -477,6 +478,7 @@ private slots:
     void sourceConfigSecretsNotPlaintext();
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
+    void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
     void playlistSnifferRecognizesBody();
@@ -851,7 +853,36 @@ void CoreLogicTest::sourceConfigNormalizesTimeout()
     bool ok = false;
     const SourceConfig config = sourceConfigFromJson(object, &ok);
     QVERIFY(ok);
-    QCOMPARE(config.timeoutMs, 8000);
+    QCOMPARE(config.timeoutMs, 0);
+    // 缺失 timeoutMs 也按自动预算，不能偷偷回落到 8 秒
+    QJsonObject absent = object;
+    absent.remove(QStringLiteral("timeoutMs"));
+    const SourceConfig autoConfig = sourceConfigFromJson(absent, &ok);
+    QVERIFY(ok);
+    QCOMPARE(autoConfig.timeoutMs, 0);
+}
+
+void CoreLogicTest::sourceTimeoutUsesConfiguredValue()
+{
+    SourceConfig music;
+    music.kind = QStringLiteral("config");
+    music.timeoutMs = 12000;
+    QCOMPARE(SearchCoordinator::sourceTimeoutMs(music, 20), 12000);
+
+    music.timeoutMs = 0;
+    QCOMPARE(SearchCoordinator::sourceTimeoutMs(music, 20), 20000);
+
+    SourceConfig web;
+    web.kind = QStringLiteral("builtin");
+    web.provider = QStringLiteral("maccms_web");
+    web.timeoutMs = 0;
+    // 网页影视源没填超时仍按条数自动放宽
+    QCOMPARE(SearchCoordinator::sourceTimeoutMs(web, 20), 20000);
+    QCOMPARE(SearchCoordinator::sourceTimeoutMs(web, 50), 32000);
+
+    // 一旦用户明确填写，网页源也按配置值，不再被自动预算覆盖
+    web.timeoutMs = 15000;
+    QCOMPARE(SearchCoordinator::sourceTimeoutMs(web, 50), 15000);
 }
 
 void CoreLogicTest::httpLogUrlRedactsSignature()

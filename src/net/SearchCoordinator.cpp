@@ -6,6 +6,7 @@
 #include "net/SourceRegistry.h"
 
 #include <QLoggingCategory>
+#include <utility>
 
 Q_LOGGING_CATEGORY(lcSearch, "mvp.search")
 
@@ -134,19 +135,31 @@ void SearchCoordinator::startAll()
 
 int SearchCoordinator::timeoutForSource(const SourceConfig &config) const
 {
+    return sourceTimeoutMs(config, m_limit);
+}
+
+int SearchCoordinator::sourceTimeoutMs(const SourceConfig &config, int limitPerSource)
+{
+    // 配置了超时的源必须真正按配置限时，否则设置界面上的值只是装饰。
+    if (config.timeoutMs > 0)
+        return qBound(1000, config.timeoutMs, 60000);
+
     // 网页型影视源每条结果要打详情+播放页；条数调大时给更长的单源预算，
     // 否则 20/30/50 条会在 20 秒处被截断，用户会以为“设置没生效”。
     const bool webVideo = config.kind == QLatin1String("builtin")
                           && config.provider == QLatin1String("maccms_web");
-    return webVideo ? qBound(kSourceTimeoutMs, 12000 + m_limit * 400, 45000)
+    const int limit = limitPerSource > 0 ? limitPerSource : 20;
+    return webVideo ? qBound(kSourceTimeoutMs, 12000 + limit * 400, 45000)
                     : kSourceTimeoutMs;
 }
 
 int SearchCoordinator::globalBudgetForLimit() const
 {
-    // 总预算随条数放大：20 条约 18 秒、50 条约 33 秒。
-    // 全源并发时总耗时取决于最慢的源，这里兜住“个别源迟迟不回调”的整体收尾。
-    return qBound(12000, 8000 + m_limit * 500, 45000);
+    // 总预算至少覆盖最慢的单源配置，否则单源还没到自己的超时就被全局计时截断。
+    int budget = qBound(12000, 8000 + m_limit * 500, 45000);
+    for (const SourceConfig &config : std::as_const(m_queue))
+        budget = qMax(budget, sourceTimeoutMs(config, m_limit));
+    return budget;
 }
 
 int SearchCoordinator::taskIndexFor(SearchProviderBase *provider) const

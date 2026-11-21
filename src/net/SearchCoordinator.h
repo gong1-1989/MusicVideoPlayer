@@ -30,6 +30,9 @@ public:
     void cancel();
     bool isBusy() const { return m_busy; }
 
+    /// 单源预算：timeoutMs>0 时所有源类型都按配置值，0 时按源类型/条数自动分配。
+    static int sourceTimeoutMs(const SourceConfig &config, int limitPerSource);
+
 signals:
     void searchStarted();
     /// 每完成一个源就增量刷新，慢源不会把首屏拖到全部结束才出现

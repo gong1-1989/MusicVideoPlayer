@@ -333,6 +333,32 @@
                 </layout>
                </widget>
               </item>
+              <item row="5" column="0">
+               <widget class="QLabel" name="label_captionTimeout">
+                <property name="text">
+                 <string>超时</string>
+                </property>
+               </widget>
+              </item>
+              <item row="5" column="1">
+               <widget class="QSpinBox" name="spin_timeout">
+                <property name="minimum">
+                 <number>0</number>
+                </property>
+                <property name="maximum">
+                 <number>60000</number>
+                </property>
+                <property name="singleStep">
+                 <number>500</number>
+                </property>
+                <property name="suffix">
+                 <string> 毫秒</string>
+                </property>
+                <property name="specialValueText">
+                 <string>自动</string>
+                </property>
+               </widget>
+              </item>
              </layout>
             </item>
            </layout>
@@ -791,30 +817,7 @@ op 可选 eq / ne / gt / gte / lt / lte / empty / notEmpty / contains</string>
                 </property>
                </widget>
               </item>
-              <item row="2" column="0">
-               <widget class="QLabel" name="label_captionTimeout">
-                <property name="text">
-                 <string>超时</string>
-                </property>
-               </widget>
-              </item>
-              <item row="2" column="1">
-               <widget class="QSpinBox" name="spin_timeout">
-                <property name="minimum">
-                 <number>1000</number>
-                </property>
-                <property name="maximum">
-                 <number>60000</number>
-                </property>
-                <property name="singleStep">
-                 <number>500</number>
-                </property>
-                <property name="suffix">
-                 <string> 毫秒</string>
-                </property>
-               </widget>
-              </item>
-              <item row="3" column="0" colspan="2">
+              <item row="2" column="0" colspan="2">
                <widget class="QLabel" name="label_externalHint">
                 <property name="objectName">
                  <string>label_hint</string>

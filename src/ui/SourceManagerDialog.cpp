@@ -225,9 +225,10 @@ void SourceManagerDialog::bindUi()
     m_streamKind->addItem(tr("单条直链"), QStringLiteral("direct"));
     m_streamKind->addItem(tr("剧集列表（名称$地址#名称$地址）"), QStringLiteral("episodes"));
 
-    m_timeout->setRange(1000, 60000);
+    m_timeout->setRange(0, 60000);
     m_timeout->setSingleStep(500);
     m_timeout->setSuffix(tr(" 毫秒"));
+    m_timeout->setSpecialValueText(tr("自动"));
 
     // 过滤规则是 JSON，用等宽字体看着清楚
     m_skipIf->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
@@ -456,8 +457,9 @@ SourceConfig SourceManagerDialog::readForm() const
     if (config.kind == QLatin1String("external")) {
         config.command = m_command->text().trimmed();
         config.arguments = m_arguments->text();
-        config.timeoutMs = m_timeout->value();
     }
+    // 超时对配置型/网页型/外部解析器统一生效；0 表示自动预算。
+    config.timeoutMs = m_timeout->value();
     config.method = m_method->currentData().toString();
     config.urlTemplate = m_url->text().trimmed();
     // 内置网页源只在“站点地址”一栏里编辑，别被隐藏的 JSON 地址栏覆盖

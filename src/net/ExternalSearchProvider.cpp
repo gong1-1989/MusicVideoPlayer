@@ -87,7 +87,8 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
     m_timer = new QTimer(this);
     m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &ExternalSearchProvider::onTimeout);
-    m_timer->start(qMax(1000, m_config.timeoutMs));
+    const int timeoutMs = m_config.timeoutMs > 0 ? m_config.timeoutMs : 8000;
+    m_timer->start(qMax(1000, timeoutMs));
 
     qCInfo(lcExternal) << "启动外部解析器" << m_config.command << arguments;
     m_process->start(resolveCommand(m_config.command), arguments);
@@ -105,7 +106,8 @@ void ExternalSearchProvider::onTimeout()
         return;
     if (m_process != nullptr && m_process->state() != QProcess::NotRunning)
         m_process->kill();
-    finish(tr("解析器超时（%1 ms）").arg(m_config.timeoutMs));
+    const int timeoutMs = m_config.timeoutMs > 0 ? m_config.timeoutMs : 8000;
+    finish(tr("解析器超时（%1 ms）").arg(timeoutMs));
 }
 
 void ExternalSearchProvider::onProcessFinished(int exitCode, QProcess::ExitStatus status)

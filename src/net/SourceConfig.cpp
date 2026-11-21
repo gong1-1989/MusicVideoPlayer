@@ -163,8 +163,9 @@ QJsonObject sourceConfigToJson(const SourceConfig &config)
         object.insert(QStringLiteral("command"), config.command);
         object.insert(QStringLiteral("arguments"), config.arguments);
     }
-    // 超时对配置型/内置型搜索同样生效；只给外部解析器写会导致重启后静默回落到 8000ms
-    object.insert(QStringLiteral("timeoutMs"), config.timeoutMs);
+    // 0 表示自动预算，不落盘；大于 0 时配置型/内置型/外部解析器都按该值限时。
+    if (config.timeoutMs > 0)
+        object.insert(QStringLiteral("timeoutMs"), config.timeoutMs);
     object.insert(QStringLiteral("method"), config.method.toUpper());
     object.insert(QStringLiteral("url"), config.urlTemplate);
     if (!config.bodyTemplate.isEmpty()) {
@@ -214,9 +215,11 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
     config.provider = object.value(QStringLiteral("provider")).toString();
     config.command = object.value(QStringLiteral("command")).toString();
     config.arguments = object.value(QStringLiteral("arguments")).toString();
-    config.timeoutMs = object.value(QStringLiteral("timeoutMs")).toInt(8000);
-    if (config.timeoutMs < 500)
-        config.timeoutMs = 8000;
+    // 未填写或过小的值都视为“自动”，由 SearchCoordinator 按源类型/条数分配；
+    // 旧配置里残留的 100ms 不能继续把请求瞬间掐断。
+    config.timeoutMs = object.value(QStringLiteral("timeoutMs")).toInt(0);
+    if (config.timeoutMs < 1000)
+        config.timeoutMs = 0;
     config.method = object.value(QStringLiteral("method")).toString(QStringLiteral("GET")).toUpper();
     config.urlTemplate = object.value(QStringLiteral("url")).toString();
     config.bodyTemplate = object.value(QStringLiteral("body")).toString();
