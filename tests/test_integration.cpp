@@ -216,6 +216,7 @@ private slots:
     void externalAbortKillsProcessWithoutFinish();
     void searchJsonOverLimitFails();
     void responseLimitAbortsInflight();
+    void responseLimitOnHttpErrorKeepsStatus();
     void requestLogsRedactQuerySecrets();
     void downloadLimitSettingClampsAndPersists();
 
@@ -612,6 +613,37 @@ void IntegrationTest::responseLimitAbortsInflight()
     if (!reply->isFinished())
         QVERIFY(finished.wait(5000));
     QVERIFY(reply->property("mvpReplyLimitExceeded").toBool());
+    // 200 响应被上限截断仍算“成功读到合法正文”，由 readAllLimited 报超限。
+    QVERIFY(HttpClient::isHttpSuccess(reply));
+
+    bool tooLarge = false;
+    const QByteArray body = HttpClient::readAllLimited(reply, NetLimits::kJsonBytes, &tooLarge);
+    QVERIFY(tooLarge);
+    QVERIFY(body.isEmpty());
+    reply->deleteLater();
+}
+
+void IntegrationTest::responseLimitOnHttpErrorKeepsStatus()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray huge(4 * 1024 * 1024, 'e');
+    server.handler = [huge](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 404, huge, "text/plain");
+    };
+
+    HttpClient http;
+    QNetworkReply *reply = http.get(server.url(QStringLiteral("/missing")));
+    QVERIFY(reply != nullptr);
+    QSignalSpy finished(reply, &QNetworkReply::finished);
+    if (!reply->isFinished())
+        QVERIFY(finished.wait(5000));
+    QVERIFY(reply->property("mvpReplyLimitExceeded").toBool());
+    QCOMPARE(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 404);
+
+    // 404 的大错误页被上限截断，仍要保留 HTTP 失败状态，不能被当成成功。
+    QVERIFY(!HttpClient::isHttpSuccess(reply));
+    QVERIFY(HttpClient::describeError(reply).contains(QStringLiteral("HTTP 404")));
 
     bool tooLarge = false;
     const QByteArray body = HttpClient::readAllLimited(reply, NetLimits::kJsonBytes, &tooLarge);

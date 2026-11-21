@@ -19,7 +19,7 @@ struct SourceConfig
     MediaType mediaType = MediaType::Music;
 
     /// config   = 纯配置驱动（JSON 接口）
-    /// builtin  = 编进程序的实现（需要签名的站点）
+    /// builtin  = 编进程序的抓取实现（如网页型影视源，只解析站点页面）
     /// external = 外部解析器进程（自己写脚本算签名/爬取，stdout 吐 JSON）
     QString kind = QStringLiteral("config");
     QString provider;                       // kind=builtin 时用，例如 maccms_web

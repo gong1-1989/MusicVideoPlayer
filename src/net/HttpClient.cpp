@@ -297,14 +297,18 @@ bool HttpClient::isHttpSuccess(QNetworkReply *reply)
 {
     if (!reply)
         return false;
-    // 在途上限触发 abort() 后，error() 会是 OperationCanceledError；
-    // 这类响应的正文被保证截断，交给 readAllLimited 报“超限”，
-    // 避免上层再误报成普通网络错误。
-    if (reply->property(kLimitExceededProperty).toBool())
-        return true;
+    const QVariant status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+    // 在途上限触发 abort() 后，error() 会是 OperationCanceledError。
+    // 只有 2xx 或非 HTTP 传输才把这类响应交给 readAllLimited 报“超限”；
+    // 404/500 的大错误页仍要按 HTTP 失败，不能因为超限吞掉真实状态码。
+    if (reply->property(kLimitExceededProperty).toBool()) {
+        if (!status.isValid())
+            return true;
+        const int code = status.toInt();
+        return code >= 200 && code < 300;
+    }
     if (reply->error() != QNetworkReply::NoError)
         return false;
-    const QVariant status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
     if (!status.isValid())
         return true; // 非 HTTP 传输（如 file://）
     const int code = status.toInt();
