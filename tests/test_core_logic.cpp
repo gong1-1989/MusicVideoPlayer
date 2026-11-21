@@ -9,6 +9,7 @@
 #include "stream/StreamProxy.h"
 #include "stream/HlsPlaylist.h"
 #include "stream/HlsSeekWindow.h"
+#include "stream/StreamTokenRegistry.h"
 #include "util/HeaderPolicy.h"
 #include "util/PlaylistSniffer.h"
 #include "util/SecretStore.h"
@@ -495,6 +496,7 @@ private slots:
     void streamProxyFallsBackWhenHlsRangeIgnored();
     void hlsPlaylistParsesAndIndexes();
     void hlsPlaylistRewritesUris();
+    void streamTokensReuseByUrlAndHeaders();
 };
 
 void CoreLogicTest::timeFormat()
@@ -1388,6 +1390,43 @@ void CoreLogicTest::hlsPlaylistRewritesUris()
     QVERIFY(text.contains(QStringLiteral("URI=\"http://127.0.0.1:1234/stream/token/key.bin\"")));
     QVERIFY(text.contains(QStringLiteral("http://127.0.0.1:1234/stream/token/seg1.ts")));
     QVERIFY(!text.contains(QStringLiteral("seg1.ts\nseg1.ts")));
+}
+
+void CoreLogicTest::streamTokensReuseByUrlAndHeaders()
+{
+    StreamTokenRegistry tokens;
+    const QUrl upstream(QStringLiteral("https://cdn.test/a/seg1.ts"));
+    QHash<QString, QString> headers;
+    headers.insert(QStringLiteral("Referer"), QStringLiteral("https://source.test/"));
+    headers.insert(QStringLiteral("X-Source-Session"), QStringLiteral("sid=1"));
+
+    const QUrl first = tokens.registerFor(upstream, headers, 4567);
+    const QUrl second = tokens.registerFor(upstream, headers, 4567);
+    QVERIFY(first.isValid());
+    QCOMPARE(first, second);
+    QCOMPARE(tokens.size(), 1);
+
+    QHash<QString, QString> other = headers;
+    other.insert(QStringLiteral("X-Source-Session"), QStringLiteral("sid=2"));
+    const QUrl changed = tokens.registerFor(upstream, other, 4567);
+    QVERIFY(changed != first);
+    QCOMPARE(tokens.size(), 2);
+
+    const QString path = first.path();
+    const QString prefix = QStringLiteral("/stream/");
+    QVERIFY(path.startsWith(prefix));
+    const QString token = path.mid(prefix.size()).section(QLatin1Char('/'), 0, 0);
+    QVERIFY(!token.isEmpty());
+
+    StreamTokenRegistry::Upstream restored;
+    QVERIFY(tokens.lookup(token, &restored));
+    QCOMPARE(restored.url, upstream);
+    QCOMPARE(restored.headers.value(QStringLiteral("X-Source-Session")),
+             QStringLiteral("sid=1"));
+    QVERIFY(!tokens.lookup(QStringLiteral("unknown"), &restored));
+
+    tokens.clear();
+    QCOMPARE(tokens.size(), 0);
 }
 
 QTEST_GUILESS_MAIN(CoreLogicTest)

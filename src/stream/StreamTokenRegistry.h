@@ -16,23 +16,31 @@ public:
     {
         QUrl url;
         QHash<QString, QString> headers;
-        qint64 createdAtMs = 0;
+        qint64 lastUsedMs = 0;
+        QString cacheKey;
     };
 
     void clear();
     int size() const { return m_tokens.size(); }
 
-    /// 登记上游地址并返回本地代理目录 URL；监听端口无效时返回空 URL。
+    /// 地址 + 鉴权头的稳定键；缓存和 token 复用都必须用同一套规则。
+    static QString cacheKeyFor(const QUrl &upstream, const QHash<QString, QString> &headers);
+
+    /// 登记上游地址并返回本地代理目录 URL；同一地址+同一组头会复用 token。
+    /// 监听端口无效时返回空 URL。
     QUrl registerFor(const QUrl &upstream, const QHash<QString, QString> &headers, int port);
 
-    /// 按 token 取回上游；未知 token 返回 false。
-    bool lookup(const QString &token, Upstream *upstream) const;
+    /// 按 token 取回上游并刷新空闲时间；未知 token 返回 false。
+    bool lookup(const QString &token, Upstream *upstream);
 
-    /// 过期清理：512 条以下不扫，6 小时后过期，极端增长时丢最老四分之一。
+    /// 过期清理：512 条以下每 64 次扫一遍，空闲 2 小时后过期，
+    /// 极端增长时丢最老四分之一。
     void prune();
 
 private:
     QHash<QString, Upstream> m_tokens;
+    QHash<QString, QString> m_tokenByKey;
+    int m_pruneCounter = 0;
 };
 
 #endif // STREAMTOKENREGISTRY_H

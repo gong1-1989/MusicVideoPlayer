@@ -871,12 +871,7 @@ void StreamProxy::failRangeEntry(const QString &key,
 QString StreamProxy::cacheKeyFor(const QUrl &upstream,
                                  const QHash<QString, QString> &headers)
 {
-    QStringList headerKeys = headers.keys();
-    headerKeys.sort();
-    QString key = upstream.toString(QUrl::FullyEncoded);
-    for (const QString &header : std::as_const(headerKeys))
-        key += QLatin1Char('\x1f') + header + QLatin1Char('\x1e') + headers.value(header);
-    return key;
+    return StreamTokenRegistry::cacheKeyFor(upstream, headers);
 }
 
 void StreamProxy::rememberPlaylist(const QByteArray &body, const QUrl &playlistUrl,
