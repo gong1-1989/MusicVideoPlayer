@@ -13,7 +13,6 @@
 #include <QFileDialog>
 #include <QSaveFile>
 #include <QFontDatabase>
-#include <QGuiApplication>
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QJsonArray>
@@ -98,9 +97,8 @@ SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *h
     setModal(true);
 
     // 表单内容比小屏高时右侧表单内部自己滚动，左侧操作区保持固定可见
-    const QRect available = QGuiApplication::primaryScreen()
-                                ? QGuiApplication::primaryScreen()->availableGeometry()
-                                : QRect(0, 0, 1280, 800);
+    const QRect available = screen() != nullptr ? screen()->availableGeometry()
+                                                : QRect(0, 0, 1280, 800);
     // 中间区域可以被压缩，底部试搜/保存/取消始终留在屏幕内
     ui->bodyWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
     ui->bodyWidget->setMinimumHeight(0);
@@ -149,9 +147,8 @@ void SourceManagerDialog::bindUi()
     // 源列表独自吃掉左栏剩余高度，底部操作按钮固定不动
     ui->layout_left->setStretch(0, 1);
     // 左栏/表单的“舒适宽度”在窄屏或 150% 缩放下必须让位，否则窗口会被最小宽度顶出屏幕。
-    const int availableWidth = QGuiApplication::primaryScreen()
-                                   ? QGuiApplication::primaryScreen()->availableGeometry().width()
-                                   : 1280;
+    const int availableWidth = screen() != nullptr ? screen()->availableGeometry().width()
+                                                   : 1280;
     const int leftMin = qMin(240, qMax(120, availableWidth / 4));
     ui->leftBox->setMinimumWidth(leftMin);
     ui->leftBox->setMaximumWidth(qMax(leftMin, qMin(320, availableWidth / 3)));
