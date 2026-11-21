@@ -4,6 +4,7 @@
 #include "net/HttpClient.h"
 #include "net/SourceConfig.h"
 #include "stream/StreamProxy.h"
+#include "stream/HlsSeekWindow.h"
 #include "util/TimeFormat.h"
 
 #include <QElapsedTimer>
@@ -234,6 +235,7 @@ private slots:
     void configMapperBoolRulesDoNotMixWithNumbers();
     void configMapperSplitsEpisodesAndResolvesUrls();
     void streamProxySlicesRangeFromCache();
+    void seekPrefetchWindowFollowsPlaylistIndex();
     void streamProxyMultiRangeForHlsSegment();
     void streamProxyFallsBackWhenHlsRangeIgnored();
 };
@@ -624,6 +626,32 @@ void CoreLogicTest::streamProxySlicesRangeFromCache()
     QVERIFY(head.contains("Content-Range: bytes */1000"));
     QCOMPARE(body.size(), 0);
     QCOMPARE(upstream.requestCount, 1);
+}
+
+void CoreLogicTest::seekPrefetchWindowFollowsPlaylistIndex()
+{
+    // 索引 152 是播放列表里的目标片；FFmpeg 会顺序打开 152..161。
+    // 这个用例锁住“从目标索引开始、向后 9 片”的窗口，防止再按文件名
+    // 做 target+2 / target-9 导致整段预取错位。
+    const auto normal = HlsSeekWindow::forTarget(152, 600, 9);
+    QVERIFY(normal.isValid());
+    QCOMPARE(normal.first, 152);
+    QCOMPARE(normal.last, 161);
+
+    const auto atStart = HlsSeekWindow::forTarget(0, 600, 9);
+    QVERIFY(atStart.isValid());
+    QCOMPARE(atStart.first, 0);
+    QCOMPARE(atStart.last, 9);
+
+    // 靠近末尾时只能裁到最后一个分片，不能越界。
+    const auto atEnd = HlsSeekWindow::forTarget(598, 600, 9);
+    QVERIFY(atEnd.isValid());
+    QCOMPARE(atEnd.first, 598);
+    QCOMPARE(atEnd.last, 599);
+
+    QVERIFY(!HlsSeekWindow::forTarget(-1, 600, 9).isValid());
+    QVERIFY(!HlsSeekWindow::forTarget(600, 600, 9).isValid());
+    QVERIFY(!HlsSeekWindow::forTarget(152, 0, 9).isValid());
 }
 
 void CoreLogicTest::streamProxyMultiRangeForHlsSegment()

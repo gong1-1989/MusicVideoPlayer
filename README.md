@@ -38,13 +38,22 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 
 测试专用：设置环境变量 `MVP_DATA_DIR` 可把数据目录指向临时路径，单元测试用它避免碰真实数据。
 
+## 视频播放与 HLS 深拖动
+
+- 视频条目有多个播放地址时优先选择 MP4/FLV 直链，HLS 作为回退地址保留；下载同样使用优先地址。
+- HLS 统一经 `StreamProxy` 本地回环代理，补 Referer/Cookie，并把 m3u8 里的相对分片改写成本地 token 地址。
+- 普通分片按 4 路 Range 下载；上游忽略 Range、不返回 206 时自动回退单路透传。
+- 深拖动时，代理按播放列表索引定位目标分片，预取 `targetIndex..targetIndex+9`，每片 4 路 Range、同时 4 片流水预取。实测 600 秒目标从约 6.5 秒降到约 4.5 秒；同条件关闭预取约 5.5 秒。
+- 预取窗口必须用播放列表索引，不能用文件名反推：播放列表索引 152 可能对应文件 `0000143.ts`，按文件名偏移会导致整段预取错位。
+- 公开 MP4 样例源（`https://dpaste.org/9mnUE/raw`）仅用于验收 MP4 直链与拖动，默认停用，避免静态样例污染正常搜索结果。
+
 ## 测试
 
 ```powershell
 ctest --test-dir build/Desktop_Qt_6_10_1_MinGW_64_bit_Debug --output-on-failure
 ```
 
-包含 `mvp_core_logic`（时间格式、LRC 解析、条目/源配置校验、日志 URL 脱敏）与 `mvp_storage`（播放列表与搜索源持久化、损坏文件备份）。
+包含 `mvp_core_logic`（时间格式、LRC 解析、条目/源配置校验、日志 URL 脱敏、HLS 分片多连接 Range 与 206 回退）与 `mvp_storage`（播放列表与搜索源持久化、损坏文件备份）。
 
 ## 搜索源
 

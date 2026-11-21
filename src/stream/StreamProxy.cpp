@@ -1,5 +1,5 @@
 #include "stream/StreamProxy.h"
-
+#include "stream/HlsSeekWindow.h"
 #include "net/HttpClient.h"
 
 #include <QDateTime>
@@ -1080,12 +1080,14 @@ void StreamProxy::prefetchForSeek(const QUrl &playlistUrl,
         return;
 
     // 这里必须用播放列表索引，不能用文件名反推：索引 152 实际是文件 143。
-    // FFmpeg 从目标索引开始顺序打开 10 片，所以窗口是 target..target+9。
-    const int first = targetIndex;
-    const int last = qMin(info->segments.size() - 1,
-                          targetIndex + kSeekPrefetchAheadSegments);
-    if (first > last)
+    // FFmpeg 从目标索引开始顺序打开 10 片，窗口统一由 HlsSeekWindow 计算。
+    const auto window = HlsSeekWindow::forTarget(targetIndex, info->segments.size(),
+                                                 kSeekPrefetchAheadSegments);
+    if (!window.isValid())
         return;
+
+    const int first = window.first;
+    const int last = window.last;
 
     cancelPrefetch();
     const qint64 generation = m_prefetchGeneration;
