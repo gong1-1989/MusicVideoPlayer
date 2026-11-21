@@ -3,12 +3,14 @@
 #include "net/HttpClient.h"
 #include "ui/LyricsController.h"
 #include "ui/PlaylistController.h"
+#include "ui/SeekSlider.h"
 
 #include <QFile>
 #include <QListWidget>
 #include <QListView>
 #include <QTemporaryDir>
 #include <QTabWidget>
+#include <QSignalSpy>
 
 #include <QPointer>
 #include <QTcpServer>
@@ -71,6 +73,7 @@ class UiLogicTest : public QObject
 
 private slots:
     void lyricsClearCancelsPendingRequest();
+    void progressSliderClickJumpsToAbsolutePosition();
     void playlistSaveFailureKeepsDirtyAndRetries();
 };
 
@@ -98,6 +101,24 @@ void UiLogicTest::lyricsClearCancelsPendingRequest()
     controller.clear();
     QTest::qWait(900);
     QCOMPARE(list.count(), 0);
+}
+
+void UiLogicTest::progressSliderClickJumpsToAbsolutePosition()
+{
+    SeekSlider slider;
+    slider.setOrientation(Qt::Horizontal);
+    slider.setRange(0, 600000);
+    slider.resize(420, 32);
+    slider.show();
+    QTest::qWait(50);
+
+    QSignalSpy released(&slider, &QSlider::sliderReleased);
+    // 点击进度条正中间：默认 QSlider 只会前进 pageStep=10ms，旧实现等于没反应。
+    QTest::mouseClick(&slider, Qt::LeftButton, Qt::NoModifier, QPoint(210, 16));
+
+    QVERIFY(released.count() >= 1);
+    QVERIFY2(qAbs(slider.value() - 300000) <= 30000,
+             qPrintable(QStringLiteral("value=%1").arg(slider.value())));
 }
 
 void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()

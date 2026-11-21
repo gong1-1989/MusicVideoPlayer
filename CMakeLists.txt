@@ -124,6 +124,8 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/DownloadController.cpp
     src/ui/PlaybackUiController.h
     src/ui/PlaybackUiController.cpp
+    src/ui/SeekSlider.h
+    src/ui/SeekSlider.cpp
     src/ui/SettingsController.h
     src/ui/SettingsController.cpp
     src/ui/ThemeManager.h
@@ -188,6 +190,7 @@ add_executable(mvp_ui_tests
     tests/test_ui_logic.cpp
     src/ui/LyricsController.cpp
     src/ui/PlaylistController.cpp
+    src/ui/SeekSlider.cpp
     src/ui/ThemeManager.cpp
     src/ui/WindowChrome.cpp
 )

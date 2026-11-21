@@ -454,7 +454,7 @@
           </layout>
          </item>
          <item>
-          <widget class="QSlider" name="slider_progress">
+          <widget class="SeekSlider" name="slider_progress">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
              <horstretch>1</horstretch>
@@ -721,6 +721,11 @@
    <extends>QListWidget</extends>
    <header>ui/LyricsView.h</header>
    <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>SeekSlider</class>
+   <extends>QSlider</extends>
+   <header>ui/SeekSlider.h</header>
   </customwidget>
  </customwidgets>
  <resources/>
