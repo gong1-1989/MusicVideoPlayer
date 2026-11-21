@@ -14,6 +14,7 @@
 #include "ui/PlaybackUiController.h"
 #include "ui/PlaylistController.h"
 #include "ui/SearchPanelController.h"
+#include "ui/SearchWindow.h"
 #include "ui/SettingsController.h"
 #include "ui/ThemeManager.h"
 #include "ui/UiIcons.h"
@@ -28,6 +29,7 @@
 #include <QLoggingCategory>
 #include <QMessageBox>
 #include <QModelIndex>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QShortcut>
@@ -74,25 +76,19 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_downloads, &DownloadController::statusMessage, this,
             [this](const QString &text) { setNetworkStatus(text); });
 
-    // 搜索面板的模型、委托、分页和右键菜单全部由控制器持有
-    SearchPanelUi searchUi;
-    searchUi.list = ui->list_search;
-    searchUi.edit = ui->edit_search;
-    searchUi.searchButton = ui->btn_search;
-    searchUi.pager = ui->frame_searchPager;
-    searchUi.prevButton = ui->btn_searchPrev;
-    searchUi.nextButton = ui->btn_searchNext;
-    searchUi.titleLabel = ui->label_searchTitle;
-    searchUi.pageLabel = ui->label_searchPage;
-    searchUi.pageInfoLabel = ui->label_searchPageInfo;
-    searchUi.sidebar = ui->panelSidebar;
-    m_searchPanel = new SearchPanelController(m_coordinator, m_registry, m_http,
-                                             searchUi, this);
+    // 搜索整体从左侧拆成独立窗口：主界面只保留播放列表，
+    // 搜索窗口在点搜索结果播放时自动隐藏，由侧栏搜索按钮再次打开。
+    m_searchWindow = new SearchWindow(m_coordinator, m_registry, m_http, this);
+    m_searchPanel = m_searchWindow->controller();
 
     connect(m_searchPanel, &SearchPanelController::statusMessage, this,
             [this](const QString &text) { setNetworkStatus(text); });
-    connect(m_searchPanel, &SearchPanelController::mediaActivated,
-            this, &MainWindow::playSearchItem);
+    connect(m_searchPanel, &SearchPanelController::mediaActivated, this,
+            [this](const MediaItem &item) {
+                if (m_searchWindow != nullptr)
+                    m_searchWindow->hide();
+                playSearchItem(item);
+            });
     connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
             this, &MainWindow::addSearchItemToPlaylist);
     connect(m_searchPanel, &SearchPanelController::downloadRequested, this,
@@ -116,11 +112,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_playlists, &PlaylistController::playbackInvalidated,
             this, &MainWindow::clearPlaybackUi);
 
-    // 歌词加载、当前行高亮和歌词栏显隐由控制器统一处理
-    LyricsUi lyricsUi;
-    lyricsUi.panel = ui->panelLyrics;
-    lyricsUi.list = ui->list_lrc;
-    m_lyrics = new LyricsController(m_http, lyricsUi, this);
+    // 歌词加载与当前行定位只产出数据信号，实际绘制在音乐视觉层完成
+    m_lyrics = new LyricsController(m_http, this);
 
     // 侧栏 / 控制条的常显与浮层形态、贴边检测和几何定位
     PanelOverlayUi panelUi;
@@ -182,17 +175,23 @@ MainWindow::MainWindow(QWidget *parent)
                     m_musicVisual->setPlaying(state == QMediaPlayer::PlayingState);
             });
 
-    // 歌词栏默认隐藏，只有播音乐时才让位出来
-    m_lyrics->hidePanel();
+    // 歌词不再占用右侧独立面板，直接绘制在音乐视觉层的左下区域
+    connect(m_lyrics, &LyricsController::linesLoaded, this,
+            [this](const QStringList &lines) { m_musicVisual->setLyrics(lines); });
+    connect(m_lyrics, &LyricsController::currentIndexChanged,
+            m_musicVisual, &MusicVisualWidget::setLyricIndex);
+    connect(m_lyrics, &LyricsController::cleared,
+            m_musicVisual, &MusicVisualWidget::clearLyrics);
 
-    // 自绘控件的几何参数：圆角半径与歌词渐隐高度不再散落在各处
+    // 自绘控件的几何参数：圆角半径不再散落在各处
     ui->videoStage->setCornerRadius(16.0);
-    ui->list_lrc->setFadeExtent(28);
 
     // 原生标题栏跟着主题走，不要留一条白条
     ThemeManager::instance().applyWindowChrome(this);
     UiIcons::apply(ui->btn_settings, QStringLiteral("settings"),
                    tr("系统设置 (Ctrl+,)"), 20);
+    UiIcons::apply(ui->btn_openSearch, QStringLiteral("search"),
+                   tr("搜索发现"), 18, QColor(Qt::white));
     UiIcons::apply(ui->btn_fullscreen, QStringLiteral("fullscreen"),
                    tr("全屏 / 退出全屏"), 20);
     UiIcons::apply(ui->btn_downloads, QStringLiteral("downloads"),
@@ -204,6 +203,8 @@ MainWindow::MainWindow(QWidget *parent)
                 ThemeManager::instance().applyWindowChrome(this);
                 UiIcons::apply(ui->btn_settings, QStringLiteral("settings"),
                                tr("系统设置 (Ctrl+,)"), 20);
+                UiIcons::apply(ui->btn_openSearch, QStringLiteral("search"),
+                               tr("搜索发现"), 18, QColor(Qt::white));
                 UiIcons::apply(ui->btn_fullscreen, QStringLiteral("fullscreen"),
                                tr("全屏 / 退出全屏"), 20);
                 UiIcons::apply(ui->btn_downloads, QStringLiteral("downloads"),
@@ -247,6 +248,8 @@ MainWindow::~MainWindow()
 
 void MainWindow::setupConnections()
 {
+    connect(ui->btn_openSearch, &QPushButton::clicked,
+            this, &MainWindow::showSearchWindow);
     connect(m_transport, &PlaybackUiController::statusMessage, this,
             [this](const QString &text) { ui->label_status->setText(text); });
     connect(m_transport, &PlaybackUiController::currentItemChanged, this,
@@ -274,6 +277,28 @@ void MainWindow::setupConnections()
                 m_player->setPlaylist(m_videoModel);
                 m_player->playRow(index.row());
             });
+}
+
+void MainWindow::showSearchWindow()
+{
+    if (m_searchWindow == nullptr)
+        return;
+
+    // 第一次打开时把独立搜索窗放在主窗中心；之后记住用户拖动的位置。
+    if (!m_searchWindow->property("placed").toBool()) {
+        const QRect frame = frameGeometry();
+        const QSize size = m_searchWindow->size();
+        QRect available = screen() != nullptr ? screen()->availableGeometry()
+                                              : QRect(frame.center(), QSize(1, 1));
+        QPoint topLeft = frame.center() - QPoint(size.width() / 2, size.height() / 2);
+        topLeft.setX(qBound(available.left(), topLeft.x(),
+                            available.right() - size.width()));
+        topLeft.setY(qBound(available.top(), topLeft.y(),
+                            available.bottom() - size.height()));
+        m_searchWindow->move(topLeft);
+        m_searchWindow->setProperty("placed", true);
+    }
+    m_searchWindow->focusSearch();
 }
 
 void MainWindow::setNetworkStatus(const QString &text)

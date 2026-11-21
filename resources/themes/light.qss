@@ -25,8 +25,7 @@ QWidget#centralwidget {
 /* ------------------------------------------------ 白玻璃面板 */
 QFrame#panelSidebar,
 QFrame#panelStage,
-QFrame#panelTransport,
-QFrame#panelLyrics {
+QFrame#panelTransport {
     background: rgba(255, 255, 255, 72%);
     border: 1px solid rgba(140, 130, 220, 22%);
     border-radius: 18px;
@@ -63,13 +62,6 @@ QFrame#panelTransport[fullscreen="true"] {
     border-radius: 18px;
 }
 
-/* 歌词面板用实色底：渐隐遮罩必须与面板底色完全一致，否则会看出色块 */
-QFrame#panelLyrics {
-    background: #fdfcff;
-    border: 1px solid rgba(140, 130, 220, 22%);
-    border-radius: 18px;
-}
-
 /* ------------------------------------------------ 文字层级 */
 QLabel#label_brand {
     color: #6a4bff;
@@ -89,7 +81,7 @@ QFrame#brandLine {
 }
 
 QLabel#label_searchTitle,
-QLabel#label_lyricsTitle {
+QLabel#label_playlistTitle {
     color: rgba(43, 43, 69, 45%);
     font-size: 12px;
     padding-left: 4px;
@@ -248,6 +240,45 @@ QPushButton#btn_search:hover {
                                 stop:1 #5cd0ff);
 }
 
+QPushButton#btn_openSearch {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #7b5bff,
+                                stop:1 #35c2ff);
+    border: 1px solid rgba(255, 255, 255, 70%);
+    border-radius: 19px;
+    padding: 0;
+}
+
+QPushButton#btn_openSearch:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #8f75ff,
+                                stop:1 #5cd0ff);
+}
+
+QWidget#SearchWindow {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #f7f8ff,
+                                stop:0.55 #f1f0ff,
+                                stop:1 #eef7ff);
+    color: #24243a;
+}
+
+QLabel#label_searchBrand {
+    color: #3f36b0;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+QLabel#label_searchSubtitle {
+    color: rgba(43, 43, 69, 55%);
+    font-size: 12px;
+}
+
+QLabel#label_searchHint {
+    color: rgba(43, 43, 69, 45%);
+    padding: 12px 6px;
+}
+
 QPushButton#btn_play {
     min-width: 56px;
     max-width: 56px;
@@ -323,18 +354,6 @@ QListWidget::item:selected {
                                 stop:0 rgba(123, 91, 255, 22%),
                                 stop:1 rgba(53, 194, 255, 14%));
     color: #1e1e33;
-}
-
-QListWidget#list_lrc {
-    background: transparent;
-    border: none;
-    font-size: 13px;
-    color: rgba(43, 43, 69, 55%);
-}
-
-QListWidget#list_lrc::item {
-    padding: 6px 4px;
-    background: transparent;
 }
 
 /* ------------------------------------------------ 自绘容器 */

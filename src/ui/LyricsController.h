@@ -4,40 +4,33 @@
 #include "lyrics/LrcParser.h"
 
 #include <QObject>
+#include <QStringList>
 #include <QVector>
 
 class HttpClient;
 class LyricsService;
-class QListWidget;
-class QWidget;
 struct MediaItem;
 
-/// 歌词视图所需的最小控件集合，避免控制器反向依赖整个 Ui::MainWindow。
-struct LyricsUi
-{
-    QWidget *panel = nullptr;
-    QListWidget *list = nullptr;
-};
-
-/// 歌词加载、当前行高亮与滚动、歌词栏显隐。主窗只负责转发播放进度和切歌事件。
+/// 歌词加载与当前行定位。控制器只产出纯数据信号，
+/// 由主窗把歌词交给音乐视觉层绘制，不再依赖任何列表面板控件。
 class LyricsController : public QObject
 {
     Q_OBJECT
 
 public:
-    LyricsController(HttpClient *http, const LyricsUi &ui, QObject *parent = nullptr);
+    explicit LyricsController(HttpClient *http, QObject *parent = nullptr);
 
     void setCurrentItem(const MediaItem &item);
     void updatePosition(qint64 positionMs);
-    void showPanel();
-    void hidePanel();
     void clear();
     void refreshHighlight();
 
-private:
-    void applyHighlight();
+signals:
+    void linesLoaded(const QStringList &lines);
+    void currentIndexChanged(int index);
+    void cleared();
 
-    LyricsUi m_ui;
+private:
     LyricsService *m_service;
     QVector<LrcLine> m_lines;
     int m_index = -1;

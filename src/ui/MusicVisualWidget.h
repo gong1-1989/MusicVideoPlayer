@@ -5,6 +5,7 @@
 
 #include <QColor>
 #include <QPixmap>
+#include <QStringList>
 #include <QWidget>
 
 class QTimer;
@@ -23,6 +24,9 @@ public:
     void setTrack(const MediaItem &item);
     void setPlaying(bool playing);
     void setAccent(const QColor &color);
+    void setLyrics(const QStringList &lines);
+    void setLyricIndex(int index);
+    void clearLyrics();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -36,11 +40,14 @@ private:
     void drawSpectrum(QPainter &painter, const QRectF &rect);
     void drawTrackInfo(QPainter &painter, const QRectF &rect);
     void drawDisc(QPainter &painter, const QRectF &rect);
+    void drawLyrics(QPainter &painter, const QRectF &rect);
 
     MediaItem m_item;
     QPixmap m_cover;
     QTimer *m_timer = nullptr;
     QColor m_accent{96, 132, 255};
+    QStringList m_lyrics;
+    int m_lyricIndex = -1;
     qreal m_phase = 0.0;
     bool m_playing = false;
 };

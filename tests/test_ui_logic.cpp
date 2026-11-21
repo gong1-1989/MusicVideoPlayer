@@ -8,7 +8,6 @@
 #include "ui/ThemeManager.h"
 
 #include <QFile>
-#include <QListWidget>
 #include <QListView>
 #include <QTemporaryDir>
 #include <QTabWidget>
@@ -88,9 +87,8 @@ void UiLogicTest::lyricsClearCancelsPendingRequest()
     QVERIFY(server.listen(QHostAddress::LocalHost));
 
     HttpClient http;
-    QWidget panel;
-    QListWidget list;
-    LyricsController controller(&http, LyricsUi{&panel, &list});
+    LyricsController controller(&http);
+    QSignalSpy loaded(&controller, &LyricsController::linesLoaded);
 
     MediaItem song;
     song.type = MediaType::Music;
@@ -102,10 +100,10 @@ void UiLogicTest::lyricsClearCancelsPendingRequest()
     controller.setCurrentItem(song);
     QTRY_VERIFY_WITH_TIMEOUT(server.requestCount > 0, 2000);
 
-    // 模拟切到无歌词条目/视频：旧请求必须立刻取消，500ms 后不能回填列表。
+    // 模拟切到无歌词条目/视频：旧请求必须立刻取消，500ms 后不能再回填歌词。
     controller.clear();
     QTest::qWait(900);
-    QCOMPARE(list.count(), 0);
+    QCOMPARE(loaded.count(), 0);
 }
 
 void UiLogicTest::progressSliderClickJumpsToAbsolutePosition()

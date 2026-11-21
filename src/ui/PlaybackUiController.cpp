@@ -116,13 +116,9 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
                     m_seekTarget = -1;
                     // 停止后播放器不会再送新帧；不清掉的话上一部视频的最后一帧会一直留在面板上
                     m_surface->clearFrame();
-                    m_lyrics->hidePanel();
                 } else {
                     // 新一次播放开始，允许视频面重新接收帧
                     m_surface->resumeFrames();
-                    if (m_player->hasCurrentItem()
-                        && m_player->currentItem().type == MediaType::Music)
-                        m_lyrics->showPanel();
                 }
             });
     connect(m_player, &PlaybackController::currentItemChanged, this,

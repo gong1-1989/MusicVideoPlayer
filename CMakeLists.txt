@@ -14,7 +14,6 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Network
     Multimedia
     MultimediaWidgets
-    LinguistTools
     Test
 )
 
@@ -120,6 +119,8 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/MainWindow.ui
     src/ui/SearchPanelController.h
     src/ui/SearchPanelController.cpp
+    src/ui/SearchWindow.h
+    src/ui/SearchWindow.cpp
     src/ui/PlaylistController.h
     src/ui/PlaylistController.cpp
     src/ui/FullscreenController.h
@@ -152,8 +153,6 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/MusicVisualWidget.cpp
     src/ui/VideoStage.h
     src/ui/VideoStage.cpp
-    src/ui/LyricsView.h
-    src/ui/LyricsView.cpp
     src/ui/SettingsDialog.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.ui
@@ -285,14 +284,6 @@ if(WIN32)
             "未找到 ${MVP_FFMPEG_ARCHIVE}，HLS 下载将无法自动转 MP4")
     endif()
 endif()
-
-# ---------------------------------------------------------------- 翻译
-# qt_add_translations 会把 .qm 编译后嵌入资源，main.cpp 的 :/i18n 才能真正加载。
-qt_add_translations(MusicVideoPlayer
-    TS_FILES translations/MusicVideoPlayer_zh_CN.ts
-    RESOURCE_PREFIX "/i18n"
-    LUPDATE_OPTIONS -no-obsolete
-)
 
 # ---------------------------------------------------------------- 安装与部署
 # 默认不安装回归测试程序。确实需要在开发机上一起安装时，

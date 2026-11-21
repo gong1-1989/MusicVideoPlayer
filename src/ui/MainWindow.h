@@ -11,6 +11,7 @@ class PlaylistModel;
 class PlaylistController;
 class SearchCoordinator;
 class SearchPanelController;
+class SearchWindow;
 class FullscreenController;
 class PanelOverlayController;
 class LyricsController;
@@ -55,6 +56,7 @@ private:
     void setupConnections();
     /// 搜索/下载类提示单独放一个标签，避免反复覆盖播放与恢复状态
     void setNetworkStatus(const QString &text);
+    void showSearchWindow();
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void clearPlaybackUi();
@@ -73,6 +75,7 @@ private:
     SourceRegistry *m_registry;
     SearchCoordinator *m_coordinator;
     SearchPanelController *m_searchPanel = nullptr;
+    SearchWindow *m_searchWindow = nullptr;
     FullscreenController *m_fullscreen = nullptr;
     PanelOverlayController *m_panels = nullptr;
     LyricsController *m_lyrics = nullptr;

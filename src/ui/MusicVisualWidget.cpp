@@ -85,6 +85,30 @@ void MusicVisualWidget::setAccent(const QColor &color)
     update();
 }
 
+void MusicVisualWidget::setLyrics(const QStringList &lines)
+{
+    m_lyrics = lines;
+    m_lyricIndex = -1;
+    update();
+}
+
+void MusicVisualWidget::setLyricIndex(int index)
+{
+    if (m_lyricIndex == index)
+        return;
+    m_lyricIndex = index;
+    update();
+}
+
+void MusicVisualWidget::clearLyrics()
+{
+    if (m_lyrics.isEmpty() && m_lyricIndex < 0)
+        return;
+    m_lyrics.clear();
+    m_lyricIndex = -1;
+    update();
+}
+
 void MusicVisualWidget::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)
@@ -96,6 +120,8 @@ void MusicVisualWidget::paintEvent(QPaintEvent *event)
     drawSpectrum(painter, rect);
     drawDisc(painter, rect);
     drawTrackInfo(painter, rect);
+    // 歌词最后绘制，压在频谱之上保证可读
+    drawLyrics(painter, rect);
 }
 
 void MusicVisualWidget::resizeEvent(QResizeEvent *event)
@@ -327,5 +353,84 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
         painter.setPen(withAlpha(QColor(225, 240, 255), 220));
         painter.drawText(badge, Qt::AlignCenter, tag);
         badgeLeft += width + 8;
+    }
+}
+
+void MusicVisualWidget::drawLyrics(QPainter &painter, const QRectF &rect)
+{
+    if (m_lyrics.isEmpty())
+        return;
+
+    // 歌词让到左下：右上留给唱片，顶部留给曲目信息，底部频谱只作背景。
+    const bool compact = rect.width() < 720.0;
+    const qreal left = rect.left() + rect.width() * 0.075;
+    const qreal width = compact ? rect.width() * 0.85 : rect.width() * 0.46;
+    const qreal top = rect.top() + rect.height() * 0.46;
+    const qreal height = rect.height() * 0.34;
+    if (width < 160.0 || height < 80.0)
+        return;
+
+    const int visible = 5;
+    int anchor = m_lyricIndex >= 0 ? m_lyricIndex : 0;
+    int first = anchor - 2;
+    first = qBound(0, first, qMax(0, m_lyrics.size() - visible));
+
+    const qreal rowHeight = height / visible;
+    const qreal centerY = top + height / 2.0;
+
+    QFont lyricFont = font();
+    const qreal baseSize = qMax(9.0, rect.height() / 44.0);
+    const qreal currentSize = qMax(11.0, rect.height() / 34.0);
+
+    for (int row = 0; row < visible; ++row) {
+        const int index = first + row;
+        if (index >= m_lyrics.size())
+            break;
+
+        const QString text = m_lyrics.at(index).trimmed();
+        if (text.isEmpty())
+            continue;
+
+        const bool current = index == m_lyricIndex;
+        const int distance = m_lyricIndex >= 0 ? qAbs(index - m_lyricIndex)
+                                              : qAbs(row - 2);
+
+        // 上下边缘渐隐，让歌词浮在画面里而不是像一块贴上去的列表。
+        const qreal rowCenter = top + (row + 0.5) * rowHeight;
+        const qreal edge = 1.0 - qAbs(rowCenter - centerY) / (height / 2.0);
+        const qreal edgeAlpha = qBound(0.18, 1.0 - edge * edge * 0.7, 1.0);
+        const int alpha = qBound(40, int((current ? 235 : 120 + 45 / (distance + 1))
+                                         * edgeAlpha),
+                                 255);
+
+        lyricFont.setPointSizeF(current ? currentSize : baseSize);
+        lyricFont.setBold(current);
+        painter.setFont(lyricFont);
+
+        const QRectF rowRect(left, rowCenter - rowHeight / 2.0, width, rowHeight);
+        const int textWidth = int(width - 24.0);
+        const QString elided =
+            QFontMetrics(lyricFont).elidedText(text, Qt::ElideRight, textWidth);
+
+        if (current) {
+            // 当前句加一条短发光短线，替代原来的整行背景块。
+            const qreal markerY = rowCenter;
+            QLinearGradient marker(left - 10.0, markerY, left + 22.0, markerY);
+            marker.setColorAt(0.0, QColor(0, 0, 0, 0));
+            marker.setColorAt(0.5, withAlpha(m_accent.lighter(150), 220));
+            marker.setColorAt(1.0, withAlpha(m_accent, 0));
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(marker);
+            painter.drawRoundedRect(QRectF(left - 10.0, markerY - 1.5, 32.0, 3.0), 1.5, 1.5);
+        }
+
+        painter.setPen(QColor(0, 0, 0, qMin(170, alpha)));
+        painter.drawText(rowRect.translated(0, 1.5),
+                         Qt::AlignHCenter | Qt::AlignVCenter, elided);
+
+        QColor color = current ? m_accent.lighter(165) : QColor(215, 228, 255);
+        color.setAlpha(alpha);
+        painter.setPen(color);
+        painter.drawText(rowRect, Qt::AlignHCenter | Qt::AlignVCenter, elided);
     }
 }
