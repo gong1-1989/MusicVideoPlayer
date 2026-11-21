@@ -7,6 +7,7 @@
 #include "stream/StreamProxy.h"
 #include "stream/HlsSeekWindow.h"
 #include "util/HeaderPolicy.h"
+#include "util/SecretStore.h"
 #include "util/TimeFormat.h"
 
 #include <QElapsedTimer>
@@ -364,6 +365,7 @@ private slots:
     void mediaItemValidity();
     void mediaIdentityUsesStableWebUrl();
     void sourceConfigJsonRoundTrip();
+    void sourceConfigSecretsNotPlaintext();
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
     void httpLogUrlRedactsSignature();
@@ -552,6 +554,7 @@ void CoreLogicTest::sourceConfigJsonRoundTrip()
     config.bodyTemplate = QStringLiteral("{\"q\":\"{keyword}\"}");
     config.bodyIsJson = true;
     config.headers.insert(QStringLiteral("Referer"), QStringLiteral("https://example.com/"));
+    config.headers.insert(QStringLiteral("Authorization"), QStringLiteral("Bearer secret-token"));
     config.cookie = QStringLiteral("sid=1");
     config.itemsPath = QStringLiteral("data.items");
     config.fields.insert(QStringLiteral("title"), QStringLiteral("name"));
@@ -566,6 +569,16 @@ void CoreLogicTest::sourceConfigJsonRoundTrip()
     QVERIFY2(config.isValid(), qPrintable(config.validationError()));
 
     const QJsonObject json = sourceConfigToJson(config);
+    const QString serialized =
+        QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact));
+    QVERIFY(!serialized.contains(QStringLiteral("sid=1")));
+    QVERIFY(!serialized.contains(QStringLiteral("secret-token")));
+    QVERIFY(json.value(QStringLiteral("cookie")).toString().startsWith(
+        QStringLiteral("mvp-dpapi:v1:")));
+    QVERIFY(!json.value(QStringLiteral("headers")).toObject().contains(
+        QStringLiteral("Authorization")));
+    QVERIFY(json.value(QStringLiteral("headersProtected")).toObject().contains(
+        QStringLiteral("Authorization")));
     bool ok = false;
     const SourceConfig restored = sourceConfigFromJson(json, &ok);
 
@@ -588,6 +601,53 @@ void CoreLogicTest::sourceConfigJsonRoundTrip()
     QCOMPARE(restored.detailItemsPath, config.detailItemsPath);
     QVERIFY(restored.detailFields == config.detailFields);
     QCOMPARE(restored.timeoutMs, config.timeoutMs);
+}
+
+void CoreLogicTest::sourceConfigSecretsNotPlaintext()
+{
+    if (!SecretStore::isAvailable())
+        QSKIP("当前平台没有凭据加密能力，源凭据按设计不落盘");
+
+    QJsonObject legacy;
+    legacy.insert(QStringLiteral("id"), QStringLiteral("legacy"));
+    legacy.insert(QStringLiteral("name"), QStringLiteral("旧源"));
+    legacy.insert(QStringLiteral("url"), QStringLiteral("https://api.example.com/search"));
+    legacy.insert(QStringLiteral("itemsPath"), QStringLiteral("data"));
+    legacy.insert(QStringLiteral("fields"),
+                  QJsonObject{{QStringLiteral("title"), QStringLiteral("name")},
+                              {QStringLiteral("streamUrl"), QStringLiteral("url")}});
+    legacy.insert(QStringLiteral("headers"),
+                  QJsonObject{{QStringLiteral("Authorization"),
+                               QStringLiteral("Bearer legacy-token")}});
+    legacy.insert(QStringLiteral("cookie"), QStringLiteral("sid=legacy"));
+
+    bool ok = false;
+    const SourceConfig config = sourceConfigFromJson(legacy, &ok);
+    QVERIFY(ok);
+    QCOMPARE(config.cookie, QStringLiteral("sid=legacy"));
+    QCOMPARE(config.headers.value(QStringLiteral("Authorization")),
+             QStringLiteral("Bearer legacy-token"));
+
+    const QJsonObject stored = sourceConfigToJson(config);
+    const QString serialized =
+        QString::fromUtf8(QJsonDocument(stored).toJson(QJsonDocument::Compact));
+    QVERIFY(!serialized.contains(QStringLiteral("sid=legacy")));
+    QVERIFY(!serialized.contains(QStringLiteral("legacy-token")));
+    QVERIFY(stored.value(QStringLiteral("cookie")).toString().startsWith(
+        QStringLiteral("mvp-dpapi:v1:")));
+    QVERIFY(stored.value(QStringLiteral("headersProtected"))
+                .toObject()
+                .contains(QStringLiteral("Authorization")));
+    QVERIFY(!stored.value(QStringLiteral("headers"))
+                 .toObject()
+                 .contains(QStringLiteral("Authorization")));
+
+    bool restoredOk = false;
+    const SourceConfig restored = sourceConfigFromJson(stored, &restoredOk);
+    QVERIFY(restoredOk);
+    QCOMPARE(restored.cookie, QStringLiteral("sid=legacy"));
+    QCOMPARE(restored.headers.value(QStringLiteral("Authorization")),
+             QStringLiteral("Bearer legacy-token"));
 }
 
 void CoreLogicTest::sourceConfigRejectsIncompleteConfig()

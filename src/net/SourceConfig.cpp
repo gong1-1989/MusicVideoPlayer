@@ -1,5 +1,8 @@
 #include "net/SourceConfig.h"
 
+#include "util/HeaderPolicy.h"
+#include "util/SecretStore.h"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QObject>
@@ -23,6 +26,30 @@ QHash<QString, QString> headersFromJson(const QJsonObject &object)
     for (auto it = object.constBegin(); it != object.constEnd(); ++it)
         headers.insert(it.key(), it.value().toString());
     return headers;
+}
+
+/// 普通请求头明文写入，敏感头单独加密到 headersProtected。
+QJsonObject requestHeadersToJson(const QHash<QString, QString> &headers,
+                                 const QString &sourceId,
+                                 QJsonObject *protectedHeaders)
+{
+    QJsonObject object;
+    for (auto it = headers.cbegin(); it != headers.cend(); ++it) {
+        const QString key = it.key().trimmed();
+        if (key.isEmpty())
+            continue;
+        if (HeaderPolicy::isSensitiveHeader(key)) {
+            const QString cipher = SecretStore::protectForStorage(
+                it.value(), sourceId + QLatin1Char('/') + key);
+            if (cipher.isEmpty())
+                continue; // 无法加密时宁可丢字段，也不退回明文
+            if (protectedHeaders != nullptr)
+                protectedHeaders->insert(key, cipher);
+            continue;
+        }
+        object.insert(key, it.value());
+    }
+    return object;
 }
 
 } // namespace
@@ -144,10 +171,19 @@ QJsonObject sourceConfigToJson(const SourceConfig &config)
         object.insert(QStringLiteral("body"), config.bodyTemplate);
         object.insert(QStringLiteral("bodyIsJson"), config.bodyIsJson);
     }
-    if (!config.headers.isEmpty())
-        object.insert(QStringLiteral("headers"), headersToJson(config.headers));
-    if (!config.cookie.isEmpty())
-        object.insert(QStringLiteral("cookie"), config.cookie);
+    QJsonObject protectedHeaders;
+    const QJsonObject plainHeaders = requestHeadersToJson(config.headers, config.id,
+                                                           &protectedHeaders);
+    if (!plainHeaders.isEmpty())
+        object.insert(QStringLiteral("headers"), plainHeaders);
+    if (!protectedHeaders.isEmpty())
+        object.insert(QStringLiteral("headersProtected"), protectedHeaders);
+    if (!config.cookie.isEmpty()) {
+        const QString cipher = SecretStore::protectForStorage(
+            config.cookie, config.id + QStringLiteral("/cookie"));
+        if (!cipher.isEmpty())
+            object.insert(QStringLiteral("cookie"), cipher);
+    }
     object.insert(QStringLiteral("itemsPath"), config.itemsPath);
     object.insert(QStringLiteral("fields"), headersToJson(config.fields));
     if (config.streamKind != QLatin1String("direct"))
@@ -185,8 +221,27 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
     config.urlTemplate = object.value(QStringLiteral("url")).toString();
     config.bodyTemplate = object.value(QStringLiteral("body")).toString();
     config.bodyIsJson = object.value(QStringLiteral("bodyIsJson")).toBool(false);
-    config.headers = headersFromJson(object.value(QStringLiteral("headers")).toObject());
-    config.cookie = object.value(QStringLiteral("cookie")).toString();
+    config.headers.clear();
+    const QJsonObject plainHeaders = object.value(QStringLiteral("headers")).toObject();
+    for (auto it = plainHeaders.constBegin(); it != plainHeaders.constEnd(); ++it) {
+        const QString key = it.key();
+        QString value = it.value().toString();
+        // 兼容旧版：敏感头过去也写在 headers 里，读出后下次保存会迁到 headersProtected。
+        if (HeaderPolicy::isSensitiveHeader(key))
+            value = SecretStore::revealStored(value, config.id + QLatin1Char('/') + key);
+        if (!value.isEmpty())
+            config.headers.insert(key, value);
+    }
+    const QJsonObject protectedHeaders =
+        object.value(QStringLiteral("headersProtected")).toObject();
+    for (auto it = protectedHeaders.constBegin(); it != protectedHeaders.constEnd(); ++it) {
+        const QString value = SecretStore::revealStored(
+            it.value().toString(), config.id + QLatin1Char('/') + it.key());
+        if (!value.isEmpty())
+            config.headers.insert(it.key(), value);
+    }
+    config.cookie = SecretStore::revealStored(object.value(QStringLiteral("cookie")).toString(),
+                                              config.id + QStringLiteral("/cookie"));
     config.itemsPath = object.value(QStringLiteral("itemsPath")).toString();
     config.fields = headersFromJson(object.value(QStringLiteral("fields")).toObject());
     config.streamKind = object.value(QStringLiteral("streamKind"))

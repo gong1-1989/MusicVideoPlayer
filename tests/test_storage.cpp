@@ -1,6 +1,7 @@
 #include "core/PlaylistStore.h"
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
+#include "util/SecretStore.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -213,8 +214,18 @@ void StorageTest::sourceRegistrySeedsAndPersists()
     custom.fields.insert(QStringLiteral("title"), QStringLiteral("title"));
     custom.fields.insert(QStringLiteral("streamUrl"), QStringLiteral("url"));
     custom.timeoutMs = 9000;
+    custom.cookie = QStringLiteral("sid=storage-secret");
+    custom.headers.insert(QStringLiteral("Authorization"),
+                          QStringLiteral("Bearer storage-token"));
 
     QVERIFY(registry.upsert(custom));
+
+    QFile stored(registry.storagePath());
+    QVERIFY(stored.open(QIODevice::ReadOnly));
+    const QString raw = QString::fromUtf8(stored.readAll());
+    stored.close();
+    QVERIFY(!raw.contains(QStringLiteral("sid=storage-secret")));
+    QVERIFY(!raw.contains(QStringLiteral("storage-token")));
 
     SourceRegistry reloaded;
     QVERIFY(reloaded.load());
@@ -222,6 +233,13 @@ void StorageTest::sourceRegistrySeedsAndPersists()
     QCOMPARE(restored.id, custom.id);
     QCOMPARE(restored.name, custom.name);
     QCOMPARE(restored.timeoutMs, 9000);
+    if (SecretStore::isAvailable()) {
+        QCOMPARE(restored.cookie, custom.cookie);
+        QCOMPARE(restored.headers.value(QStringLiteral("Authorization")),
+                 QStringLiteral("Bearer storage-token"));
+    } else {
+        QVERIFY(restored.cookie.isEmpty());
+    }
 }
 
 void StorageTest::sourceRegistryCorruptFileBacksUp()

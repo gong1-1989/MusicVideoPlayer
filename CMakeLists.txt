@@ -34,6 +34,8 @@ endfunction()
 qt_add_library(mvp_core STATIC
     src/media/MediaItem.h
     src/util/HeaderPolicy.h
+    src/util/SecretStore.h
+    src/util/SecretStore.cpp
     src/util/TimeFormat.h
     src/util/TimeFormat.cpp
     src/net/HttpClient.h
@@ -83,6 +85,10 @@ target_link_libraries(mvp_core PUBLIC
     Qt6::Network
     Qt6::Multimedia
 )
+if(WIN32)
+    # 源配置凭据使用 DPAPI 加密，避免 sources.json 出现明文 Cookie
+    target_link_libraries(mvp_core PUBLIC crypt32)
+endif()
 mvp_enable_warnings(mvp_core)
 
 # ---------------------------------------------------------------- 应用入口
