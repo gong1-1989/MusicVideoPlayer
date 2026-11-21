@@ -15,8 +15,15 @@ class QPushButton;
 class QShowEvent;
 class QTimer;
 
+QT_BEGIN_NAMESPACE
+namespace Ui {
+class SearchWindow;
+}
+QT_END_NAMESPACE
+
 /// 独立搜索窗口：搜索框、历史/热门联想、筛选、结果与分页全部从主界面左侧移出。
 /// 主窗口只保留播放列表；点搜索结果播放时由 MainWindow 自动隐藏本窗口。
+/// 静态布局由 SearchWindow.ui 描述，这里只做控件绑定和运行时状态处理。
 class SearchWindow : public QWidget
 {
     Q_OBJECT
@@ -35,7 +42,7 @@ protected:
     void showEvent(QShowEvent *event) override;
 
 private:
-    void buildUi();
+    Ui::SearchWindow *ui;
 
     QLineEdit *m_edit = nullptr;
     QListWidget *m_suggestList = nullptr;

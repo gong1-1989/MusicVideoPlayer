@@ -121,6 +121,7 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/SearchPanelController.cpp
     src/ui/SearchWindow.h
     src/ui/SearchWindow.cpp
+    src/ui/SearchWindow.ui
     src/ui/PlaylistController.h
     src/ui/PlaylistController.cpp
     src/ui/FullscreenController.h
@@ -135,6 +136,7 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/DownloadController.cpp
     src/ui/DownloadManagerDialog.h
     src/ui/DownloadManagerDialog.cpp
+    src/ui/DownloadManagerDialog.ui
     src/ui/PlaybackUiController.h
     src/ui/PlaybackUiController.cpp
     src/ui/SeekSlider.h

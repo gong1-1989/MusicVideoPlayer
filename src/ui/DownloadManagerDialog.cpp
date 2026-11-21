@@ -1,15 +1,14 @@
 #include "ui/DownloadManagerDialog.h"
+#include "ui_DownloadManagerDialog.h"
 
 #include "download/DownloadManager.h"
 #include "download/MediaRemux.h"
 #include "ui/ThemeManager.h"
 
-#include <QAbstractItemView>
 #include <QApplication>
 #include <QDesktopServices>
 #include <QFileInfo>
 #include <QFont>
-#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
@@ -20,7 +19,6 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QUrl>
-#include <QVBoxLayout>
 
 namespace {
 
@@ -49,13 +47,29 @@ QString sizeText(const DownloadJob &job)
 DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *parent)
     : QDialog(parent)
     , m_manager(manager)
+    , ui(new Ui::DownloadManagerDialog)
 {
-    setObjectName(QStringLiteral("DownloadManagerDialog"));
-    setWindowTitle(tr("下载管理"));
+    ui->setupUi(this);
+    m_tree = ui->downloadManagerTree;
+    m_tree->setHeaderLabels({tr("名称"), tr("状态"), tr("进度"), tr("大小"),
+                             tr("保存位置")});
+    m_summary = ui->label_downloadSummary;
+    m_statusLabel = ui->label_downloadStatus;
+    m_openFile = ui->btn_openFile;
+    m_openFolder = ui->btn_openFolder;
+    m_retry = ui->btn_retry;
+    m_remove = ui->btn_remove;
+    m_clearCompleted = ui->btn_clearCompleted;
+
+    // 标题字号仍按当前字体比例动态加粗，避免在 .ui 里写死字号后无法跟随字体缩放。
+    QFont titleFont = ui->downloadManagerTitle->font();
+    titleFont.setPointSize(titleFont.pointSize() + 3);
+    titleFont.setBold(true);
+    ui->downloadManagerTitle->setFont(titleFont);
+
     setWindowFlag(Qt::WindowContextHelpButtonHint, false);
     setAttribute(Qt::WA_StyledBackground, true);
     setWindowIcon(QApplication::windowIcon());
-    resize(920, 560);
     ThemeManager::instance().applyWindowChrome(this);
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
             [this] {
@@ -63,74 +77,18 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
                 applyHeaderStyle();
             });
 
-    auto *root = new QVBoxLayout(this);
-    root->setContentsMargins(18, 16, 18, 16);
-    root->setSpacing(12);
-
-    auto *title = new QLabel(tr("下载任务"), this);
-    title->setObjectName(QStringLiteral("downloadManagerTitle"));
-    QFont titleFont = title->font();
-    titleFont.setPointSize(titleFont.pointSize() + 3);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    root->addWidget(title);
-
-    m_summary = new QLabel(this);
-    m_summary->setWordWrap(true);
-    root->addWidget(m_summary);
-
-    // 下载过程提示从主窗口控制条移到这里，和任务列表同屏显示。
-    m_statusLabel = new QLabel(this);
-    m_statusLabel->setObjectName(QStringLiteral("label_downloadStatus"));
-    m_statusLabel->setWordWrap(true);
-    m_statusLabel->hide();
-    root->addWidget(m_statusLabel);
-
-    m_tree = new QTreeWidget(this);
-    m_tree->setObjectName(QStringLiteral("downloadManagerTree"));
-    m_tree->setColumnCount(5);
-    m_tree->setHeaderLabels({tr("名称"), tr("状态"), tr("进度"), tr("大小"),
-                             tr("保存位置")});
-    m_tree->setRootIsDecorated(true);
-    m_tree->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_tree->setAlternatingRowColors(true);
-    m_tree->setUniformRowHeights(false);
     m_tree->header()->setStretchLastSection(true);
     m_tree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_tree->setMinimumHeight(260);
-    root->addWidget(m_tree, 1);
     applyHeaderStyle();
 
     const QString hint =
         MediaRemux::isAvailable()
             ? tr("HLS 分片会合并成一个文件，再用内置 FFmpeg 无损转成 MP4；退出程序时未完成任务会保留，下次启动自动续传。")
             : tr("HLS 分片会合并成一个 TS 文件；当前未找到 FFmpeg，因此不转 MP4。退出程序时未完成任务会保留，下次启动自动续传。");
-    auto *hintLabel = new QLabel(hint, this);
-    hintLabel->setWordWrap(true);
-    hintLabel->setObjectName(QStringLiteral("downloadManagerHint"));
-    root->addWidget(hintLabel);
-
-    auto *buttons = new QHBoxLayout;
-    buttons->setSpacing(8);
-    m_openFile = new QPushButton(tr("打开文件"), this);
-    m_openFolder = new QPushButton(tr("打开目录"), this);
-    m_retry = new QPushButton(tr("重试 / 续传"), this);
-    m_remove = new QPushButton(tr("移除记录"), this);
-    m_clearCompleted = new QPushButton(tr("清空已完成"), this);
-    auto *closeButton = new QPushButton(tr("关闭"), this);
-    closeButton->setDefault(true);
-    buttons->addWidget(m_openFile);
-    buttons->addWidget(m_openFolder);
-    buttons->addWidget(m_retry);
-    buttons->addWidget(m_remove);
-    buttons->addStretch(1);
-    buttons->addWidget(m_clearCompleted);
-    buttons->addWidget(closeButton);
-    root->addLayout(buttons);
+    ui->downloadManagerHint->setText(hint);
 
     connect(m_tree, &QTreeWidget::itemSelectionChanged, this,
             &DownloadManagerDialog::updateButtons);
@@ -144,13 +102,18 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
             &DownloadManagerDialog::removeSelected);
     connect(m_clearCompleted, &QPushButton::clicked, this,
             &DownloadManagerDialog::clearCompleted);
-    connect(closeButton, &QPushButton::clicked, this, &QDialog::close);
+    connect(ui->btn_close, &QPushButton::clicked, this, &QDialog::close);
 
     if (m_manager != nullptr)
         connect(m_manager, &DownloadManager::jobsChanged,
                 this, &DownloadManagerDialog::rebuild);
 
     rebuild();
+}
+
+DownloadManagerDialog::~DownloadManagerDialog()
+{
+    delete ui;
 }
 
 void DownloadManagerDialog::applyHeaderStyle()
