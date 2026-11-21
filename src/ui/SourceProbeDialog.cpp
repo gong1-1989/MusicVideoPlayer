@@ -97,7 +97,7 @@ void SourceProbeDialog::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
 
-    // 150% 缩放下窗口按父窗口位置居中，732px 高的探测窗会被放到屏幕顶部
+    // 窄屏或大字体下窗口按父窗口位置居中，732px 高的探测窗会被放到屏幕顶部
     // 之外，标题栏和“探测类型”不可见。显示后按当前屏幕可用区域重新居中，
     // 并把左上角夹在区域内，保证标题栏和底部按钮始终可达。
     QTimer::singleShot(0, this, [this] {

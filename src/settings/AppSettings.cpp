@@ -6,12 +6,12 @@
 namespace {
 
 const char kTheme[] = "ui/theme";
+const char kFontPercent[] = "ui/fontPercent";
 const char kWindowPreset[] = "ui/windowPreset";
 const char kGeometry[] = "ui/geometry";
 const char kVolume[] = "playback/volume";
 const char kMode[] = "playback/mode";
 const char kSearchLimit[] = "search/limit";
-const char kSearchPageSize[] = "search/pageSize";
 const char kDownloadLimitMb[] = "download/limitMb";
 const char kProbePathsVideo[] = "search/probePaths/video";
 const char kProbePathsMusic[] = "search/probePaths/music";
@@ -23,9 +23,9 @@ const char kControlsAutoHide[] = "ui/controlsAutoHide";
 
 const char kDefaultTheme[] = "dark";
 const char kDefaultWindowPreset[] = "auto";
+const int kDefaultFontPercent = 100;
 const int kDefaultVolume = 60;
 const int kDefaultSearchLimit = 20;
-const int kDefaultSearchPageSize = 20;
 const int kDefaultDownloadLimitMb = 8192;
 const int kDefaultMode = 0;
 
@@ -46,6 +46,18 @@ QString themeId()
 void setThemeId(const QString &id)
 {
     settings().setValue(QLatin1String(kTheme), id);
+}
+
+int uiFontPercent()
+{
+    const int value =
+        settings().value(QLatin1String(kFontPercent), kDefaultFontPercent).toInt();
+    return qBound(80, value, 150);
+}
+
+void setUiFontPercent(int percent)
+{
+    settings().setValue(QLatin1String(kFontPercent), qBound(80, percent, 150));
 }
 
 QString windowPresetId()
@@ -149,18 +161,6 @@ int searchLimit()
 void setSearchLimit(int limit)
 {
     settings().setValue(QLatin1String(kSearchLimit), qBound(1, limit, 100));
-}
-
-int searchPageSize()
-{
-    const int value =
-        settings().value(QLatin1String(kSearchPageSize), kDefaultSearchPageSize).toInt();
-    return qBound(5, value, 200);
-}
-
-void setSearchPageSize(int size)
-{
-    settings().setValue(QLatin1String(kSearchPageSize), qBound(5, size, 200));
 }
 
 int downloadLimitMb()

@@ -41,7 +41,7 @@
       <string>label_sectionTitle</string>
      </property>
      <property name="styleSheet">
-      <string notr="true">font-size:16px;</string>
+      <string notr="true">font-size:1.25em;</string>
      </property>
      <property name="text">
       <string>系统设置</string>
@@ -121,13 +121,23 @@
             <item row="0" column="1">
              <widget class="QComboBox" name="combo_theme"/>
             </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="label_fontCaption">
+              <property name="text">
+               <string>字体大小</string>
+              </property>
+             </widget>
+            </item>
             <item row="1" column="1">
+             <widget class="QComboBox" name="combo_fontPercent"/>
+            </item>
+            <item row="2" column="1">
              <widget class="QLabel" name="label_themeHint">
               <property name="objectName">
                <string>label_hint</string>
               </property>
               <property name="text">
-               <string>点击“保存”后立即生效，无需重启；点击“取消”不会改变当前主题。</string>
+               <string>字体大小与主题都在点击“保存”后立即生效；点击“取消”不会改变当前外观。</string>
               </property>
              </widget>
             </item>

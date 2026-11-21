@@ -3,6 +3,8 @@
 #include "core/PlaylistModel.h"
 #include "ui/LyricsController.h"
 #include "ui/PlaylistController.h"
+#include "ui/ThemeManager.h"
+#include "ui/UiIcons.h"
 #include "ui/VideoSurface.h"
 #include "util/TimeFormat.h"
 
@@ -102,8 +104,7 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     });
     connect(m_player, &PlaybackController::playbackStateChanged, this,
             [this](QMediaPlayer::PlaybackState state) {
-                m_ui.play->setText(state == QMediaPlayer::PlayingState ? tr("暂停")
-                                                                       : tr("播放"));
+                refreshPlayButton(state);
                 if (state == QMediaPlayer::StoppedState) {
                     m_seekTarget = -1;
                     // 停止后播放器不会再送新帧；不清掉的话上一部视频的最后一帧会一直留在面板上
@@ -134,7 +135,15 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
                 emit statusMessage(tr("播放失败：%1").arg(message));
             });
 
-    refreshModeButton();
+    // 主题切换时内置图标需要按新强调色重画；外部自定义图标也重新解析。
+    connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
+            [this](const ThemeInfo &) {
+                refreshIcons();
+                refreshPlayButton(m_player->mediaPlayer()->playbackState());
+            });
+
+    refreshIcons();
+    refreshPlayButton(m_player->mediaPlayer()->playbackState());
 }
 
 void PlaybackUiController::clear()
@@ -235,16 +244,35 @@ void PlaybackUiController::modePressed()
 
 void PlaybackUiController::refreshModeButton()
 {
-    const QString fullText = m_player->modeText();
-    // 短文案也由 PlaybackController 按当前模式生成，UI 不再自行判 mode。
-    m_ui.mode->setText(m_player->modeText(m_compactMode));
-    m_ui.mode->setToolTip(fullText);
+    QString iconName = QStringLiteral("mode-list");
+    QString tooltip = tr("列表循环（播完自动下一首，点击切换）");
+    switch (m_player->mode()) {
+    case PlaybackController::Mode::SingleLoop:
+        iconName = QStringLiteral("mode-single");
+        tooltip = tr("单曲循环（当前视频/歌曲重复播放，点击切换）");
+        break;
+    case PlaybackController::Mode::Random:
+        iconName = QStringLiteral("mode-random");
+        tooltip = tr("随机播放（下一首随机选择，点击切换）");
+        break;
+    case PlaybackController::Mode::ListLoop:
+    default:
+        break;
+    }
+    UiIcons::apply(m_ui.mode, iconName, tooltip, 20);
 }
 
-void PlaybackUiController::setCompactMode(bool compact)
+void PlaybackUiController::refreshPlayButton(QMediaPlayer::PlaybackState state)
 {
-    if (m_compactMode == compact)
-        return;
-    m_compactMode = compact;
+    const bool playing = state == QMediaPlayer::PlayingState;
+    UiIcons::apply(m_ui.play, playing ? QStringLiteral("pause") : QStringLiteral("play"),
+                   playing ? tr("暂停") : tr("播放"), 26, QColor(255, 255, 255));
+}
+
+void PlaybackUiController::refreshIcons()
+{
+    UiIcons::apply(m_ui.previous, QStringLiteral("prev"), tr("上一首 / 上一个视频"), 20);
+    UiIcons::apply(m_ui.stop, QStringLiteral("stop"), tr("停止播放"), 20);
+    UiIcons::apply(m_ui.next, QStringLiteral("next"), tr("下一首 / 下一个视频"), 20);
     refreshModeButton();
 }

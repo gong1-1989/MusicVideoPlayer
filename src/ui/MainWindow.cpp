@@ -15,6 +15,7 @@
 #include "ui/SearchPanelController.h"
 #include "ui/SettingsController.h"
 #include "ui/ThemeManager.h"
+#include "ui/UiIcons.h"
 #include "ui/VideoStage.h"
 
 #include <QAbstractItemView>
@@ -49,6 +50,11 @@ MainWindow::MainWindow(QWidget *parent)
     , m_player(new PlaybackController(this))
 {
     ui->setupUi(this);
+    // 控制条改成三列：左右等宽、中间播放键固定，播放键组始终落在整条面板中线。
+    ui->layout_controls->setColumnStretch(0, 1);
+    ui->layout_controls->setColumnStretch(1, 0);
+    ui->layout_controls->setColumnStretch(2, 1);
+    QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
 
     if (!m_registry->load() || !m_registry->lastError().isEmpty()) {
         const QString message = m_registry->lastError().isEmpty()
@@ -69,11 +75,11 @@ MainWindow::MainWindow(QWidget *parent)
     searchUi.edit = ui->edit_search;
     searchUi.searchButton = ui->btn_search;
     searchUi.pager = ui->frame_searchPager;
-    searchUi.pageSizeCombo = ui->combo_searchPageSize;
     searchUi.prevButton = ui->btn_searchPrev;
     searchUi.nextButton = ui->btn_searchNext;
     searchUi.titleLabel = ui->label_searchTitle;
     searchUi.pageLabel = ui->label_searchPage;
+    searchUi.pageInfoLabel = ui->label_searchPageInfo;
     m_searchPanel = new SearchPanelController(m_coordinator, m_registry, searchUi, this);
 
     connect(m_searchPanel, &SearchPanelController::statusMessage, this,
@@ -146,9 +152,18 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 原生标题栏跟着主题走，不要留一条白条
     ThemeManager::instance().applyWindowChrome(this);
+    UiIcons::apply(ui->btn_settings, QStringLiteral("settings"),
+                   tr("系统设置 (Ctrl+,)"), 20);
+    UiIcons::apply(ui->btn_fullscreen, QStringLiteral("fullscreen"),
+                   tr("全屏 / 退出全屏"), 20);
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
             [this] {
                 ThemeManager::instance().applyWindowChrome(this);
+                UiIcons::apply(ui->btn_settings, QStringLiteral("settings"),
+                               tr("系统设置 (Ctrl+,)"), 20);
+                UiIcons::apply(ui->btn_fullscreen, QStringLiteral("fullscreen"),
+                               tr("全屏 / 退出全屏"), 20);
+                QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
                 m_lyrics->refreshHighlight();
             });
 
@@ -168,7 +183,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_settings->restore();
     m_playlists->restore();
     m_panels->applyVisibility();
-    updateControlBarLayout();
 }
 
 MainWindow::~MainWindow()
@@ -347,32 +361,16 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
     // 侧栏、控制条都是浮层、不跟布局走，窗口尺寸一变要自己贴回原位
     m_panels->reposition();
-    // 布局几何在 resizeEvent 结束后才最终确定，延迟一拍再判断控制条是否需要紧凑
-    QTimer::singleShot(0, this, &MainWindow::updateControlBarLayout);
+    QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
 }
 
-void MainWindow::updateControlBarLayout()
+void MainWindow::updateControlBarCentering()
 {
-    // 150% 缩放后右侧播放区只剩约 600 逻辑像素，仍按宽屏尺寸排会压字。
-    const bool compact = ui->panelTransport->width() < 720;
-    if (compact == m_compactControls)
-        return;
-    m_compactControls = compact;
-
-    ui->layout_controls->setSpacing(compact ? 4 : 8);
-    ui->label_volume->setVisible(!compact);
-    ui->slider_volume->setMinimumWidth(compact ? 72 : 96);
-    ui->slider_volume->setMaximumWidth(compact ? 88 : 110);
-    ui->btn_prev->setMinimumWidth(compact ? 60 : 68);
-    ui->btn_next->setMinimumWidth(compact ? 60 : 68);
-    ui->btn_stop->setMinimumWidth(compact ? 54 : 60);
-    ui->btn_mode->setMinimumWidth(compact ? 64 : 86);
-    ui->btn_fullscreen->setMinimumWidth(compact ? 54 : 60);
-    ui->btn_settings->setMinimumWidth(compact ? 52 : 58);
-    // 窄屏只缩短文案，完整模式名与悬停提示由播放条按当前 mode 统一刷新，
-    // 不能在这里写死“列表循环”，否则单曲/随机会被布局改回错误文字。
-    m_transport->setCompactMode(compact);
-    ui->spacer_controls->changeSize(compact ? 8 : 24, 20, QSizePolicy::Expanding);
+    // 右侧辅助区（模式/全屏/设置/音量）有真实最小宽度；把左侧列设成同样的最小宽度，
+    // QGrid 的两列 stretch 都是 1，中间播放键组才会落在面板正中央。
+    const int auxWidth = ui->layout_auxButtons->minimumSize().width();
+    ui->layout_controls->setColumnMinimumWidth(0, auxWidth);
+    ui->layout_controls->setColumnMinimumWidth(2, auxWidth);
     ui->layout_controls->invalidate();
 }
 

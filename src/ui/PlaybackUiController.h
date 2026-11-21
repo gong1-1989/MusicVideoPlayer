@@ -38,8 +38,8 @@ public:
     /// 当前播放项失效（如列表行被删除）时，把进度、时间和歌词一起清零
     void clear();
 
-    /// 窄窗口只缩短文案，不能覆写当前播放模式；完整文案始终放进悬停提示
-    void setCompactMode(bool compact);
+    /// 主题切换后重绘内置图标；外部自定义图标会重新按当前目录加载。
+    void refreshIcons();
 
 signals:
     void statusMessage(const QString &message);
@@ -50,6 +50,7 @@ private:
     void stopPressed();
     void modePressed();
     void refreshModeButton();
+    void refreshPlayButton(QMediaPlayer::PlaybackState state);
     /// HLS 深拖动时 FFmpeg 要从目标前若干分片顺序读起，这里只负责把“正在定位”说清楚
     void beginSeek(qint64 target);
     bool isHlsItem() const;
@@ -60,8 +61,6 @@ private:
     VideoSurface *m_surface;
     LyricsController *m_lyrics;
     bool m_userSeeking = false;
-    /// 紧凑布局只影响模式按钮显示短文案，模式本身仍由 PlaybackController 决定
-    bool m_compactMode = false;
     /// 正在等待画面追上的 seek 目标；小于 0 表示没有待确认的定位
     qint64 m_seekTarget = -1;
     /// 每次定位递增，用来让上一轮的超时回调失效

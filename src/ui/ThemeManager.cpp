@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QFile>
 #include <QLoggingCategory>
+#include <QRegularExpression>
 #include <QWidget>
 
 Q_LOGGING_CATEGORY(lcTheme, "mvp.ui.theme")
@@ -52,14 +53,39 @@ bool ThemeManager::apply(const QString &id)
         return false;
     }
 
-    const QString styleSheet = QString::fromUtf8(file.readAll());
+    const QString styleSheet = ThemeManager::scaledStyleSheet(
+        QString::fromUtf8(file.readAll()), AppSettings::uiFontPercent());
     if (qApp != nullptr)
         qApp->setStyleSheet(styleSheet);
 
     m_currentId = theme.id;
-    qCInfo(lcTheme) << "已应用主题：" << theme.id;
+    qCInfo(lcTheme) << "已应用主题：" << theme.id
+                    << "字体缩放：" << AppSettings::uiFontPercent() << "%";
     emit themeChanged(theme);
     return true;
+}
+
+QString ThemeManager::scaledStyleSheet(const QString &qss, int percent)
+{
+    const int bounded = qBound(80, percent, 150);
+    if (bounded == 100)
+        return qss;
+
+    // 主题里的字号混用 12/13/15/16px，只替换数值，保留原有选择器与其它样式。
+    QRegularExpression expression(QStringLiteral("font-size\\s*:\\s*(\\d+)\\s*px"));
+    QString scaled;
+    int cursor = 0;
+    auto matches = expression.globalMatch(qss);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch match = matches.next();
+        scaled += qss.mid(cursor, match.capturedStart() - cursor);
+        const int sourcePx = match.captured(1).toInt();
+        const int targetPx = qMax(9, qRound(sourcePx * bounded / 100.0));
+        scaled += QStringLiteral("font-size: %1px").arg(targetPx);
+        cursor = match.capturedEnd();
+    }
+    scaled += qss.mid(cursor);
+    return scaled;
 }
 
 bool ThemeManager::applySaved()

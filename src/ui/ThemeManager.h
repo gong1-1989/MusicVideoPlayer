@@ -37,6 +37,10 @@ public:
     /// 按设置里的主题应用
     bool applySaved();
 
+    /// 把主题 QSS 中所有 font-size: Npx 按百分比统一缩放。
+    /// QSS 会覆盖 QApplication 的字体设置，因此字号必须在这里改，不能只改应用字体。
+    static QString scaledStyleSheet(const QString &qss, int percent);
+
     /// 按当前主题给窗口原生标题栏上色（Windows 生效，其它平台空实现）
     void applyWindowChrome(QWidget *window) const;
 

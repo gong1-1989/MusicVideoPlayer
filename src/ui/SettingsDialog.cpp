@@ -75,6 +75,7 @@ SettingsDialog::~SettingsDialog()
 void SettingsDialog::bindUi()
 {
     m_theme = ui->combo_theme;
+    m_fontPercent = ui->combo_fontPercent;
     m_windowSize = ui->combo_windowSize;
     m_volume = ui->slider_volume;
     m_volumeValue = ui->label_volumeValue;
@@ -88,6 +89,11 @@ void SettingsDialog::bindUi()
     // ---------------------------------------------------------- 外观
     for (const ThemeInfo &theme : ThemeManager::instance().themes())
         m_theme->addItem(theme.name, theme.id);
+
+    for (int percent : {90, 100, 110, 125, 150})
+        m_fontPercent->addItem(tr("%1%").arg(percent), percent);
+    m_fontPercent->setToolTip(
+        tr("只缩放界面字体与列表行高，不改变窗口分辨率；高分屏下比整体 150% 缩放更灵活。"));
 
     // ---------------------------------------------------------- 窗口
     int presetCount = 0;
@@ -148,6 +154,14 @@ void SettingsDialog::loadValues()
 {    const int themeIndex = m_theme->findData(AppSettings::themeId());
     if (themeIndex >= 0)
         m_theme->setCurrentIndex(themeIndex);
+
+    const int fontPercent = AppSettings::uiFontPercent();
+    int fontIndex = m_fontPercent->findData(fontPercent);
+    if (fontIndex < 0) {
+        m_fontPercent->addItem(tr("%1%（当前配置）").arg(fontPercent), fontPercent);
+        fontIndex = m_fontPercent->count() - 1;
+    }
+    m_fontPercent->setCurrentIndex(fontIndex);
 
     const int windowIndex = m_windowSize->findData(AppSettings::windowPresetId());
     if (windowIndex >= 0)
@@ -241,6 +255,7 @@ void SettingsDialog::accept()
     }
 
     AppSettings::setThemeId(m_theme->currentData().toString());
+    AppSettings::setUiFontPercent(m_fontPercent->currentData().toInt());
     AppSettings::setWindowPresetId(m_windowSize->currentData().toString());
     AppSettings::setDefaultVolume(m_volume->value());
     AppSettings::setSearchLimit(m_searchLimit->currentData().toInt());
@@ -249,6 +264,7 @@ void SettingsDialog::accept()
     AppSettings::setControlsAutoHide(m_controlsAutoHide->isChecked());
 
     qCInfo(lcSettings) << "系统设置已保存：主题" << m_theme->currentData().toString()
+                       << "字体" << m_fontPercent->currentData().toInt()
                        << "窗口" << m_windowSize->currentData().toString() << "音量"
                        << m_volume->value() << "单源条数" << m_searchLimit->currentData().toInt()
                        << "下载上限" << m_downloadLimit->currentData().toInt() << "MB";

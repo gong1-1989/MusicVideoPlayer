@@ -53,9 +53,9 @@ private:
     void playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void clearPlaybackUi();
-    /// 窄窗口下压缩控制条：收窄间距与按钮，避免“列表循环 / 全屏 / 音量”互相压字
-    void updateControlBarLayout();
-    /// 显示后把窗口夹回当前屏幕可用区，避免 150% 下外框越界
+    /// 让控制条左右两列等宽，保证中间播放键组落在面板真正的中线
+    void updateControlBarCentering();
+    /// 显示后把窗口夹回当前屏幕可用区；尺寸由窗口预设/用户拖动决定，不再按 150% 特判
     void clampToAvailableScreen();
     /// Qt 的 frameGeometry 不含 Windows 不可见缩放边框，最后用原生外框兜底
     void clampNativeFrameToWorkArea();
@@ -75,7 +75,6 @@ private:
     PlaylistController *m_playlists = nullptr;
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
-    bool m_compactControls = false;
 };
 
 #endif // MAINWINDOW_H

@@ -7,6 +7,7 @@
 #include <QMediaPlayer>
 #include <QObject>
 #include <QPointer>
+#include <QString>
 
 class QAudioOutput;
 class QThread;
@@ -74,6 +75,10 @@ private:
     int rowCount() const;
     void onMediaStatusChanged(QMediaPlayer::MediaStatus status);
     void updateLoops();
+    /// 切换视频/停止/退出前写入当前视频位置；音乐不参与。
+    void saveCurrentVideoPosition();
+    /// 新媒体加载完成后恢复上次保存的位置，只对同一视频生效。
+    void applyPendingResume();
 
     QMediaPlayer *m_player;
     QAudioOutput *m_audio;
@@ -89,6 +94,11 @@ private:
     int m_consecutiveErrors = 0;
     /// 上一次向代理提交正常播放预取的位置，避免每个 positionChanged 都重复排队
     qint64 m_lastPrefetchPosition = -1;
+    /// 待恢复的视频位置；-1 表示没有待恢复任务
+    qint64 m_pendingResumeMs = -1;
+    QString m_pendingResumeIdentity;
+    /// 已尝试 setPosition 的次数；播放器过早调用会丢弃定位，需在播放启动后限次重试
+    int m_resumeRetryCount = 0;
 };
 
 #endif // PLAYBACKCONTROLLER_H

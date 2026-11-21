@@ -232,14 +232,22 @@ QPushButton#btn_mode,
 QPushButton#btn_fullscreen,
 QPushButton#btn_prev,
 QPushButton#btn_next {
-    border-radius: 15px;
-    padding: 6px 10px;
+    min-width: 38px;
+    max-width: 38px;
+    min-height: 38px;
+    max-height: 38px;
+    border-radius: 19px;
+    padding: 0;
 }
 
-/* 侧栏底部按钮内边距收窄，避免窄侧栏下文字被裁 */
+/* 侧栏底部按钮改成纯图标，固定方形，悬停提示由代码写入 */
 QPushButton#btn_settings {
-    border-radius: 15px;
-    padding: 6px 8px;
+    min-width: 38px;
+    max-width: 38px;
+    min-height: 38px;
+    max-height: 38px;
+    border-radius: 19px;
+    padding: 0;
     color: rgba(43, 43, 69, 65%);
 }
 

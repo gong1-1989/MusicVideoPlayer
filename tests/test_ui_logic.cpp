@@ -2,8 +2,10 @@
 #include "media/MediaItem.h"
 #include "net/HttpClient.h"
 #include "ui/LyricsController.h"
+#include "ui/ListMetrics.h"
 #include "ui/PlaylistController.h"
 #include "ui/SeekSlider.h"
+#include "ui/ThemeManager.h"
 
 #include <QFile>
 #include <QListWidget>
@@ -74,6 +76,8 @@ class UiLogicTest : public QObject
 private slots:
     void lyricsClearCancelsPendingRequest();
     void progressSliderClickJumpsToAbsolutePosition();
+    void listPageSizeFollowsViewport();
+    void themeFontScaleChangesFixedPixelSizes();
     void playlistSaveFailureKeepsDirtyAndRetries();
 };
 
@@ -119,6 +123,28 @@ void UiLogicTest::progressSliderClickJumpsToAbsolutePosition()
     QVERIFY(released.count() >= 1);
     QVERIFY2(qAbs(slider.value() - 300000) <= 30000,
              qPrintable(QStringLiteral("value=%1").arg(slider.value())));
+}
+
+void UiLogicTest::listPageSizeFollowsViewport()
+{
+    // 300px 视口、30px 行高 => 10 行；窗口变矮后页大小必须跟着变，而不是固定 20。
+    QCOMPARE(ListMetrics::pageSizeForViewport(300, 30), 10);
+    QCOMPARE(ListMetrics::pageSizeForViewport(150, 30), 5);
+    QCOMPARE(ListMetrics::pageSizeForViewport(330, 30, 2), 10);
+    QCOMPARE(ListMetrics::pageSizeForViewport(0, 30), 1);
+    QCOMPARE(ListMetrics::pageSizeForViewport(300, 0), 1);
+}
+
+void UiLogicTest::themeFontScaleChangesFixedPixelSizes()
+{
+    const QString qss = QStringLiteral(
+        "QWidget { font-size: 13px; } QLabel { font-size: 15px; }");
+
+    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 100), qss);
+    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 125),
+             QStringLiteral("QWidget { font-size: 16px; } QLabel { font-size: 19px; }"));
+    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 80),
+             QStringLiteral("QWidget { font-size: 10px; } QLabel { font-size: 12px; }"));
 }
 
 void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()

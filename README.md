@@ -34,6 +34,7 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 
 - `Data/playlists.json`：音乐 / 视频播放列表
 - `Data/sources.json`：搜索源配置
+- `Data/video_positions.json`：视频播放进度（音乐不记录；片头/片尾 3 秒内自动清除）
 - `log/MusicVideoPlayer.log`：运行日志，单文件超过 8 MB 轮转为 `.1`
 
 程序目录不可写时，保存会直接失败并在界面提示，不会偷偷改写到 `QStandardPaths::AppDataLocation`。
@@ -50,13 +51,31 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 - 网络响应设统一上限：JSON 与外部解析器输出 2 MB、HTML 4 MB、HLS 播放列表 4 MB 且最多 1 万片；单个下载文件默认超过 8 GB 停止，可在系统设置里改为 2/4/8/16 GB。普通请求在接收过程中累计超过上限会立即中止，不等响应收完；超限按失败处理并写日志，避免异常源把内存或磁盘吃满。
 - 公开 MP4 样例源（`https://dpaste.org/9mnUE/raw`）仅用于验收 MP4 直链与拖动，默认停用，避免静态样例污染正常搜索结果。
 
+## 界面、字体与图标
+
+- 播放控制键（上一首 / 播放暂停 / 停止 / 下一首）固定在控制条中间；模式、全屏、设置、音量放在右侧。
+- 播放键默认使用内置矢量图标，鼠标悬停显示文字说明；主题切换时图标按当前强调色重画。
+- 用户自定义图标：把 `prev / play / pause / stop / next / mode-list / mode-single / mode-random / fullscreen / settings / volume` 同名文件（支持 svg/png/ico/jpg/jpeg/webp/bmp）放到程序目录 `icons/` 或 `Data/icons/` 即可覆盖内置图标。
+- 也可以用 `Data/ui-icons.json` 精确指定文件，相对路径按 exe 目录解析，例如 `{"play":"icons/custom/play.png","pause":"icons/custom/pause.png"}`。
+- 系统设置里的“字体大小”提供 90% / 100% / 110% / 125% / 150%，只缩放界面字体与列表行高，不再针对系统 150% 缩放做硬编码布局特判。
+
+## 发布包
+
+```powershell
+pwsh -File scripts\package_release.ps1
+# 需要 zip 时：
+pwsh -File scripts\package_release.ps1 -Config Release -CreateZip
+```
+
+安装规则只包含 `MusicVideoPlayer` 主程序，`mvp_tests`、`mvp_integration`、`mvp_storage_tests`、`mvp_ui_tests` 没有 `install(TARGETS ...)` 规则；脚本在 `cmake --install` 后会递归检查 `mvp_*` 测试可执行文件，一旦发现立即失败。
+
 ## 测试
 
 ```powershell
 ctest --test-dir build/Desktop_Qt_6_10_1_MinGW_64_bit_Debug --output-on-failure
 ```
 
-包含 `mvp_core_logic`（时间格式、LRC 解析、条目/源配置校验、日志 URL 脱敏、HLS 分片多连接 Range 与 206 回退）、`mvp_integration`（本地 HTTP 服务、重定向密钥剥离、下载完整性、搜索超时/中止、响应上限）、`mvp_storage`（播放列表与搜索源持久化、损坏文件备份）与 `mvp_ui_logic`（歌词切歌取消、播放列表保存失败重试）。
+包含 `mvp_core_logic`（时间格式、LRC 解析、条目/源配置校验、日志 URL 脱敏、HLS 分片多连接 Range 与 206 回退）、`mvp_integration`（本地 HTTP 服务、重定向密钥剥离、下载完整性、搜索超时/中止、响应上限）、`mvp_storage`（播放列表、搜索源与视频进度持久化、损坏文件备份）与 `mvp_ui_logic`（歌词切歌取消、进度条点击定位、动态每页条数、字体缩放、播放列表保存失败重试）。
 
 ## 搜索源
 
@@ -66,7 +85,7 @@ ctest --test-dir build/Desktop_Qt_6_10_1_MinGW_64_bit_Debug --output-on-failure
 - `kind=builtin`：内置解析器（当前为 maccms 网页源）；网易云、Audius、iTunes 等仍由配置描述
 - `kind=external`：调用本机外部程序，默认关闭，需要显式开启
 
-每个源实际抓取条数由系统设置“搜索条数”控制（配置键 `search/limit`，默认 20，范围 1–100；设置界面提供 10/20/30/50，配置文件里的其它值会作为“当前配置”保留）。主界面的“每页显示条数”只控制结果分页（配置键 `search/pageSize`，默认 20，范围 5–200），不改变每个源抓取多少条。网页影视源在 `timeoutMs=0` 时会按搜索条数自动放宽单源超时；`timeoutMs>0` 时配置型、网页型和外部源都按该值限时。
+每个源实际抓取条数由系统设置“搜索条数”控制（配置键 `search/limit`，默认 20，范围 1–100；设置界面提供 10/20/30/50，配置文件里的其它值会作为“当前配置”保留）。搜索结果每页条数不再固定为 20，而是按搜索列表当前可见高度和实际行高动态计算；窗口拉高会多显示几条，窗口变矮会少显示几条，分页条右侧会显示当前“每页 N 条”。网页影视源在 `timeoutMs=0` 时会按搜索条数自动放宽单源超时；`timeoutMs>0` 时配置型、网页型和外部源都按该值限时。
 
 ## 目录
 

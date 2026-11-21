@@ -82,6 +82,8 @@ qt_add_library(mvp_core STATIC
     src/core/PlaylistStore.cpp
     src/core/PlaybackController.h
     src/core/PlaybackController.cpp
+    src/core/VideoPositionStore.h
+    src/core/VideoPositionStore.cpp
     src/settings/WindowPreset.h
     src/settings/AppSettings.h
     src/settings/AppSettings.cpp
@@ -126,6 +128,10 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/PlaybackUiController.cpp
     src/ui/SeekSlider.h
     src/ui/SeekSlider.cpp
+    src/ui/ListMetrics.h
+    src/ui/ListMetrics.cpp
+    src/ui/UiIcons.h
+    src/ui/UiIcons.cpp
     src/ui/SettingsController.h
     src/ui/SettingsController.cpp
     src/ui/ThemeManager.h
@@ -191,6 +197,7 @@ add_executable(mvp_ui_tests
     src/ui/LyricsController.cpp
     src/ui/PlaylistController.cpp
     src/ui/SeekSlider.cpp
+    src/ui/ListMetrics.cpp
     src/ui/ThemeManager.cpp
     src/ui/WindowChrome.cpp
 )
@@ -225,6 +232,9 @@ qt_add_translations(MusicVideoPlayer
 )
 
 # ---------------------------------------------------------------- 安装与部署
+# 安装清单故意只包含 MusicVideoPlayer 主程序；mvp_tests / mvp_integration /
+# mvp_storage_tests / mvp_ui_tests 只通过 enable_testing() 注册，未写任何
+# install(TARGETS ...) 规则，因此 cmake --install / CPack 不会把测试程序带进发布包。
 include(GNUInstallDirs)
 install(TARGETS MusicVideoPlayer
     BUNDLE DESTINATION .

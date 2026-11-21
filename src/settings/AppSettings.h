@@ -16,6 +16,9 @@ namespace AppSettings {
 // ---------------------------------------------------------------- 外观
 QString themeId();                 ///< "dark" / "light"
 void setThemeId(const QString &id);
+/// 界面字体缩放百分比，默认 100，范围 80..150；ThemeManager 会把 QSS 里的 px 字号统一缩放
+int uiFontPercent();
+void setUiFontPercent(int percent);
 
 // ---------------------------------------------------------------- 窗口
 QString windowPresetId();          ///< WindowPreset 的 id，含 "last"
@@ -43,9 +46,6 @@ void setPlaybackMode(int mode);
 // ---------------------------------------------------------------- 搜索
 int searchLimit();                 ///< 单次搜索结果条数
 void setSearchLimit(int limit);
-/// 搜索列表每页显示条数（用户可在列表底部分页条里改）
-int searchPageSize();
-void setSearchPageSize(int size);
 
 /// 探源时先试的用户自定义接口路径（相对站点，或完整 URL；支持 {keyword}/{limit}）
 QStringList probePaths(MediaType type);

@@ -147,7 +147,7 @@ void SourceManagerDialog::bindUi()
     ui->layout_body->setStretch(1, 1);
     // 源列表独自吃掉左栏剩余高度，底部操作按钮固定不动
     ui->layout_left->setStretch(0, 1);
-    // 左栏/表单的“舒适宽度”在窄屏或 150% 缩放下必须让位，否则窗口会被最小宽度顶出屏幕。
+    // 左栏/表单的“舒适宽度”在窄屏或大字体下必须让位，否则窗口会被最小宽度顶出屏幕。
     const int availableWidth = screen() != nullptr ? screen()->availableGeometry().width()
                                                    : 1280;
     const int leftMin = qMin(240, qMax(120, availableWidth / 4));

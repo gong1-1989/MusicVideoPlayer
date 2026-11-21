@@ -4,11 +4,13 @@
 #include "net/SearchCoordinator.h"
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
+#include "ui/ListMetrics.h"
+#include "ui/ThemeManager.h"
 
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
-#include <QComboBox>
+#include <QEvent>
 #include <QFontMetrics>
 #include <QHash>
 #include <QLabel>
@@ -224,23 +226,16 @@ void SearchPanelController::setupUi()
     m_delegate = delegate;
     m_ui.list->setItemDelegate(delegate);
 
-    // 分页条：每页条数由用户在这里自己选，选择会记住
-    m_pageSize = AppSettings::searchPageSize();
-    for (int size : {10, 20, 30, 50, 100})
-        m_ui.pageSizeCombo->addItem(tr("%1 条/页").arg(size), size);
-    const int sizeIndex = m_ui.pageSizeCombo->findData(m_pageSize);
-    if (sizeIndex >= 0)
-        m_ui.pageSizeCombo->setCurrentIndex(sizeIndex);
-    else
-    {
-        // 旧配置可能存了下拉里没有的条数（例如 200），回落到第一项并写回，
-        // 避免界面显示 10 条、设置里却仍是 200 的不一致
-        m_pageSize = m_ui.pageSizeCombo->currentData().toInt();
-        AppSettings::setSearchPageSize(m_pageSize);
-    }
+    // 每页条数不再是固定配置：由 applyPage/refreshPageSize 按列表实际可见高度计算。
+    m_pageSize = 20;
 
     // 还没搜索过：整块搜索列表先折叠起来，省下高度给播放列表
     setAreaVisible(false);
+
+    m_ui.list->viewport()->installEventFilter(this);
+    // 字体缩放会改变行高，主题重新应用后要重新算一页能放几行。
+    connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
+            [this](const ThemeInfo &) { schedulePageSizeRefresh(); });
 
     if (m_registry != nullptr) {
         connect(m_registry, &SourceRegistry::changed, this,
@@ -265,16 +260,6 @@ void SearchPanelController::setupUi()
         ++m_page;
         applyPage();
     });
-    connect(m_ui.pageSizeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) {
-                const int size = m_ui.pageSizeCombo->currentData().toInt();
-                if (size <= 0)
-                    return;
-                m_pageSize = size;
-                AppSettings::setSearchPageSize(size);
-                m_page = 0;
-                applyPage();
-            });
 
     connect(m_ui.list, &QWidget::customContextMenuRequested,
             this, &SearchPanelController::handleContextMenu);
@@ -293,6 +278,7 @@ void SearchPanelController::setupUi()
                 m_results = items;
                 setAreaVisible(true);
                 applyPage();
+                schedulePageSizeRefresh();
                 emit statusMessage(
                     tr("搜索中… 已完成 %1/%2 个源，当前 %3 条%4")
                         .arg(done)
@@ -386,6 +372,51 @@ void SearchPanelController::setAreaVisible(bool visible)
     m_ui.titleLabel->setVisible(visible);
     m_ui.list->setVisible(visible);
     m_ui.pager->setVisible(visible);
+    if (visible)
+        schedulePageSizeRefresh();
+}
+
+bool SearchPanelController::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_ui.list->viewport()
+        && (event->type() == QEvent::Resize || event->type() == QEvent::Show
+            || event->type() == QEvent::FontChange)) {
+        schedulePageSizeRefresh();
+    }
+    return QObject::eventFilter(watched, event);
+}
+
+void SearchPanelController::schedulePageSizeRefresh()
+{
+    // 视图显示/窗口拖动会连续触发 resize，合并到下一拍只算一次。
+    const int serial = ++m_pageSizeSerial;
+    QTimer::singleShot(0, this, [this, serial] {
+        if (serial != m_pageSizeSerial)
+            return;
+        refreshPageSize();
+    });
+}
+
+void SearchPanelController::refreshPageSize()
+{
+    if (m_results.isEmpty() || !m_ui.list->isVisible())
+        return;
+
+    int rowHeight = m_ui.list->sizeHintForRow(0);
+    if (rowHeight <= 0) {
+        // 当前页模型为空时 sizeHintForRow 返回 -1，用字体行高加内边距兜底。
+        rowHeight = qMax(30, m_ui.list->fontMetrics().height() + 12);
+    }
+    const int nextSize = ListMetrics::pageSizeForViewport(
+        m_ui.list->viewport()->height(), rowHeight, m_ui.list->spacing());
+    if (nextSize == m_pageSize)
+        return;
+
+    // 保持当前页第一条不跳走：窗口变高/变矮后重新算它落在第几页。
+    const int firstIndex = m_page * m_pageSize;
+    m_pageSize = nextSize;
+    m_page = firstIndex / m_pageSize;
+    applyPage();
 }
 
 int SearchPanelController::pageCount() const
@@ -403,12 +434,15 @@ void SearchPanelController::showResults(const QVector<MediaItem> &items)
     m_page = 0;
     setAreaVisible(true);
     applyPage();
+    schedulePageSizeRefresh();
 }
 
 void SearchPanelController::applyPage()
 {
     const int pages = pageCount();
     m_ui.titleLabel->setText(tr("搜索结果（共 %1 条）").arg(m_results.size()));
+    if (m_ui.pageInfoLabel != nullptr)
+        m_ui.pageInfoLabel->setText(tr("每页 %1 条").arg(m_pageSize));
 
     if (pages <= 0) {
         m_page = 0;

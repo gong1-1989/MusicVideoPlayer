@@ -1,4 +1,5 @@
 #include "core/PlaylistStore.h"
+#include "core/VideoPositionStore.h"
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
 #include "util/SecretStore.h"
@@ -19,6 +20,17 @@ MediaItem makeMusic(const QString &title)
     return item;
 }
 
+MediaItem makeVideo(const QString &title)
+{
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = title;
+    item.url = QUrl(QStringLiteral("https://example.com/%1.m3u8").arg(title));
+    item.webUrl = QUrl(QStringLiteral("https://example.com/detail/%1").arg(title));
+    item.online = true;
+    return item;
+}
+
 } // namespace
 
 class StorageTest : public QObject
@@ -33,6 +45,9 @@ private slots:
     void playlistRoundTrip();
     void playlistSaveWritesPrimaryOnly();
     void playlistCorruptFileBacksUp();
+    void videoPositionRoundTrip();
+    void videoPositionIgnoresMusic();
+    void videoPositionClearsNearEnd();
     void sourceRegistrySeedsAndPersists();
     void sourceRegistryReloadUsesPrimary();
     void sourceRegistryCorruptFileBacksUp();
@@ -134,6 +149,45 @@ void StorageTest::playlistCorruptFileBacksUp()
         QDir(StoragePaths::dataDir())
             .entryList({QStringLiteral("playlists.json.corrupt-*")}, QDir::Files);
     QCOMPARE(backups.size(), 1);
+}
+
+void StorageTest::videoPositionRoundTrip()
+{
+    const MediaItem video = makeVideo(QStringLiteral("功夫熊猫4"));
+    QVERIFY(VideoPositionStore::save(video, 42000, 600000));
+    QCOMPARE(VideoPositionStore::positionFor(video), 42000);
+    QVERIFY(QFile::exists(VideoPositionStore::filePath()));
+
+    const MediaItem other = makeVideo(QStringLiteral("另一部影片"));
+    QCOMPARE(VideoPositionStore::positionFor(other), 0);
+
+    QVERIFY(VideoPositionStore::save(video, 123000, 600000));
+    QCOMPARE(VideoPositionStore::positionFor(video), 123000);
+}
+
+void StorageTest::videoPositionIgnoresMusic()
+{
+    const MediaItem music = makeMusic(QStringLiteral("测试歌曲"));
+    QVERIFY(!VideoPositionStore::save(music, 42000, 126000));
+    QCOMPARE(VideoPositionStore::positionFor(music), 0);
+
+    VideoPositionStore::save(makeVideo(QStringLiteral("影片")), 42000, 600000);
+    QCOMPARE(VideoPositionStore::positionFor(music), 0);
+}
+
+void StorageTest::videoPositionClearsNearEnd()
+{
+    const MediaItem video = makeVideo(QStringLiteral("接近片尾"));
+    QVERIFY(VideoPositionStore::save(video, 42000, 600000));
+    QCOMPARE(VideoPositionStore::positionFor(video), 42000);
+
+    // 片尾 3 秒内清除记录，避免下次从片尾恢复。
+    QVERIFY(VideoPositionStore::save(video, 598000, 600000));
+    QCOMPARE(VideoPositionStore::positionFor(video), 0);
+
+    // 片头 3 秒内同样不记录。
+    QVERIFY(VideoPositionStore::save(video, 1200, 600000));
+    QCOMPARE(VideoPositionStore::positionFor(video), 0);
 }
 
 void StorageTest::sourceRegistrySeedsAndPersists()

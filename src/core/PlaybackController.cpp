@@ -1,5 +1,6 @@
 #include "core/PlaybackController.h"
 
+#include "core/VideoPositionStore.h"
 #include "net/HttpClient.h"
 #include "stream/StreamProxy.h"
 
@@ -45,6 +46,21 @@ PlaybackController::PlaybackController(QObject *parent)
     connect(m_player, &QMediaPlayer::positionChanged,
             this, &PlaybackController::positionChanged);
     connect(m_player, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
+        // 加载完成时立刻 setPosition 可能被随后的 play() 重置回 0；
+        // 这里以播放器真实上报的位置为准，确认到达目标前保留待恢复任务并限次重试。
+        if (m_pendingResumeMs > 0) {
+            const qint64 target = m_pendingResumeMs;
+            if (qAbs(position - target) <= 1500) {
+                qCInfo(lcPlayer) << "视频进度已恢复" << currentItem().displayName()
+                                 << position;
+                m_pendingResumeMs = -1;
+                m_pendingResumeIdentity.clear();
+                m_resumeRetryCount = 0;
+            } else if (position + 500 < target && m_resumeRetryCount < 4) {
+                QTimer::singleShot(200, this, &PlaybackController::applyPendingResume);
+            }
+        }
+
         if (!m_proxyReady || m_proxy == nullptr || !hasCurrentItem())
             return;
         const MediaItem item = currentItem();
@@ -68,6 +84,11 @@ PlaybackController::PlaybackController(QObject *parent)
             this, &PlaybackController::playbackStateChanged);
     connect(m_player, &QMediaPlayer::mediaStatusChanged,
             this, &PlaybackController::onMediaStatusChanged);
+    connect(m_player, &QMediaPlayer::seekableChanged, this, [this](bool seekable) {
+        // HLS 的 seekable 往往晚于 LoadedMedia 才变成 true，等它真正可定位再恢复。
+        if (seekable)
+            applyPendingResume();
+    });
     connect(m_player, &QMediaPlayer::errorOccurred, this,
             [this](QMediaPlayer::Error, const QString &message) {
                 // 上游没有音源时，播放器只会报 “Could not open file”，
@@ -143,6 +164,12 @@ void PlaybackController::setPlaylist(PlaylistModel *playlist)
 {
     if (m_playlist.data() == playlist)
         return;
+
+    // 从视频列表切到音乐/搜索列表时，先把当前视频位置落盘再换模型。
+    saveCurrentVideoPosition();
+    m_pendingResumeMs = -1;
+    m_pendingResumeIdentity.clear();
+
     m_playlist = playlist;
     m_row = -1;
     m_consecutiveErrors = 0;
@@ -175,6 +202,11 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     if (!m_playlist || row < 0 || row >= m_playlist->size())
         return;
 
+    // 切换视频（含自动下一集）前保存正在播放的那一条；音乐会被存储层忽略。
+    saveCurrentVideoPosition();
+    m_pendingResumeMs = -1;
+    m_pendingResumeIdentity.clear();
+
     // 用户主动点歌视为重新开始一轮；自动跳过则保留连续失败计数，
     // 否则每个坏源都“加载一下再报错”会无限循环。
     if (!autoAdvance)
@@ -194,6 +226,17 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     m_row = row;
     m_unavailableReason.clear();
     m_lastPrefetchPosition = -1;
+
+    // 仅视频恢复进度；音乐按要求每次都从头播放。
+    if (item.type == MediaType::Video) {
+        const qint64 resume = VideoPositionStore::positionFor(item);
+        if (resume > 0) {
+            m_pendingResumeMs = resume;
+            m_pendingResumeIdentity = mediaIdentity(item);
+            m_resumeRetryCount = 0;
+            qCInfo(lcPlayer) << "准备恢复视频进度" << item.displayName() << resume;
+        }
+    }
 
     // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
     // 本地文件直接用 file:// 播放。视频优先 mp4/flv，HLS 只做回退。
@@ -234,6 +277,10 @@ void PlaybackController::togglePlayPause()
 
 void PlaybackController::stop()
 {
+    // 关闭窗口、按停止都会走这里；必须在 QMediaPlayer 清零前读出最后位置。
+    saveCurrentVideoPosition();
+    m_pendingResumeMs = -1;
+    m_pendingResumeIdentity.clear();
     m_consecutiveErrors = 0;
     m_player->stop();
 }
@@ -281,6 +328,13 @@ void PlaybackController::seek(qint64 ms)
 {
     if (!hasCurrentItem())
         return;
+
+    // 用户手动拖到别处时，放弃尚未确认的续播任务，避免 seekableChanged 等信号再把位置拉回去。
+    if (m_pendingResumeMs > 0 && qAbs(ms - m_pendingResumeMs) > 1500) {
+        m_pendingResumeMs = -1;
+        m_pendingResumeIdentity.clear();
+        m_resumeRetryCount = 0;
+    }
 
     // 预取窗口由 StreamProxy 统一管理（目标片起 target..target+9，4 片并发、
     // 每片 4 路 Range）；UI 只负责把“定位中”讲清楚，不在这里重复调度。
@@ -351,7 +405,10 @@ void PlaybackController::onPlaylistRowRemoved(int row)
         return;
 
     if (m_row == row) {
-        // 正在播的就是被删掉的那首，直接停，避免继续指向已失效的下标
+        // 正在播的就是被删掉的那首，先保存位置，再停，避免继续指向已失效的下标
+        saveCurrentVideoPosition();
+        m_pendingResumeMs = -1;
+        m_pendingResumeIdentity.clear();
         m_player->stop();
         m_player->setSource(QUrl());
         m_row = -1;
@@ -363,6 +420,9 @@ void PlaybackController::onPlaylistRowRemoved(int row)
 
 void PlaybackController::onMediaStatusChanged(QMediaPlayer::MediaStatus status)
 {
+    if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia)
+        applyPendingResume();
+
     if (status != QMediaPlayer::EndOfMedia)
         return;
 
@@ -375,6 +435,49 @@ void PlaybackController::onMediaStatusChanged(QMediaPlayer::MediaStatus status)
         return;
     }
     next();
+}
+
+void PlaybackController::saveCurrentVideoPosition()
+{
+    if (!hasCurrentItem())
+        return;
+
+    const MediaItem item = currentItem();
+    if (item.type != MediaType::Video)
+        return;
+
+    const qint64 position = m_player->position();
+    if (position <= 0)
+        return;
+
+    // duration 为 0 表示时长尚未解析出来；位置仍然有效，允许先存。
+    VideoPositionStore::save(item, position, m_player->duration());
+}
+
+void PlaybackController::applyPendingResume()
+{
+    if (m_pendingResumeMs <= 0 || !hasCurrentItem())
+        return;
+
+    const MediaItem item = currentItem();
+    if (item.type != MediaType::Video
+        || mediaIdentity(item) != m_pendingResumeIdentity) {
+        m_pendingResumeMs = -1;
+        m_pendingResumeIdentity.clear();
+        m_resumeRetryCount = 0;
+        return;
+    }
+
+    const qint64 target = m_pendingResumeMs;
+    if (m_resumeRetryCount >= 4)
+        return;
+    ++m_resumeRetryCount;
+
+    // 这里只发起定位，不清除待恢复任务；由 positionChanged 确认真正到达目标。
+    // 播放器在 LoadedMedia 阶段可能接受 setPosition 但在 play() 启动时又重置为 0。
+    qCInfo(lcPlayer) << "请求恢复视频进度" << item.displayName() << target
+                     << "第" << m_resumeRetryCount << "次";
+    seek(target);
 }
 
 qint64 PlaybackController::position() const
