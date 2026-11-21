@@ -36,6 +36,9 @@ struct MediaItem
     QHash<QString, QString> headers; // 播放/下载要补的请求头（Referer 等；敏感头按目标 host 过滤）
     bool online = false;
     qint64 durationMs = 0;
+    /// 视频已播放位置，随播放列表条目一起持久化；0 表示从头播放。
+    /// 删除列表条目时进度随条目一起消失，音乐不使用该字段。
+    qint64 positionMs = 0;
 
     // 影片信息（音乐源可能只填一部分，全部可空）
     QUrl posterUrl;                 // 海报 / 封面
@@ -199,6 +202,9 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
     object.insert(QStringLiteral("online"), item.online);
     if (item.durationMs > 0)
         object.insert(QStringLiteral("duration"), static_cast<double>(item.durationMs));
+    // 视频进度直接写进播放列表条目：条目删除后进度自然一起删除。
+    if (item.type == MediaType::Video && item.positionMs > 0)
+        object.insert(QStringLiteral("position"), static_cast<double>(item.positionMs));
     // 影片信息：只写有值的字段，旧版列表文件不受影响
     if (!item.posterUrl.isEmpty())
         object.insert(QStringLiteral("posterUrl"), item.posterUrl.toString());
@@ -239,6 +245,8 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
     }
     item.online = object.value(QStringLiteral("online")).toBool();
     item.durationMs = static_cast<qint64>(object.value(QStringLiteral("duration")).toDouble());
+    if (item.type == MediaType::Video)
+        item.positionMs = static_cast<qint64>(object.value(QStringLiteral("position")).toDouble());
     item.posterUrl = QUrl(object.value(QStringLiteral("posterUrl")).toString());
     item.year = object.value(QStringLiteral("year")).toString();
     item.area = object.value(QStringLiteral("area")).toString();

@@ -1,5 +1,5 @@
+#include "core/PlaylistModel.h"
 #include "core/PlaylistStore.h"
-#include "core/VideoPositionStore.h"
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
 #include "util/SecretStore.h"
@@ -45,9 +45,8 @@ private slots:
     void playlistRoundTrip();
     void playlistSaveWritesPrimaryOnly();
     void playlistCorruptFileBacksUp();
-    void videoPositionRoundTrip();
-    void videoPositionIgnoresMusic();
-    void videoPositionClearsNearEnd();
+    void playlistVideoProgressRoundTrip();
+    void playlistVideoProgressRemovedWithItem();
     void sourceRegistrySeedsAndPersists();
     void sourceRegistryReloadUsesPrimary();
     void sourceRegistryCorruptFileBacksUp();
@@ -151,43 +150,38 @@ void StorageTest::playlistCorruptFileBacksUp()
     QCOMPARE(backups.size(), 1);
 }
 
-void StorageTest::videoPositionRoundTrip()
+void StorageTest::playlistVideoProgressRoundTrip()
 {
-    const MediaItem video = makeVideo(QStringLiteral("功夫熊猫4"));
-    QVERIFY(VideoPositionStore::save(video, 42000, 600000));
-    QCOMPARE(VideoPositionStore::positionFor(video), 42000);
-    QVERIFY(QFile::exists(VideoPositionStore::filePath()));
+    MediaItem video = makeVideo(QStringLiteral("功夫熊猫4"));
+    video.durationMs = 600000;
+    video.positionMs = 42000;
 
-    const MediaItem other = makeVideo(QStringLiteral("另一部影片"));
-    QCOMPARE(VideoPositionStore::positionFor(other), 0);
+    QVERIFY(PlaylistStore::saveAll({}, {video}));
+    const QVector<MediaItem> loaded = PlaylistStore::load(MediaType::Video);
+    QCOMPARE(loaded.size(), 1);
+    // 进度直接跟列表条目一起落盘，不需要额外的进度文件。
+    QCOMPARE(loaded.first().positionMs, 42000);
+    QVERIFY(!QFile::exists(StoragePaths::dataFile(QStringLiteral("video_positions.json"))));
 
-    QVERIFY(VideoPositionStore::save(video, 123000, 600000));
-    QCOMPARE(VideoPositionStore::positionFor(video), 123000);
+    MediaItem music = makeMusic(QStringLiteral("测试歌曲"));
+    music.positionMs = 42000;
+    const QJsonObject musicJson = mediaItemToJson(music);
+    QVERIFY(!musicJson.contains(QStringLiteral("position")));
 }
 
-void StorageTest::videoPositionIgnoresMusic()
+void StorageTest::playlistVideoProgressRemovedWithItem()
 {
-    const MediaItem music = makeMusic(QStringLiteral("测试歌曲"));
-    QVERIFY(!VideoPositionStore::save(music, 42000, 126000));
-    QCOMPARE(VideoPositionStore::positionFor(music), 0);
+    PlaylistModel model;
+    MediaItem video = makeVideo(QStringLiteral("会从列表移除的影片"));
+    video.positionMs = 30000;
+    QVERIFY(model.addItem(video));
+    QVERIFY(PlaylistStore::saveAll({}, model.items()));
+    QCOMPARE(PlaylistStore::load(MediaType::Video).first().positionMs, 30000);
 
-    VideoPositionStore::save(makeVideo(QStringLiteral("影片")), 42000, 600000);
-    QCOMPARE(VideoPositionStore::positionFor(music), 0);
-}
-
-void StorageTest::videoPositionClearsNearEnd()
-{
-    const MediaItem video = makeVideo(QStringLiteral("接近片尾"));
-    QVERIFY(VideoPositionStore::save(video, 42000, 600000));
-    QCOMPARE(VideoPositionStore::positionFor(video), 42000);
-
-    // 片尾 3 秒内清除记录，避免下次从片尾恢复。
-    QVERIFY(VideoPositionStore::save(video, 598000, 600000));
-    QCOMPARE(VideoPositionStore::positionFor(video), 0);
-
-    // 片头 3 秒内同样不记录。
-    QVERIFY(VideoPositionStore::save(video, 1200, 600000));
-    QCOMPARE(VideoPositionStore::positionFor(video), 0);
+    // 条目删除后重新保存列表，进度随条目一起消失，不再留有孤儿记录。
+    QVERIFY(model.removeRow(0));
+    QVERIFY(PlaylistStore::saveAll({}, model.items()));
+    QVERIFY(PlaylistStore::load(MediaType::Video).isEmpty());
 }
 
 void StorageTest::sourceRegistrySeedsAndPersists()

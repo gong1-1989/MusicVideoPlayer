@@ -74,6 +74,13 @@ PlaylistController::PlaylistController(PlaybackController *player, const Playlis
 
     bindView(m_ui.musicView, m_musicModel, MediaType::Music);
     bindView(m_ui.videoView, m_videoModel, MediaType::Video);
+
+    // 视频进度已经写进列表条目，播放器切换/停止时立即把整份列表落盘。
+    // 搜索结果等临时模型不归本控制器管理，不能顺手写入用户播放列表。
+    connect(m_player, &PlaybackController::currentItemPositionUpdated, this, [this](int) {
+        if (m_player->playlist() == m_musicModel || m_player->playlist() == m_videoModel)
+            save();
+    });
 }
 
 PlaylistModel *PlaylistController::modelFor(MediaType type) const

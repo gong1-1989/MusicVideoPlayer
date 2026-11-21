@@ -69,6 +69,8 @@ signals:
     void modeChanged(PlaybackController::Mode mode);
     void volumePercentChanged(int percent);
     void errorOccurred(const QString &message);
+    /// 视频进度写回了播放列表条目，列表控制器据此立即持久化列表。
+    void currentItemPositionUpdated(int row);
 
 private:
     void playRowInternal(int row, bool autoAdvance);

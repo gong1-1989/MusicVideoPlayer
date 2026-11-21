@@ -45,6 +45,8 @@ public:
     QVector<MediaItem> items() const { return m_items; }
 
     MediaItem itemAt(int row) const;
+    /// 就地更新一行（例如保存视频播放进度），身份和行号不变，界面收到 dataChanged。
+    bool updateItem(int row, const MediaItem &item);
     int indexOf(const MediaItem &item) const;
     int size() const { return m_items.size(); }
     bool isEmpty() const { return m_items.isEmpty(); }

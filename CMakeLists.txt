@@ -19,7 +19,9 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
 )
 
 qt_standard_project_setup()
-enable_testing()
+# BUILD_TESTING 是 CMake/CTest 标准开关：发布构建可以 -DBUILD_TESTING=OFF
+# 直接不生成 mvp_* 测试程序，不需要额外的打包脚本。
+include(CTest)
 
 function(mvp_enable_warnings target)
     if(MSVC)
@@ -82,8 +84,6 @@ qt_add_library(mvp_core STATIC
     src/core/PlaylistStore.cpp
     src/core/PlaybackController.h
     src/core/PlaybackController.cpp
-    src/core/VideoPositionStore.h
-    src/core/VideoPositionStore.cpp
     src/settings/WindowPreset.h
     src/settings/AppSettings.h
     src/settings/AppSettings.cpp
@@ -163,6 +163,7 @@ mvp_enable_warnings(MusicVideoPlayer)
 
 # ---------------------------------------------------------------- 回归测试
 # 只锁纯逻辑/序列化/解析；涉及网络、GUI、进程的路径放在下面的集成测试。
+if(BUILD_TESTING)
 add_executable(mvp_tests tests/test_core_logic.cpp)
 target_link_libraries(mvp_tests PRIVATE
     mvp_core
@@ -209,6 +210,7 @@ target_link_libraries(mvp_ui_tests PRIVATE
 mvp_enable_warnings(mvp_ui_tests)
 add_test(NAME mvp_ui_logic COMMAND mvp_ui_tests)
 set_tests_properties(mvp_ui_logic PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif() # BUILD_TESTING
 
 # 主题样式表嵌入资源，ThemeManager 从 :/themes/<id>.qss 加载
 qt_add_resources(MusicVideoPlayer "app_themes"
@@ -232,15 +234,22 @@ qt_add_translations(MusicVideoPlayer
 )
 
 # ---------------------------------------------------------------- 安装与部署
-# 安装清单故意只包含 MusicVideoPlayer 主程序；mvp_tests / mvp_integration /
-# mvp_storage_tests / mvp_ui_tests 只通过 enable_testing() 注册，未写任何
-# install(TARGETS ...) 规则，因此 cmake --install / CPack 不会把测试程序带进发布包。
+# 默认不安装回归测试程序。确实需要在开发机上一起安装时，
+# 配置 -DMVP_INSTALL_TESTS=ON；发布构建默认保持 OFF。
+option(MVP_INSTALL_TESTS "把 mvp_* 回归测试程序一并安装到发布目录（仅开发调试）" OFF)
+
 include(GNUInstallDirs)
 install(TARGETS MusicVideoPlayer
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+if(MVP_INSTALL_TESTS AND BUILD_TESTING)
+    install(TARGETS mvp_tests mvp_integration mvp_storage_tests mvp_ui_tests
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
 
 qt_generate_deploy_app_script(
     TARGET MusicVideoPlayer

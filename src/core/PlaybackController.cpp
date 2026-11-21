@@ -1,6 +1,5 @@
 #include "core/PlaybackController.h"
 
-#include "core/VideoPositionStore.h"
 #include "net/HttpClient.h"
 #include "stream/StreamProxy.h"
 
@@ -227,15 +226,12 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     m_unavailableReason.clear();
     m_lastPrefetchPosition = -1;
 
-    // 仅视频恢复进度；音乐按要求每次都从头播放。
-    if (item.type == MediaType::Video) {
-        const qint64 resume = VideoPositionStore::positionFor(item);
-        if (resume > 0) {
-            m_pendingResumeMs = resume;
-            m_pendingResumeIdentity = mediaIdentity(item);
-            m_resumeRetryCount = 0;
-            qCInfo(lcPlayer) << "准备恢复视频进度" << item.displayName() << resume;
-        }
+    // 仅视频恢复进度；进度就存在列表条目里，条目删除时进度自然消失。
+    if (item.type == MediaType::Video && item.positionMs > 0) {
+        m_pendingResumeMs = item.positionMs;
+        m_pendingResumeIdentity = mediaIdentity(item);
+        m_resumeRetryCount = 0;
+        qCInfo(lcPlayer) << "准备恢复视频进度" << item.displayName() << item.positionMs;
     }
 
     // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
@@ -405,10 +401,11 @@ void PlaybackController::onPlaylistRowRemoved(int row)
         return;
 
     if (m_row == row) {
-        // 正在播的就是被删掉的那首，先保存位置，再停，避免继续指向已失效的下标
-        saveCurrentVideoPosition();
+        // 条目已经从模型里移除，进度属于被删条目，随条目一起丢弃；
+        // 不能再读当前播放器位置写进后面那条，否则会把进度串到下一集。
         m_pendingResumeMs = -1;
         m_pendingResumeIdentity.clear();
+        m_resumeRetryCount = 0;
         m_player->stop();
         m_player->setSource(QUrl());
         m_row = -1;
@@ -442,7 +439,7 @@ void PlaybackController::saveCurrentVideoPosition()
     if (!hasCurrentItem())
         return;
 
-    const MediaItem item = currentItem();
+    MediaItem item = currentItem();
     if (item.type != MediaType::Video)
         return;
 
@@ -450,8 +447,20 @@ void PlaybackController::saveCurrentVideoPosition()
     if (position <= 0)
         return;
 
-    // duration 为 0 表示时长尚未解析出来；位置仍然有效，允许先存。
-    VideoPositionStore::save(item, position, m_player->duration());
+    const qint64 duration = m_player->duration();
+    if (duration > 0)
+        item.durationMs = duration;
+
+    // 片头 3 秒内视为没看；片尾 3 秒内清掉旧进度，下次从头播放。
+    if (position < 3000 || (duration > 0 && position >= duration - 3000))
+        item.positionMs = 0;
+    else
+        item.positionMs = position;
+
+    if (m_playlist->updateItem(m_row, item)) {
+        qCInfo(lcPlayer) << "已写入列表视频进度" << item.displayName() << item.positionMs;
+        emit currentItemPositionUpdated(m_row);
+    }
 }
 
 void PlaybackController::applyPendingResume()

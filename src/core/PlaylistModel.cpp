@@ -110,6 +110,17 @@ MediaItem PlaylistModel::itemAt(int row) const
     return m_items.at(row);
 }
 
+bool PlaylistModel::updateItem(int row, const MediaItem &item)
+{
+    if (row < 0 || row >= m_items.size())
+        return false;
+    // 播放进度只改当前行数据，不重排、不重置模型，列表选中状态不受影响。
+    m_items[row] = item;
+    const QModelIndex changed = index(row, 0);
+    emit dataChanged(changed, changed);
+    return true;
+}
+
 int PlaylistModel::indexOf(const MediaItem &item) const
 {
     const QString identity = mediaIdentity(item);

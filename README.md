@@ -32,9 +32,9 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 
 用户数据只放在**程序根目录**（exe 所在目录）下，不再写系统用户数据目录：
 
-- `Data/playlists.json`：音乐 / 视频播放列表
+- `Data/playlists.json`：音乐 / 视频播放列表；视频条目自带 `position`（毫秒）播放进度
 - `Data/sources.json`：搜索源配置
-- `Data/video_positions.json`：视频播放进度（音乐不记录；片头/片尾 3 秒内自动清除）
+- 视频进度不再单独保存文件：它跟随播放列表条目，条目删除后进度一起删除；音乐不记录
 - `log/MusicVideoPlayer.log`：运行日志，单文件超过 8 MB 轮转为 `.1`
 
 程序目录不可写时，保存会直接失败并在界面提示，不会偷偷改写到 `QStandardPaths::AppDataLocation`。
@@ -61,13 +61,16 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 
 ## 发布包
 
+发布构建不生成测试程序：
+
 ```powershell
-pwsh -File scripts\package_release.ps1
-# 需要 zip 时：
-pwsh -File scripts\package_release.ps1 -Config Release -CreateZip
+cmake -S . -B build -DBUILD_TESTING=OFF
+cmake --build build
+cmake --install build --prefix release
 ```
 
-安装规则只包含 `MusicVideoPlayer` 主程序，`mvp_tests`、`mvp_integration`、`mvp_storage_tests`、`mvp_ui_tests` 没有 `install(TARGETS ...)` 规则；脚本在 `cmake --install` 后会递归检查 `mvp_*` 测试可执行文件，一旦发现立即失败。
+- `BUILD_TESTING` 是 CMake/CTest 标准开关，设为 `OFF` 时 `mvp_tests`、`mvp_integration`、`mvp_storage_tests`、`mvp_ui_tests` 根本不会构建。
+- `MVP_INSTALL_TESTS` 默认 `OFF`，即使开发构建里生成了测试程序，`cmake --install` 也不会把它们装进发布目录；只有显式设置 `-DMVP_INSTALL_TESTS=ON` 才会安装测试程序。
 
 ## 测试
 
@@ -75,7 +78,7 @@ pwsh -File scripts\package_release.ps1 -Config Release -CreateZip
 ctest --test-dir build/Desktop_Qt_6_10_1_MinGW_64_bit_Debug --output-on-failure
 ```
 
-包含 `mvp_core_logic`（时间格式、LRC 解析、条目/源配置校验、日志 URL 脱敏、HLS 分片多连接 Range 与 206 回退）、`mvp_integration`（本地 HTTP 服务、重定向密钥剥离、下载完整性、搜索超时/中止、响应上限）、`mvp_storage`（播放列表、搜索源与视频进度持久化、损坏文件备份）与 `mvp_ui_logic`（歌词切歌取消、进度条点击定位、动态每页条数、字体缩放、播放列表保存失败重试）。
+包含 `mvp_core_logic`（时间格式、LRC 解析、条目/源配置校验、日志 URL 脱敏、HLS 分片多连接 Range 与 206 回退）、`mvp_integration`（本地 HTTP 服务、重定向密钥剥离、下载完整性、搜索超时/中止、响应上限）、`mvp_storage`（播放列表、视频进度随列表条目持久化与删除、搜索源、损坏文件备份）与 `mvp_ui_logic`（歌词切歌取消、进度条点击定位、动态每页条数、字体缩放、播放列表保存失败重试）。
 
 ## 搜索源
 
