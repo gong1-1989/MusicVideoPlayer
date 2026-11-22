@@ -41,6 +41,8 @@ public:
     bool save();
     /// 上次保存失败后保留内存修改；这里重试写盘，成功才清除未保存标记
     bool retrySave();
+    /// 主文件读不了且无法备份时为 true：此时任何保存都会覆盖原文件，必须禁止
+    bool storageBlocked() const { return m_storageBlocked; }
     bool hasUnsavedChanges() const { return m_dirty; }
     void ensurePlaylist();
 
@@ -78,6 +80,8 @@ private:
     QString m_videoTabTitle;
     /// 保存失败后界面仍保留修改；页签加 * 并在右键菜单提供重试
     bool m_dirty = false;
+    /// 读取失败且无法备份原文件：保存被冻结，避免空模型覆盖
+    bool m_storageBlocked = false;
 };
 
 #endif // PLAYLISTCONTROLLER_H

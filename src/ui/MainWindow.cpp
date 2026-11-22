@@ -343,27 +343,41 @@ void MainWindow::closeEvent(QCloseEvent *event)
             event->ignore();
             return;
         }
-        m_downloads->prepareForExit();
+        // 真正暂停下载放到播放列表保存成功之后，避免保存失败取消退出时下载已被停掉。
     }
+
+    // 先确认播放列表真的落盘，再停止播放/退全屏/暂停下载。
+    // 否则用户在保存失败对话框里点“取消退出”后，窗口还在但播放已停、下载已暂停。
+    if (m_playlists->storageBlocked()) {
+        // 读取失败且连备份都做不了：保存会覆盖原文件，只能明确告知本次不保存后退出。
+        QMessageBox::warning(
+            this, tr("播放列表未安全读取"),
+            tr("播放列表原文件读取失败，且无法备份到其他路径。\n\n"
+               "为避免用空列表覆盖原文件，本次退出不会保存当前列表修改；原文件保持不变。\n"
+               "请检查 Data/playlists.json 的权限或占用情况后重启程序。"));
+    } else {
+        while (!m_playlists->save()) {
+            const QMessageBox::StandardButton answer = QMessageBox::warning(
+                this, tr("播放列表保存失败"),
+                tr("播放列表无法写入数据目录。\n\n"
+                   "可能原因：磁盘已满、目录无写权限，或数据文件被其他程序占用。\n"
+                   "可以释放空间/关闭占用后点“重试”，或取消退出保留当前修改。"),
+                QMessageBox::Retry | QMessageBox::Cancel, QMessageBox::Retry);
+            if (answer != QMessageBox::Retry) {
+                event->ignore();
+                return;
+            }
+        }
+    }
+
+    if (m_downloads != nullptr && m_downloads->hasActiveDownloads())
+        m_downloads->prepareForExit();
 
     // 全屏是独立顶层窗；不先退出，主窗关闭后进程可能被它拉住不退出。
     if (m_fullscreen != nullptr)
         m_fullscreen->exitFullScreen();
     m_player->stop();
-    // 退出前必须确认播放列表真的落盘。磁盘满/目录不可写时 save() 会失败，
-    // 不能直接退出把未保存的列表丢掉；给用户就地重试或取消退出的机会。
-    while (!m_playlists->save()) {
-        const QMessageBox::StandardButton answer = QMessageBox::warning(
-            this, tr("播放列表保存失败"),
-            tr("播放列表无法写入数据目录。\n\n"
-               "可能原因：磁盘已满、目录无写权限，或数据文件被其他程序占用。\n"
-               "可以释放空间/关闭占用后点“重试”，或取消退出保留当前修改。"),
-            QMessageBox::Retry | QMessageBox::Cancel, QMessageBox::Retry);
-        if (answer != QMessageBox::Retry) {
-            event->ignore();
-            return;
-        }
-    }
+
     m_settings->save();
     QMainWindow::closeEvent(event);
     // 关闭主窗后显式结束事件循环：避免独立全屏窗或异步播放对象让进程残留在后台。

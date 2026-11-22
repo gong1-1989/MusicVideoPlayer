@@ -17,6 +17,7 @@
 #include <QListView>
 #include <QLoggingCategory>
 #include <QMenu>
+#include <QMessageBox>
 #include <QModelIndex>
 #include <QPoint>
 #include <QShortcut>
@@ -100,12 +101,29 @@ QListView *PlaylistController::activeView() const
 
 void PlaylistController::restore()
 {
-    QVector<MediaItem> music = PlaylistStore::load(MediaType::Music);
-    QVector<MediaItem> video = PlaylistStore::load(MediaType::Video);
+    const PlaylistStore::LoadResult loadResult = PlaylistStore::loadAll();
+    QVector<MediaItem> music = loadResult.music;
+    QVector<MediaItem> video = loadResult.video;
+    m_storageBlocked = loadResult.storageBlocked;
+
+    if (m_storageBlocked) {
+        qCCritical(lcPlaylist) << "播放列表读取失败且无法备份，禁止保存：" << loadResult.message;
+        QMessageBox::critical(
+            m_ui.tabs, tr("播放列表未加载"),
+            loadResult.message
+                + tr("\n\n当前列表为空，原文件未被覆盖。请退出程序，检查或恢复 Data/playlists.json 后重启。"));
+    } else if (!loadResult.message.isEmpty()) {
+        emit statusMessage(loadResult.message);
+    }
+
+    // 从成功快照恢复的内容需要写回主文件，因此在退出前标记为未保存。
+    if (loadResult.recoveredFromBackup)
+        setDirty(true);
 
     // 只迁移一次：旧版 QSettings 里的列表写入 Data/playlists.json 后清键。
     // 迁移标记防止“用户清空列表”后下次启动又被旧键复活。
-    if (!AppSettings::playlistsMigrated()) {
+    // 读取被冻结时不能迁移，否则迁移保存会覆盖读不了的原文件。
+    if (!m_storageBlocked && !AppSettings::playlistsMigrated()) {
         bool canMarkMigrated = true;
         bool imported = false;
         if (music.isEmpty()) {
@@ -143,7 +161,7 @@ void PlaylistController::restore()
     m_musicModel->setItems(music);
     m_videoModel->setItems(video);
 
-    if (!music.isEmpty() || !video.isEmpty()) {
+    if (!m_storageBlocked && (!music.isEmpty() || !video.isEmpty())) {
         emit statusMessage(tr("已恢复上次的播放列表：音乐 %1 首，视频 %2 个")
                                .arg(music.size())
                                .arg(video.size()));
@@ -152,6 +170,12 @@ void PlaylistController::restore()
 
 bool PlaylistController::save()
 {
+    if (m_storageBlocked) {
+        qCWarning(lcPlaylist) << "播放列表读取失败且无法备份，拒绝保存";
+        emit statusMessage(tr("播放列表读取失败且无法备份，已禁止保存以避免覆盖原文件；请检查 Data/playlists.json 后重启"));
+        return false;
+    }
+
     if (PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
         setDirty(false);
         return true;
@@ -168,6 +192,10 @@ bool PlaylistController::retrySave()
 {
     if (!m_dirty)
         return true;
+    if (m_storageBlocked) {
+        emit statusMessage(tr("播放列表读取失败且无法备份，仍禁止保存；请检查 Data/playlists.json 后重启"));
+        return false;
+    }
     if (!PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
         qCWarning(lcPlaylist) << "播放列表重试保存仍失败";
         emit statusMessage(tr("播放列表仍未保存：数据目录写入失败，修改继续保留"));

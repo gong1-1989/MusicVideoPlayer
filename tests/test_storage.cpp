@@ -49,6 +49,7 @@ private slots:
     void playlistRoundTrip();
     void playlistSaveWritesPrimaryOnly();
     void playlistCorruptFileBacksUp();
+    void playlistSnapshotRecoversAfterCorruption();
     void playlistVideoProgressRoundTrip();
     void playlistVideoProgressRemovedWithItem();
     void sourceRegistrySeedsAndPersists();
@@ -157,6 +158,28 @@ void StorageTest::playlistCorruptFileBacksUp()
         QDir(StoragePaths::dataDir())
             .entryList({QStringLiteral("playlists.json.corrupt-*")}, QDir::Files);
     QCOMPARE(backups.size(), 1);
+}
+
+void StorageTest::playlistSnapshotRecoversAfterCorruption()
+{
+    const QString primary = PlaylistStore::filePath();
+    const QString snapshot = PlaylistStore::backupFilePath();
+    QVERIFY(PlaylistStore::saveAll({makeMusic(QStringLiteral("快照恢复"))}, {}));
+    QVERIFY(QFile::exists(snapshot));
+
+    // 主文件损坏后，读取结果必须从最近一次成功快照恢复，而不是返回空列表。
+    QFile file(primary);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    file.write("{ broken");
+    file.close();
+
+    const PlaylistStore::LoadResult result = PlaylistStore::loadAll();
+    QVERIFY(!result.storageBlocked);
+    QVERIFY(result.recoveredFromBackup);
+    QVERIFY(!result.message.isEmpty());
+    QCOMPARE(result.music.size(), 1);
+    QCOMPARE(result.music.first().title, QStringLiteral("快照恢复"));
+    QVERIFY(QFile::exists(result.corruptBackupPath));
 }
 
 void StorageTest::playlistVideoProgressRoundTrip()

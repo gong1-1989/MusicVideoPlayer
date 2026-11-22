@@ -1,16 +1,25 @@
 #include "ui/MainWindow.h"
 #include "ui/ThemeManager.h"
 
+#include "storage/StoragePaths.h"
+
 #include <QApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QLockFile>
 #include <QLoggingCategory>
+#include <QMessageBox>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QStyleFactory>
+#include <QThread>
 #include <QTimer>
 
 namespace {
@@ -174,6 +183,36 @@ void flushLogFile()
     }
 }
 
+/// 同一 Data 目录只允许一个写者；不同便携目录/测试目录互不干扰。
+QString activationServerName()
+{
+    const QByteArray digest =
+        QCryptographicHash::hash(StoragePaths::dataDir().toUtf8(), QCryptographicHash::Sha256)
+            .toHex()
+            .left(16);
+    return QStringLiteral("MusicVideoPlayer-activate-") + QString::fromLatin1(digest);
+}
+
+bool notifyRunningInstance()
+{
+    QLocalSocket socket;
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        socket.connectToServer(activationServerName());
+        if (socket.waitForConnected(500)) {
+            socket.write("activate");
+            socket.flush();
+            socket.waitForBytesWritten(500);
+            socket.disconnectFromServer();
+            return true;
+        }
+        qWarning() << "唤醒已有实例失败（第" << attempt + 1 << "次）："
+                   << socket.errorString() << "服务名：" << activationServerName();
+        socket.abort();
+        QThread::msleep(150);
+    }
+    return false;
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -183,9 +222,36 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("MusicVideoPlayer"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2"));
 
+    QLoggingCategory::setFilterRules(QStringLiteral("mvp.*.debug=false"));
+
+    if (!QDir().mkpath(StoragePaths::dataDir())) {
+        fprintf(stderr, "无法创建数据目录，程序退出：%s\n",
+                qPrintable(StoragePaths::dataDir()));
+        return 1;
+    }
+
+    // 单实例锁必须在任何窗口/存储初始化之前拿到；两个实例各自全量读、全量写
+    // playlists.json/downloads.json/sources.json，后退出者会覆盖先退出者的修改。
+    QLockFile instanceLock(StoragePaths::dataFile(QStringLiteral("MusicVideoPlayer.lock")));
+    if (!instanceLock.tryLock(0)) {
+        // 第二实例不安装日志 handler，避免和第一实例并发写同一个日志文件。
+        fprintf(stderr, "单实例锁已被占用，数据目录：%s\n",
+                qPrintable(StoragePaths::dataDir()));
+        if (!notifyRunningInstance()
+            && QGuiApplication::platformName() != QLatin1String("offscreen")) {
+            QMessageBox::information(
+                nullptr, QObject::tr("MusicVideoPlayer 已在运行"),
+                QObject::tr("检测到另一个实例正在使用同一数据目录。\n\n"
+                            "请从任务栏切换到已运行的窗口；如果窗口没有出现，"
+                            "请先结束旧的 MusicVideoPlayer 进程再启动。"));
+        }
+        return 0;
+    }
+
     qInstallMessageHandler(messageHandler);
     qAddPostRoutine(flushLogFile);
-    QLoggingCategory::setFilterRules(QStringLiteral("mvp.*.debug=false"));
+    qInfo() << "单实例锁已获取，数据目录：" << StoragePaths::dataDir()
+            << "激活服务名：" << activationServerName();
 
     // 即使没有新日志，也按秒把 INFO/DEBUG 缓冲落盘，方便现场实时看日志。
     QTimer logFlushTimer;
@@ -198,7 +264,34 @@ int main(int argc, char *argv[])
     // 主题来自系统设置，样式表在资源里；加载失败保留 Fusion 默认外观
     ThemeManager::instance().applySaved();
 
+    // 第二实例带锁失败后通过本地套接字唤醒已有窗口；服务端先于窗口构造监听，
+    // 避免主窗口加载慢时第二实例误判“无法唤醒”而弹出模态提示。
+    MainWindow *mainWindow = nullptr;
+    QLocalServer activationServer;
+    QLocalServer::removeServer(activationServerName());
+    if (activationServer.listen(activationServerName()))
+        qInfo() << "单实例激活服务已监听：" << activationServerName();
+    else
+        qWarning() << "单实例激活服务启动失败：" << activationServer.errorString()
+                   << "服务名：" << activationServerName();
+    QObject::connect(&activationServer, &QLocalServer::newConnection, &app, [&] {
+        while (activationServer.hasPendingConnections()) {
+            QLocalSocket *socket = activationServer.nextPendingConnection();
+            if (socket == nullptr)
+                break;
+            socket->readAll();
+            socket->disconnectFromServer();
+            socket->deleteLater();
+            if (mainWindow != nullptr) {
+                mainWindow->showNormal();
+                mainWindow->raise();
+                mainWindow->activateWindow();
+            }
+        }
+    });
+
     MainWindow window;
+    mainWindow = &window;
     window.show();
     return app.exec();
 }

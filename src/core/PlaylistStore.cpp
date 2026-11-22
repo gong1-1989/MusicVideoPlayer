@@ -32,6 +32,12 @@ QString primaryPath()
     return StoragePaths::dataFile(QStringLiteral("playlists.json"));
 }
 
+/// 最近一次成功保存的完整快照。主文件损坏时用它恢复，而不是把损坏内容当成空列表。
+QString snapshotPath()
+{
+    return primaryPath() + QStringLiteral(".bak");
+}
+
 bool writeFile(const QString &path, const QByteArray &payload)
 {
     if (path.isEmpty())
@@ -81,42 +87,30 @@ QString backupCorrupt(const QString &path)
     return backup;
 }
 
-/// 读取播放列表文件；文件不存在、打不开或损坏都返回 false。
-/// 解析成功时允许空列表（有效状态）。
-bool readPlaylistFile(const QString &path, MediaType type, QVector<MediaItem> *items)
+/// 读取结果必须区分“正常读取”“文件不存在”“读不了”“格式损坏”。
+/// 旧实现把后三者都当空列表，导致退出时可能用空模型覆盖原文件。
+enum class ReadStatus
 {
-    if (items == nullptr)
-        return false;
+    Ok,
+    Missing,
+    ReadError,
+    TooLarge,
+    Corrupt
+};
 
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return false;
+struct ReadFileResult
+{
+    ReadStatus status = ReadStatus::Missing;
+    QVector<MediaItem> music;
+    QVector<MediaItem> video;
+    QString error;
+};
 
-    if (file.size() > kMaxPlaylistFileBytes) {
-        qCWarning(lcStore) << "播放列表文件超过大小上限，按损坏处理：" << path;
-        file.close();
-        const QString backup = backupCorrupt(path);
-        if (!backup.isEmpty())
-            qCWarning(lcStore) << "playlists.json 已超过上限，原文件备份为" << backup;
-        return false;
-    }
-
-    const QByteArray payload = file.readAll();
-    file.close();
-    QJsonParseError parseError{};
-    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        const QString backup = backupCorrupt(path);
-        if (!backup.isEmpty())
-            qCWarning(lcStore) << "playlists.json 已损坏，原文件备份为" << backup;
-        else
-            qCWarning(lcStore) << "playlists.json 已损坏，且无法备份原文件：" << path;
-        return false;
-    }
-
-    const QJsonArray array = doc.object().value(keyFor(type)).toArray();
-    items->clear();
-    items->reserve(array.size());
+QVector<MediaItem> parsePartition(const QJsonObject &root, MediaType type)
+{
+    const QJsonArray array = root.value(keyFor(type)).toArray();
+    QVector<MediaItem> items;
+    items.reserve(array.size());
     for (const QJsonValue &value : array) {
         if (!value.isObject())
             continue;
@@ -125,9 +119,61 @@ bool readPlaylistFile(const QString &path, MediaType type, QVector<MediaItem> *i
             continue;
         // 类型以所在分区为准，避免手工改文件后串区
         item.type = type;
-        items->append(item);
+        items.append(item);
     }
-    return true;
+    return items;
+}
+
+ReadFileResult readPlaylistFile(const QString &path)
+{
+    ReadFileResult result;
+    const QFileInfo info(path);
+    if (!info.exists()) {
+        result.status = ReadStatus::Missing;
+        return result;
+    }
+    if (!info.isFile()) {
+        result.status = ReadStatus::ReadError;
+        result.error = QStringLiteral("路径不是普通文件");
+        return result;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        result.status = ReadStatus::ReadError;
+        result.error = file.errorString();
+        return result;
+    }
+
+    if (file.size() > kMaxPlaylistFileBytes) {
+        file.close();
+        result.status = ReadStatus::TooLarge;
+        result.error = QStringLiteral("文件超过 32MB 上限");
+        return result;
+    }
+
+    const QByteArray payload = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        result.status = ReadStatus::ReadError;
+        result.error = file.errorString();
+        file.close();
+        return result;
+    }
+    file.close();
+
+    QJsonParseError parseError{};
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        result.status = ReadStatus::Corrupt;
+        result.error = parseError.errorString();
+        return result;
+    }
+
+    const QJsonObject root = doc.object();
+    result.music = parsePartition(root, MediaType::Music);
+    result.video = parsePartition(root, MediaType::Video);
+    result.status = ReadStatus::Ok;
+    return result;
 }
 
 } // namespace
@@ -139,12 +185,76 @@ QString filePath()
     return primaryPath();
 }
 
+QString backupFilePath()
+{
+    return snapshotPath();
+}
+
+LoadResult loadAll()
+{
+    LoadResult result;
+    const QString primary = primaryPath();
+    const QString snapshot = snapshotPath();
+    const QFileInfo primaryInfo(primary);
+
+    if (primaryInfo.exists()) {
+        const ReadFileResult read = readPlaylistFile(primary);
+        if (read.status == ReadStatus::Ok) {
+            result.music = read.music;
+            result.video = read.video;
+            return result;
+        }
+
+        const QString corrupt = backupCorrupt(primary);
+        if (corrupt.isEmpty()) {
+            // 既读不了、又无法把原文件移走：绝不能把空模型写回去覆盖它。
+            result.storageBlocked = true;
+            result.message = QStringLiteral(
+                "播放列表读取失败，且无法备份原文件；为避免覆盖，当前禁止保存。文件：%1")
+                .arg(primary);
+            qCCritical(lcStore) << "播放列表读取失败且无法备份，禁止保存：" << primary
+                                << "：" << read.error;
+            return result;
+        }
+
+        result.corruptBackupPath = corrupt;
+        qCWarning(lcStore) << "播放列表无法读取，原文件已备份为" << corrupt
+                           << "，原因：" << read.error;
+    } else {
+        result.fileMissing = true;
+    }
+
+    // 主文件缺失、损坏或读不了时，回退到最近一次成功保存的完整快照。
+    const QFileInfo snapshotInfo(snapshot);
+    if (snapshotInfo.exists()) {
+        const ReadFileResult read = readPlaylistFile(snapshot);
+        if (read.status == ReadStatus::Ok) {
+            result.music = read.music;
+            result.video = read.video;
+            result.recoveredFromBackup = true;
+            result.message = QStringLiteral(
+                "播放列表主文件不可用，已从最近一次成功保存的快照恢复：音乐 %1 首，视频 %2 个")
+                .arg(result.music.size())
+                .arg(result.video.size());
+            qCInfo(lcStore) << "播放列表已从快照恢复：" << snapshot;
+            return result;
+        }
+        qCWarning(lcStore) << "播放列表快照也无法读取：" << snapshot
+                           << "，原因：" << read.error;
+    }
+
+    if (!result.corruptBackupPath.isEmpty()) {
+        result.message = QStringLiteral(
+            "播放列表原文件已备份为 %1，但最近一次成功快照不可用；当前显示空列表，保存前请确认。")
+            .arg(result.corruptBackupPath);
+    }
+    return result;
+}
+
 QVector<MediaItem> load(MediaType type)
 {
-    QVector<MediaItem> items;
-    if (readPlaylistFile(primaryPath(), type, &items))
-        return items;
-    return {};
+    const LoadResult result = loadAll();
+    return type == MediaType::Video ? result.video : result.music;
 }
 
 bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
@@ -161,14 +271,19 @@ bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
     const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Compact);
 
     const QString primary = primaryPath();
-    if (writeFile(primary, payload)) {
-        qCInfo(lcStore) << "播放列表已保存（音乐" << music.size() << "条、视频" << video.size()
-                        << "条）到" << primary;
-        return true;
+    if (!writeFile(primary, payload)) {
+        qCWarning(lcStore) << "播放列表保存失败：" << primary;
+        return false;
     }
 
-    qCWarning(lcStore) << "播放列表保存失败：" << primary;
-    return false;
+    // 主文件写成功后再刷新快照；快照失败不影响本次主文件已经落盘。
+    const QString snapshot = snapshotPath();
+    if (!writeFile(snapshot, payload))
+        qCWarning(lcStore) << "播放列表快照写入失败：" << snapshot;
+
+    qCInfo(lcStore) << "播放列表已保存（音乐" << music.size() << "条、视频" << video.size()
+                    << "条）到" << primary;
+    return true;
 }
 
 } // namespace PlaylistStore
