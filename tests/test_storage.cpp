@@ -69,6 +69,7 @@ private slots:
     void downloadManagerRejectsOversizedStateFile();
     void downloadManagerClearsStalePartialOnPathConflict();
     void downloadManagerDelayedRemoveSkipsReservedPath();
+    void downloadManagerDoesNotResumeSnapshot();
     void sourceRegistryRehydratesPlaylistCredentials();
 
 private:
@@ -385,6 +386,9 @@ void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
     job.segmentIndex = 2;
     job.segmentCount = 10;
     job.hls = true;
+    job.snapshot = true;
+    job.allowIncomplete = true;
+    job.needsSnapshotConsent = true;
     job.committed = true;
     job.status = DownloadJob::Status::Paused;
     job.message = QStringLiteral("等待续传");
@@ -417,6 +421,9 @@ void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
     QCOMPARE(parsed.segmentIndex, job.segmentIndex);
     QCOMPARE(parsed.segmentCount, job.segmentCount);
     QCOMPARE(parsed.hls, true);
+    QCOMPARE(parsed.snapshot, true);
+    QCOMPARE(parsed.allowIncomplete, true);
+    QCOMPARE(parsed.needsSnapshotConsent, true);
     QCOMPARE(parsed.committed, true);
     QCOMPARE(parsed.url, job.url);
     QCOMPARE(parsed.item.url, job.url);
@@ -622,6 +629,48 @@ void StorageTest::downloadManagerDelayedRemoveSkipsReservedPath()
 
     manager.shutdownForExit();
     server.close();
+}
+
+void StorageTest::downloadManagerDoesNotResumeSnapshot()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("downloads-snapshot"));
+    QVERIFY(QDir().mkpath(dir));
+    const QString target = QDir(dir).filePath(QStringLiteral("快照.ts"));
+
+    DownloadJob job;
+    job.id = QStringLiteral("snapshot");
+    job.item.type = MediaType::Video;
+    job.item.title = QStringLiteral("快照");
+    job.item.url = QUrl(QStringLiteral("http://127.0.0.1:1/a.m3u8"));
+    job.item.online = true;
+    job.url = job.item.url;
+    job.filePath = target;
+    job.hls = true;
+    job.snapshot = true;
+    job.segmentIndex = 3;
+    job.segmentCount = 6;
+    job.status = DownloadJob::Status::Downloading;
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("jobs"), QJsonArray{job.toJson()});
+    QFile state(StoragePaths::dataFile(QStringLiteral("downloads.json")));
+    QVERIFY(state.open(QIODevice::WriteOnly));
+    state.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    state.close();
+
+    QFile partial(target + QStringLiteral(".mvpdownload"));
+    QVERIFY(partial.open(QIODevice::WriteOnly));
+    partial.write("partial");
+    partial.close();
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QCOMPARE(manager.jobs().size(), 1);
+    // 快照列表可能跨启动变化，不能拿旧分片序号自动续传。
+    QCOMPARE(manager.jobs().at(0).status, DownloadJob::Status::Failed);
+    QVERIFY(!manager.jobs().at(0).committed);
+    QVERIFY(manager.jobs().at(0).message.contains(QStringLiteral("快照任务")));
 }
 
 void StorageTest::sourceRegistryRehydratesPlaylistCredentials()

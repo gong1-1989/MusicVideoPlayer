@@ -184,12 +184,21 @@ void DownloadManager::resumePending()
         return;
 
     bool any = false;
+    bool changed = false;
     for (DownloadJob &job : m_jobs) {
         if (job.status != DownloadJob::Status::Paused)
             continue;
+        if (job.snapshot) {
+            job.status = DownloadJob::Status::Failed;
+            job.message = tr("快照任务不自动续传；请重新下载");
+            changed = true;
+            continue;
+        }
         any = true;
         job.message = tr("等待恢复上次未完成的下载");
     }
+    if (changed)
+        scheduleSave();
     if (any) {
         pumpQueue();
         scheduleNotify();
@@ -279,7 +288,7 @@ bool DownloadManager::removeJob(const QString &id)
     return true;
 }
 
-bool DownloadManager::retryJob(const QString &id)
+bool DownloadManager::retryJob(const QString &id, bool allowIncomplete)
 {
     const int index = indexOf(id);
     if (index < 0)
@@ -289,9 +298,24 @@ bool DownloadManager::retryJob(const QString &id)
         || job.status == DownloadJob::Status::Completed) {
         return false;
     }
+    if (allowIncomplete && !job.needsSnapshotConsent)
+        return false;
 
+    if (allowIncomplete) {
+        // 只有用户在下载管理器里明确确认过，才允许无 ENDLIST 的直播/未知列表
+        // 按当前分片下载；这不是普通“重试”的默认行为。
+        job.allowIncomplete = true;
+        job.needsSnapshotConsent = false;
+    }
+    if (job.snapshot) {
+        // 快照列表可能在两次启动之间已经变化，旧分片序号不能复用。
+        job.bytesReceived = 0;
+        job.segmentIndex = 0;
+        job.segmentCount = 0;
+    }
     job.status = DownloadJob::Status::Paused;
-    job.message = tr("等待重试");
+    job.message = allowIncomplete ? tr("已授权按当前分片强制下载，等待开始")
+                                  : tr("等待重试");
     pumpQueue();
     scheduleSave();
     scheduleNotify();
@@ -355,6 +379,7 @@ void DownloadManager::load()
     const QJsonArray array = document.object().value(QStringLiteral("jobs")).toArray();
     QVector<DownloadJob> loaded;
     QSet<QString> seenIds;
+    bool changedInLoad = false;
     for (const QJsonValue &value : array) {
         DownloadJob job;
         QString error;
@@ -368,7 +393,16 @@ void DownloadManager::load()
             continue;
         }
         seenIds.insert(job.id);
-        if (job.status == DownloadJob::Status::Downloading) {
+        if (job.snapshot
+            && (job.status == DownloadJob::Status::Downloading
+                || job.status == DownloadJob::Status::Paused)) {
+            // 快照列表可能在两次启动之间变化，旧的 HLS 分片序号不能续传。
+            // 不自动恢复，保留失败记录让用户重新下载或移除。
+            job.status = DownloadJob::Status::Failed;
+            job.committed = false;
+            job.message = tr("快照任务在退出时中断，不自动续传；请重新下载");
+            changedInLoad = true;
+        } else if (job.status == DownloadJob::Status::Downloading) {
             job.status = DownloadJob::Status::Paused;
             job.message = tr("上次退出时暂停，正在自动续传");
         }
@@ -428,6 +462,8 @@ void DownloadManager::load()
         }
     }
 
+    if (changedInLoad)
+        scheduleSave();
     qCInfo(lcDownloadManager) << "已载入" << m_jobs.size() << "条下载记录";
 }
 
@@ -573,7 +609,13 @@ void DownloadManager::startJob(const QString &id)
     }
 
     const QString partial(job.partialPath());
-    if (!QFileInfo::exists(partial)) {
+    if (job.snapshot) {
+        // 快照任务每次重试都从头下载：列表没有 ENDLIST，分片序号跨次启动
+        // 不再可信；openTargetFile() 会在续传点为 0 时截掉旧临时文件。
+        job.bytesReceived = 0;
+        job.segmentIndex = 0;
+        job.segmentCount = 0;
+    } else if (!QFileInfo::exists(partial)) {
         // 临时文件没了，上面的续传点也失效，必须从零开始。
         job.bytesReceived = 0;
         job.segmentIndex = 0;
@@ -590,7 +632,9 @@ void DownloadManager::startJob(const QString &id)
         return;
     }
     task->setMaxBytes(job.maxBytes > 0 ? job.maxBytes : NetLimits::kDownloadBytes);
-    task->setResumeState(job.bytesReceived, job.segmentIndex, job.hls);
+    task->setAllowIncompletePlaylist(job.allowIncomplete);
+    task->setResumeState(job.snapshot ? 0 : job.bytesReceived,
+                         job.snapshot ? 0 : job.segmentIndex, job.hls);
 
     // 源站地址由 Provider 写入条目；旧记录没有该字段时退回 Referer/Origin。
     const QUrl origin = job.item.sourceOrigin.isValid() && !job.item.sourceOrigin.host().isEmpty()
@@ -619,6 +663,30 @@ void DownloadManager::startJob(const QString &id)
                 scheduleNotify();
             });
 
+    connect(task, &DownloadTask::snapshotAccepted, this,
+            [this, id](const QString &reason) {
+                const int i = indexOf(id);
+                if (i < 0)
+                    return;
+                DownloadJob &j = m_jobs[i];
+                j.snapshot = true;
+                j.needsSnapshotConsent = false;
+                j.message = reason;
+                scheduleSave();
+                scheduleNotify();
+            });
+
+    connect(task, &DownloadTask::snapshotConsentRequired, this,
+            [this, id](const QString &) {
+                const int i = indexOf(id);
+                if (i < 0)
+                    return;
+                DownloadJob &j = m_jobs[i];
+                j.needsSnapshotConsent = true;
+                scheduleSave();
+                scheduleNotify();
+            });
+
     connect(task, &DownloadTask::progress, this,
             [this, id](qint64 received, qint64 total) {
                 const int i = indexOf(id);
@@ -628,7 +696,11 @@ void DownloadManager::startJob(const QString &id)
                 if (j.hls) {
                     j.segmentIndex = int(received);
                     j.segmentCount = int(total);
-                    j.message = tr("正在下载 %1/%2 分片").arg(received).arg(total);
+                    j.message = j.snapshot
+                        ? tr("正在下载 %1/%2 分片（快照，可能不完整）")
+                              .arg(received)
+                              .arg(total)
+                        : tr("正在下载 %1/%2 分片").arg(received).arg(total);
                 } else {
                     j.bytesReceived = received;
                     j.bytesTotal = total;
@@ -661,7 +733,9 @@ void DownloadManager::startJob(const QString &id)
                 j.bytesReceived = QFileInfo(path).size();
                 if (j.hls) {
                     j.status = DownloadJob::Status::Downloading;
-                    j.message = tr("正在无损转成 MP4");
+                    j.message = j.snapshot
+                        ? tr("正在无损转成 MP4（当前分片快照）")
+                        : tr("正在无损转成 MP4");
                     startRemux(id);
                 } else {
                     finishJob(id, path, true, tr("下载完成"));
@@ -753,13 +827,18 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
                          : DownloadJob::Status::Failed;
     if (success)
         job.committed = true;
-    job.message = message;
+    QString finalMessage = message;
+    if (success && job.snapshot && !finalMessage.contains(QStringLiteral("快照"))) {
+        // 不把无 ENDLIST 的结果伪装成“完整下载”；下载管理器与状态栏都显示快照提示。
+        finalMessage += tr("（当前分片快照，可能不完整）");
+    }
+    job.message = finalMessage;
     job.completedAt = QDateTime::currentDateTime();
     scheduleSave();
     scheduleNotify();
 
     if (success) {
-        emit statusMessage(message);
+        emit statusMessage(finalMessage);
         emit jobCompleted(job.item, path);
     }
     pumpQueue();

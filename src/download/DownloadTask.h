@@ -42,6 +42,13 @@ public:
 
     /// 源站地址只用于裁剪 Cookie/Authorization 的作用域，不是流地址本身。
     void setOriginUrl(const QUrl &origin);
+    /// 无 #EXT-X-ENDLIST 时是否允许按当前分片下载。默认只放行服务器显式声明
+    /// PLAYLIST-TYPE:VOD 的列表；这里用于用户确认后的“强制下载当前分片”。
+    void setAllowIncompletePlaylist(bool allow);
+    /// 本次实际是否按无结束标记的快照列表下载。
+    bool isSnapshot() const { return m_isSnapshot; }
+    /// 是否因缺少 #EXT-X-ENDLIST 且未声明 VOD 而被拒绝；界面据此提供强制入口。
+    bool needsSnapshotConsent() const { return m_needsSnapshotConsent; }
     /// 目标路径冲突时由下载管理器重新分配，绝不覆盖已有文件。
     void setPathResolver(std::function<QString(const QString &)> resolver);
 
@@ -70,6 +77,10 @@ signals:
     void checkpoint(qint64 bytesWritten, int segmentIndex, int segmentCount);
     /// 响应实际是 HLS 时，最终扩展名会从 .mp4/.mp3 改成 .ts
     void targetPathChanged(const QString &filePath, bool hls);
+    /// 列表没有 ENDLIST 但已按 VOD 声明或用户授权继续下载；结果只是快照。
+    void snapshotAccepted(const QString &reason);
+    /// 列表没有 ENDLIST 且未声明 VOD，默认拒绝；界面可让用户确认后强制下载。
+    void snapshotConsentRequired(const QString &reason);
     void succeeded(const QString &filePath);
     void failed(const QString &message);
     void finished();
@@ -129,6 +140,9 @@ private:
     qint64 m_resumeBytes = 0;
 
     bool m_isHls = false;
+    bool m_allowIncomplete = false;
+    bool m_isSnapshot = false;
+    bool m_needsSnapshotConsent = false;
     QVector<Segment> m_segments;
     int m_segmentIndex = 0;
     int m_resumeSegmentIndex = 0;

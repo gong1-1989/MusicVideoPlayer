@@ -43,7 +43,9 @@ public:
     void shutdownForExit();
 
     bool removeJob(const QString &id);
-    bool retryJob(const QString &id);
+    /// allowIncomplete=true 是用户确认后的“按当前分片强制下载”，
+    /// 仅对缺少 #EXT-X-ENDLIST 且未声明 VOD 的失败任务生效。
+    bool retryJob(const QString &id, bool allowIncomplete = false);
     void clearCompleted();
 
     QString stateFilePath() const { return m_statePath; }

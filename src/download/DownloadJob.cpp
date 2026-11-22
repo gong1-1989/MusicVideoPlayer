@@ -92,6 +92,9 @@ QJsonObject DownloadJob::toJson() const
     object.insert(QStringLiteral("segmentIndex"), segmentIndex);
     object.insert(QStringLiteral("segmentCount"), segmentCount);
     object.insert(QStringLiteral("hls"), hls);
+    object.insert(QStringLiteral("snapshot"), snapshot);
+    object.insert(QStringLiteral("allowIncomplete"), allowIncomplete);
+    object.insert(QStringLiteral("needsSnapshotConsent"), needsSnapshotConsent);
     object.insert(QStringLiteral("committed"), committed);
     object.insert(QStringLiteral("status"), statusKey(status));
     object.insert(QStringLiteral("message"), message);
@@ -146,6 +149,10 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     parsed.segmentIndex = object.value(QStringLiteral("segmentIndex")).toInt();
     parsed.segmentCount = object.value(QStringLiteral("segmentCount")).toInt();
     parsed.hls = object.value(QStringLiteral("hls")).toBool();
+    parsed.snapshot = object.value(QStringLiteral("snapshot")).toBool(false);
+    parsed.allowIncomplete = object.value(QStringLiteral("allowIncomplete")).toBool(false);
+    parsed.needsSnapshotConsent =
+        object.value(QStringLiteral("needsSnapshotConsent")).toBool(false);
     parsed.committed = object.value(QStringLiteral("committed")).toBool(false);
     parsed.status = statusFromKey(object.value(QStringLiteral("status")).toString());
     parsed.message = object.value(QStringLiteral("message")).toString();

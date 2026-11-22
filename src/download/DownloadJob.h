@@ -31,6 +31,12 @@ struct DownloadJob
     int segmentIndex = 0;
     int segmentCount = 0;
     bool hls = false;
+    /// 列表没有 #EXT-X-ENDLIST 时按当前分片下载，结果只是快照。
+    bool snapshot = false;
+    /// 用户已明确授权无 ENDLIST 也下载（例如下载管理器里的“强制下载当前分片”）。
+    bool allowIncomplete = false;
+    /// 上次因缺少 ENDLIST 且未声明 VOD 被拒绝，界面据此提供强制下载入口。
+    bool needsSnapshotConsent = false;
     /// 最终文件是否由本任务成功提交。旧状态没有这个字段时按 false 处理，
     /// 不能把用户后来放在目标路径的同名文件当成自己的下载结果。
     bool committed = false;

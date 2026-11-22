@@ -222,6 +222,9 @@ private slots:
     void downloadManagerSameNameGetsDistinctFiles();
     void downloadHlsMergesAndRemuxes();
     void mediaRemuxConvertsTsToMp4();
+    void downloadTaskAllowsVodWithoutEndList();
+    void downloadTaskRequiresConsentWithoutVod();
+    void downloadManagerForcesSnapshotOnlyAfterConsent();
     void streamProxyPreservesEncodedSegmentQuery();
     void streamProxyServesFirstSegmentOfLongPlaylist();
     void searchTimeoutAbortsProvider();
@@ -769,6 +772,148 @@ void IntegrationTest::downloadHlsMergesAndRemuxes()
     QTRY_VERIFY_WITH_TIMEOUT(finished.count() > 0, 30000);
     QCOMPARE(finished.first().at(0).toBool(), true);
     QVERIFY(QFileInfo(mp4Path).size() > 0);
+}
+
+void IntegrationTest::downloadTaskAllowsVodWithoutEndList()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-PLAYLIST-TYPE:VOD\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXTINF:1.0,\n"
+        "seg0.bin\n";
+    const QByteArray segment("vod-segment");
+    server.handler = [playlist, segment](const LocalHttpServer::Request &request,
+                                         QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/vod/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+        } else if (request.path == QStringLiteral("/vod/seg0.bin")) {
+            LocalHttpServer::respond(socket, 200, segment, "application/octet-stream");
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    HttpClient http;
+    const QString target = m_tempDir.filePath(QStringLiteral("vod-no-endlist.ts"));
+    QFile::remove(target);
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/vod/index.m3u8")), target);
+    QSignalSpy snapshot(task, &DownloadTask::snapshotAccepted);
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 10000);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(succeeded.count(), 1);
+    QCOMPARE(snapshot.count(), 1);
+    QVERIFY(QFileInfo(target).size() > 0);
+}
+
+void IntegrationTest::downloadTaskRequiresConsentWithoutVod()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXTINF:1.0,\n"
+        "seg0.bin\n";
+    const QByteArray segment("forced-segment");
+    server.handler = [playlist, segment](const LocalHttpServer::Request &request,
+                                         QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/unknown/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+        } else if (request.path == QStringLiteral("/unknown/seg0.bin")) {
+            LocalHttpServer::respond(socket, 200, segment, "application/octet-stream");
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    HttpClient http;
+    const QString target = m_tempDir.filePath(QStringLiteral("unknown-no-endlist.ts"));
+    QFile::remove(target);
+
+    // 没有 VOD 声明时默认拒绝，并明确告诉调用方需要确认。
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/unknown/index.m3u8")), target);
+    QSignalSpy consent(task, &DownloadTask::snapshotConsentRequired);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(failed.count() > 0, 10000);
+    QCOMPARE(consent.count(), 1);
+    QVERIFY(!QFileInfo::exists(target));
+
+    // 用户确认后允许按当前分片下载，但结果必须标记为快照。
+    QFile::remove(target);
+    DownloadTask *forced =
+        DownloadTask::start(&http, server.url(QStringLiteral("/unknown/index.m3u8")), target);
+    forced->setAllowIncompletePlaylist(true);
+    QSignalSpy forcedSnapshot(forced, &DownloadTask::snapshotAccepted);
+    QSignalSpy forcedSucceeded(forced, &DownloadTask::succeeded);
+    QSignalSpy forcedFailed(forced, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(forcedSucceeded.count() + forcedFailed.count() > 0, 10000);
+    QCOMPARE(forcedFailed.count(), 0);
+    QCOMPARE(forcedSucceeded.count(), 1);
+    QCOMPARE(forcedSnapshot.count(), 1);
+    QVERIFY(QFileInfo(target).size() > 0);
+}
+
+void IntegrationTest::downloadManagerForcesSnapshotOnlyAfterConsent()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXTINF:1.0,\n"
+        "seg0.bin\n";
+    const QByteArray segment("manager-forced-segment");
+    server.handler = [playlist, segment](const LocalHttpServer::Request &request,
+                                         QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/mgmt/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+        } else if (request.path == QStringLiteral("/mgmt/seg0.bin")) {
+            LocalHttpServer::respond(socket, 200, segment, "application/octet-stream");
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("无结束标记任务");
+    item.url = server.url(QStringLiteral("/mgmt/index.m3u8"));
+    item.online = true;
+    const QString target = m_tempDir.filePath(QStringLiteral("manager-no-endlist.ts"));
+    QFile::remove(target);
+
+    const QString id = manager.enqueue(item, item.url, {}, target, true, 4096);
+    QVERIFY(!id.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(manager.jobs().at(0).status,
+                              DownloadJob::Status::Failed, 10000);
+    QVERIFY(manager.jobs().at(0).needsSnapshotConsent);
+    QVERIFY(!manager.jobs().at(0).snapshot);
+
+    // 普通重试仍然拒绝，不能绕过产品确认。
+    QVERIFY(manager.retryJob(id));
+    QTRY_COMPARE_WITH_TIMEOUT(manager.jobs().at(0).status,
+                              DownloadJob::Status::Failed, 10000);
+    QVERIFY(manager.jobs().at(0).needsSnapshotConsent);
+
+    // 显式授权后才允许快照下载，并持久化 snapshot 标记。
+    QVERIFY(manager.retryJob(id, true));
+    QTRY_VERIFY_WITH_TIMEOUT(manager.jobs().at(0).snapshot, 10000);
+    QVERIFY(manager.jobs().at(0).allowIncomplete);
+    QVERIFY(!manager.jobs().at(0).needsSnapshotConsent);
+
+    manager.removeJob(id);
 }
 
 void IntegrationTest::mediaRemuxConvertsTsToMp4()

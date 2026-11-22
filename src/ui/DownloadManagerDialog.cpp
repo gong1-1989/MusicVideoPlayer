@@ -84,11 +84,12 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
     m_tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     applyHeaderStyle();
 
-    const QString hint =
+    const QString baseHint =
         MediaRemux::isAvailable()
-            ? tr("HLS 分片会合并成一个文件，再用内置 FFmpeg 无损转成 MP4；退出程序时未完成任务会保留，下次启动自动续传。")
-            : tr("HLS 分片会合并成一个 TS 文件；当前未找到 FFmpeg，因此不转 MP4。退出程序时未完成任务会保留，下次启动自动续传。");
-    ui->downloadManagerHint->setText(hint);
+            ? tr("HLS 分片会合并成一个文件，再用内置 FFmpeg 无损转成 MP4；普通任务退出后会自动续传。")
+            : tr("HLS 分片会合并成一个 TS 文件；当前未找到 FFmpeg，因此不转 MP4；普通任务退出后会自动续传。");
+    ui->downloadManagerHint->setText(
+        baseHint + tr("没有结束标记的快照任务只按当前分片下载，不会自动续传。"));
 
     connect(m_tree, &QTreeWidget::itemSelectionChanged, this,
             &DownloadManagerDialog::updateButtons);
@@ -189,7 +190,7 @@ void DownloadManagerDialog::rebuild()
             active.append(job);
     }
 
-    m_summary->setText(tr("未完成 %1 个 · 已完成 %2 个 · 退出程序后未完成任务会自动续传")
+    m_summary->setText(tr("未完成 %1 个 · 已完成 %2 个 · 普通任务退出后自动续传，快照任务不会")
                             .arg(active.size())
                             .arg(completed.size()));
 
@@ -315,7 +316,22 @@ void DownloadManagerDialog::retrySelected()
     const DownloadJob *job = selectedJob();
     if (job == nullptr || m_manager == nullptr)
         return;
-    m_manager->retryJob(job->id);
+
+    const bool forceSnapshot = job->needsSnapshotConsent;
+    const QString id = job->id;
+    if (forceSnapshot) {
+        const QString text =
+            tr("该播放列表没有 #EXT-X-ENDLIST，可能是直播或仍在更新。\n\n"
+               "普通重试仍会失败。是否按当前可见分片强制下载？\n"
+               "结果只是快照，可能不完整，且不会跨启动续传。");
+        if (QMessageBox::question(this, tr("按当前分片强制下载"), text,
+                                  QMessageBox::Yes | QMessageBox::No,
+                                  QMessageBox::No)
+            != QMessageBox::Yes) {
+            return;
+        }
+    }
+    m_manager->retryJob(id, forceSnapshot);
     rebuild();
 }
 

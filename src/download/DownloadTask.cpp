@@ -184,6 +184,11 @@ void DownloadTask::setOriginUrl(const QUrl &origin)
         m_originUrl = origin;
 }
 
+void DownloadTask::setAllowIncompletePlaylist(bool allow)
+{
+    m_allowIncomplete = allow;
+}
+
 void DownloadTask::setPathResolver(std::function<QString(const QString &)> resolver)
 {
     m_pathResolver = std::move(resolver);
@@ -536,6 +541,7 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
 
     QUrl mediaBase = baseUrl;
     bool hasEndList = false;
+    QString playlistType;
     QByteArray pendingRange;
     for (QString line : lines) {
         line = line.trimmed();
@@ -562,6 +568,11 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
 
         if (line.startsWith(QLatin1String("#EXT-X-ENDLIST"))) {
             hasEndList = true;
+            continue;
+        }
+        if (line.startsWith(QLatin1String("#EXT-X-PLAYLIST-TYPE:"))) {
+            playlistType =
+                line.mid(QStringLiteral("#EXT-X-PLAYLIST-TYPE:").size()).trimmed().toUpper();
             continue;
         }
         if (line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))) {
@@ -687,11 +698,30 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     }
 
     if (!hasEndList) {
-        if (error != nullptr)
-            *error = tr("播放列表没有 #EXT-X-ENDLIST，可能是直播/仍在更新的列表；"
-                        "现在下载只会得到不完整的文件。");
-        m_segments.clear();
-        return false;
+        // 没有 ENDLIST 有两种可能：静态 VOD 服务器偷懒没写结束标记，
+        // 或者直播/EVENT 列表仍在追加。前者由 PLAYLIST-TYPE:VOD 明确声明，
+        // 可以安全地按当前分片下载；后者默认拒绝，避免静默产出残片。
+        const bool declaredVod = playlistType == QLatin1String("VOD");
+        if (!declaredVod && !m_allowIncomplete) {
+            m_needsSnapshotConsent = true;
+            if (error != nullptr) {
+                *error = tr("播放列表没有 #EXT-X-ENDLIST，可能是直播/仍在更新的列表。"
+                            "默认不下载；可在下载管理器中确认后按当前分片强制下载。");
+            }
+            emit snapshotConsentRequired(error != nullptr ? *error : QString());
+            m_segments.clear();
+            return false;
+        }
+
+        m_isSnapshot = true;
+        m_needsSnapshotConsent = false;
+        const QString reason =
+            declaredVod
+                ? tr("服务器声明 #EXT-X-PLAYLIST-TYPE:VOD 但没有 #EXT-X-ENDLIST，"
+                     "按当前分片下载；文件可能不完整。")
+                : tr("已按当前分片强制下载；列表没有 #EXT-X-ENDLIST，"
+                     "文件可能不完整，且不会跨启动续传。");
+        emit snapshotAccepted(reason);
     }
     return true;
 }
