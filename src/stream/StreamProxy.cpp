@@ -689,7 +689,14 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         }
         const qint64 cacheLimit =
             diskRequested ? std::numeric_limits<qint64>::max() : kMaxCacheEntryBytes;
-        if (!isHead && cacheTotal > 0 && cacheTotal <= cacheLimit) {
+        // HLS 的 EXT-X-BYTERANGE 分片会把同一个 main.mp4 当成上百个分片。
+        // 对这类“已登记为 HLS 分片、又明确只要某个小 Range”的请求，绝不能
+        // 按响应总长度建立整文件缓存：一个几百字节的分片会触发 82MB 全量拉取。
+        // 普通音视频的 Range 请求（比如播放器探测 0-99）仍沿用原有整段缓存，
+        // 否则会退化成每次透传，破坏拖动预取和 206 切片。
+        const bool hlsSegmentRange = hasRange && isHlsSegmentUrl(upstream);
+        const bool cacheWholeRequest = !hlsSegmentRange || isOpenEndedRange(request.range);
+        if (!isHead && cacheWholeRequest && cacheTotal > 0 && cacheTotal <= cacheLimit) {
             // 200 全量和“从 0/断点开始、未指定结束”的 206 都能缓存整段。
             // 上游已经回明确区间（例如拖动后的 bytes=500000-500100）时保持原样
             // 透传，不额外占缓存，也不能冒充完整文件。

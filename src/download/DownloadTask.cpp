@@ -16,6 +16,7 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <cmath>
 #include <utility>
 
 Q_LOGGING_CATEGORY(lcDownload, "mvp.download")
@@ -192,6 +193,12 @@ void DownloadTask::setAllowIncompletePlaylist(bool allow)
 void DownloadTask::setPathResolver(std::function<QString(const QString &)> resolver)
 {
     m_pathResolver = std::move(resolver);
+}
+
+void DownloadTask::setPreserveSegmentsDir(const QString &dir)
+{
+    m_preserveSegments = !dir.isEmpty();
+    m_preserveDir = QDir::cleanPath(dir);
 }
 
 QString DownloadTask::partialPath() const
@@ -402,6 +409,42 @@ void DownloadTask::onPlaylistFinished(QNetworkReply *reply)
 
     qCInfo(lcDownload) << "HLS 播放列表解析完成，分片数：" << m_segments.size();
 
+    if (m_preserveSegments) {
+        // 分片缓存不写合并 TS：先丢掉按正文路径建的空临时文件，逐片写进
+        // 调用方指定的 segments/ 目录，全部成功后再把本地 m3u8 落到正文路径。
+        if (m_file != nullptr) {
+            const QString oldPartial = partialPath();
+            m_file->close();
+            m_file->deleteLater();
+            m_file = nullptr;
+            QFile::remove(oldPartial);
+        }
+        m_bytesWritten = 0;
+        m_resumeSegmentIndex = 0;
+        QDir().mkpath(m_preserveDir);
+
+        int mediaIndex = 0;
+        for (int i = 0; i < m_segments.size(); ++i) {
+            Segment &segment = m_segments[i];
+            if (segment.isMap) {
+                segment.localName = i == 0 ? QStringLiteral("init.mp4")
+                                           : QStringLiteral("init_%1.mp4").arg(i);
+                continue;
+            }
+            QString suffix = QFileInfo(segment.url.path()).suffix().toLower();
+            if (suffix != QLatin1String("ts") && suffix != QLatin1String("m4s")
+                && suffix != QLatin1String("mp4") && suffix != QLatin1String("aac")
+                && suffix != QLatin1String("m4a")) {
+                suffix = segment.range.isEmpty() ? QStringLiteral("ts")
+                                                 : QStringLiteral("m4s");
+            }
+            segment.localName = QStringLiteral("seg_%1.%2")
+                                    .arg(mediaIndex, 5, 10, QLatin1Char('0'))
+                                    .arg(suffix);
+            ++mediaIndex;
+        }
+    }
+
     int resumeIndex = m_isHls ? m_resumeSegmentIndex : 0;
     if (resumeIndex > m_segments.size()) {
         qCWarning(lcDownload) << "播放列表分片数少于续传序号，改为从头下载 resume="
@@ -543,11 +586,20 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     bool hasEndList = false;
     QString playlistType;
     QByteArray pendingRange;
+    double pendingDuration = -1.0;
     for (QString line : lines) {
         line = line.trimmed();
         if (line.isEmpty())
             continue;
 
+        if (line.startsWith(QLatin1String("#EXTINF:"))) {
+            const QString value =
+                line.mid(QStringLiteral("#EXTINF:").size()).section(QLatin1Char(','), 0, 0);
+            bool ok = false;
+            const double duration = value.trimmed().toDouble(&ok);
+            pendingDuration = ok && duration >= 0 ? duration : -1.0;
+            continue;
+        }
         if (line.startsWith(QLatin1String("#EXT-X-BASE:"))) {
             QString value = line.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
             if (value.size() >= 2 && value.startsWith(QLatin1Char('"'))
@@ -670,7 +722,12 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
                                    .arg(offset + length - 1)
                                    .toUtf8();
                 }
-                m_segments.append({mapUrl, mapRange});
+                Segment mapSegment;
+                mapSegment.url = mapUrl;
+                mapSegment.range = mapRange;
+                mapSegment.duration = -1.0;
+                mapSegment.isMap = true;
+                m_segments.append(mapSegment);
             }
             continue;
         }
@@ -688,7 +745,10 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         Segment segment;
         segment.url = segmentUrl;
         segment.range = pendingRange;
+        segment.duration = pendingDuration;
+        segment.isMap = false;
         pendingRange.clear();
+        pendingDuration = -1.0;
         if (m_segments.size() >= NetLimits::kPlaylistSegments) {
             if (error != nullptr)
                 *error = tr("分片数量超过 %1 上限").arg(NetLimits::kPlaylistSegments);
@@ -726,6 +786,74 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     return true;
 }
 
+bool DownloadTask::openSegmentFile()
+{
+    if (!m_preserveSegments || m_segmentIndex < 0
+        || m_segmentIndex >= m_segments.size())
+        return false;
+    const Segment &segment = m_segments.at(m_segmentIndex);
+    const QString path = m_preserveDir + QLatin1Char('/') + segment.localName;
+    if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
+        fail(tr("无法创建分片缓存目录：%1").arg(QFileInfo(path).absolutePath()));
+        return false;
+    }
+    QFile::remove(path);
+    m_segmentFile = new QFile(path, this);
+    if (!m_segmentFile->open(QIODevice::WriteOnly)) {
+        fail(tr("无法写入分片缓存：%1").arg(m_segmentFile->errorString()));
+        return false;
+    }
+    return true;
+}
+
+void DownloadTask::closeSegmentFile()
+{
+    if (m_segmentFile == nullptr)
+        return;
+    m_segmentFile->close();
+    m_segmentFile->deleteLater();
+    m_segmentFile = nullptr;
+}
+
+QString DownloadTask::buildLocalPlaylist() const
+{
+    double maxDuration = 1.0;
+    bool fmp4 = false;
+    for (const Segment &segment : m_segments) {
+        if (segment.isMap || segment.localName.endsWith(QLatin1String(".m4s"))
+            || segment.localName.endsWith(QLatin1String(".mp4")))
+            fmp4 = true;
+        if (!segment.isMap && segment.duration > maxDuration)
+            maxDuration = segment.duration;
+    }
+
+    // fMP4 需要 EXT-X-MAP 和版本 7；纯 MPEG-TS 保持版本 3，避免让
+    // 只看 TS 的老播放器因为版本号拒绝整个本地缓存。
+    QString playlist = QStringLiteral("#EXTM3U\n"
+                                      "#EXT-X-VERSION:%1\n"
+                                      "#EXT-X-INDEPENDENT-SEGMENTS\n"
+                                      "#EXT-X-TARGETDURATION:%2\n"
+                                      "#EXT-X-MEDIA-SEQUENCE:0\n"
+                                      "#EXT-X-PLAYLIST-TYPE:VOD\n")
+                           .arg(fmp4 ? 7 : 3)
+                           .arg(qMax(1, int(std::ceil(maxDuration))));
+    for (const Segment &segment : m_segments) {
+        const QString uri =
+            QStringLiteral("segments/%1")
+                .arg(QString::fromLatin1(QUrl::toPercentEncoding(segment.localName)));
+        if (segment.isMap) {
+            playlist += QStringLiteral("#EXT-X-MAP:URI=\"%1\"\n").arg(uri);
+        } else {
+            const double duration = segment.duration >= 0 ? segment.duration : 0.0;
+            playlist += QStringLiteral("#EXTINF:%1,\n%2\n")
+                            .arg(duration, 0, 'f', 3)
+                            .arg(uri);
+        }
+    }
+    playlist += QStringLiteral("#EXT-X-ENDLIST\n");
+    return playlist;
+}
+
 void DownloadTask::startNextSegment()
 {
     if (m_done)
@@ -738,6 +866,8 @@ void DownloadTask::startNextSegment()
     const Segment segment = m_segments.at(m_segmentIndex);
     m_segmentBytes = 0;
     m_segmentExpected = expectedRangeBytes(segment.range);
+    if (m_preserveSegments && !openSegmentFile())
+        return;
     QPointer<DownloadTask> self(this);
     const QHash<QString, QString> headers =
         HeaderPolicy::sanitizedForTarget(segment.url, m_headers, m_originUrl);
@@ -842,6 +972,8 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
 
     m_segmentExpected = -1;
     m_segmentBytes = 0;
+    if (m_preserveSegments)
+        closeSegmentFile();
     ++m_segmentIndex;
     // 只在完整分片边界记录续传点：进程中途退出时，状态文件里的字节数
     // 对应的一定是完整分片前缀，重启后可安全截断半截分片并重下该片。
@@ -879,7 +1011,8 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
 
 void DownloadTask::writeReplyData(QNetworkReply *reply)
 {
-    if (reply == nullptr || m_file == nullptr)
+    QFile *sink = m_preserveSegments ? m_segmentFile : m_file;
+    if (reply == nullptr || sink == nullptr)
         return;
 
     const QByteArray chunk = reply->readAll();
@@ -890,9 +1023,9 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
         fail(tr("文件超过 %1 MB 上限，已停止下载").arg(m_maxBytes / (1024 * 1024)));
         return;
     }
-    const qint64 written = m_file->write(chunk);
+    const qint64 written = sink->write(chunk);
     if (written != chunk.size()) {
-        fail(tr("写入文件不完整：%1").arg(m_file->errorString()));
+        fail(tr("写入文件不完整：%1").arg(sink->errorString()));
         return;
     }
     m_bytesWritten += chunk.size();
@@ -909,6 +1042,12 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
 
 bool DownloadTask::switchToHlsFile()
 {
+    if (m_preserveSegments) {
+        // 分片缓存模式下正文是最后生成的本地 m3u8，保持调用方给的缓存路径
+        // （影视布局 `.../<条目>/media`），不能改挂 `.ts`。
+        m_isHls = true;
+        return true;
+    }
     if (m_filePath.endsWith(QLatin1String(".ts"), Qt::CaseInsensitive)) {
         m_isHls = true;
         return true;
@@ -947,23 +1086,46 @@ bool DownloadTask::switchToHlsFile()
 
 void DownloadTask::commitFile()
 {
-    if (m_file == nullptr) {
-        fail(tr("下载文件已失效"));
-        return;
-    }
-
-    if (!m_file->flush()) {
-        fail(tr("刷新文件失败：%1").arg(m_file->errorString()));
-        return;
-    }
-    m_file->close();
     const QString temp = partialPath();
-    const QString originalPath = m_filePath;
-    m_file->deleteLater();
-    m_file = nullptr;
+    if (m_preserveSegments) {
+        closeSegmentFile();
+        for (const Segment &segment : m_segments) {
+            const QString path = m_preserveDir + QLatin1Char('/') + segment.localName;
+            const QFileInfo info(path);
+            if (!info.exists() || info.size() <= 0) {
+                fail(tr("分片缓存缺少文件：%1").arg(segment.localName));
+                return;
+            }
+        }
+        QFile playlist(temp);
+        if (!playlist.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            fail(tr("无法生成本地播放列表：%1").arg(playlist.errorString()));
+            return;
+        }
+        const QString body = buildLocalPlaylist();
+        if (playlist.write(body.toUtf8()) != body.toUtf8().size()) {
+            fail(tr("写入本地播放列表不完整：%1").arg(playlist.errorString()));
+            return;
+        }
+        playlist.close();
+    } else {
+        if (m_file == nullptr) {
+            fail(tr("下载文件已失效"));
+            return;
+        }
+
+        if (!m_file->flush()) {
+            fail(tr("刷新文件失败：%1").arg(m_file->errorString()));
+            return;
+        }
+        m_file->close();
+        m_file->deleteLater();
+        m_file = nullptr;
+    }
 
     // 下载期间用户可能新建了同名文件，另一个任务也可能刚好完成并占用了
     // 这个路径。最终提交必须重新确认，冲突时换成新名字，绝不删除已有文件。
+    const QString originalPath = m_filePath;
     QString finalPath = m_filePath;
     if (QFileInfo::exists(finalPath) && m_pathResolver) {
         const QString resolved = m_pathResolver(finalPath);
@@ -981,7 +1143,10 @@ void DownloadTask::commitFile()
     }
 
     qCInfo(lcDownload) << "下载完成，已保存到" << m_filePath
-                       << (m_isHls ? "（HLS 分片已合并）" : "");
+                       << (m_preserveSegments
+                               ? QStringLiteral("（HLS 分片已分别保留）")
+                               : (m_isHls ? QStringLiteral("（HLS 分片已合并）")
+                                          : QString()));
     emit succeeded(m_filePath);
     finish();
 }
@@ -1013,6 +1178,7 @@ void DownloadTask::fail(const QString &message, bool removePartial)
         if (removePartial || m_bytesWritten == 0)
             QFile::remove(temp);
     }
+    closeSegmentFile();
 
     qCWarning(lcDownload) << "下载失败：" << message;
     emit failed(message);
@@ -1038,6 +1204,7 @@ void DownloadTask::stopForExit()
         m_file->deleteLater();
         m_file = nullptr;
     }
+    closeSegmentFile();
 
     // 不发出 failed：退出不是下载失败，管理器会保留状态供下次续传。
     emit finished();
@@ -1064,6 +1231,7 @@ void DownloadTask::cancel()
         m_file->deleteLater();
         m_file = nullptr;
     }
+    closeSegmentFile();
     // 只删当前任务自己的半成品；最终文件可能已经属于另一个同名任务或用户，
     // 不能在这里无条件删除。
     QFile::remove(temp);

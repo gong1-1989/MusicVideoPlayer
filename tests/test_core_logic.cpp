@@ -1850,23 +1850,24 @@ void CoreLogicTest::hlsCompleteCacheRecognition()
     hls.url = QUrl(QStringLiteral("https://example.com/show/index.m3u8?token=abc"));
     hls.online = true;
 
-    // HLS 不是可按 Range 读取的直链，但合并转封装后的 MP4 必须能被当成
-    // 完整缓存命中；否则每次重播都会重新拉全部分片。
+    // HLS 不是可按 Range 读取的直链，但逐片缓存的本地 m3u8 正文必须能被
+    // 当成完整缓存命中；否则每次重播都会重新拉全部分片。
     QVERIFY(!MediaCache::isCacheable(hls));
     const QString bodyPath = MediaCache::filePathForItem(hls);
     QVERIFY(QDir().mkpath(QFileInfo(bodyPath).absolutePath()));
     QFile body(bodyPath);
     QVERIFY(body.open(QIODevice::WriteOnly));
-    QVERIFY(body.write("fake-mp4-data") > 0);
+    QVERIFY(body.write("#EXTM3U\n#EXT-X-ENDLIST\n") > 0);
     body.close();
     QCOMPARE(QFileInfo(bodyPath).suffix(), QString());
 
     QVERIFY(MediaCache::writeState(bodyPath, MediaCache::cacheIdentity(hls), hls.url,
-                                   "video/mp4", QFileInfo(bodyPath).size(), true,
-                                   QStringLiteral("mp4")));
+                                   "application/vnd.apple.mpegurl",
+                                   QFileInfo(bodyPath).size(), true,
+                                   QStringLiteral(".m3u8")));
     MediaCache::State state;
     QVERIFY(MediaCache::readState(bodyPath, &state));
-    QCOMPARE(state.extension, QStringLiteral(".mp4"));
+    QCOMPARE(state.extension, QStringLiteral(".m3u8"));
     QCOMPARE(MediaCache::completeFileForItem(hls), bodyPath);
 
     QVERIFY(MediaCache::removeForItem(hls));

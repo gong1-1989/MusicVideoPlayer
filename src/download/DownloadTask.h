@@ -49,6 +49,9 @@ public:
     bool needsSnapshotConsent() const { return m_needsSnapshotConsent; }
     /// 目标路径冲突时由下载管理器重新分配，绝不覆盖已有文件。
     void setPathResolver(std::function<QString(const QString &)> resolver);
+    /// 影视 HLS 自动缓存：不合并分片，按顺序把每一片原样写入该目录，
+    /// 全部完成后再写一份引用这些分片的本地 m3u8 作为缓存正文。
+    void setPreserveSegmentsDir(const QString &dir);
 
     /// 去掉 Windows 非法字符并补扩展名
     static QString sanitizeFileName(const QString &name, const QString &suffix);
@@ -93,6 +96,9 @@ private:
     {
         QUrl url;
         QByteArray range;
+        QString localName;
+        double duration = -1.0;
+        bool isMap = false;
     };
 
     void startRequest();
@@ -105,6 +111,9 @@ private:
     void onDirectFinished(QNetworkReply *reply);
     void writeReplyData(QNetworkReply *reply);
     bool openTargetFile();
+    bool openSegmentFile();
+    void closeSegmentFile();
+    QString buildLocalPlaylist() const;
     void resetTargetFile();
     void commitFile();
     void fail(const QString &message, bool removePartial = false);
@@ -140,6 +149,10 @@ private:
     bool m_allowIncomplete = false;
     bool m_isSnapshot = false;
     bool m_needsSnapshotConsent = false;
+    bool m_preserveSegments = false;
+    QString m_preserveDir;
+    QFile *m_segmentFile = nullptr;
+    double m_pendingDuration = -1.0;
     QVector<Segment> m_segments;
     int m_segmentIndex = 0;
     int m_resumeSegmentIndex = 0;

@@ -4,6 +4,7 @@
 
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -355,11 +356,20 @@ bool removeForItem(const MediaItem &item)
         // JSON，下一次重试还能靠身份找到同一个文件。
         if (QFileInfo::exists(path))
             ok = QFile::remove(path) && ok;
-        if (QFileInfo::exists(path))
+        if (QFileInfo::exists(path)) {
+            qWarning() << "删除影视缓存正文失败：" << path;
             return false;
+        }
         if (QFileInfo::exists(meta))
             ok = QFile::remove(meta) && ok;
-        QDir().rmdir(dir);
+        // 影视逐片缓存会在正文旁保留 segments/ 分片目录；只删正文和 JSON
+        // 会留下无法播放的分片孤儿，所以这里必须整目录递归清理。
+        if (QFileInfo::exists(dir))
+            ok = QDir(dir).removeRecursively() && ok;
+        if (QFileInfo::exists(dir)) {
+            qWarning() << "删除影视缓存目录失败：" << dir;
+            return false;
+        }
     } else {
         if (path.isEmpty() || path == cacheRoot
             || !path.startsWith(cacheRoot + QLatin1Char('/'))) {
@@ -467,8 +477,8 @@ bool writeState(const QString &cachePath, const QString &identity, const QUrl &u
 QString completeFileForItem(const MediaItem &item)
 {
     const bool hls = item.online && isHlsUrl(preferredPlaybackUrl(item));
-    // HLS 播放列表本身不是文件，但 HlsCacheBuilder 会把它合并转封装成
-    // 无后缀的 MP4 正文，所以“完整缓存”查询必须覆盖 HLS。
+    // HLS 播放列表本身不是媒体文件，但 HlsCacheBuilder 会逐片保留 TS/M4S，
+    // 并生成一个无后缀的本地 m3u8 正文，所以“完整缓存”查询必须覆盖 HLS。
     if (!isCacheable(item) && !hls)
         return QString();
     if (!hls)
