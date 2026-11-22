@@ -93,6 +93,10 @@ qt_add_library(mvp_core STATIC
     src/download/MediaRemux.cpp
     src/cache/MediaCache.h
     src/cache/MediaCache.cpp
+    src/cache/LyricsCache.h
+    src/cache/LyricsCache.cpp
+    src/cache/HlsCacheBuilder.h
+    src/cache/HlsCacheBuilder.cpp
     src/stream/StreamProxy.h
     src/stream/StreamProxy.cpp
     src/stream/StreamCacheStore.h
@@ -112,6 +116,8 @@ qt_add_library(mvp_core STATIC
     src/settings/WindowPreset.h
     src/settings/AppSettings.h
     src/settings/AppSettings.cpp
+    src/settings/AppShortcuts.h
+    src/settings/AppShortcuts.cpp
     src/storage/StoragePaths.h
     src/storage/StoragePaths.cpp
 )
@@ -184,6 +190,8 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/SettingsDialog.h
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.ui
+    src/ui/ShortcutSettingsDialog.h
+    src/ui/ShortcutSettingsDialog.cpp
     src/ui/SourceManagerDialog.h
     src/ui/SourceManagerDialog.cpp
     src/ui/SourceManagerDialog.ui
@@ -243,6 +251,7 @@ add_executable(mvp_ui_tests
     # 但链接期必须提供这些实现，否则整个 SettingsController 对象无法落地。
     src/ui/SettingsDialog.cpp
     src/ui/SettingsDialog.ui
+    src/ui/ShortcutSettingsDialog.cpp
     src/ui/SourceManagerDialog.cpp
     src/ui/SourceManagerDialog.ui
     src/ui/SourceProbeDialog.cpp

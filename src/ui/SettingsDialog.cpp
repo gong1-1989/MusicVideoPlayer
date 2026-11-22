@@ -2,7 +2,9 @@
 
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
+#include "settings/AppShortcuts.h"
 #include "settings/WindowPreset.h"
+#include "ui/ShortcutSettingsDialog.h"
 #include "ui/SourceManagerDialog.h"
 #include "ui/ThemeManager.h"
 #include "ui_SettingsDialog.h"
@@ -191,6 +193,8 @@ void SettingsDialog::bindUi()
     });
     connect(m_sourcesButton, &QPushButton::clicked, this,
             &SettingsDialog::openSourceManager);
+    connect(ui->btn_shortcuts, &QPushButton::clicked, this,
+            &SettingsDialog::openShortcutSettings);
     connect(m_browseDownloadDir, &QPushButton::clicked, this, [this] {
         const QString dir = QFileDialog::getExistingDirectory(
             this, tr("选择默认下载目录"), m_downloadDir->text());
@@ -299,6 +303,19 @@ void SettingsDialog::openSourceManager()
     }
 }
 
+void SettingsDialog::openShortcutSettings()
+{
+    // 和搜索源一样只改本页草稿；系统设置页“保存”才真正写 QSettings，
+    // 点“取消”时快捷键修改也会一起丢弃。
+    const QHash<QString, QString> draft =
+        m_shortcutsDirty ? m_stagedShortcuts : AppShortcuts::currentBindings();
+    ShortcutSettingsDialog dialog(draft, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        m_stagedShortcuts = dialog.bindings();
+        m_shortcutsDirty = true;
+    }
+}
+
 void SettingsDialog::accept()
 {
     // 先校验唯一可能失败的外部副作用（下载目录），再提交源配置和设置。
@@ -339,6 +356,10 @@ void SettingsDialog::accept()
     AppSettings::setDownloadDir(dir.absolutePath());
     AppSettings::setSidebarAutoHide(m_sidebarAutoHide->isChecked());
     AppSettings::setControlsAutoHide(m_controlsAutoHide->isChecked());
+    if (m_shortcutsDirty) {
+        AppShortcuts::storeBindings(m_stagedShortcuts);
+        m_shortcutsDirty = false;
+    }
 
     qCInfo(lcSettings) << "系统设置已保存：主题" << m_theme->currentData().toString()
                        << "字号" << m_fontSize->currentData().toInt() << "px"

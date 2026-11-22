@@ -310,8 +310,12 @@ QString cacheIdentity(const MediaItem &item)
            + QLatin1Char('#') + stableId;
 }
 
-QString directoryForItem(const MediaItem &item)
+QString entryBaseName(const MediaItem &item)
 {
+    return safeEntryName(item.displayName(), item.type);
+}
+
+QString directoryForItem(const MediaItem &item) {
     if (item.type == MediaType::Music)
         return rootDir();
     return QFileInfo(filePathForItem(item)).absolutePath();
@@ -422,7 +426,8 @@ bool readState(const QString &cachePath, State *state)
 }
 
 bool writeState(const QString &cachePath, const QString &identity, const QUrl &url,
-                const QByteArray &contentType, qint64 totalBytes, bool complete)
+                const QByteArray &contentType, qint64 totalBytes, bool complete,
+                const QString &extension)
 {
     if (cachePath.isEmpty() || identity.isEmpty())
         return false;
@@ -439,7 +444,13 @@ bool writeState(const QString &cachePath, const QString &identity, const QUrl &u
     safeUrl.setFragment(QString());
     object.insert(QStringLiteral("url"), safeUrl.toString());
     object.insert(QStringLiteral("contentType"), QString::fromLatin1(contentType));
-    object.insert(QStringLiteral("extension"), safeExtensionFromUrl(url, contentType));
+    QString normalizedExtension = extension.trimmed().toLower();
+    if (!normalizedExtension.isEmpty() && !normalizedExtension.startsWith(QLatin1Char('.')))
+        normalizedExtension.prepend(QLatin1Char('.'));
+    object.insert(QStringLiteral("extension"),
+                  normalizedExtension.isEmpty()
+                      ? safeExtensionFromUrl(url, contentType)
+                      : normalizedExtension);
     object.insert(QStringLiteral("total"), static_cast<double>(totalBytes));
     object.insert(QStringLiteral("complete"), complete);
     object.insert(QStringLiteral("updatedAt"),
@@ -455,9 +466,13 @@ bool writeState(const QString &cachePath, const QString &identity, const QUrl &u
 
 QString completeFileForItem(const MediaItem &item)
 {
-    if (!isCacheable(item))
+    const bool hls = item.online && isHlsUrl(preferredPlaybackUrl(item));
+    // HLS 播放列表本身不是文件，但 HlsCacheBuilder 会把它合并转封装成
+    // 无后缀的 MP4 正文，所以“完整缓存”查询必须覆盖 HLS。
+    if (!isCacheable(item) && !hls)
         return QString();
-    adoptLegacyCache(item);
+    if (!hls)
+        adoptLegacyCache(item);
     const QString path = filePathForItem(item);
     State state;
     if (!readState(path, &state) || state.totalBytes <= 0

@@ -24,6 +24,7 @@ const char kPlaylistMusic[] = "playlists/music";
 const char kPlaylistVideo[] = "playlists/video";
 const char kSidebarAutoHide[] = "ui/sidebarAutoHide";
 const char kControlsAutoHide[] = "ui/controlsAutoHide";
+const char kShortcutPrefix[] = "shortcuts/";
 
 const char kDefaultTheme[] = "dark";
 const char kDefaultWindowPreset[] = "auto";
@@ -265,6 +266,34 @@ void setProbePaths(MediaType type, const QStringList &paths)
             cleaned.append(trimmed);
     }
     settings().setValue(QLatin1String(key), cleaned);
+}
+
+QString shortcut(const QString &actionId)
+{
+    if (actionId.isEmpty())
+        return QString();
+    return settings().value(QLatin1String(kShortcutPrefix) + actionId).toString();
+}
+
+bool hasShortcut(const QString &actionId)
+{
+    if (actionId.isEmpty())
+        return false;
+    return settings().contains(QLatin1String(kShortcutPrefix) + actionId);
+}
+
+void setShortcut(const QString &actionId, const QString &sequence)
+{
+    if (actionId.isEmpty())
+        return;
+    settings().setValue(QLatin1String(kShortcutPrefix) + actionId, sequence);
+}
+
+void removeShortcut(const QString &actionId)
+{
+    if (actionId.isEmpty())
+        return;
+    settings().remove(QLatin1String(kShortcutPrefix) + actionId);
 }
 
 QString lastDir()

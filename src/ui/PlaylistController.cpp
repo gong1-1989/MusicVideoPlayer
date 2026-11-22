@@ -1,6 +1,7 @@
 #include "ui/PlaylistController.h"
 
 #include "cache/MediaCache.h"
+#include "cache/LyricsCache.h"
 #include "core/PlaybackController.h"
 #include "core/PlaylistModel.h"
 #include "core/PlaylistStore.h"
@@ -479,6 +480,11 @@ void PlaylistController::bindView(QListView *view, PlaylistModel *model, MediaTy
 
 void PlaylistController::removeCacheAfterPlayback(const MediaItem &item, int attempt)
 {
+    // 歌词和播放缓存同属一个条目：删除列表条目后两者都没有再命中的可能。
+    // 歌词正文较小、不依赖播放器句柄，先删；失败也不阻塞播放缓存重试。
+    if (!LyricsCache::removeForItem(item))
+        qCWarning(lcPlaylist) << "歌词缓存删除失败：" << item.title;
+
     if (MediaCache::removeForItem(item))
         return;
     if (attempt >= 10) {
@@ -509,6 +515,10 @@ void PlaylistController::removeRow(MediaType type, int row)
     if (m_player->playlist() == model)
         m_player->onPlaylistRowRemoved(row);
 
+    // 播放器停止/清源后，代理线程可能仍为拖动保留缓存文件句柄；
+    // 先请求释放，后面的删除重试才能真正删掉 Windows 上被占用的文件。
+    m_player->releaseStreamCacheForItem(removedItem);
+
     if (removingCurrent)
         emit playbackInvalidated();
 
@@ -534,10 +544,20 @@ void PlaylistController::clearPlaylist(MediaType type)
         removedItems.append(model->itemAt(row));
 
     if (m_player->playlist() == model) {
-        m_player->stop();
+        // 仅 stop 不会释放 QMediaPlayer 持有的本地缓存文件句柄，Windows 上
+        // 会导致清空列表后的缓存删除连续失败；按删除当前行的同一路径先停播
+        // 并清空 source，再解除模型绑定。
+        const int currentRow = m_player->currentRow();
+        if (currentRow >= 0)
+            m_player->onPlaylistRowRemoved(currentRow);
+        else
+            m_player->stop();
         m_player->setPlaylist(nullptr);
         emit playbackInvalidated();
     }
+
+    for (const MediaItem &item : std::as_const(removedItems))
+        m_player->releaseStreamCacheForItem(item);
 
     model->clear();
     for (const MediaItem &item : std::as_const(removedItems))

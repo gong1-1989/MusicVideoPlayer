@@ -65,6 +65,14 @@ void setDownloadLimitMb(int limitMb);
 QString downloadDir();
 void setDownloadDir(const QString &dir);
 
+// ---------------------------------------------------------------- 快捷键
+/// 快捷键按动作 id 保存。动作清单与默认值由 AppShortcuts 统一维护，
+/// AppSettings 只负责键值落盘，避免界面层直接接触 QSettings。
+QString shortcut(const QString &actionId);
+bool hasShortcut(const QString &actionId);
+void setShortcut(const QString &actionId, const QString &sequence);
+void removeShortcut(const QString &actionId);
+
 // ---------------------------------------------------------------- 路径
 QString lastDir();
 void setLastDir(const QString &dir);

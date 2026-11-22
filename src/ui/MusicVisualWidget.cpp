@@ -122,6 +122,25 @@ void MusicVisualWidget::setTrack(const MediaItem &item)
     update();
 }
 
+void MusicVisualWidget::reset()
+{
+    m_item = MediaItem();
+    m_cover = QPixmap();
+    m_coverScaled = QPixmap();
+    m_coverScaledRadius = 0;
+    m_audioSpectrum.clear();
+    m_audioSpectrumAge = 1000;
+    m_lyrics.clear();
+    m_lyricIndex = -1;
+    m_phase = 0.0;
+    m_playing = false;
+    if (m_timer != nullptr)
+        m_timer->stop();
+    if (m_spectrum != nullptr)
+        m_spectrum->stopCapture();
+    update();
+}
+
 void MusicVisualWidget::setPlaying(bool playing)
 {
     if (m_playing == playing)
@@ -458,6 +477,11 @@ void MusicVisualWidget::drawDisc(QPainter &painter, const QRectF &rect)
 
 void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
 {
+    // 删除当前条目后 reset() 会清空 m_item；此时不要继续画“未知曲目/未知歌手”，
+    // 否则用户仍会看到一张写着占位文案的动感视图，误以为没有复位。
+    if (!m_item.isValid())
+        return;
+
     const qreal left = rect.left() + rect.width() * 0.075;
     const qreal maxWidth = qMax(120.0, rect.width() * (rect.width() < 620 ? 0.84 : 0.52));
     const qreal top = rect.top() + rect.height() * 0.16;

@@ -783,3 +783,68 @@ QDialog#SettingsDialog QLineEdit:focus {
     background: rgba(255, 255, 255, 10%);
     border: 1px solid rgba(150, 200, 255, 60%);
 }
+
+/* 快捷键设置：深色梦幻玻璃面板。表格和输入框必须显式配色，
+   否则 QTableWidget 会退回系统浅色底，叠加深色主题的浅色文字后不可读。 */
+QDialog#ShortcutSettingsDialog {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #0a0a1e,
+                                stop:1 #101a33);
+}
+QDialog#ShortcutSettingsDialog QLabel {
+    color: #cfd6ff;
+}
+QDialog#ShortcutSettingsDialog QTableWidget#table_shortcuts {
+    background: rgba(255, 255, 255, 5%);
+    alternate-background-color: rgba(255, 255, 255, 3%);
+    border: 1px solid rgba(160, 190, 255, 16%);
+    border-radius: 12px;
+    color: #e6ecff;
+    gridline-color: rgba(160, 190, 255, 10%);
+    selection-background-color: rgba(110, 92, 255, 35%);
+    selection-color: #ffffff;
+}
+QDialog#ShortcutSettingsDialog QTableWidget#table_shortcuts::item {
+    color: #e6ecff;
+    padding: 3px 8px;
+    border: none;
+}
+QDialog#ShortcutSettingsDialog QTableWidget#table_shortcuts::item:selected {
+    color: #ffffff;
+    background: rgba(110, 92, 255, 40%);
+}
+QDialog#ShortcutSettingsDialog QHeaderView::section {
+    background-color: #202747;
+    color: #eef2ff;
+    border: none;
+    border-right: 1px solid rgba(160, 190, 255, 20%);
+    border-bottom: 1px solid rgba(160, 190, 255, 32%);
+    padding: 7px 8px;
+    font-weight: 600;
+}
+QDialog#ShortcutSettingsDialog QKeySequenceEdit,
+QDialog#ShortcutSettingsDialog QLineEdit {
+    background: rgba(255, 255, 255, 7%);
+    border: 1px solid rgba(150, 190, 255, 22%);
+    border-radius: 8px;
+    padding: 3px 8px;
+    color: #eef2ff;
+    selection-background-color: rgba(110, 92, 255, 55%);
+    selection-color: #ffffff;
+}
+QDialog#ShortcutSettingsDialog QKeySequenceEdit:focus,
+QDialog#ShortcutSettingsDialog QLineEdit:focus {
+    background: rgba(255, 255, 255, 11%);
+    border: 1px solid rgba(150, 200, 255, 65%);
+}
+QDialog#ShortcutSettingsDialog QToolButton {
+    background: rgba(255, 255, 255, 6%);
+    border: 1px solid rgba(150, 190, 255, 20%);
+    border-radius: 8px;
+    color: #dfe4ff;
+    padding: 4px 10px;
+}
+QDialog#ShortcutSettingsDialog QToolButton:hover {
+    background: rgba(120, 170, 255, 18%);
+    border-color: rgba(150, 200, 255, 45%);
+}

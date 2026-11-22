@@ -2,7 +2,9 @@
 #define LYRICSSERVICE_H
 
 #include "lyrics/LrcParser.h"
+#include "media/MediaItem.h"
 
+#include <QByteArray>
 #include <QObject>
 #include <QPointer>
 #include <QUrl>
@@ -20,7 +22,7 @@ class LyricsService : public QObject
 public:
     explicit LyricsService(HttpClient *http, QObject *parent = nullptr);
 
-    void load(const QUrl &url);
+    void load(const QUrl &url, const MediaItem &item);
     void loadLocalFile(const QString &filePath);
     void cancel();
 
@@ -30,10 +32,14 @@ signals:
 
 private:
     void onFinished(int generation);
+    void deliverPayload(const QByteArray &payload);
 
     HttpClient *m_http;
     QPointer<QNetworkReply> m_reply;
     int m_generation = 0;
+    /// 当前请求对应的条目与歌词地址；在线响应正文按它写磁盘缓存。
+    MediaItem m_item;
+    QUrl m_lyricUrl;
 };
 
 #endif // LYRICSSERVICE_H

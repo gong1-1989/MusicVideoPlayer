@@ -4,6 +4,7 @@
 #include "net/SourceConfig.h"
 
 #include <QDialog>
+#include <QHash>
 #include <QVector>
 
 class HttpClient;
@@ -44,6 +45,7 @@ private:
     void loadValues();
     void refreshSourcesLabel();
     void openSourceManager();
+    void openShortcutSettings();
     /// 大字体/窄窗口下把左右两列改成单列，避免右列被横向裁掉
     void updateColumnLayout();
 
@@ -52,6 +54,9 @@ private:
     HttpClient *m_http = nullptr;
     QVector<SourceConfig> m_stagedSources;
     bool m_sourcesDirty = false;
+
+    QHash<QString, QString> m_stagedShortcuts;
+    bool m_shortcutsDirty = false;
 
     QComboBox *m_theme = nullptr;
     QComboBox *m_fontSize = nullptr;

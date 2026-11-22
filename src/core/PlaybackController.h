@@ -48,6 +48,11 @@ public:
     /// 列表里删掉了一行后调用：正在播的那首被删则停下，删的是前面的行则下标前移
     void onPlaylistRowRemoved(int row);
 
+    /// 删除条目前释放代理线程对该条目磁盘缓存的句柄。
+    /// 代理为支持拖动会长期保留打开的文件；不先释放，
+    /// MediaCache::removeForItem 在 Windows 上会因占用而删不掉。
+    void releaseStreamCacheForItem(const MediaItem &item);
+
     bool hasCurrentItem() const;
     MediaItem currentItem() const;
     int currentRow() const { return m_row; }

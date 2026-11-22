@@ -2,9 +2,11 @@
 #include "ui_MainWindow.h"
 
 #include "core/PlaylistModel.h"
+#include "cache/HlsCacheBuilder.h"
 #include "net/HttpClient.h"
 #include "net/SearchCoordinator.h"
 #include "net/SourceRegistry.h"
+#include "settings/AppShortcuts.h"
 #include "ui/DownloadController.h"
 #include "ui/FullscreenController.h"
 #include "ui/LyricsController.h"
@@ -26,6 +28,7 @@
 #include <QFontMetrics>
 #include <QFrame>
 #include <QGuiApplication>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QMessageBox>
@@ -33,6 +36,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QSet>
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSlider>
@@ -75,6 +79,21 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 下载对话框、HLS 后缀处理、任务进度与结果提示交给控制器
     m_downloads = new DownloadController(m_http, this, this);
+
+    // HLS 影视播放时后台把全部分片合并转成 MP4 缓存；它不是用户下载任务，
+    // 只跟随当前播放条目，避免和下载队列抢并发/抢同一个目标文件。
+    m_hlsCache = new HlsCacheBuilder(m_http, this);
+    connect(m_hlsCache, &HlsCacheBuilder::completed, this,
+            [this](const MediaItem &item, const QString &) {
+                ui->label_status->setText(tr("影视缓存完成：%1").arg(item.displayName()));
+            });
+    connect(m_hlsCache, &HlsCacheBuilder::failed, this,
+            [this](const MediaItem &item, const QString &message) {
+                // 加密/直播列表失败是正常能力边界，不弹窗打断播放，只在状态栏说明；
+                // 用户仍可继续在线播放。
+                ui->label_status->setText(
+                    tr("影视缓存未完成：%1（%2）").arg(item.displayName(), message));
+            });
 
     // 播放列表为安全落盘不保存 Cookie；播放/下载前按 sourceId 从源配置
     // 恢复内存态凭据，源配置被更新或删除后也自然跟随。
@@ -124,7 +143,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_playlists, &PlaylistController::statusMessage, this,
             [this](const QString &text) { ui->label_status->setText(text); });
     connect(m_playlists, &PlaylistController::playbackInvalidated,
-            this, &MainWindow::clearPlaybackUi);
+            this, [this] {
+                // 先停后台 HLS 缓存再删缓存目录，避免分片下载句柄让删除一直重试。
+                if (m_hlsCache != nullptr)
+                    m_hlsCache->cancelAndRemove();
+                clearPlaybackUi();
+            });
     connect(m_playlists, &PlaylistController::downloadRequested, this,
             [this](const MediaItem &item) { m_downloads->download(item); });
     // 视频进度一旦写回模型就立刻落盘：停止、切音乐、切视频、退出都会经过
@@ -216,6 +240,16 @@ MainWindow::MainWindow(QWidget *parent)
                     m_musicVisual->hide();
                     ui->videoWidget->show();
                 }
+                // HLS 影视开始在后台补齐整段缓存；切到音乐/直链视频时
+                // 中止上一个条目的半成品，但保留已经完成的 MP4。
+                if (m_hlsCache != nullptr) {
+                    if (item.type == MediaType::Video && item.online
+                        && playbackIsHls(item)) {
+                        m_hlsCache->start(item);
+                    } else {
+                        m_hlsCache->cancel();
+                    }
+                }
             });
     connect(m_player, &PlaybackController::playbackStateChanged, this,
             [this](QMediaPlayer::PlaybackState state) {
@@ -261,10 +295,8 @@ MainWindow::MainWindow(QWidget *parent)
                 QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
                 QTimer::singleShot(0, this, &MainWindow::updateAdaptiveMetrics);
                 m_lyrics->refreshHighlight();
+                updateShortcutTooltips();
             });
-
-    auto *settingsShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+,")), this);
-    connect(settingsShortcut, &QShortcut::activated, this, &MainWindow::on_btn_settings_clicked);
 
     // 设置读写、主题/窗口预设与设置对话框入口交给控制器
     m_settings = new SettingsController(m_player, m_registry, m_http,
@@ -273,11 +305,14 @@ MainWindow::MainWindow(QWidget *parent)
         // 侧栏 / 控制条的折叠策略改了要立刻生效；歌词高亮跟随主题刷新
         m_panels->applyVisibility();
         m_lyrics->refreshHighlight();
+        rebuildShortcuts();
     });
 
     setupConnections();
     m_settings->restore();
     m_playlists->restore();
+    // 快捷键也属于设置：启动时按用户绑定重建，不再写死 Ctrl+, / Ctrl+S。
+    rebuildShortcuts();
     // 主题/字体缩放已经在 restore 中应用，等样式 polish 完再按实际字体尺寸排版。
     QTimer::singleShot(0, this, &MainWindow::updateAdaptiveMetrics);
     m_panels->applyVisibility();
@@ -292,6 +327,9 @@ MainWindow::~MainWindow()
         if (m_player->mediaPlayer() != nullptr)
             m_player->mediaPlayer()->setVideoSink(nullptr);
     }
+    // 退出时中止 HLS 后台分片，删除半成品 TS，避免下次启动误续传旧列表。
+    if (m_hlsCache != nullptr)
+        m_hlsCache->cancel();
     if (m_fullscreen != nullptr)
         m_fullscreen->exitFullScreen();
     delete ui;
@@ -302,12 +340,8 @@ void MainWindow::setupConnections()
     connect(ui->btn_openSearch, &QPushButton::clicked,
             this, &MainWindow::showSearchWindow);
 
-    // 播放列表目前是自动保存；再给一个显式保存入口，便于确认修改真的落盘。
-    auto *savePlaylistShortcut = new QShortcut(QKeySequence::Save, this);
-    connect(savePlaylistShortcut, &QShortcut::activated, this, [this] {
-        if (m_playlists != nullptr)
-            m_playlists->saveNow();
-    });
+    // 播放列表目前是自动保存；显式保存入口（Ctrl+S）由动态快捷键统一创建，
+    // 这样用户可以把它改成别的组合键。
     connect(m_transport, &PlaybackUiController::statusMessage, this,
             [this](const QString &text) { ui->label_status->setText(text); });
     connect(m_transport, &PlaybackUiController::currentItemChanged, this,
@@ -337,8 +371,94 @@ void MainWindow::setupConnections()
             });
 }
 
-void MainWindow::showSearchWindow()
+void MainWindow::rebuildShortcuts()
 {
+    for (QShortcut *shortcut : m_shortcuts)
+        delete shortcut;
+    m_shortcuts.clear();
+
+    const QHash<QString, QString> bindings = AppShortcuts::currentBindings();
+    QSet<QString> used;
+    for (const AppShortcuts::Action &action : AppShortcuts::actions()) {
+        const QString sequence = AppShortcuts::normalizeSequence(bindings.value(action.id));
+        if (sequence.isEmpty())
+            continue;
+        // 设置对话框已经拦截重复；这里再兜底一次，防止手工改配置文件后
+        // 同一个键同时触发多个动作。
+        if (used.contains(sequence)) {
+            qCWarning(lcWindow) << "快捷键重复，已跳过：" << sequence << action.label;
+            continue;
+        }
+        used.insert(sequence);
+
+        auto *shortcut = new QShortcut(
+            QKeySequence::fromString(sequence, QKeySequence::PortableText), this);
+        shortcut->setContext(Qt::WindowShortcut);
+        const QString actionId = action.id;
+        connect(shortcut, &QShortcut::activated, this,
+                [this, actionId] { executeShortcutAction(actionId); });
+        m_shortcuts.append(shortcut);
+    }
+    updateShortcutTooltips();
+}
+
+void MainWindow::executeShortcutAction(const QString &actionId)
+{
+    if (m_player == nullptr)
+        return;
+
+    if (actionId == QLatin1String("playPause")) {
+        m_player->togglePlayPause();
+    } else if (actionId == QLatin1String("stop")) {
+        m_player->stop();
+    } else if (actionId == QLatin1String("previous")) {
+        m_player->previous();
+    } else if (actionId == QLatin1String("next")) {
+        m_player->next();
+    } else if (actionId == QLatin1String("fullscreen")) {
+        if (m_fullscreen != nullptr)
+            m_fullscreen->toggle();
+    } else if (actionId == QLatin1String("settings")) {
+        if (m_settings != nullptr)
+            m_settings->openDialog();
+    } else if (actionId == QLatin1String("savePlaylist")) {
+        if (m_playlists != nullptr)
+            m_playlists->saveNow();
+    } else if (actionId == QLatin1String("search")) {
+        showSearchWindow();
+    } else if (actionId == QLatin1String("downloads")) {
+        if (m_downloads != nullptr)
+            m_downloads->openManager();
+    } else if (actionId == QLatin1String("volumeUp")
+               || actionId == QLatin1String("volumeDown")) {
+        const int step = actionId == QLatin1String("volumeUp") ? 5 : -5;
+        const int volume = qBound(0, m_player->volumePercent() + step, 100);
+        m_player->setVolumePercent(volume);
+        ui->label_status->setText(tr("音量 %1%").arg(volume));
+    }
+}
+
+void MainWindow::updateShortcutTooltips()
+{
+    const QHash<QString, QString> bindings = AppShortcuts::currentBindings();
+    auto withKey = [&bindings](const QString &label, const QString &actionId) {
+        const QString key = bindings.value(actionId);
+        return key.isEmpty() ? label : QStringLiteral("%1 (%2)").arg(label, key);
+    };
+
+    if (ui->btn_settings != nullptr)
+        ui->btn_settings->setToolTip(withKey(tr("系统设置"), QStringLiteral("settings")));
+    if (ui->btn_openSearch != nullptr)
+        ui->btn_openSearch->setToolTip(withKey(tr("搜索发现"), QStringLiteral("search")));
+    if (ui->btn_fullscreen != nullptr)
+        ui->btn_fullscreen->setToolTip(
+            withKey(tr("全屏 / 退出全屏"), QStringLiteral("fullscreen")));
+    if (ui->btn_downloads != nullptr)
+        ui->btn_downloads->setToolTip(
+            withKey(tr("下载任务"), QStringLiteral("downloads")));
+}
+
+void MainWindow::showSearchWindow(){
     if (m_searchWindow == nullptr)
         return;
 
@@ -613,8 +733,18 @@ void MainWindow::addSearchItemToPlaylist(const MediaItem &item, MediaType type)
 
 void MainWindow::clearPlaybackUi()
 {
-    // 播放条自己负责把进度、时间和歌词清零，主窗不再逐个控件复位
+    // 播放条自己负责把进度、时间和歌词清零
     m_transport->clear();
+    // 删除的是当前播放条目时，播放器不会再上报新曲目；动感视图必须整轨复位，
+    // 否则封面、曲名、频谱和“正在播放”状态会留在已删除的条目上。
+    if (m_musicVisual != nullptr) {
+        m_musicVisual->reset();
+        m_musicVisual->hide();
+    }
+    if (ui->videoWidget != nullptr) {
+        ui->videoWidget->clearFrame();
+        ui->videoWidget->show();
+    }
 }
 
 void MainWindow::setupVolumePopup()

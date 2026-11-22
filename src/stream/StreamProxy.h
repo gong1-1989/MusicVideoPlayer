@@ -56,6 +56,12 @@ public:
     /// 只应在代理所属线程调用；PlaybackController 用阻塞队列调用它。
     void shutdown();
 
+    /// 释放指定磁盘缓存文件对应的流转条目句柄（不删除文件本身）。
+    /// 删除播放列表条目时调用，避免 QMediaPlayer 已停止、代理仍持有文件句柄
+    /// 导致 MediaCache::removeForItem 连续重试后仍删不掉。
+    /// 必须在代理所属线程调用。
+    void releaseCacheFile(const QString &path);
+
     /// 登记一个上游地址，返回给 QMediaPlayer 使用的本地 URL。
     /// headers 是该源必需的请求头（Referer、Cookie 等），代理在拉流时补上。
     /// cachePath 非空且是可按字节定位的直链时，代理会把整段正文落到该文件，

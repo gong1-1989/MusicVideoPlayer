@@ -27,6 +27,8 @@ public:
     ~MusicVisualWidget() override;
 
     void setTrack(const MediaItem &item);
+    /// 删除当前播放条目后整轨复位：曲目文案、封面、频谱、歌词和动画状态一起清空
+    void reset();
     void setPlaying(bool playing);
     void setMediaPlayer(QMediaPlayer *player);
     void setLyrics(const QStringList &lines);

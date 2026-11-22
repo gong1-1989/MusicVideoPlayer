@@ -1,5 +1,6 @@
 #include "lyrics/LyricsService.h"
 
+#include "cache/LyricsCache.h"
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
 
@@ -41,7 +42,7 @@ LyricsService::LyricsService(HttpClient *http, QObject *parent)
 {
 }
 
-void LyricsService::load(const QUrl &url)
+void LyricsService::load(const QUrl &url, const MediaItem &item)
 {
     cancel();
 
@@ -53,6 +54,21 @@ void LyricsService::load(const QUrl &url)
         loadLocalFile(url.toLocalFile());
         return;
     }
+
+    m_item = item;
+    m_lyricUrl = url;
+
+    // 在线歌词按“条目 + 歌词地址”缓存原始响应体。命中时不需要再打接口，
+    // 但仍走同一套解析，JSON 包裹和纯 LRC 两种格式不会走岔。
+    if (LyricsCache::isEligible(item)) {
+        QByteArray cached;
+        if (LyricsCache::load(item, &cached)) {
+            qCDebug(lcLyrics) << "歌词缓存命中：" << item.displayName();
+            deliverPayload(cached);
+            return;
+        }
+    }
+
     if (m_http == nullptr)
         return;
 
@@ -83,6 +99,8 @@ void LyricsService::cancel()
     // 每次取消都让旧请求的世代号失效，即使 abort 之后的 finished 回调
     // 迟到，也不会把旧歌词塞进新条目的面板。
     ++m_generation;
+    m_item = MediaItem();
+    m_lyricUrl = QUrl();
     if (m_reply.isNull())
         return;
     QNetworkReply *reply = m_reply.data();
@@ -122,6 +140,17 @@ void LyricsService::onFinished(int generation)
         return;
     }
 
+    // 先落原始响应体再解析：歌词接口返回是否 JSON 包裹由上游决定，
+    // 保存原文可以让下次命中和本次在线解析走完全相同的分支。
+    if (LyricsCache::isEligible(m_item)
+        && LyricsCache::store(m_item, m_lyricUrl, payload)) {
+        qCDebug(lcLyrics) << "歌词已缓存：" << m_item.displayName();
+    }
+    deliverPayload(payload);
+}
+
+void LyricsService::deliverPayload(const QByteArray &payload)
+{
     QVector<LrcLine> lines;
     if (payload.trimmed().startsWith('{')) {
         // 网易云 /api/song/lyric 返回 JSON，真正歌词在 lrc.lyric 字段里

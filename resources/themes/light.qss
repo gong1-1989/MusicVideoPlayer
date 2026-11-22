@@ -784,3 +784,67 @@ QDialog#SettingsDialog QLineEdit:focus {
     background: #ffffff;
     border: 1px solid rgba(120, 150, 255, 65%);
 }
+
+/* 快捷键设置：浅色梦幻玻璃面板，保证表格文字与表头对比度。 */
+QDialog#ShortcutSettingsDialog {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #fdfcff,
+                                stop:1 #eef3ff);
+}
+QDialog#ShortcutSettingsDialog QLabel {
+    color: #3a3f63;
+}
+QDialog#ShortcutSettingsDialog QTableWidget#table_shortcuts {
+    background: rgba(255, 255, 255, 88%);
+    alternate-background-color: rgba(245, 248, 255, 92%);
+    border: 1px solid rgba(120, 150, 255, 26%);
+    border-radius: 12px;
+    color: #2b2b45;
+    gridline-color: rgba(120, 150, 255, 12%);
+    selection-background-color: rgba(110, 92, 255, 22%);
+    selection-color: #1a1a2e;
+}
+QDialog#ShortcutSettingsDialog QTableWidget#table_shortcuts::item {
+    color: #2b2b45;
+    padding: 3px 8px;
+    border: none;
+}
+QDialog#ShortcutSettingsDialog QTableWidget#table_shortcuts::item:selected {
+    color: #1a1a2e;
+    background: rgba(110, 92, 255, 24%);
+}
+QDialog#ShortcutSettingsDialog QHeaderView::section {
+    background-color: #e4eaff;
+    color: #232a4d;
+    border: none;
+    border-right: 1px solid rgba(80, 110, 200, 14%);
+    border-bottom: 1px solid rgba(80, 110, 200, 22%);
+    padding: 7px 8px;
+    font-weight: 600;
+}
+QDialog#ShortcutSettingsDialog QKeySequenceEdit,
+QDialog#ShortcutSettingsDialog QLineEdit {
+    background: rgba(255, 255, 255, 92%);
+    border: 1px solid rgba(120, 150, 255, 28%);
+    border-radius: 8px;
+    padding: 3px 8px;
+    color: #2b2b45;
+    selection-background-color: rgba(110, 92, 255, 35%);
+    selection-color: #1a1a2e;
+}
+QDialog#ShortcutSettingsDialog QKeySequenceEdit:focus,
+QDialog#ShortcutSettingsDialog QLineEdit:focus {
+    background: #ffffff;
+    border: 1px solid rgba(120, 150, 255, 65%);
+}
+QDialog#ShortcutSettingsDialog QToolButton {
+    background: rgba(255, 255, 255, 94%);
+    border: 1px solid rgba(120, 150, 255, 24%);
+    border-radius: 8px;
+    color: #2b2b45;
+    padding: 4px 10px;
+}
+QDialog#ShortcutSettingsDialog QToolButton:hover {
+    background: rgba(225, 235, 255, 96%);
+    border-color: rgba(120, 150, 255, 55%);
+}

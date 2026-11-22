@@ -2191,6 +2191,26 @@ StreamProxy::CacheStats StreamProxy::cacheStats() const
     return stats;
 }
 
+void StreamProxy::releaseCacheFile(const QString &path)
+{
+    if (path.isEmpty())
+        return;
+    const QString target = QFileInfo(path).absoluteFilePath();
+    QStringList keys;
+    for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
+        if (!it.value().isNull() && !it.value()->filePath.isEmpty()) {
+            const QString entryPath = QFileInfo(it.value()->filePath).absoluteFilePath();
+            if (entryPath == target)
+                keys.append(it.key());
+        }
+    }
+    for (const QString &key : keys)
+        dropCacheEntry(key);
+    if (!keys.isEmpty()) {
+        qCInfo(lcProxy) << "已释放流转缓存文件句柄" << target << keys.size() << "个条目";
+    }
+}
+
 void StreamProxy::dropCacheEntry(const QString &key)
 {
     const QSharedPointer<CacheEntry> entry = m_cache.take(key);

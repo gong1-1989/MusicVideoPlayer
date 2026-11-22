@@ -1,6 +1,10 @@
+#include "cache/HlsCacheBuilder.h"
+#include "cache/LyricsCache.h"
+#include "cache/MediaCache.h"
 #include "download/DownloadManager.h"
 #include "download/DownloadTask.h"
 #include "download/MediaRemux.h"
+#include "lyrics/LyricsService.h"
 #include "net/ConfigSearchProvider.h"
 #include "net/ExternalSearchProvider.h"
 #include "net/HttpClient.h"
@@ -222,12 +226,15 @@ private slots:
     void downloadManagerSameNameGetsDistinctFiles();
     void downloadManagerImportsCompleteCache();
     void downloadHlsMergesAndRemuxes();
+    void hlsCacheBuilderProducesSuffixlessMp4();
+    void lyricsServiceCachesOnlinePayload();
     void mediaRemuxConvertsTsToMp4();
     void downloadTaskAllowsVodWithoutEndList();
     void downloadTaskRequiresConsentWithoutVod();
     void downloadManagerForcesSnapshotOnlyAfterConsent();
     void streamProxyPreservesEncodedSegmentQuery();
     void streamProxyServesFirstSegmentOfLongPlaylist();
+    void streamProxyReleaseCacheFileClosesEntry();
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
     void externalAbortKillsProcessWithoutFinish();
@@ -817,6 +824,149 @@ void IntegrationTest::downloadHlsMergesAndRemuxes()
     QVERIFY(QFileInfo(mp4Path).size() > 0);
 }
 
+void IntegrationTest::hlsCacheBuilderProducesSuffixlessMp4()
+{
+    if (!MediaRemux::isAvailable())
+        QSKIP("未找到 ffmpeg，跳过 HLS 后台缓存测试");
+
+    const QString ffmpeg = MediaRemux::ffmpegExecutable();
+    const QString sourceTs = m_tempDir.filePath(QStringLiteral("hls-cache-source.ts"));
+    QFile::remove(sourceTs);
+    QProcess generator;
+    generator.start(ffmpeg, {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                             QStringLiteral("-loglevel"), QStringLiteral("error"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("testsrc=size=160x90:rate=25"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("sine=frequency=440"),
+                             QStringLiteral("-t"), QStringLiteral("2"),
+                             QStringLiteral("-c:v"), QStringLiteral("mpeg2video"),
+                             QStringLiteral("-c:a"), QStringLiteral("mp2"),
+                             QStringLiteral("-f"), QStringLiteral("mpegts"), sourceTs});
+    QVERIFY(generator.waitForFinished(30000));
+    QCOMPARE(generator.exitCode(), 0);
+    QFile tsFile(sourceTs);
+    QVERIFY(tsFile.open(QIODevice::ReadOnly));
+    const QByteArray tsBytes = tsFile.readAll();
+    QVERIFY(tsBytes.size() > 1024);
+    const int split = tsBytes.size() / 2;
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "seg0.ts\n"
+        "#EXTINF:1.0,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n";
+    server.handler = [playlist, tsBytes, split](const LocalHttpServer::Request &request,
+                                                QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/cache/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+        } else if (request.path == QStringLiteral("/cache/seg0.ts")) {
+            LocalHttpServer::respond(socket, 200, tsBytes.left(split), "video/mp2t");
+        } else if (request.path == QStringLiteral("/cache/seg1.ts")) {
+            LocalHttpServer::respond(socket, 200, tsBytes.mid(split), "video/mp2t");
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("HLS 缓存测试");
+    item.url = server.url(QStringLiteral("/cache/index.m3u8"));
+    item.online = true;
+
+    HttpClient http;
+    HlsCacheBuilder builder(&http);
+    bool completed = false;
+    bool failed = false;
+    QString completedPath;
+    QString failureMessage;
+    connect(&builder, &HlsCacheBuilder::completed, &builder,
+            [&](const MediaItem &, const QString &path) {
+                completed = true;
+                completedPath = path;
+            });
+    connect(&builder, &HlsCacheBuilder::failed, &builder,
+            [&](const MediaItem &, const QString &message) {
+                failed = true;
+                failureMessage = message;
+            });
+
+    QVERIFY(builder.start(item));
+    QTRY_VERIFY_WITH_TIMEOUT(completed || failed, 30000);
+    QVERIFY2(!failed, qPrintable(failureMessage));
+    QVERIFY(completed);
+    QCOMPARE(MediaCache::completeFileForItem(item), completedPath);
+    QVERIFY(QFileInfo(completedPath).suffix().isEmpty());
+
+    MediaCache::State state;
+    QVERIFY(MediaCache::readState(completedPath, &state));
+    QCOMPARE(state.extension, QStringLiteral(".mp4"));
+    QCOMPARE(state.identity, MediaCache::cacheIdentity(item));
+    QVERIFY(QFileInfo(completedPath).size() > 0);
+
+    // 合并 TS 只是中间产物，缓存成功必须只留无后缀正文 + .json。
+    const QString tsPath = completedPath + QStringLiteral(".ts");
+    QVERIFY(!QFileInfo::exists(tsPath));
+    QVERIFY(!QFileInfo::exists(tsPath + QStringLiteral(".mvpdownload")));
+
+    QVERIFY(MediaCache::removeForItem(item));
+    QVERIFY(!QFileInfo::exists(completedPath));
+}
+
+void IntegrationTest::lyricsServiceCachesOnlinePayload()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray payload = QByteArrayLiteral(
+        "{\"lrc\":{\"lyric\":\"[00:01.00]第一句\\n[00:02.00]第二句\"}}");
+    server.handler = [payload](const LocalHttpServer::Request &request,
+                               QTcpSocket *socket) {
+        if (request.path.startsWith("/lyric"))
+            LocalHttpServer::respond(socket, 200, payload, "application/json");
+        else
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    MediaItem music;
+    music.type = MediaType::Music;
+    music.title = QStringLiteral("在线歌词缓存测试");
+    music.url = QUrl(QStringLiteral("https://music.example.com/song.mp3?id=42"));
+    music.lyricUrl = server.url(QStringLiteral("/lyric?id=42"));
+    music.online = true;
+
+    HttpClient http;
+    LyricsService service(&http);
+    int ready = 0;
+    connect(&service, &LyricsService::lyricsReady, &service,
+            [&](const QVector<LrcLine> &) { ++ready; });
+    service.load(music.lyricUrl, music);
+    QTRY_COMPARE_WITH_TIMEOUT(ready, 1, 5000);
+    QCOMPARE(server.requests.size(), 1);
+
+    QByteArray cachedPayload;
+    QVERIFY(LyricsCache::load(music, &cachedPayload));
+    QCOMPARE(cachedPayload, payload);
+
+    // 第二次加载同一首歌必须命中磁盘缓存，不再请求歌词接口。
+    LyricsService cachedService(&http);
+    int cachedReady = 0;
+    connect(&cachedService, &LyricsService::lyricsReady, &cachedService,
+            [&](const QVector<LrcLine> &) { ++cachedReady; });
+    cachedService.load(music.lyricUrl, music);
+    QCOMPARE(cachedReady, 1);
+    QCOMPARE(server.requests.size(), 1);
+
+    QVERIFY(LyricsCache::removeForItem(music));
+}
+
 void IntegrationTest::downloadTaskAllowsVodWithoutEndList()
 {
     LocalHttpServer server;
@@ -1102,6 +1252,46 @@ void IntegrationTest::streamProxyServesFirstSegmentOfLongPlaylist()
 
     QCOMPARE(server.requests.size(), 1);
     QCOMPARE(server.requests.first().path, QByteArray("/hls/seg0.ts"));
+    proxy.shutdown();
+}
+
+void IntegrationTest::streamProxyReleaseCacheFileClosesEntry()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray body(4096, 'a');
+    server.handler = [body](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path == QByteArray("/audio.mp3"))
+            LocalHttpServer::respond(socket, 200, body, "audio/mpeg");
+        else
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    const QString cachePath =
+        m_tempDir.filePath(QStringLiteral("proxy-release/media"));
+    QVERIFY(QDir().mkpath(QFileInfo(cachePath).absolutePath()));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+    const QUrl proxied = proxy.proxyUrlFor(server.url(QStringLiteral("/audio.mp3")), {},
+                                           cachePath, QStringLiteral("test#release"));
+    QVERIFY(proxied.isValid());
+
+    HttpClient http;
+    QNetworkReply *reply = http.get(proxied);
+    QSignalSpy finished(reply, &QNetworkReply::finished);
+    QTRY_VERIFY_WITH_TIMEOUT(finished.count() > 0, 5000);
+    QVERIFY(HttpClient::isHttpSuccess(reply));
+    QCOMPARE(reply->readAll().size(), body.size());
+    reply->deleteLater();
+
+    // 代理为支持拖动会保留缓存条目和打开的文件句柄；删除条目前必须能把
+    // 对应条目释放掉，否则 Windows 上 MediaCache::removeForItem 会一直失败。
+    QTRY_COMPARE_WITH_TIMEOUT(proxy.cacheStats().entries, 1, 3000);
+    proxy.releaseCacheFile(cachePath);
+    QCOMPARE(proxy.cacheStats().entries, 0);
+    QVERIFY(QFileInfo::exists(cachePath));
+    QVERIFY(QFile::remove(cachePath));
     proxy.shutdown();
 }
 

@@ -278,16 +278,16 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     }
 
     // 加载优先级：本地文件 > 完整本地缓存 > 断点续传缓存 > 网络。
-    // 本地条目本来就在磁盘上，再缓存一份纯属浪费；只有在线直链（音乐/影视）
-    // 才建立与播放列表条目一一对应的整段缓存。HLS 仍是播放列表加分片，
-    // 由代理按分片在内存里缓存，不在这里拼成单文件。
+    // 本地条目本来就在磁盘上，再缓存一份纯属浪费；只有在线条目（音乐/影视）
+    // 才建立与播放列表条目一一对应的整段缓存。HLS 完整分片由 HlsCacheBuilder
+    // 合并转成无后缀 MP4 后，也在这个分支优先按本地文件播放。
     const QUrl playbackUrl = preferredPlaybackUrl(playbackItem);
     QUrl source = playbackUrl;
     QString sourceKind = playbackItem.online ? QStringLiteral("在线代理")
                                              : QStringLiteral("本地文件");
     const bool cacheable = MediaCache::isCacheable(playbackItem);
     const QString completeCache =
-        cacheable ? MediaCache::completeFileForItem(playbackItem) : QString();
+        playbackItem.online ? MediaCache::completeFileForItem(playbackItem) : QString();
     if (!completeCache.isEmpty()) {
         source = QUrl::fromLocalFile(completeCache);
         sourceKind = QStringLiteral("本地缓存");
@@ -480,6 +480,25 @@ void PlaybackController::onPlaylistRowRemoved(int row)
     }
     if (m_row > row)
         --m_row;
+}
+
+void PlaybackController::releaseStreamCacheForItem(const MediaItem &item)
+{
+    if (!m_proxyReady || m_proxy == nullptr || m_proxyThread == nullptr
+        || !m_proxyThread->isRunning()) {
+        return;
+    }
+    const QString path = MediaCache::filePathForItem(item);
+    if (path.isEmpty())
+        return;
+    // 代理在独立线程；队列投递后由删除逻辑的 500ms 重试覆盖。
+    // 不使用阻塞队列：代理可能正在写大分片，阻塞 GUI 没有收益。
+    QMetaObject::invokeMethod(
+        m_proxy,
+        [proxy = m_proxy, path] {
+            proxy->releaseCacheFile(path);
+        },
+        Qt::QueuedConnection);
 }
 
 void PlaybackController::onMediaStatusChanged(QMediaPlayer::MediaStatus status)

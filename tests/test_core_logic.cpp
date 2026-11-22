@@ -1,6 +1,7 @@
 #include "lyrics/LrcParser.h"
 #include "audio/SpectrumMath.h"
 #include "cache/MediaCache.h"
+#include "cache/LyricsCache.h"
 #include "core/PlaybackController.h"
 #include "core/PlaylistModel.h"
 #include "download/DownloadTask.h"
@@ -9,6 +10,7 @@
 #include "net/HttpClient.h"
 #include "net/SourceConfig.h"
 #include "net/SearchCoordinator.h"
+#include "settings/AppShortcuts.h"
 #include "stream/StreamProxy.h"
 #include "stream/HlsPlaylist.h"
 #include "stream/HlsSeekWindow.h"
@@ -603,6 +605,9 @@ private slots:
     void streamProxyWritesCompleteDiskCache();
     void streamProxyResumesDiskCacheFromPartialFile();
     void mediaCacheLayoutForMusicAndVideo();
+    void hlsCompleteCacheRecognition();
+    void lyricsCacheRoundTrip();
+    void shortcutsDefaultConflictDetection();
     void streamProxyHandlesSuffixlessTextPlaylist();
     void streamProxyEvictsPrefetchWithoutLeakingSlots();
     void seekPrefetchWindowFollowsPlaylistIndex();
@@ -1817,6 +1822,145 @@ void CoreLogicTest::mediaCacheLayoutForMusicAndVideo()
     orphanVideo.close();
     QVERIFY(MediaCache::removeForItem(video));
     QVERIFY(!QDir(videoDir).exists());
+}
+
+void CoreLogicTest::hlsCompleteCacheRecognition()
+{
+    QTemporaryDir dataDir;
+    QVERIFY(dataDir.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    const bool hadDataDir = qEnvironmentVariableIsSet("MVP_DATA_DIR");
+    struct EnvGuard
+    {
+        QByteArray oldValue;
+        bool had = false;
+        ~EnvGuard()
+        {
+            if (had)
+                qputenv("MVP_DATA_DIR", oldValue);
+            else
+                qunsetenv("MVP_DATA_DIR");
+        }
+    } guard{oldDataDir, hadDataDir};
+    qputenv("MVP_DATA_DIR", dataDir.path().toUtf8());
+
+    MediaItem hls;
+    hls.type = MediaType::Video;
+    hls.title = QStringLiteral("HLS 完整缓存");
+    hls.url = QUrl(QStringLiteral("https://example.com/show/index.m3u8?token=abc"));
+    hls.online = true;
+
+    // HLS 不是可按 Range 读取的直链，但合并转封装后的 MP4 必须能被当成
+    // 完整缓存命中；否则每次重播都会重新拉全部分片。
+    QVERIFY(!MediaCache::isCacheable(hls));
+    const QString bodyPath = MediaCache::filePathForItem(hls);
+    QVERIFY(QDir().mkpath(QFileInfo(bodyPath).absolutePath()));
+    QFile body(bodyPath);
+    QVERIFY(body.open(QIODevice::WriteOnly));
+    QVERIFY(body.write("fake-mp4-data") > 0);
+    body.close();
+    QCOMPARE(QFileInfo(bodyPath).suffix(), QString());
+
+    QVERIFY(MediaCache::writeState(bodyPath, MediaCache::cacheIdentity(hls), hls.url,
+                                   "video/mp4", QFileInfo(bodyPath).size(), true,
+                                   QStringLiteral("mp4")));
+    MediaCache::State state;
+    QVERIFY(MediaCache::readState(bodyPath, &state));
+    QCOMPARE(state.extension, QStringLiteral(".mp4"));
+    QCOMPARE(MediaCache::completeFileForItem(hls), bodyPath);
+
+    QVERIFY(MediaCache::removeForItem(hls));
+    QVERIFY(!QFileInfo::exists(bodyPath));
+}
+
+void CoreLogicTest::lyricsCacheRoundTrip()
+{
+    QTemporaryDir dataDir;
+    QVERIFY(dataDir.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    const bool hadDataDir = qEnvironmentVariableIsSet("MVP_DATA_DIR");
+    struct EnvGuard
+    {
+        QByteArray oldValue;
+        bool had = false;
+        ~EnvGuard()
+        {
+            if (had)
+                qputenv("MVP_DATA_DIR", oldValue);
+            else
+                qunsetenv("MVP_DATA_DIR");
+        }
+    } guard{oldDataDir, hadDataDir};
+    qputenv("MVP_DATA_DIR", dataDir.path().toUtf8());
+
+    MediaItem music;
+    music.type = MediaType::Music;
+    music.title = QStringLiteral("缓存歌词");
+    music.artist = QStringLiteral("测试");
+    music.url = QUrl(QStringLiteral("https://music.example.com/song.mp3?id=42"));
+    music.lyricUrl = QUrl(QStringLiteral("https://music.example.com/api/lyric?id=42"));
+    music.online = true;
+
+    const QByteArray payload =
+        QByteArrayLiteral("{\"lrc\":{\"lyric\":\"[00:01.00]第一句\\n[00:02.00]第二句\"}}");
+    QVERIFY(LyricsCache::isEligible(music));
+    QVERIFY(LyricsCache::store(music, music.lyricUrl, payload));
+
+    QByteArray loaded;
+    QVERIFY(LyricsCache::load(music, &loaded));
+    QCOMPARE(loaded, payload);
+
+    const QDir root(LyricsCache::rootDir());
+    QVERIFY(root.exists());
+    const QStringList files = root.entryList(QDir::Files | QDir::NoDotAndDotDot);
+    QCOMPARE(files.size(), 2);
+    bool foundBodyWithoutSuffix = false;
+    bool foundMeta = false;
+    for (const QString &name : files) {
+        if (name.endsWith(QStringLiteral(".json")))
+            foundMeta = true;
+        else if (QFileInfo(name).suffix().isEmpty())
+            foundBodyWithoutSuffix = true;
+    }
+    QVERIFY(foundBodyWithoutSuffix);
+    QVERIFY(foundMeta);
+
+    QVERIFY(LyricsCache::removeForItem(music));
+    QVERIFY(root.entryList(QDir::Files | QDir::NoDotAndDotDot).isEmpty());
+
+    // 只有正文、没有旁车 JSON 的孤儿文件也必须能被删除条目回收，
+    // 否则它会永久占用基础名，把后续歌词缓存推到 "(2)" 且无法命中。
+    const QString orphanPath = root.filePath(MediaCache::entryBaseName(music));
+    QFile orphan(orphanPath);
+    QVERIFY(orphan.open(QIODevice::WriteOnly));
+    orphan.write(payload);
+    orphan.close();
+    QVERIFY(QFileInfo::exists(orphanPath));
+    QVERIFY(LyricsCache::removeForItem(music));
+    QVERIFY(!QFileInfo::exists(orphanPath));
+    QVERIFY(root.entryList(QDir::Files | QDir::NoDotAndDotDot).isEmpty());
+}
+
+void CoreLogicTest::shortcutsDefaultConflictDetection()
+{
+    const QHash<QString, QString> defaults = AppShortcuts::defaultBindings();
+    QCOMPARE(defaults.size(), AppShortcuts::actions().size());
+    QVERIFY(AppShortcuts::conflicts(defaults).isEmpty());
+
+    // 同一快捷键只能有一个动作；播放/暂停与全屏/退出全屏在动作表里
+    // 本身已是 toggle，不能再拆成两个动作去共用或占用两把按键。
+    QHash<QString, QString> duplicate = defaults;
+    duplicate.insert(QStringLiteral("stop"),
+                     defaults.value(QStringLiteral("playPause")));
+    const QVector<AppShortcuts::Conflict> conflicts =
+        AppShortcuts::conflicts(duplicate);
+    QCOMPARE(conflicts.size(), 1);
+    QCOMPARE(conflicts.first().actionIds.size(), 2);
+    QVERIFY(!AppShortcuts::conflictMessage(conflicts).isEmpty());
+
+    QCOMPARE(AppShortcuts::normalizeSequence(QStringLiteral("ctrl+s")),
+             QStringLiteral("Ctrl+S"));
+    QVERIFY(AppShortcuts::normalizeSequence(QStringLiteral("  ")).isEmpty());
 }
 
 void CoreLogicTest::streamProxyHandlesSuffixlessTextPlaylist()

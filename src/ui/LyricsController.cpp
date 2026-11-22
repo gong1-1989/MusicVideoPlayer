@@ -42,7 +42,7 @@ void LyricsController::setCurrentItem(const MediaItem &item)
             return;
         m_service->loadLocalFile(item.lyricUrl.toLocalFile());
     } else {
-        m_service->load(item.lyricUrl);
+        m_service->load(item.lyricUrl, item);
     }
 }
 
