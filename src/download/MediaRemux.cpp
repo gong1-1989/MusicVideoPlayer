@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QTimer>
 
 #ifdef Q_OS_WIN
@@ -72,6 +73,12 @@ bool MediaRemux::isAvailable()
 
 void MediaRemux::remuxToMp4(const QString &inputPath, const QString &outputPath)
 {
+    remuxToMp4(inputPath, QString(), outputPath);
+}
+
+void MediaRemux::remuxToMp4(const QString &videoPath, const QString &audioPath,
+                            const QString &outputPath)
+{
     if (m_process != nullptr)
         return;
 
@@ -82,8 +89,12 @@ void MediaRemux::remuxToMp4(const QString &inputPath, const QString &outputPath)
         return;
     }
 
-    if (!QFileInfo::exists(inputPath)) {
-        emit finished(false, outputPath, tr("待转换的 TS 文件不存在"));
+    if (!QFileInfo::exists(videoPath)) {
+        emit finished(false, outputPath, tr("待转换的视频文件不存在"));
+        return;
+    }
+    if (!audioPath.isEmpty() && !QFileInfo::exists(audioPath)) {
+        emit finished(false, outputPath, tr("待合并的音频文件不存在"));
         return;
     }
 
@@ -156,18 +167,24 @@ void MediaRemux::remuxToMp4(const QString &inputPath, const QString &outputPath)
                 emit finished(success, outputPath, error);
             });
 
-    const QStringList arguments = {
+    QStringList arguments = {
         QStringLiteral("-y"),
         QStringLiteral("-nostdin"),
         QStringLiteral("-loglevel"), QStringLiteral("error"),
-        QStringLiteral("-i"), inputPath,
-        QStringLiteral("-map"), QStringLiteral("0:v?"),
-        QStringLiteral("-map"), QStringLiteral("0:a?"),
-        QStringLiteral("-c"), QStringLiteral("copy"),
-        QStringLiteral("-movflags"), QStringLiteral("+faststart"),
-        QStringLiteral("-f"), QStringLiteral("mp4"),
-        m_tempPath,
+        QStringLiteral("-i"), videoPath,
     };
+    if (!audioPath.isEmpty()) {
+        arguments << QStringLiteral("-i") << audioPath
+                  << QStringLiteral("-map") << QStringLiteral("0:v:0?")
+                  << QStringLiteral("-map") << QStringLiteral("1:a:0?");
+    } else {
+        arguments << QStringLiteral("-map") << QStringLiteral("0:v:0?")
+                  << QStringLiteral("-map") << QStringLiteral("0:a:0?");
+    }
+    arguments << QStringLiteral("-c") << QStringLiteral("copy")
+              << QStringLiteral("-movflags") << QStringLiteral("+faststart")
+              << QStringLiteral("-f") << QStringLiteral("mp4")
+              << m_tempPath;
     m_process->start(ffmpeg, arguments);
 
     QTimer::singleShot(10 * 60 * 1000, this, [this] {

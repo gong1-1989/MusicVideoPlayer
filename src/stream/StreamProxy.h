@@ -9,6 +9,7 @@
 #include <QByteArray>
 #include <QHash>
 #include <QList>
+#include <QMutex>
 #include <QObject>
 #include <QPointer>
 #include <QSet>
@@ -51,6 +52,12 @@ public:
         int rangePrefetches = 0;
     };
     CacheStats cacheStats() const;
+
+    /// 播放器最近请求过的视频/音频媒体播放列表地址。
+    /// 用于让后台 HLS 缓存跟随当前播放码率，而不是盲选最高码率。
+    /// 读取时加锁，可从主线程调用。
+    QUrl lastPlaybackVideoPlaylist() const;
+    QUrl lastPlaybackAudioPlaylist() const;
 
     /// 关闭监听、终止所有上游请求并清空缓存。
     /// 只应在代理所属线程调用；PlaybackController 用阻塞队列调用它。
@@ -127,6 +134,8 @@ private:
                                const Request &request, bool hasRange,
                                const QString &cacheKey);
     bool isHlsSegmentUrl(const QUrl &url) const;
+    /// 同一分片 URL 在清单里重复出现，说明是 EXT-X-BYTERANGE 单文件 HLS。
+    bool isSingleFileHlsSegment(const QUrl &url) const;
     void startRangePart(const QSharedPointer<CacheEntry> &entry, const QString &cacheKey,
                         const QUrl &upstream, const QHash<QString, QString> &headers,
                         qint64 start, qint64 end, bool probe, QTcpSocket *client,
@@ -231,6 +240,10 @@ private:
     int m_prefetchConcurrency = 2;
     bool m_seekPrefetchActive = false;
     qint64 m_prefetchDisabledUntilMs = 0;
+
+    mutable QMutex m_playbackPlaylistMutex;
+    QUrl m_lastPlaybackVideoPlaylist;
+    QUrl m_lastPlaybackAudioPlaylist;
 
     std::atomic_bool m_listening{false};
 };

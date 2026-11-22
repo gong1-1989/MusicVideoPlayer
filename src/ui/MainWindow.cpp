@@ -83,6 +83,17 @@ MainWindow::MainWindow(QWidget *parent)
     // HLS 影视播放时后台把全部分片合并转成 MP4 缓存；它不是用户下载任务，
     // 只跟随当前播放条目，避免和下载队列抢并发/抢同一个目标文件。
     m_hlsCache = new HlsCacheBuilder(m_http, this);
+    // 后台缓存要跟随播放器当前实际打开的码率，而不是主列表里最高的码率：
+    // 播放器把最近一次视频/音频播放列表 URL 回传给缓存器，由它匹配主列表。
+    m_hlsCache->setPlaybackTrackResolvers(
+        [this] { return m_player->lastHlsVideoPlaylistUrl(); },
+        [this] { return m_player->lastHlsAudioPlaylistUrl(); });
+    connect(m_hlsCache, &HlsCacheBuilder::progressChanged, this,
+            [this](const MediaItem &, int percent, const QString &detail) {
+                // 只影响状态栏，不碰播放控制；percent 已包含在 detail 文案里。
+                Q_UNUSED(percent);
+                ui->label_status->setText(detail);
+            });
     connect(m_hlsCache, &HlsCacheBuilder::completed, this,
             [this](const MediaItem &item, const QString &) {
                 ui->label_status->setText(tr("影视缓存完成：%1").arg(item.displayName()));
@@ -240,15 +251,12 @@ MainWindow::MainWindow(QWidget *parent)
                     m_musicVisual->hide();
                     ui->videoWidget->show();
                 }
-                // HLS 影视开始在后台补齐整段缓存；切到音乐/直链视频时
-                // 中止上一个条目的半成品，但保留已经完成的 MP4。
-                if (m_hlsCache != nullptr) {
-                    if (item.type == MediaType::Video && item.online
-                        && playbackIsHls(item)) {
-                        m_hlsCache->start(item);
-                    } else {
-                        m_hlsCache->cancel();
-                    }
+                // HLS 影视开始在后台补齐整段缓存。切到音乐/直链视频时不再主动
+                // 取消：后台缓存应继续跑完，真正需要让位时由下一次 HLS start()
+                // 自己取消上一个条目，避免“切歌即丢缓存”。
+                if (m_hlsCache != nullptr && item.type == MediaType::Video && item.online
+                    && playbackIsHls(item)) {
+                    m_hlsCache->start(item);
                 }
             });
     connect(m_player, &PlaybackController::playbackStateChanged, this,

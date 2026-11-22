@@ -14,6 +14,7 @@
 #include <QHostAddress>
 #include <QList>
 #include <QLoggingCategory>
+#include <QMutexLocker>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPair>
@@ -125,6 +126,21 @@ bool isPlaylistResponse(QNetworkReply *reply)
 bool isOpenEndedRange(const QString &spec)
 {
     return spec.trimmed().compare(QLatin1String("bytes=0-"), Qt::CaseInsensitive) == 0;
+}
+
+/// 独立音轨常见于 `/a1/`、`/aud1/`、`/audio/` 这类目录。
+/// 只用于把播放器最近请求的播放列表分成视频/音频，避免缓存选到音轨。
+bool looksLikeAudioPlaylist(const QUrl &url)
+{
+    const QStringList parts = url.path().toLower().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    for (const QString &part : parts) {
+        if (part == QLatin1String("audio") || part.startsWith(QLatin1String("audio"))
+            || part == QLatin1String("aud") || part.startsWith(QLatin1String("aud"))
+            || QRegularExpression(QStringLiteral("^a\\d+$")).match(part).hasMatch()) {
+            return true;
+        }
+    }
+    return false;
 }
 
 QByteArray statusReason(int status)
@@ -542,6 +558,12 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
 {
     const bool isHead = request.method == QLatin1String("HEAD");
     QByteArray range = request.range.toUtf8();
+    // Apple 的 fMP4 HLS 把整段视频写成 main.mp4，再用 EXT-X-BYTERANGE 切片，
+    // 所以同一个 URL 会在清单里重复出现。播放器无论请求 `bytes=0-717`
+    // 还是 `bytes=718-`，上游都会带回整个文件的总长；不能因此把 27–82MB
+    // 的整段文件建进内存缓存，否则会和后台缓存抢带宽。
+    // 普通 HLS 每片 URL 唯一，仍保留原来的分片缓存/深拖动预取。
+    bool singleFileHlsSegment = isSingleFileHlsSegment(upstream);
 
     // 整段落盘只在“主地址本身就是一个可按字节读取的文件”时启用。
     // HLS 主地址是播放列表，必须留给 attachPlaylist 改写，不能写入媒体文件。
@@ -590,7 +612,8 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
     QPointer<QTcpSocket> guard(client);
     m_http->stream(upstream, range, headers,
                    [this, guard, upstream, headers, isHead, hasRange, cacheKey, request,
-                    cachePath, cacheIdentity, diskRequested, resumeOffset](QNetworkReply *reply) {
+                    cachePath, cacheIdentity, diskRequested, resumeOffset,
+                    singleFileHlsSegment](QNetworkReply *reply) {
         if (guard.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -689,7 +712,8 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         }
         const qint64 cacheLimit =
             diskRequested ? std::numeric_limits<qint64>::max() : kMaxCacheEntryBytes;
-        if (!isHead && cacheTotal > 0 && cacheTotal <= cacheLimit) {
+        if (!isHead && !singleFileHlsSegment && cacheTotal > 0
+            && cacheTotal <= cacheLimit) {
             // 200 全量和“从 0/断点开始、未指定结束”的 206 都能缓存整段。
             // 上游已经回明确区间（例如拖动后的 bytes=500000-500100）时保持原样
             // 透传，不额外占缓存，也不能冒充完整文件。
@@ -761,7 +785,10 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
             return;
         }
 
-        if (cacheTotal > kMaxCacheEntryBytes) {
+        if (singleFileHlsSegment) {
+            qCDebug(lcProxy) << "单文件 HLS 分片，按需透传不建整段缓存"
+                             << request.range << HttpClient::redactUrl(upstream);
+        } else if (cacheTotal > kMaxCacheEntryBytes) {
             qCInfo(lcProxy) << "流转缓存跳过：文件过大" << HttpClient::redactUrl(upstream)
                             << cacheTotal << "字节";
         }
@@ -793,6 +820,20 @@ bool StreamProxy::isHlsSegmentUrl(const QUrl &url) const
     return false;
 }
 
+bool StreamProxy::isSingleFileHlsSegment(const QUrl &url) const
+{
+    int sameUrlCount = 0;
+    for (const auto &info : std::as_const(m_playlists)) {
+        if (info.isNull())
+            continue;
+        for (const QUrl &segment : info->segments) {
+            if (segment == url && ++sameUrlCount > 1)
+                return true;
+        }
+    }
+    return false;
+}
+
 bool StreamProxy::tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream,
                                         const QHash<QString, QString> &headers,
                                         const Request &request, bool hasRange,
@@ -811,6 +852,10 @@ bool StreamProxy::tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream
     if (spec.mid(6).trimmed() != QLatin1String("0-"))
         return false;
     if (!isHlsSegmentUrl(upstream))
+        return false;
+    // 单文件 BYTERANGE 的 `bytes=0-` 同样是整段 82MB，不能在内存里
+    // 拆多连接缓存；只按播放器实际需要的字节透传。
+    if (isSingleFileHlsSegment(upstream))
         return false;
 
     const QSharedPointer<CacheEntry> existing = m_cache.value(cacheKey);
@@ -1114,6 +1159,16 @@ void StreamProxy::rememberPlaylist(const QByteArray &body, const QUrl &playlistU
     m_playlists.insert(key, info);
     if (info->prefetchable)
         m_lastPlaylistKey = key;
+
+    // 记录播放器实际打开的媒体列表，后台缓存据此跟随当前码率。
+    // 音频列表与视频列表分开存，避免缓存误选到独立的音轨。
+    {
+        QMutexLocker locker(&m_playbackPlaylistMutex);
+        if (looksLikeAudioPlaylist(playlistUrl))
+            m_lastPlaybackAudioPlaylist = playlistUrl;
+        else
+            m_lastPlaybackVideoPlaylist = playlistUrl;
+    }
 
     // 一个进程看很多部片子时，分片索引不能无限累积；只保留最近几份。
     if (m_playlists.size() > 8) {
@@ -2189,6 +2244,18 @@ StreamProxy::CacheStats StreamProxy::cacheStats() const
     stats.activePrefetches = m_prefetchActive;
     stats.rangePrefetches = int(m_rangePrefetchKeys.size());
     return stats;
+}
+
+QUrl StreamProxy::lastPlaybackVideoPlaylist() const
+{
+    QMutexLocker locker(&m_playbackPlaylistMutex);
+    return m_lastPlaybackVideoPlaylist;
+}
+
+QUrl StreamProxy::lastPlaybackAudioPlaylist() const
+{
+    QMutexLocker locker(&m_playbackPlaylistMutex);
+    return m_lastPlaybackAudioPlaylist;
 }
 
 void StreamProxy::releaseCacheFile(const QString &path)

@@ -70,6 +70,11 @@ public:
 
     QMediaPlayer *mediaPlayer() const { return m_player; }
 
+    /// 播放器最近打开的视频/音频媒体列列表地址；后台缓存用来跟随当前码率。
+    /// 代理方法内部加锁，可从主线程安全读取。
+    QUrl lastHlsVideoPlaylistUrl() const;
+    QUrl lastHlsAudioPlaylistUrl() const;
+
 signals:
     void currentItemChanged(const MediaItem &item, int row);
     void playbackStateChanged(QMediaPlayer::PlaybackState state);

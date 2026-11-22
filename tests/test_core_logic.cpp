@@ -1,6 +1,7 @@
 #include "lyrics/LrcParser.h"
 #include "audio/SpectrumMath.h"
 #include "cache/MediaCache.h"
+#include "cache/HlsCacheManifest.h"
 #include "cache/LyricsCache.h"
 #include "core/PlaybackController.h"
 #include "core/PlaylistModel.h"
@@ -276,6 +277,102 @@ public:
     QByteArray body;
     int requestCount = 0;
     QList<QPair<qint64, qint64>> ranges;
+};
+
+/// 单文件 BYTERANGE HLS：所有分片都指向同一个 main.mp4。
+/// 用来验证播放器请求大文件的局部 Range 时，StreamProxy 不会缓存整段。
+class SingleFileHlsServer : public QTcpServer
+{
+public:
+    explicit SingleFileHlsServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        body = proxyTestBody(400'000);
+        playlist = QByteArrayLiteral(
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:7\n"
+            "#EXT-X-TARGETDURATION:2\n"
+            "#EXTINF:2,\n"
+            "#EXT-X-BYTERANGE:200000@0\n"
+            "main.mp4\n"
+            "#EXTINF:2,\n"
+            "#EXT-X-BYTERANGE:200000@200000\n"
+            "main.mp4\n"
+            "#EXT-X-ENDLIST\n");
+
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("responded").toBool())
+                        return;
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+
+                    const QByteArray head = pending.left(headEnd);
+                    const QByteArray path =
+                        head.split('\n').value(0).trimmed().split(' ').value(1);
+                    qint64 start = 0;
+                    qint64 end = body.size() - 1;
+                    for (const QByteArray &line : head.split('\n')) {
+                        if (!line.toLower().startsWith("range:"))
+                            continue;
+                        const QByteArray spec = line.mid(6).trimmed();
+                        if (!spec.startsWith("bytes="))
+                            continue;
+                        const QByteArray value = spec.mid(6);
+                        const int dash = value.indexOf('-');
+                        if (dash <= 0)
+                            continue;
+                        start = value.left(dash).toLongLong();
+                        const QByteArray tail = value.mid(dash + 1);
+                        if (!tail.isEmpty())
+                            end = tail.toLongLong();
+                    }
+                    socket->setProperty("responded", true);
+
+                    if (path == "/hls/index.m3u8") {
+                        QByteArray response = "HTTP/1.1 200 OK\r\n"
+                                              "Content-Type: application/vnd.apple.mpegurl\r\n"
+                                              "Content-Length: "
+                                              + QByteArray::number(playlist.size())
+                                              + "\r\nConnection: close\r\n\r\n" + playlist;
+                        socket->write(response);
+                        QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                        return;
+                    }
+                    if (path != "/hls/main.mp4") {
+                        socket->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
+                                      "Connection: close\r\n\r\n");
+                        QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                        return;
+                    }
+
+                    end = qMin(end, qint64(body.size() - 1));
+                    const QByteArray part = body.mid(int(start), int(end - start + 1));
+                    QByteArray response = "HTTP/1.1 206 Partial Content\r\n"
+                                          "Content-Type: video/mp4\r\n"
+                                          "Content-Range: bytes "
+                                          + QByteArray::number(start) + '-'
+                                          + QByteArray::number(end) + '/'
+                                          + QByteArray::number(body.size())
+                                          + "\r\nContent-Length: "
+                                          + QByteArray::number(part.size())
+                                          + "\r\nConnection: close\r\n\r\n" + part;
+                    socket->write(response);
+                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QByteArray body;
+    QByteArray playlist;
 };
 
 /// 缓存淘汰回归源：播放列表有 10 个分片，预取请求只回 206 头和 1KB 正文后挂住；
@@ -606,12 +703,14 @@ private slots:
     void streamProxyResumesDiskCacheFromPartialFile();
     void mediaCacheLayoutForMusicAndVideo();
     void hlsCompleteCacheRecognition();
+    void hlsCacheManifestParsesMasterAndSingleFile();
     void lyricsCacheRoundTrip();
     void shortcutsDefaultConflictDetection();
     void streamProxyHandlesSuffixlessTextPlaylist();
     void streamProxyEvictsPrefetchWithoutLeakingSlots();
     void seekPrefetchWindowFollowsPlaylistIndex();
     void streamProxyMultiRangeForHlsSegment();
+    void streamProxySkipsSingleFileHlsSegmentCache();
     void streamProxyFallsBackWhenHlsRangeIgnored();
     void hlsPlaylistParsesAndIndexes();
     void hlsPlaylistRewritesUris();
@@ -1873,6 +1972,87 @@ void CoreLogicTest::hlsCompleteCacheRecognition()
     QVERIFY(!QFileInfo::exists(bodyPath));
 }
 
+void CoreLogicTest::hlsCacheManifestParsesMasterAndSingleFile()
+{
+    const QUrl masterUrl(QStringLiteral("https://cdn.example.com/fmp4/master.m3u8"));
+    const QByteArray masterBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:7\n"
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud1\",NAME=\"English\",DEFAULT=YES,"
+        "URI=\"a1/prog_index.m3u8\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=82753463,RESOLUTION=1920x1080,CODECS=\"hvc1\" "
+        "AUDIO=\"aud1\"\n"
+        "v4/prog_index.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=585499767,RESOLUTION=3840x2160,CODECS=\"hvc1\" "
+        "AUDIO=\"aud1\"\n"
+        "v9/prog_index.m3u8\n");
+    HlsCacheManifest::Master master;
+    QString error;
+    QVERIFY2(HlsCacheManifest::parseMaster(masterBody, masterUrl, &master, &error),
+             qPrintable(error));
+    QCOMPARE(master.variants.size(), 2);
+    QCOMPARE(master.variants.at(0).bandwidth, 82753463);
+    QCOMPARE(master.variants.at(0).resolution, QStringLiteral("1920x1080"));
+    QCOMPARE(master.variants.at(0).audioGroup, QStringLiteral("aud1"));
+    QCOMPARE(master.variants.at(0).url, QUrl(QStringLiteral(
+                 "https://cdn.example.com/fmp4/v4/prog_index.m3u8")));
+    QCOMPARE(master.audioRenditions.size(), 1);
+    QCOMPARE(master.audioRenditions.at(0).groupId, QStringLiteral("aud1"));
+    QVERIFY(master.audioRenditions.at(0).isDefault);
+    QCOMPARE(master.audioRenditions.at(0).url, QUrl(QStringLiteral(
+                 "https://cdn.example.com/fmp4/a1/prog_index.m3u8")));
+
+    const QUrl videoUrl(QStringLiteral(
+        "https://cdn.example.com/fmp4/v4/prog_index.m3u8?token=abc"));
+    const QByteArray singleFileBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:7\n"
+        "#EXT-X-TARGETDURATION:4\n"
+        "#EXT-X-MAP:URI=\"main.mp4\",BYTERANGE=\"718@0\"\n"
+        "#EXTINF:4.0,\n"
+        "#EXT-X-BYTERANGE:830431@718\n"
+        "main.mp4\n"
+        "#EXTINF:4.0,\n"
+        "#EXT-X-BYTERANGE:830431@831149\n"
+        "main.mp4\n"
+        "#EXTINF:4.0,\n"
+        "#EXT-X-BYTERANGE:830431@1661580\n"
+        "main.mp4\n"
+        "#EXT-X-ENDLIST\n");
+    HlsCacheManifest::MediaTrack track;
+    QVERIFY2(HlsCacheManifest::parseMediaTrack(singleFileBody, videoUrl, &track, &error),
+             qPrintable(error));
+    QVERIFY(track.valid);
+    QVERIFY(track.hasEndList);
+    QCOMPARE(track.segmentCount, 3);
+    QVERIFY(track.singleFile);
+    QCOMPARE(track.singleFileUrl, QUrl(QStringLiteral(
+                 "https://cdn.example.com/fmp4/v4/main.mp4")));
+
+    // 普通分片即使 URL 相同也不能走“整文件 Range”快路径；
+    // 只有每片都声明 BYTERANGE 才是单文件 HLS。
+    const QByteArray segmentedBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXTINF:1,\n"
+        "seg0.ts\n"
+        "#EXTINF:1,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n");
+    HlsCacheManifest::MediaTrack segmented;
+    QVERIFY(HlsCacheManifest::parseMediaTrack(segmentedBody, videoUrl, &segmented, &error));
+    QVERIFY(!segmented.singleFile);
+    QCOMPARE(segmented.segmentCount, 2);
+
+    QVERIFY(HlsCacheManifest::sameUrlIgnoringQuery(
+        QUrl(QStringLiteral("https://cdn.example.com/fmp4/v4/prog.m3u8?token=one")),
+        QUrl(QStringLiteral("https://cdn.example.com/fmp4/v4/prog.m3u8?token=two"))));
+    QVERIFY(!HlsCacheManifest::sameUrlIgnoringQuery(
+        QUrl(QStringLiteral("https://cdn.example.com/fmp4/v4/prog.m3u8")),
+        QUrl(QStringLiteral("https://cdn.example.com/fmp4/v9/prog.m3u8"))));
+}
+
 void CoreLogicTest::lyricsCacheRoundTrip()
 {
     QTemporaryDir dataDir;
@@ -2129,6 +2309,56 @@ void CoreLogicTest::streamProxyMultiRangeForHlsSegment()
     QTRY_VERIFY_WITH_TIMEOUT(upstream.requestCount >= 4, 5000);
     QVERIFY(upstream.ranges.contains(qMakePair(qint64(0), qint64(16383))));
     QVERIFY(upstream.ranges.contains(qMakePair(qint64(16384), qint64(66383))));
+}
+
+void CoreLogicTest::streamProxySkipsSingleFileHlsSegmentCache()
+{
+    SingleFileHlsServer upstream;
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QUrl playlistUrl(
+        QStringLiteral("http://127.0.0.1:%1/hls/index.m3u8").arg(upstream.serverPort()));
+    const QUrl mediaUrl(
+        QStringLiteral("http://127.0.0.1:%1/hls/main.mp4").arg(upstream.serverPort()));
+    const QUrl localPlaylist = proxy.proxyUrlFor(playlistUrl);
+    const QUrl localMedia = proxy.proxyUrlFor(mediaUrl);
+    QVERIFY(localPlaylist.isValid());
+    QVERIFY(localMedia.isValid());
+
+    auto fetch = [](const QUrl &local, const QByteArray &range, QByteArray *head,
+                    QByteArray *body) {
+        QTcpSocket socket;
+        socket.connectToHost(local.host(), quint16(local.port()));
+        if (!socket.waitForConnected(3000))
+            return false;
+        QByteArray request = "GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                             "Host: 127.0.0.1\r\n";
+        if (!range.isEmpty())
+            request += "Range: " + range + "\r\n";
+        request += "Connection: close\r\n\r\n";
+        socket.write(request);
+        socket.flush();
+        return readProxyResponse(&socket, head, body);
+    };
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(fetch(localPlaylist, {}, &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 200"), head.constData());
+    QVERIFY(body.contains("/stream/"));
+
+    // 播放器对 main.mp4 请求 `bytes=718-`：上游会告诉总长 400KB，
+    // 但这是单文件 HLS 的第 2 个 BYTERANGE 起点，绝不能把整段建进缓存。
+    QVERIFY(fetch(localMedia, "bytes=718-", &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QVERIFY(body.size() > 300'000);
+
+    const StreamProxy::CacheStats stats = proxy.cacheStats();
+    QCOMPARE(stats.entries, 0);
+    QCOMPARE(stats.bytes, 0);
 }
 
 void CoreLogicTest::streamProxyFallsBackWhenHlsRangeIgnored()

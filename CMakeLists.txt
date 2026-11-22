@@ -97,6 +97,8 @@ qt_add_library(mvp_core STATIC
     src/cache/LyricsCache.cpp
     src/cache/HlsCacheBuilder.h
     src/cache/HlsCacheBuilder.cpp
+    src/cache/HlsCacheManifest.h
+    src/cache/HlsCacheManifest.cpp
     src/stream/StreamProxy.h
     src/stream/StreamProxy.cpp
     src/stream/StreamCacheStore.h

@@ -187,6 +187,20 @@ PlaybackController::~PlaybackController()
     m_proxy = nullptr;
 }
 
+QUrl PlaybackController::lastHlsVideoPlaylistUrl() const
+{
+    if (m_proxy == nullptr || !m_proxyReady)
+        return QUrl();
+    return m_proxy->lastPlaybackVideoPlaylist();
+}
+
+QUrl PlaybackController::lastHlsAudioPlaylistUrl() const
+{
+    if (m_proxy == nullptr || !m_proxyReady)
+        return QUrl();
+    return m_proxy->lastPlaybackAudioPlaylist();
+}
+
 void PlaybackController::setMediaItemResolver(
     std::function<MediaItem(const MediaItem &)> resolver)
 {
