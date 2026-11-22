@@ -21,6 +21,9 @@ struct StreamCacheEntry
 {
     QByteArray data;
     qint64 total = -1;
+    /// 已登记但还没收到的字节数。pending 占位和单连接在途响应都按 total
+    /// 预留配额，避免多个未完成条目绕过 kMaxCacheTotalBytes。
+    qint64 reservedBytes = 0;
     bool complete = false;
     bool failed = false;
     // 预取请求已占位但响应头还没到。播放器这时命中缓存不能另开一条上游，

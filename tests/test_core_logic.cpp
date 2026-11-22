@@ -1640,6 +1640,12 @@ void CoreLogicTest::streamCacheStoreCountsRangeParts()
     entry->rangePartEnds.insert(5, 7);
     QCOMPARE(StreamCacheStore::bytes(*entry), qint64(18));
 
+    // pending 占位/在途响应按 total 预留配额，统计值取“已缓存”和“已预留”的较大者。
+    entry->reservedBytes = qint64(64);
+    QCOMPARE(StreamCacheStore::bytes(*entry), qint64(64));
+    entry->reservedBytes = qint64(9);
+    QCOMPARE(StreamCacheStore::bytes(*entry), qint64(18));
+
     store.insert(QStringLiteral("k"), entry);
     QCOMPARE(store.size(), 1);
     QVERIFY(store.contains(QStringLiteral("k")));

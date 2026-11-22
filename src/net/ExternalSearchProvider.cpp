@@ -225,15 +225,15 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
                                  item.webUrl);
         item.durationMs = static_cast<qint64>(object.value(QStringLiteral("durationMs")).toDouble(0));
         item.sourceId = m_config.id;
-        const QUrl source = item.webUrl.isValid() && !item.webUrl.host().isEmpty()
-                                ? item.webUrl
-                                : QUrl(m_config.urlTemplate);
-        item.sourceOrigin = HeaderPolicy::originOnly(source);
+        // Cookie/Authorization 的作用域只能来自用户配置的源站，不能让解析器输出的
+        // 远程 webUrl 决定凭据发往哪个 host；webUrl 只用于补全相对地址和展示。
+        const QUrl trustedOrigin(m_config.urlTemplate);
+        item.sourceOrigin = HeaderPolicy::originOnly(trustedOrigin);
         item.online = true;
         item.headers = m_config.headers;
         if (!m_config.cookie.isEmpty())
             item.headers.insert(QStringLiteral("Cookie"), m_config.cookie);
-        item.headers = HeaderPolicy::withSourceHeaders(item.headers, source);
+        item.headers = HeaderPolicy::withSourceHeaders(item.headers, trustedOrigin);
 
         if (item.title.isEmpty() || item.url.isEmpty() || item.url.isRelative()
             || !item.url.isValid()) {

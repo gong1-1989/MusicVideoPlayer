@@ -92,6 +92,9 @@ struct MediaItem
     QString sourceId;               // 来自哪个搜索源（本地文件为空）
     QHash<QString, QString> headers; // 播放/下载要补的请求头（Referer 等；敏感头按目标 host 过滤）
     bool online = false;
+    /// 搜索结果试听创建的内存条目。只用于当前会话播放，不参与持久化；
+    /// 用户明确“加入列表”或下载完成后会清除该标记。
+    bool previewOnly = false;
     qint64 durationMs = 0;
     /// 视频已播放位置，随播放列表条目一起持久化；0 表示从头播放。
     /// 删除列表条目时进度随条目一起消失，音乐不使用该字段。

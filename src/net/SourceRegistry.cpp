@@ -410,21 +410,18 @@ MediaItem SourceRegistry::mediaItemWithCredentials(const MediaItem &item) const
         return item;
 
     MediaItem result = item;
-    QUrl origin = result.sourceOrigin;
-    if (!origin.isValid() || origin.host().isEmpty()) {
-        if (!config.urlTemplate.isEmpty())
-            origin = QUrl(config.urlTemplate);
-        else if (!result.webUrl.isEmpty())
-            origin = result.webUrl;
-    }
+    // 凭据作用域只认用户配置的源站。远程 webUrl/旧条目的 sourceOrigin 都可能被
+    // 搜索结果或外部解析器改写，不能作为 Cookie 发往哪个 host 的依据。
+    const QUrl trustedUrl(config.urlTemplate);
+    const QUrl origin = HeaderPolicy::originOnly(trustedUrl);
 
     if (origin.isValid() && !origin.host().isEmpty()) {
-        result.sourceOrigin = HeaderPolicy::originOnly(origin);
+        result.sourceOrigin = origin;
         // 源配置更新后旧条目的 Referer 可能过期，按当前源站重建；
         // 配置里的显式 Referer/Origin 仍会在下面覆盖回来。
         result.headers.remove(QStringLiteral("Referer"));
         result.headers.remove(QStringLiteral("Origin"));
-        result.headers = HeaderPolicy::withSourceHeaders(result.headers, origin);
+        result.headers = HeaderPolicy::withSourceHeaders(result.headers, trustedUrl);
     }
 
     // 播放列表落盘时剥离了敏感头，这里只从内存中的 SourceRegistry 恢复，
@@ -433,6 +430,15 @@ MediaItem SourceRegistry::mediaItemWithCredentials(const MediaItem &item) const
         result.headers.insert(it.key(), it.value());
     if (!config.cookie.isEmpty())
         result.headers.insert(QStringLiteral("Cookie"), config.cookie);
+
+    if (!origin.isValid() || origin.host().isEmpty()) {
+        // 没有可信源站时 fail closed：配置里残留的 Referer/Origin 也不能成为
+        // 请求层推断凭据作用域的依据，敏感头一并剥离。
+        result.sourceOrigin = QUrl();
+        result.headers.remove(QStringLiteral("Referer"));
+        result.headers.remove(QStringLiteral("Origin"));
+        result.headers = HeaderPolicy::withoutSensitiveHeaders(result.headers);
+    }
 
     return result;
 }

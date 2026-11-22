@@ -482,6 +482,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
 
                 auto entry = QSharedPointer<CacheEntry>::create();
                 entry->total = total;
+                entry->reservedBytes = total;
                 entry->contentType =
                     reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
                 entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
@@ -582,8 +583,11 @@ bool StreamProxy::tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream
     auto entry = QSharedPointer<CacheEntry>::create();
     entry->pending = true;
     entry->multiRange = true;
+    // 探测阶段只知道首片大小；按整片上限预留会让 2 条预取就吃满 256MB 配额，
+    // 把后面排队的 HLS 分片全部挡住。未知总长时只登记真实在途的首片。
+    entry->reservedBytes = kRangeProbeBytes;
     entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
-    if (!cacheHasRoom(kMaxCacheEntryBytes, cacheKey)) {
+    if (!cacheHasRoom(kRangeProbeBytes, cacheKey)) {
         qCInfo(lcProxy) << "HLS 分片多连接 Range 跳过：缓存配额已满"
                         << HttpClient::redactUrl(upstream);
         return false;
@@ -726,6 +730,7 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
         }
 
         entry->total = total;
+        entry->reservedBytes = total;
         entry->pending = false;
         entry->contentType =
             reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
@@ -1061,6 +1066,14 @@ void StreamProxy::startNextPrefetch()
                                  || cached->total >= 0))
             continue;
 
+        // 预取也要先占配额；未知总长时只按真实在途的探测片登记，
+        // 收到 Content-Range 后再改成整片总长，避免 4 条预取互相挤占。
+        if (cached.isNull() && !cacheHasRoom(kRangeProbeBytes, job.cacheKey)) {
+            qCDebug(lcProxy) << "HLS 预取跳过：缓存配额已满"
+                             << HttpClient::redactUrl(job.upstream);
+            continue;
+        }
+
         // 拖动后的后续分片用多连接 Range 逐片流水预取：单连接每片约 0.5 秒，
         // 播放器顺序打开 10 片就要 5 秒；4 路 Range 每片约 0.4 秒且与前台重叠，
         // 才能真正缩短恢复时间。正常播放仍走单连接，避免长期多占源站连接。
@@ -1077,6 +1090,7 @@ void StreamProxy::startNextPrefetch()
         if (cached.isNull()) {
             auto placeholder = QSharedPointer<CacheEntry>::create();
             placeholder->pending = true;
+            placeholder->reservedBytes = kRangeProbeBytes;
             placeholder->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
             m_cache.insert(job.cacheKey, placeholder);
         } else {
@@ -1111,6 +1125,7 @@ bool StreamProxy::startRangePrefetch(const PrefetchJob &job)
     entry->pending = true;
     entry->multiRange = true;
     entry->prefetch = true;
+    entry->reservedBytes = kRangeProbeBytes;
     entry->rangeConnections = qMin(kRangeMaxConnections, 4);
     entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
     m_cache.insert(job.cacheKey, entry);
@@ -1207,6 +1222,7 @@ void StreamProxy::onPrefetchReply(QNetworkReply *reply, const PrefetchJob &job)
     if (entry.isNull())
         entry = QSharedPointer<CacheEntry>::create();
     entry->total = total;
+    entry->reservedBytes = total;
     entry->contentType = reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
     entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
     entry->reply = reply;

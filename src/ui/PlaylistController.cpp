@@ -53,6 +53,19 @@ QVector<MediaItem> playlistFromJson(const QByteArray &payload)
     return items;
 }
 
+/// 试听条目只活在当前模型里。无论从哪个保存入口触发，落盘前都统一剔除，
+/// 避免“点开听一下”在关闭程序或下一次增删时被顺手写成永久列表。
+QVector<MediaItem> persistentItems(const QVector<MediaItem> &items)
+{
+    QVector<MediaItem> result;
+    result.reserve(items.size());
+    for (const MediaItem &item : items) {
+        if (!item.previewOnly)
+            result.append(item);
+    }
+    return result;
+}
+
 } // namespace
 
 PlaylistController::PlaylistController(PlaybackController *player, const PlaylistUi &ui,
@@ -176,7 +189,8 @@ bool PlaylistController::save()
         return false;
     }
 
-    if (PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
+    if (PlaylistStore::saveAll(persistentItems(m_musicModel->items()),
+                               persistentItems(m_videoModel->items()))) {
         setDirty(false);
         return true;
     }
@@ -196,7 +210,8 @@ bool PlaylistController::retrySave()
         emit statusMessage(tr("播放列表读取失败且无法备份，仍禁止保存；请检查 Data/playlists.json 后重启"));
         return false;
     }
-    if (!PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
+    if (!PlaylistStore::saveAll(persistentItems(m_musicModel->items()),
+                                persistentItems(m_videoModel->items()))) {
         qCWarning(lcPlaylist) << "播放列表重试保存仍失败";
         emit statusMessage(tr("播放列表仍未保存：数据目录写入失败，修改继续保留"));
         return false;
@@ -240,13 +255,15 @@ void PlaylistController::playItem(const MediaItem &item)
         return;
 
     PlaylistModel *model = modelFor(item.type);
-    model->addItem(item); // 已存在时返回 false，不影响下面的定位
+    // 搜索结果试听只临时进模型；不能顺手 save()，否则用户只是点开听一下，
+    // 列表文件就被悄悄改写。previewOnly 由所有保存入口统一过滤。
+    MediaItem preview = item;
+    preview.previewOnly = true;
+    model->addItem(preview); // 已存在时保留原条目（包括已永久加入的条目）
     const int row = model->indexOf(item);
     if (row < 0)
         return;
 
-    // 这里是“搜索结果试听”路径，临时加入模型即可；不能顺手 save()，
-    // 否则用户只是点开听一下，列表文件就被悄悄改写。
     m_player->setPlaylist(model);
     m_player->playRow(row);
     m_ui.tabs->setCurrentIndex(item.type == MediaType::Video ? 1 : 0);
@@ -256,8 +273,20 @@ void PlaylistController::addSearchItem(const MediaItem &item, MediaType type)
 {
     MediaItem copy = item;
     copy.type = type;
+    copy.previewOnly = false;
     PlaylistModel *model = modelFor(type);
     if (!model->addItem(copy)) {
+        // 同一条内容可能先是试听条目；用户此时明确点“加入列表”，
+        // 必须把原来的 previewOnly 条目提升为永久条目，而不是报“已存在”。
+        const int existing = model->indexOf(copy);
+        if (existing >= 0 && model->itemAt(existing).previewOnly) {
+            if (model->updateItem(existing, copy)) {
+                if (save())
+                    emit statusMessage(type == MediaType::Music ? tr("已加入音乐列表")
+                                                                : tr("已加入视频列表"));
+                return;
+            }
+        }
         emit statusMessage(type == MediaType::Music ? tr("音乐列表中已存在")
                                                     : tr("视频列表中已存在"));
         return;
@@ -326,6 +355,8 @@ bool PlaylistController::updateDownloadedItem(const MediaItem &source, const QSt
             item.headers.clear();
             item.alternateUrls.clear();
             item.positionMs = 0;
+            // 下载完成说明用户明确要保留这条内容，试听标记不再生效。
+            item.previewOnly = false;
             if (model->updateItem(row, item)) {
                 changed = true;
                 qCInfo(lcPlaylist) << "下载完成后列表条目已改为本地来源" << item.title

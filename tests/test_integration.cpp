@@ -13,6 +13,7 @@
 #include "storage/StoragePaths.h"
 #include "stream/HlsPlaylist.h"
 #include "stream/StreamProxy.h"
+#include "util/HeaderPolicy.h"
 
 #include <QDir>
 #include <QElapsedTimer>
@@ -226,6 +227,7 @@ private slots:
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
     void externalAbortKillsProcessWithoutFinish();
+    void externalProviderScopesCookieToConfiguredOrigin();
     void searchJsonOverLimitFails();
     void responseLimitAbortsInflight();
     void responseLimitOnHttpErrorKeepsStatus();
@@ -1056,6 +1058,57 @@ void IntegrationTest::responseLimitOnHttpErrorKeepsStatus()
     QVERIFY(tooLarge);
     QVERIFY(body.isEmpty());
     reply->deleteLater();
+}
+
+void IntegrationTest::externalProviderScopesCookieToConfiguredOrigin()
+{
+    const QString script = m_tempDir.filePath(QStringLiteral("external_scope.cmd"));
+    QFile file(script);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("@echo {\"items\":[{\"title\":\"scope test\","
+              "\"streamUrl\":\"https://cdn.example/a.mp3\","
+              "\"webUrl\":\"https://evil.example/page\"}]}\r\n");
+    file.close();
+
+    SourceConfig config;
+    config.id = QStringLiteral("external_scope");
+    config.name = QStringLiteral("外部解析器作用域");
+    config.kind = QStringLiteral("external");
+    config.mediaType = MediaType::Music;
+    config.command = QStringLiteral("cmd.exe");
+    config.arguments = QStringLiteral("/c ") + QDir::toNativeSeparators(script);
+    config.urlTemplate = QStringLiteral("https://trusted.example/api?q={keyword}");
+    config.cookie = QStringLiteral("session=trusted");
+    config.timeoutMs = 5000;
+
+    ExternalSearchProvider provider(config);
+    QVector<MediaItem> items;
+    QString error;
+    bool done = false;
+    connect(&provider, &SearchProviderBase::finished, this,
+            [&](const QString &, const QVector<MediaItem> &result, int, const QString &message) {
+                items = result;
+                error = message;
+                done = true;
+            });
+
+    provider.search(QStringLiteral("测试"), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(done, 4000);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(items.size(), 1);
+
+    const MediaItem &item = items.first();
+    // 解析器输出的 webUrl 指向第三方，但 Cookie 作用域必须来自用户配置的源站。
+    QCOMPARE(item.sourceOrigin, QUrl(QStringLiteral("https://trusted.example")));
+    QCOMPARE(item.headers.value(QStringLiteral("Cookie")), QStringLiteral("session=trusted"));
+    QCOMPARE(item.headers.value(QStringLiteral("Referer")),
+             QStringLiteral("https://trusted.example/api"));
+    QVERIFY(!item.headers.value(QStringLiteral("Referer")).contains(QStringLiteral("evil")));
+
+    // CDN 与源站不同 host：请求层必须剥掉 Cookie，避免把源站凭据带给第三方。
+    const QHash<QString, QString> safe = HeaderPolicy::sanitizedForTarget(
+        QUrl(QStringLiteral("https://cdn.example/a.mp3")), item.headers, item.sourceOrigin);
+    QVERIFY(!safe.contains(QStringLiteral("Cookie")));
 }
 
 void IntegrationTest::searchJsonOverLimitFails()

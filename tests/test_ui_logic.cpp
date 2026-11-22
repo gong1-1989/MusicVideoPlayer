@@ -1,4 +1,5 @@
 #include "core/PlaybackController.h"
+#include "core/PlaylistStore.h"
 #include "media/MediaItem.h"
 #include "net/HttpClient.h"
 #include "ui/LyricsController.h"
@@ -79,6 +80,7 @@ private slots:
     void listPageSizeFollowsViewport();
     void themeFontScaleChangesFixedPixelSizes();
     void playlistSaveFailureKeepsDirtyAndRetries();
+    void previewItemNeverPersistsUnlessPromoted();
     void downloadedItemSwitchesPlaylistToLocalSource();
 };
 
@@ -221,6 +223,46 @@ void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()
     QVERIFY(!controller.hasUnsavedChanges());
     QCOMPARE(tabs.tabText(0), QStringLiteral("音乐"));
     QCOMPARE(tabs.tabText(1), QStringLiteral("视频"));
+
+    if (oldDataDir.isEmpty())
+        qunsetenv("MVP_DATA_DIR");
+    else
+        qputenv("MVP_DATA_DIR", oldDataDir);
+}
+
+void UiLogicTest::previewItemNeverPersistsUnlessPromoted()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    qputenv("MVP_DATA_DIR", temp.path().toUtf8());
+
+    PlaybackController player;
+    QTabWidget tabs;
+    QListView *musicView = new QListView;
+    QListView *videoView = new QListView;
+    tabs.addTab(musicView, QStringLiteral("音乐"));
+    tabs.addTab(videoView, QStringLiteral("视频"));
+    PlaylistController controller(&player, PlaylistUi{musicView, videoView, &tabs});
+
+    MediaItem preview;
+    preview.type = MediaType::Music;
+    preview.title = QStringLiteral("试听条目");
+    preview.url = QUrl(QStringLiteral("https://example.com/preview.mp3"));
+    preview.online = true;
+    preview.previewOnly = true;
+
+    // 预览条目可以出现在模型里，但保存入口必须统一过滤，绝不落盘。
+    QVERIFY(controller.musicModel()->addItem(preview));
+    QVERIFY(!controller.hasUnsavedChanges());
+    QVERIFY(controller.save());
+    QVERIFY(PlaylistStore::load(MediaType::Music).isEmpty());
+
+    // 用户把同一内容加入搜索列表：预览行提升为永久条目并立即保存。
+    controller.addSearchItem(preview, MediaType::Music);
+    const QVector<MediaItem> saved = PlaylistStore::load(MediaType::Music);
+    QCOMPARE(saved.size(), 1);
+    QVERIFY(!saved.first().previewOnly);
 
     if (oldDataDir.isEmpty())
         qunsetenv("MVP_DATA_DIR");
