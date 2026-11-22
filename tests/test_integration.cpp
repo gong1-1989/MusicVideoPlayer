@@ -1,3 +1,4 @@
+#include "download/DownloadManager.h"
 #include "download/DownloadTask.h"
 #include "download/MediaRemux.h"
 #include "net/ConfigSearchProvider.h"
@@ -213,6 +214,9 @@ private slots:
     void downloadStopsAtInjectedByteLimit();
     void downloadRejectsShortHlsSegmentRange();
     void downloadResumesFromPartialFileWithRange();
+    void downloadCancelLeavesExistingFinalFile();
+    void downloadManagerKeepsExistingFinalFile();
+    void downloadManagerSameNameGetsDistinctFiles();
     void downloadHlsMergesAndRemuxes();
     void mediaRemuxConvertsTsToMp4();
     void streamProxyPreservesEncodedSegmentQuery();
@@ -503,6 +507,126 @@ void IntegrationTest::downloadResumesFromPartialFileWithRange()
 
     QCOMPARE(server.requests.size(), 1);
     QCOMPARE(server.requests.first().headers.value("range"), QByteArray("bytes=300-"));
+}
+
+void IntegrationTest::downloadCancelLeavesExistingFinalFile()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &, QTcpSocket *) {
+        // 故意不响应：让任务停在请求在途状态，随后由 cancel() 中止。
+    };
+
+    const QString path = m_tempDir.filePath(QStringLiteral("cancel-existing.mp3"));
+    QFile::remove(path);
+    QFile::remove(path + QStringLiteral(".mvpdownload"));
+    {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("existing-final") == 14);
+    }
+
+    HttpClient http;
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/stall.mp3")), path);
+    QTRY_VERIFY_WITH_TIMEOUT(server.requests.size() > 0, 5000);
+    task->cancel();
+    QTest::qWait(100);
+
+    // 取消只应删除本任务的 .mvpdownload，不能删除已有最终文件。
+    QVERIFY(QFileInfo::exists(path));
+    QFile existing(path);
+    QVERIFY(existing.open(QIODevice::ReadOnly));
+    QCOMPARE(existing.readAll(), QByteArray("existing-final"));
+    QVERIFY(!QFile::exists(path + QStringLiteral(".mvpdownload")));
+}
+
+void IntegrationTest::downloadManagerKeepsExistingFinalFile()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("dl-keep"));
+    QVERIFY(QDir(dir).removeRecursively() || !QFileInfo::exists(dir));
+    QVERIFY(QDir().mkpath(dir));
+    const QString base = QDir(dir).filePath(QStringLiteral("同名.mp3"));
+    {
+        QFile file(base);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("user-file") == 9);
+    }
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        const QByteArray body("download-body");
+        LocalHttpServer::respond(socket, 200, body, "audio/mpeg", body.size());
+    };
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("同名");
+    item.url = server.url(QStringLiteral("/same.mp3"));
+    item.online = true;
+
+    QStringList completed;
+    connect(&manager, &DownloadManager::jobCompleted,
+            [&completed](const MediaItem &, const QString &path) { completed.append(path); });
+    const QString id =
+        manager.enqueue(item, item.url, {}, base, false, NetLimits::kDownloadBytes);
+    QVERIFY(!id.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000);
+
+    const QString saved = completed.first();
+    QCOMPARE(saved, QDir(dir).filePath(QStringLiteral("同名 (1).mp3")));
+    QVERIFY(saved != base);
+    QFile original(base);
+    QVERIFY(original.open(QIODevice::ReadOnly));
+    QCOMPARE(original.readAll(), QByteArray("user-file"));
+    QVERIFY(QFileInfo(saved).size() > 0);
+    manager.shutdownForExit();
+}
+
+void IntegrationTest::downloadManagerSameNameGetsDistinctFiles()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("dl-concurrent"));
+    QVERIFY(QDir(dir).removeRecursively() || !QFileInfo::exists(dir));
+    QVERIFY(QDir().mkpath(dir));
+    const QString base = QDir(dir).filePath(QStringLiteral("同名.mp3"));
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        const QByteArray body = request.path == "/a.mp3" ? "body-a" : "body-b";
+        LocalHttpServer::respond(socket, 200, body, "audio/mpeg", body.size());
+    };
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    MediaItem first;
+    first.type = MediaType::Music;
+    first.title = QStringLiteral("同名");
+    first.url = server.url(QStringLiteral("/a.mp3"));
+    first.online = true;
+    MediaItem second = first;
+    second.url = server.url(QStringLiteral("/b.mp3"));
+
+    QStringList completed;
+    connect(&manager, &DownloadManager::jobCompleted,
+            [&completed](const MediaItem &, const QString &path) { completed.append(path); });
+    QVERIFY(!manager.enqueue(first, first.url, {}, base, false, NetLimits::kDownloadBytes).isEmpty());
+    QVERIFY(!manager.enqueue(second, second.url, {}, base, false, NetLimits::kDownloadBytes).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 2, 10000);
+
+    QVERIFY(completed.at(0) != completed.at(1));
+    QVERIFY(completed.contains(base));
+    QVERIFY(completed.contains(QDir(dir).filePath(QStringLiteral("同名 (1).mp3"))));
+    QFile a(base);
+    QFile b(QDir(dir).filePath(QStringLiteral("同名 (1).mp3")));
+    QVERIFY(a.open(QIODevice::ReadOnly));
+    QVERIFY(b.open(QIODevice::ReadOnly));
+    QCOMPARE(a.readAll(), QByteArray("body-a"));
+    QCOMPARE(b.readAll(), QByteArray("body-b"));
+    manager.shutdownForExit();
 }
 
 void IntegrationTest::downloadHlsMergesAndRemuxes()
