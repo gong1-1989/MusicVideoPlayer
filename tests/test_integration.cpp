@@ -220,6 +220,7 @@ private slots:
     void downloadCancelLeavesExistingFinalFile();
     void downloadManagerKeepsExistingFinalFile();
     void downloadManagerSameNameGetsDistinctFiles();
+    void downloadManagerImportsCompleteCache();
     void downloadHlsMergesAndRemuxes();
     void mediaRemuxConvertsTsToMp4();
     void downloadTaskAllowsVodWithoutEndList();
@@ -695,6 +696,48 @@ void IntegrationTest::downloadManagerSameNameGetsDistinctFiles()
     QVERIFY(b.open(QIODevice::ReadOnly));
     QCOMPARE(a.readAll(), QByteArray("body-a"));
     QCOMPARE(b.readAll(), QByteArray("body-b"));
+    manager.shutdownForExit();
+}
+
+void IntegrationTest::downloadManagerImportsCompleteCache()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("dl-cache-import"));
+    QVERIFY(QDir(dir).removeRecursively() || !QFileInfo::exists(dir));
+    QVERIFY(QDir().mkpath(dir));
+    const QString cacheBody = QDir(dir).filePath(QStringLiteral("缓存正文"));
+    const QByteArray expected("cached-media-body");
+    {
+        QFile file(cacheBody);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write(expected), qint64(expected.size()));
+    }
+    // 下载目标必须有用户能识别的后缀；缓存正文本身可以无后缀。
+    const QString target = QDir(dir).filePath(QStringLiteral("缓存导入.mp3"));
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("缓存导入");
+    item.url = QStringLiteral("https://example.com/import.mp3");
+    item.online = true;
+
+    QStringList completed;
+    connect(&manager, &DownloadManager::jobCompleted,
+            [&completed](const MediaItem &, const QString &path) { completed.append(path); });
+    const QString id = manager.importFromCache(item, cacheBody, target);
+    QVERIFY(!id.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000);
+    QCOMPARE(completed.first(), target);
+    QVERIFY(!QFileInfo::exists(target + QStringLiteral(".mvpdownload")));
+
+    QFile saved(target);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QCOMPARE(saved.readAll(), expected);
+    for (const DownloadJob &job : manager.jobs()) {
+        if (job.id == id)
+            QCOMPARE(job.status, DownloadJob::Status::Completed);
+    }
     manager.shutdownForExit();
 }
 

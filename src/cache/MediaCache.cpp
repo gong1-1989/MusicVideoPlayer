@@ -5,7 +5,6 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
-#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -13,14 +12,11 @@
 #include <QSaveFile>
 #include <QUrlQuery>
 
-#include <algorithm>
-
 namespace {
-constexpr int kMetaVersion = 1;
+constexpr int kMetaVersion = 2;
 
-QString safeExtension(const MediaItem &item)
+QString safeExtensionFromUrl(const QUrl &url, const QByteArray &contentType = QByteArray())
 {
-    const QUrl url = preferredPlaybackUrl(item);
     static const QStringList known = {
         QStringLiteral("mp3"),  QStringLiteral("m4a"), QStringLiteral("aac"),
         QStringLiteral("flac"), QStringLiteral("wav"), QStringLiteral("ogg"),
@@ -31,8 +27,7 @@ QString safeExtension(const MediaItem &item)
     QString suffix = QFileInfo(url.path()).suffix().toLower();
     if (!known.contains(suffix)) {
         // 网易云这类外链把真实文件名放在查询串里：
-        // `.../outer/url?id=123.mp3`。只按 path 取后缀会得到 "url"，
-        // 最终落盘成 media.bin，既难辨认，也不利于播放器按扩展名建解码器。
+        // `.../outer/url?id=123.mp3`。只按 path 取后缀会得到 "url"。
         const QUrlQuery query(url);
         for (const auto &pair : query.queryItems(QUrl::FullyDecoded)) {
             const QString candidate = QFileInfo(pair.second).suffix().toLower();
@@ -42,9 +37,239 @@ QString safeExtension(const MediaItem &item)
             }
         }
     }
+    if (!known.contains(suffix) && !contentType.isEmpty()) {
+        // CDN 经常给无后缀签名地址；Content-Type 是最后一道可靠线索。
+        const QString type = QString::fromLatin1(contentType).toLower();
+        if (type.contains(QStringLiteral("mpeg")) && type.contains(QStringLiteral("audio")))
+            suffix = QStringLiteral("mp3");
+        else if (type.contains(QStringLiteral("audio/mp4")))
+            suffix = QStringLiteral("m4a");
+        else if (type.contains(QStringLiteral("flac")))
+            suffix = QStringLiteral("flac");
+        else if (type.contains(QStringLiteral("wav")))
+            suffix = QStringLiteral("wav");
+        else if (type.contains(QStringLiteral("ogg")))
+            suffix = QStringLiteral("ogg");
+        else if (type.contains(QStringLiteral("webm")))
+            suffix = QStringLiteral("webm");
+        else if (type.contains(QStringLiteral("flv")))
+            suffix = QStringLiteral("flv");
+        else if (type.contains(QStringLiteral("mp2t")))
+            suffix = QStringLiteral("ts");
+        else if (type.contains(QStringLiteral("video/mp4")) || type.contains(QStringLiteral("m4v")))
+            suffix = QStringLiteral("mp4");
+        else if (type.contains(QStringLiteral("quicktime")))
+            suffix = QStringLiteral("mov");
+    }
     if (!known.contains(suffix))
         suffix = QStringLiteral("bin");
     return QLatin1Char('.') + suffix;
+}
+
+QString safeEntryName(const QString &raw, MediaType type)
+{
+    QString name;
+    const QString invalid = QStringLiteral("<>:\"/\\|?*");
+    for (const QChar ch : raw) {
+        if (ch.category() == QChar::Other_Control || invalid.contains(ch))
+            name.append(QLatin1Char('_'));
+        else if (ch == QLatin1Char('\n') || ch == QLatin1Char('\r') || ch == QLatin1Char('\t'))
+            name.append(QLatin1Char(' '));
+        else
+            name.append(ch);
+    }
+    name = name.simplified();
+    while (!name.isEmpty()
+           && (name.endsWith(QLatin1Char('.')) || name.endsWith(QLatin1Char(' ')))) {
+        name.chop(1);
+    }
+    // 文件名过长会在 Windows 上触发 MAX_PATH；给同目录的 .json 留足空间。
+    if (name.size() > 120)
+        name.truncate(120);
+    if (name.isEmpty())
+        name = type == MediaType::Video ? QStringLiteral("影视") : QStringLiteral("音乐");
+    // Windows 不允许直接用这些名字做文件/目录名。
+    static const QStringList reserved = {
+        QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),
+        QStringLiteral("NUL"),  QStringLiteral("COM1"), QStringLiteral("COM2"),
+        QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"),
+        QStringLiteral("COM6"), QStringLiteral("COM7"), QStringLiteral("COM8"),
+        QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
+        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),
+        QStringLiteral("LPT6"), QStringLiteral("LPT7"), QStringLiteral("LPT8"),
+        QStringLiteral("LPT9"),
+    };
+    if (reserved.contains(name, Qt::CaseInsensitive))
+        name.prepend(QLatin1Char('_'));
+    return name;
+}
+
+QString identityDigest(const MediaItem &item, int length)
+{
+    return QCryptographicHash::hash(mediaIdentity(item).toUtf8(), QCryptographicHash::Sha256)
+        .toHex()
+        .left(length);
+}
+
+QUrl comparableUrl(QUrl url)
+{
+    url.setQuery(QString());
+    url.setFragment(QString());
+    return url;
+}
+
+/// 第一轮缓存是 `<SHA-256 前 32 位>/media.<ext> + meta.json`。
+/// 新布局第一次播放同一 URL 时把数据搬到用户可读的新位置，避免升级后
+/// 已经下好的歌曲/影视全部变成看不见的孤儿。
+bool adoptLegacyCache(const MediaItem &item)
+{
+    if (!MediaCache::isCacheable(item))
+        return false;
+    const QString newPath = MediaCache::filePathForItem(item);
+    if (QFileInfo::exists(newPath) || QFileInfo::exists(MediaCache::metaPathForFile(newPath)))
+        return false;
+
+    const QString legacyDir =
+        MediaCache::rootDir() + QLatin1Char('/') + identityDigest(item, 32);
+    QDir dir(legacyDir);
+    if (!dir.exists())
+        return false;
+
+    QFile meta(dir.filePath(QStringLiteral("meta.json")));
+    if (!meta.open(QIODevice::ReadOnly))
+        return false;
+    const QJsonObject object = QJsonDocument::fromJson(meta.readAll()).object();
+    meta.close();
+    if (object.value(QStringLiteral("version")).toInt() != 1)
+        return false;
+
+    const QUrl oldUrl = comparableUrl(QUrl(object.value(QStringLiteral("url")).toString()));
+    if (!oldUrl.isValid() || oldUrl != comparableUrl(preferredPlaybackUrl(item)))
+        return false;
+    const qint64 total =
+        static_cast<qint64>(object.value(QStringLiteral("total")).toDouble(-1));
+    const bool complete = object.value(QStringLiteral("complete")).toBool();
+    const QByteArray contentType =
+        object.value(QStringLiteral("contentType")).toString().toLatin1();
+
+    QString legacyData;
+    const QFileInfoList files =
+        dir.entryInfoList(QStringList{QStringLiteral("media.*")}, QDir::Files);
+    for (const QFileInfo &info : files) {
+        legacyData = info.absoluteFilePath();
+        break;
+    }
+    if (legacyData.isEmpty())
+        return false;
+
+    if (!QDir().mkpath(QFileInfo(newPath).absolutePath()))
+        return false;
+    if (!QFile::rename(legacyData, newPath)) {
+        if (!QFile::copy(legacyData, newPath))
+            return false;
+        QFile::remove(legacyData);
+    }
+    if (!MediaCache::writeState(newPath, MediaCache::cacheIdentity(item),
+                                preferredPlaybackUrl(item), contentType, total, complete)) {
+        // 不允许出现“正文搬走了、旁车没写成”的半套状态；搬回去让下次再试。
+        QFile::rename(newPath, legacyData);
+        return false;
+    }
+    dir.removeRecursively();
+    return true;
+}
+
+QString candidateName(const QString &base, int index)
+{
+    return index <= 0 ? base : base + QStringLiteral(" (%1)").arg(index + 1);
+}
+
+QString resolvedCachePath(const MediaItem &item)
+{
+    const QString root = QDir::cleanPath(MediaCache::rootDir());
+    const QString base = safeEntryName(item.displayName(), item.type);
+    const QString identity = MediaCache::cacheIdentity(item);
+
+    for (int index = 0; index < 1000; ++index) {
+        const QString name = candidateName(base, index);
+        QString path;
+        bool reusable = false;
+        if (item.type == MediaType::Video) {
+            const QString folder = root + QLatin1Char('/') + name;
+            // 影视条目是一个目录，正文固定叫 media，不带后缀。
+            path = folder + QStringLiteral("/media");
+            const QFileInfo folderInfo(folder);
+            if (folderInfo.exists() && !folderInfo.isDir())
+                continue;
+            if (!folderInfo.exists())
+                reusable = true;
+        } else {
+            // 音乐条目直接放缓存根目录，一个条目一个文件，不带后缀。
+            path = root + QLatin1Char('/') + name;
+            const QFileInfo dataInfo(path);
+            if (dataInfo.exists() && dataInfo.isDir())
+                continue;
+            if (!dataInfo.exists())
+                reusable = true;
+        }
+
+        MediaCache::State state;
+        const QFileInfo metaInfo(MediaCache::metaPathForFile(path));
+        if (metaInfo.exists()) {
+            if (MediaCache::readState(path, &state) && state.identity == identity)
+                return path;
+            continue;
+        }
+
+        // 没有旁车 JSON 的空目录可以复用；已有正文却缺 JSON 说明是异常残留，
+        // 换下一个名字，避免把别的条目数据覆盖掉。
+        if (item.type == MediaType::Video && !reusable
+            && QDir(QFileInfo(path).absolutePath()).isEmpty()) {
+            reusable = true;
+        }
+        if (reusable)
+            return path;
+    }
+    // 极端同名情况下仍保证能落盘：短哈希是稳定且唯一的最后手段。
+    return root + QLatin1Char('/') + base + QStringLiteral("__") + identityDigest(item, 8)
+           + (item.type == MediaType::Video ? QStringLiteral("/media") : QString());
+}
+
+/// 删除时必须找到“当前实际占用”的条目路径，而不能复用 `resolvedCachePath`
+/// 的“可写候选”逻辑。`removeForItem` 会先删正文再删 JSON；如果正文因文件
+/// 句柄未释放而删除失败，再次进入时 JSON 仍在，身份还能定位到同一文件。
+/// 反过来，一旦先删 JSON，正文就变成没有身份的孤儿，候选会跳到 `(2)`，
+/// 重试永远删不到真正被占用的文件。这里把无 JSON 的残留正文也视为待删目标。
+QString removalPathForItem(const MediaItem &item)
+{
+    const QString root = QDir::cleanPath(MediaCache::rootDir());
+    const QString base = safeEntryName(item.displayName(), item.type);
+    const QString identity = MediaCache::cacheIdentity(item);
+
+    for (int index = 0; index < 1000; ++index) {
+        const QString name = candidateName(base, index);
+        QString path;
+        if (item.type == MediaType::Video) {
+            path = root + QLatin1Char('/') + name + QStringLiteral("/media");
+        } else {
+            path = root + QLatin1Char('/') + name;
+        }
+        if (!QFileInfo::exists(path))
+            continue;
+
+        const QFileInfo metaInfo(MediaCache::metaPathForFile(path));
+        if (!metaInfo.exists())
+            return path;
+
+        MediaCache::State state;
+        if (MediaCache::readState(path, &state) && state.identity == identity)
+            return path;
+    }
+
+    // 没有任何残留可删时返回候选 0，让调用方走“无需删除”的成功路径。
+    return item.type == MediaType::Video
+               ? root + QLatin1Char('/') + base + QStringLiteral("/media")
+               : root + QLatin1Char('/') + base;
 }
 
 } // namespace
@@ -56,23 +281,101 @@ QString rootDir()
     return StoragePaths::dataFile(QStringLiteral("media-cache"));
 }
 
+QString cacheIdentity(const MediaItem &item)
+{
+    if (!item.online)
+        return mediaIdentity(item);
+    if (!item.webUrl.isEmpty() && item.webUrl.isValid()) {
+        return QStringLiteral("web:") + item.webUrl.toString() + QLatin1Char('#')
+               + item.title;
+    }
+
+    QUrl bare = preferredPlaybackUrl(item);
+    bare.setQuery(QString());
+    bare.setFragment(QString());
+    QString stableId;
+    // 只捡名字里带 id 的参数（id/songId/videoId/aid…）；签名、过期时间这类
+    // 会变的参数不能参与缓存归属，否则同一首歌每次重播都换一份缓存。
+    const QUrlQuery query(item.url);
+    for (const auto &pair : query.queryItems(QUrl::FullyDecoded)) {
+        const QString key = pair.first.toLower();
+        if (key == QStringLiteral("id") || key.endsWith(QStringLiteral("id"))) {
+            stableId = pair.second;
+            break;
+        }
+    }
+    return QStringLiteral("url:") + bare.toString() + QLatin1Char('#')
+           + QString::number(static_cast<int>(item.type)) + QLatin1Char('#') + item.title
+           + QLatin1Char('#') + item.artist + QLatin1Char('#') + item.sourceId
+           + QLatin1Char('#') + stableId;
+}
+
 QString directoryForItem(const MediaItem &item)
 {
-    const QByteArray digest =
-        QCryptographicHash::hash(mediaIdentity(item).toUtf8(), QCryptographicHash::Sha256)
-            .toHex()
-            .left(32);
-    return rootDir() + QLatin1Char('/') + QString::fromLatin1(digest);
+    if (item.type == MediaType::Music)
+        return rootDir();
+    return QFileInfo(filePathForItem(item)).absolutePath();
 }
 
 QString filePathForItem(const MediaItem &item)
 {
-    return directoryForItem(item) + QStringLiteral("/media") + safeExtension(item);
+    return resolvedCachePath(item);
 }
 
 QString metaPathForFile(const QString &cachePath)
 {
-    return QFileInfo(cachePath).absolutePath() + QStringLiteral("/meta.json");
+    // 正文故意不带后缀，真实格式写在紧邻的 `<正文>.json` 里。
+    return cachePath + QStringLiteral(".json");
+}
+
+QString extensionForUrl(const QUrl &url, const QByteArray &contentType)
+{
+    return safeExtensionFromUrl(url, contentType);
+}
+
+bool removeForItem(const MediaItem &item)
+{
+    const QString cacheRoot = QDir::cleanPath(rootDir());
+    const QString path = QDir::cleanPath(removalPathForItem(item));
+    const QString meta = QDir::cleanPath(metaPathForFile(path));
+    bool ok = true;
+
+    if (item.type == MediaType::Video) {
+        const QString dir = QFileInfo(path).absolutePath();
+        // 只允许删 media-cache 下这一层条目目录，防止路径计算异常时误删别处。
+        if (dir.isEmpty() || dir == cacheRoot
+            || !dir.startsWith(cacheRoot + QLatin1Char('/'))) {
+            return false;
+        }
+        // 先删正文、再删 JSON、最后删空目录。正文被播放器短暂占用时保留
+        // JSON，下一次重试还能靠身份找到同一个文件。
+        if (QFileInfo::exists(path))
+            ok = QFile::remove(path) && ok;
+        if (QFileInfo::exists(path))
+            return false;
+        if (QFileInfo::exists(meta))
+            ok = QFile::remove(meta) && ok;
+        QDir().rmdir(dir);
+    } else {
+        if (path.isEmpty() || path == cacheRoot
+            || !path.startsWith(cacheRoot + QLatin1Char('/'))) {
+            return false;
+        }
+        if (QFileInfo::exists(path))
+            ok = QFile::remove(path) && ok;
+        // 正文没删掉就保留旁车 JSON；重试时才能继续定位这个正文。
+        if (QFileInfo::exists(path))
+            return false;
+        if (QFileInfo::exists(meta))
+            ok = QFile::remove(meta) && ok;
+    }
+
+    // 第一轮缓存是 `<32 位哈希>/media.<ext>`；删除条目时连旧布局一起清掉，
+    // 避免用户升级后删了列表却留下看不见的孤儿目录。
+    const QString legacy = cacheRoot + QLatin1Char('/') + identityDigest(item, 32);
+    if (QDir(legacy).exists())
+        ok = QDir(legacy).removeRecursively() && ok;
+    return ok;
 }
 
 bool isCacheable(const MediaItem &item)
@@ -105,8 +408,10 @@ bool readState(const QString &cachePath, State *state)
         return false;
 
     State loaded;
+    loaded.identity = object.value(QStringLiteral("identity")).toString();
     loaded.url = QUrl(object.value(QStringLiteral("url")).toString());
     loaded.contentType = object.value(QStringLiteral("contentType")).toString();
+    loaded.extension = object.value(QStringLiteral("extension")).toString();
     loaded.totalBytes =
         static_cast<qint64>(object.value(QStringLiteral("total")).toDouble(-1));
     loaded.complete = object.value(QStringLiteral("complete")).toBool();
@@ -116,16 +421,17 @@ bool readState(const QString &cachePath, State *state)
     return true;
 }
 
-bool writeState(const QString &cachePath, const QUrl &url, const QByteArray &contentType,
-                qint64 totalBytes, bool complete)
+bool writeState(const QString &cachePath, const QString &identity, const QUrl &url,
+                const QByteArray &contentType, qint64 totalBytes, bool complete)
 {
-    if (cachePath.isEmpty())
+    if (cachePath.isEmpty() || identity.isEmpty())
         return false;
     if (!QDir().mkpath(QFileInfo(cachePath).absolutePath()))
         return false;
 
     QJsonObject object;
     object.insert(QStringLiteral("version"), kMetaVersion);
+    object.insert(QStringLiteral("identity"), identity);
     // 地址只留 scheme/host/path：CDN 直链的查询串常带临时签名，
     // 缓存旁车没有理由把另一份短期凭据写到磁盘。
     QUrl safeUrl = url;
@@ -133,6 +439,7 @@ bool writeState(const QString &cachePath, const QUrl &url, const QByteArray &con
     safeUrl.setFragment(QString());
     object.insert(QStringLiteral("url"), safeUrl.toString());
     object.insert(QStringLiteral("contentType"), QString::fromLatin1(contentType));
+    object.insert(QStringLiteral("extension"), safeExtensionFromUrl(url, contentType));
     object.insert(QStringLiteral("total"), static_cast<double>(totalBytes));
     object.insert(QStringLiteral("complete"), complete);
     object.insert(QStringLiteral("updatedAt"),
@@ -150,10 +457,13 @@ QString completeFileForItem(const MediaItem &item)
 {
     if (!isCacheable(item))
         return QString();
+    adoptLegacyCache(item);
     const QString path = filePathForItem(item);
     State state;
-    if (!readState(path, &state) || state.totalBytes <= 0)
+    if (!readState(path, &state) || state.totalBytes <= 0
+        || state.identity != cacheIdentity(item)) {
         return QString();
+    }
     const qint64 size = fileSize(path);
     if (size <= 0 || size != state.totalBytes)
         return QString();
@@ -164,59 +474,20 @@ QString partialFileForItem(const MediaItem &item)
 {
     if (!isCacheable(item))
         return QString();
+    adoptLegacyCache(item);
     const QString path = filePathForItem(item);
     const qint64 size = fileSize(path);
     if (size <= 0)
         return QString();
 
     State state;
-    if (readState(path, &state) && state.totalBytes > 0 && size >= state.totalBytes)
-        return QString();
+    if (readState(path, &state)) {
+        if (state.identity != cacheIdentity(item))
+            return QString();
+        if (state.totalBytes > 0 && size >= state.totalBytes)
+            return QString();
+    }
     return path;
-}
-
-void prune(qint64 maxBytes)
-{
-    QDir root(rootDir());
-    if (!root.exists() || maxBytes <= 0)
-        return;
-
-    struct Entry
-    {
-        QString path;
-        qint64 bytes = 0;
-        qint64 lastUsedMs = 0;
-    };
-    QVector<Entry> entries;
-    qint64 total = 0;
-    const QFileInfoList dirs =
-        root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
-    for (const QFileInfo &dirInfo : dirs) {
-        Entry entry;
-        entry.path = dirInfo.absoluteFilePath();
-        entry.lastUsedMs = dirInfo.lastModified().toMSecsSinceEpoch();
-        QDirIterator it(entry.path, QDir::Files | QDir::Hidden,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            const QFileInfo info(it.next());
-            entry.bytes += info.size();
-            entry.lastUsedMs = qMax(entry.lastUsedMs, info.lastModified().toMSecsSinceEpoch());
-        }
-        total += entry.bytes;
-        entries.append(entry);
-    }
-    if (total <= maxBytes)
-        return;
-
-    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
-        return a.lastUsedMs < b.lastUsedMs;
-    });
-    for (const Entry &entry : std::as_const(entries)) {
-        if (total <= maxBytes)
-            break;
-        if (QDir(entry.path).removeRecursively())
-            total -= entry.bytes;
-    }
 }
 
 } // namespace MediaCache

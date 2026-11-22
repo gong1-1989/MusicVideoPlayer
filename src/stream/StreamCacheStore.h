@@ -26,6 +26,8 @@ struct StreamCacheEntry
     /// dataSize 同时覆盖内存与文件两种模式，避免各处混用 data.size()。
     bool diskBacked = false;
     QString filePath;
+    /// 写入旁车 JSON 的条目身份；代理本身不认识播放列表，只能由调用方带入。
+    QString cacheIdentity;
     QUrl upstream;
     qint64 dataSize = 0;
     QFile *file = nullptr;

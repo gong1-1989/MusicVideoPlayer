@@ -22,6 +22,8 @@
 #include "util/TimeFormat.h"
 
 #include <QDateTime>
+#include <QCryptographicHash>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -30,6 +32,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTcpServer>
@@ -599,6 +602,7 @@ private slots:
     void streamProxyResumesTruncatedPartialCache();
     void streamProxyWritesCompleteDiskCache();
     void streamProxyResumesDiskCacheFromPartialFile();
+    void mediaCacheLayoutForMusicAndVideo();
     void streamProxyHandlesSuffixlessTextPlaylist();
     void streamProxyEvictsPrefetchWithoutLeakingSlots();
     void seekPrefetchWindowFollowsPlaylistIndex();
@@ -1519,7 +1523,11 @@ void CoreLogicTest::streamProxyWritesCompleteDiskCache()
     const QString cachePath = MediaCache::filePathForItem(item);
     QVERIFY(!cachePath.isEmpty());
     QVERIFY(cachePath.contains(QStringLiteral("media-cache")));
-    QVERIFY2(cachePath.endsWith(QStringLiteral("media.mp3")), qPrintable(cachePath));
+    // 音乐正文直接放缓存根目录，一个条目一个文件，且不带后缀。
+    QCOMPARE(QFileInfo(cachePath).absolutePath(),
+             QDir::cleanPath(MediaCache::rootDir()));
+    QVERIFY(QFileInfo(cachePath).suffix().isEmpty());
+    QVERIFY(QFileInfo(cachePath).fileName() != QStringLiteral("media.mp3"));
 
     auto fetchAll = [](const QUrl &local, QByteArray *head, QByteArray *body) {
         QTcpSocket socket;
@@ -1535,7 +1543,8 @@ void CoreLogicTest::streamProxyWritesCompleteDiskCache()
     {
         StreamProxy proxy;
         QVERIFY(proxy.start());
-        const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath);
+        const QUrl local =
+            proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath, MediaCache::cacheIdentity(item));
         QVERIFY(local.isValid());
 
         QByteArray head;
@@ -1562,7 +1571,8 @@ void CoreLogicTest::streamProxyWritesCompleteDiskCache()
     {
         StreamProxy proxy;
         QVERIFY(proxy.start());
-        const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath);
+        const QUrl local =
+            proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath, MediaCache::cacheIdentity(item));
         QVERIFY(local.isValid());
 
         QByteArray head;
@@ -1614,11 +1624,13 @@ void CoreLogicTest::streamProxyResumesDiskCacheFromPartialFile()
         QVERIFY(file.open(QIODevice::WriteOnly));
         QVERIFY(file.write(upstream.body.left(300)) == 300);
     }
-    QVERIFY(MediaCache::writeState(cachePath, QUrl(upstreamUrl), "video/mp4", 1000, false));
+    QVERIFY(MediaCache::writeState(cachePath, MediaCache::cacheIdentity(item), QUrl(upstreamUrl),
+                                   "video/mp4", 1000, false));
 
     StreamProxy proxy;
     QVERIFY(proxy.start());
-    const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath);
+    const QUrl local =
+        proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath, MediaCache::cacheIdentity(item));
     QVERIFY(local.isValid());
 
     QTcpSocket socket;
@@ -1644,6 +1656,167 @@ void CoreLogicTest::streamProxyResumesDiskCacheFromPartialFile()
     QVERIFY(MediaCache::readState(cachePath, &state));
     QVERIFY(state.complete);
     QCOMPARE(state.totalBytes, qint64(1000));
+}
+
+void CoreLogicTest::mediaCacheLayoutForMusicAndVideo()
+{
+    QTemporaryDir dataDir;
+    QVERIFY(dataDir.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    const bool hadDataDir = qEnvironmentVariableIsSet("MVP_DATA_DIR");
+    struct EnvGuard
+    {
+        QByteArray oldValue;
+        bool had = false;
+        ~EnvGuard()
+        {
+            if (had)
+                qputenv("MVP_DATA_DIR", oldValue);
+            else
+                qunsetenv("MVP_DATA_DIR");
+        }
+    } guard{oldDataDir, hadDataDir};
+    qputenv("MVP_DATA_DIR", dataDir.path().toUtf8());
+
+    MediaItem music;
+    music.type = MediaType::Music;
+    music.title = QStringLiteral("Lover");
+    music.artist = QStringLiteral("Taylor Swift");
+    music.url = QStringLiteral("https://example.com/song.mp3");
+    music.online = true;
+    const QString musicPath = MediaCache::filePathForItem(music);
+    // 音乐：缓存根目录下一条目一个正文文件，正文不带后缀；后缀只进同目录 JSON。
+    QCOMPARE(QDir::cleanPath(QFileInfo(musicPath).absolutePath()),
+             QDir::cleanPath(MediaCache::rootDir()));
+    QVERIFY(QFileInfo(musicPath).suffix().isEmpty());
+    QVERIFY(musicPath.endsWith(QStringLiteral("Lover - Taylor Swift")));
+    QCOMPARE(MediaCache::metaPathForFile(musicPath), musicPath + QStringLiteral(".json"));
+    {
+        QVERIFY(QDir().mkpath(MediaCache::rootDir()));
+        QFile first(musicPath);
+        QVERIFY(first.open(QIODevice::WriteOnly));
+        QVERIFY(first.write("music") > 0);
+    }
+    QVERIFY(MediaCache::writeState(musicPath, MediaCache::cacheIdentity(music), QUrl(music.url),
+                                   "audio/mpeg", 5, false));
+
+    // 同名不同地址必须自动让位到 "(2)"，不能覆盖另一个条目的缓存。
+    MediaItem musicSameName;
+    musicSameName.type = MediaType::Music;
+    musicSameName.title = music.title;
+    musicSameName.artist = music.artist;
+    musicSameName.url = QStringLiteral("https://example.com/song-2.mp3");
+    musicSameName.online = true;
+    const QString secondPath = MediaCache::filePathForItem(musicSameName);
+    QVERIFY2(secondPath.endsWith(QStringLiteral("Lover - Taylor Swift (2)")),
+             qPrintable(secondPath));
+    QVERIFY(MediaCache::cacheIdentity(music) != MediaCache::cacheIdentity(musicSameName));
+
+    // 同一外链路径、不同歌曲 id 必须得到不同缓存身份；这正是旧实现
+    // “所有网易云歌曲共用一个缓存目录”的根因。
+    MediaItem songA = music;
+    songA.url = QStringLiteral("https://music.163.com/song/media/outer/url?id=1.mp3");
+    MediaItem songB = music;
+    songB.url = QStringLiteral("https://music.163.com/song/media/outer/url?id=2.mp3");
+    QVERIFY(MediaCache::cacheIdentity(songA) != MediaCache::cacheIdentity(songB));
+
+    // 删除重试的真实场景：正文被短暂占用，第一轮删正文失败后 JSON 已被删掉。
+    // 下一次按“无 JSON 的残留正文”仍要定位到同一个文件，不能跳到 (3)。
+    {
+        QFile second(secondPath);
+        QVERIFY(second.open(QIODevice::WriteOnly));
+        QVERIFY(second.write("second") > 0);
+    }
+    QVERIFY(MediaCache::writeState(secondPath,
+                                   MediaCache::cacheIdentity(musicSameName),
+                                   QUrl(musicSameName.url), "audio/mpeg", 6, false));
+    QVERIFY(QFile::remove(MediaCache::metaPathForFile(secondPath)));
+    QVERIFY(MediaCache::removeForItem(musicSameName));
+    QVERIFY(!QFileInfo::exists(secondPath));
+
+    QVERIFY(MediaCache::removeForItem(music));
+    QVERIFY(!QFileInfo::exists(musicPath));
+    QVERIFY(!QFileInfo::exists(MediaCache::metaPathForFile(musicPath)));
+
+    // 升级兼容：第一轮的 32 位哈希目录要能自动搬到新布局，而不是变成孤儿。
+    MediaItem legacy;
+    legacy.type = MediaType::Music;
+    legacy.title = QStringLiteral("旧缓存");
+    legacy.url = QStringLiteral("https://example.com/legacy.mp3");
+    legacy.online = true;
+    const QString legacyDir =
+        MediaCache::rootDir() + QLatin1Char('/')
+        + QCryptographicHash::hash(mediaIdentity(legacy).toUtf8(), QCryptographicHash::Sha256)
+              .toHex()
+              .left(32);
+    QVERIFY(QDir().mkpath(legacyDir));
+    QFile legacyData(legacyDir + QStringLiteral("/media.mp3"));
+    QVERIFY(legacyData.open(QIODevice::WriteOnly));
+    QVERIFY(legacyData.write(QByteArray("old-cache-body")) > 0);
+    legacyData.close();
+    QJsonObject oldMeta;
+    oldMeta.insert(QStringLiteral("version"), 1);
+    oldMeta.insert(QStringLiteral("url"), legacy.url.toString());
+    oldMeta.insert(QStringLiteral("contentType"), QStringLiteral("audio/mpeg"));
+    oldMeta.insert(QStringLiteral("total"), 14);
+    oldMeta.insert(QStringLiteral("complete"), true);
+    {
+        QFile meta(legacyDir + QStringLiteral("/meta.json"));
+        QVERIFY(meta.open(QIODevice::WriteOnly));
+        QVERIFY(meta.write(QJsonDocument(oldMeta).toJson(QJsonDocument::Compact)) > 0);
+    }
+    const QString adopted = MediaCache::completeFileForItem(legacy);
+    QVERIFY(!adopted.isEmpty());
+    QVERIFY(!QDir(legacyDir).exists());
+    QFile adoptedFile(adopted);
+    QVERIFY(adoptedFile.open(QIODevice::ReadOnly));
+    QCOMPARE(adoptedFile.readAll(), QByteArray("old-cache-body"));
+    MediaCache::State adoptedState;
+    QVERIFY(MediaCache::readState(adopted, &adoptedState));
+    QCOMPARE(adoptedState.extension, QStringLiteral(".mp3"));
+
+    // 影视：一条目一个文件夹，正文固定 media、不带后缀，并过滤非法字符。
+    MediaItem video;
+    video.type = MediaType::Video;
+    video.title = QStringLiteral("某影视: 第一集?");
+    video.url = QStringLiteral("https://example.com/video.mp4");
+    video.online = true;
+    const QString videoDir = MediaCache::directoryForItem(video);
+    const QString folderName = QFileInfo(videoDir).fileName();
+    QVERIFY2(folderName.startsWith(QStringLiteral("某影视_ 第一集_")), qPrintable(folderName));
+    QVERIFY(!folderName.contains(QStringLiteral("__")));
+    QVERIFY(!folderName.contains(QLatin1Char(':')));
+    QVERIFY(!folderName.contains(QLatin1Char('?')));
+    QVERIFY(QDir().mkpath(videoDir));
+    const QString videoPath = videoDir + QStringLiteral("/media");
+    QVERIFY(QFileInfo(videoPath).suffix().isEmpty());
+
+    QFile payload(videoPath);
+    QVERIFY(payload.open(QIODevice::WriteOnly));
+    QVERIFY(payload.write("fake-video") > 0);
+    payload.close();
+    QVERIFY(MediaCache::writeState(videoPath, MediaCache::cacheIdentity(video), QUrl(video.url),
+                                   "video/mp4", 10, true));
+    MediaCache::State state;
+    QVERIFY(MediaCache::readState(videoPath, &state));
+    QCOMPARE(state.extension, QStringLiteral(".mp4"));
+    QCOMPARE(MediaCache::completeFileForItem(video), videoPath);
+
+    QVERIFY(MediaCache::removeForItem(video));
+    QVERIFY(!QDir(videoDir).exists());
+
+    // 目录不存在时删除也算成功，删除接口可以安全地重复调用。
+    QVERIFY(MediaCache::removeForItem(video));
+
+    // 影视目录里的 JSON 先被删掉、正文仍因句柄占用留下时，重试也必须删掉
+    // 整个条目目录，而不是跳到下一个同名候选。
+    QVERIFY(QDir().mkpath(videoDir));
+    QFile orphanVideo(videoPath);
+    QVERIFY(orphanVideo.open(QIODevice::WriteOnly));
+    QVERIFY(orphanVideo.write("orphan") > 0);
+    orphanVideo.close();
+    QVERIFY(MediaCache::removeForItem(video));
+    QVERIFY(!QDir(videoDir).exists());
 }
 
 void CoreLogicTest::streamProxyHandlesSuffixlessTextPlaylist()

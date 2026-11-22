@@ -62,7 +62,8 @@ public:
     /// 下次播放从已有字节继续请求；HLS 播放列表/分片忽略该参数。
     QUrl proxyUrlFor(const QUrl &upstream,
                      const QHash<QString, QString> &headers = QHash<QString, QString>(),
-                     const QString &cachePath = QString());
+                     const QString &cachePath = QString(),
+                     const QString &cacheIdentity = QString());
 
     /// 深拖动前调用：按播放列表里记录的分片时长，把目标时间映射成分片序号，
     /// 在 FFmpeg 真正 seek 之前先把目标附近的分片排进预取队列。
@@ -111,7 +112,8 @@ private:
                               const QHash<QString, QString> &headers,
                               const Request &request, bool hasRange,
                               const QString &cacheKey,
-                              const QString &cachePath = QString());
+                              const QString &cachePath = QString(),
+                              const QString &cacheIdentity = QString());
     /// HLS 分片请求命中时，用多路 Range 并发拉取并在缓存里按偏移拼接。
     /// 只对已知媒体分片、`bytes=0-` 且总长受限的请求启用。
     bool tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream,

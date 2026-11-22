@@ -300,8 +300,8 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
         const bool invoked = QMetaObject::invokeMethod(
             m_proxy,
             [proxy = m_proxy, url = playbackUrl, headers = playbackItem.headers,
-             cachePath, &proxied] {
-                proxied = proxy->proxyUrlFor(url, headers, cachePath);
+             cachePath, identity = MediaCache::cacheIdentity(playbackItem), &proxied] {
+                proxied = proxy->proxyUrlFor(url, headers, cachePath, identity);
             },
             Qt::BlockingQueuedConnection);
         if (invoked && proxied.isValid())

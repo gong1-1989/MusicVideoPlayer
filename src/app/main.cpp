@@ -1,7 +1,6 @@
 #include "ui/MainWindow.h"
 #include "ui/ThemeManager.h"
 
-#include "cache/MediaCache.h"
 #include "storage/StoragePaths.h"
 
 #include <QApplication>
@@ -343,9 +342,7 @@ int main(int argc, char *argv[])
     qInfo() << "单实例锁已获取，数据目录：" << StoragePaths::dataDir()
             << "激活服务名：" << activationServerName();
 
-    // 整段媒体缓存跨会话保留，退出时不会自动删；启动时按最近使用时间
-    // 淘汰超出配额的老条目，避免长期使用后无限占盘。
-    MediaCache::prune(MediaCache::DefaultMaxBytes);
+    // 播放缓存由用户直接管理，不再启动时按容量/条数自动淘汰。
 
     // 即使没有新日志，也按秒把 INFO/DEBUG 缓冲落盘，方便现场实时看日志。
     QTimer logFlushTimer;

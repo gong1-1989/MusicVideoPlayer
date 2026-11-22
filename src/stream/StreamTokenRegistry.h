@@ -20,6 +20,8 @@ public:
         QString cacheKey;
         /// 该条目对应的整段磁盘缓存路径；HLS 播放列表/分片为空。
         QString cachePath;
+        /// 条目身份，写入缓存旁车 JSON，用于重启后确认文件归属。
+        QString cacheIdentity;
     };
 
     void clear();
@@ -31,7 +33,8 @@ public:
     /// 登记上游地址并返回本地代理目录 URL；同一地址+同一组头会复用 token。
     /// 监听端口无效时返回空 URL。cachePath 只对可直接整段落盘的直链生效。
     QUrl registerFor(const QUrl &upstream, const QHash<QString, QString> &headers, int port,
-                     const QString &cachePath = QString());
+                     const QString &cachePath = QString(),
+                     const QString &cacheIdentity = QString());
 
     /// 按 token 取回上游并刷新空闲时间；未知 token 返回 false。
     bool lookup(const QString &token, Upstream *upstream);

@@ -1,5 +1,6 @@
 #include "ui/PlaylistController.h"
 
+#include "cache/MediaCache.h"
 #include "core/PlaybackController.h"
 #include "core/PlaylistModel.h"
 #include "core/PlaylistStore.h"
@@ -22,7 +23,10 @@
 #include <QPoint>
 #include <QShortcut>
 #include <QTabWidget>
+#include <QTimer>
 #include <QVector>
+
+#include <utility>
 #include <QWidget>
 
 Q_LOGGING_CATEGORY(lcPlaylist, "mvp.playlist")
@@ -473,6 +477,21 @@ void PlaylistController::bindView(QListView *view, PlaylistModel *model, MediaTy
     });
 }
 
+void PlaylistController::removeCacheAfterPlayback(const MediaItem &item, int attempt)
+{
+    if (MediaCache::removeForItem(item))
+        return;
+    if (attempt >= 10) {
+        qCWarning(lcPlaylist) << "播放缓存删除失败，文件句柄可能仍被占用：" << item.title;
+        return;
+    }
+    // 播放器停止后底层 FFmpeg demuxer 可能还会短暂持有文件句柄；
+    // 500ms 一次、最多 5 秒，足够覆盖正常的释放时间。
+    QTimer::singleShot(500, this, [this, item, attempt] {
+        removeCacheAfterPlayback(item, attempt + 1);
+    });
+}
+
 void PlaylistController::removeRow(MediaType type, int row)
 {
     PlaylistModel *model = modelFor(type);
@@ -480,7 +499,8 @@ void PlaylistController::removeRow(MediaType type, int row)
     if (row < 0 || row >= model->rowCount())
         return;
 
-    const QString name = model->itemAt(row).displayName();
+    const MediaItem removedItem = model->itemAt(row);
+    const QString name = removedItem.displayName();
     const bool removingCurrent = m_player->playlist() == model && m_player->currentRow() == row;
 
     if (!model->removeRow(row))
@@ -491,6 +511,10 @@ void PlaylistController::removeRow(MediaType type, int row)
 
     if (removingCurrent)
         emit playbackInvalidated();
+
+    // 缓存和播放列表条目一一对应：条目删除后缓存没有重新命中的可能，
+    // 必须同步清理，否则会长期留下用户看不见的孤儿缓存。
+    removeCacheAfterPlayback(removedItem);
 
     if (save()) {
         emit statusMessage(removingCurrent ? tr("已移除当前播放项：%1").arg(name)
@@ -504,6 +528,11 @@ void PlaylistController::clearPlaylist(MediaType type)
     if (model->isEmpty())
         return;
 
+    QVector<MediaItem> removedItems;
+    removedItems.reserve(model->rowCount());
+    for (int row = 0; row < model->rowCount(); ++row)
+        removedItems.append(model->itemAt(row));
+
     if (m_player->playlist() == model) {
         m_player->stop();
         m_player->setPlaylist(nullptr);
@@ -511,6 +540,9 @@ void PlaylistController::clearPlaylist(MediaType type)
     }
 
     model->clear();
+    for (const MediaItem &item : std::as_const(removedItems))
+        removeCacheAfterPlayback(item);
+
     if (save())
         emit statusMessage(tr("已清空列表"));
 }

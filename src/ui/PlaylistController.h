@@ -77,6 +77,9 @@ private:
     bool promotePreviewRow(MediaType type, int row);
     void setDirty(bool dirty);
     void refreshTabTitles();
+    /// 删除条目时同步清理其播放缓存。正在播放的文件可能仍被播放器占用，
+    /// 失败时延迟重试，避免 Windows 上文件句柄未释放导致删不干净。
+    void removeCacheAfterPlayback(const MediaItem &item, int attempt = 0);
 
     PlaybackController *m_player = nullptr;
     PlaylistUi m_ui;

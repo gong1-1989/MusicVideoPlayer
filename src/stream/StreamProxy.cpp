@@ -46,10 +46,8 @@ const char *const kCacheRequested = "proxyCacheRequested";
 // 单条 128MB、总量 256MB，覆盖常见歌曲和短片，避免无上限吃内存。
 constexpr qint64 kMaxCacheEntryBytes = 128LL * 1024 * 1024;
 constexpr qint64 kMaxCacheTotalBytes = 256LL * 1024 * 1024;
-// 整段落盘面向音乐和可直接 Range 的影视直链，单条上限远大于内存缓存。
-// 16GB 是代理层同时活跃磁盘条目的预算；跨会话总量由 MediaCache::prune 控制。
-constexpr qint64 kMaxDiskCacheEntryBytes = 8LL * 1024 * 1024 * 1024;
-constexpr qint64 kMaxDiskCacheTotalBytes = 16LL * 1024 * 1024 * 1024;
+// 整段落盘面向音乐和可直接 Range 的影视直链。磁盘正文跨会话保留，
+// 数量与总容量交给用户管理；这里只保留内存缓存预算，避免 HLS 分片吃光内存。
 // HLS 深拖动时 FFmpeg 会先回退几十秒，再顺序读取目标前的分片；
 // 缓存条目要能同时放下这些分片，不能只有 6 条。
 constexpr int kMaxCacheEntries = 24;
@@ -296,8 +294,8 @@ void StreamProxy::persistCacheState(CacheEntry &entry)
 {
     if (!entry.diskBacked || entry.filePath.isEmpty())
         return;
-    MediaCache::writeState(entry.filePath, entry.upstream, entry.contentType, entry.total,
-                           entry.complete);
+    MediaCache::writeState(entry.filePath, entry.cacheIdentity, entry.upstream,
+                           entry.contentType, entry.total, entry.complete);
 }
 
 void StreamProxy::abortReplySilently(QNetworkReply *reply)
@@ -359,11 +357,12 @@ bool StreamProxy::isListening() const
 }
 
 QUrl StreamProxy::proxyUrlFor(const QUrl &upstream, const QHash<QString, QString> &headers,
-                              const QString &cachePath)
+                              const QString &cachePath, const QString &cacheIdentity)
 {
     if (!isListening() && !start())
         return QUrl();
-    return m_tokens.registerFor(upstream, headers, m_server->serverPort(), cachePath);
+    return m_tokens.registerFor(upstream, headers, m_server->serverPort(), cachePath,
+                                cacheIdentity);
 }
 
 void StreamProxy::onNewConnection()
@@ -505,6 +504,7 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     // 条目缓存只对应播放列表里那一整条媒体地址；HLS 分片是同一 token 下的
     // 相对子资源，不能把整段视频文件当成某一个分片来写。
     const QString cachePath = suffix.isEmpty() ? entry.cachePath : QString();
+    const QString cacheIdentity = suffix.isEmpty() ? entry.cacheIdentity : QString();
 
     // 缓存键必须同时包含地址和鉴权头，避免同一 CDN 地址在不同 Referer/Cookie
     // 下共用缓存，把 A 源的响应喂给 B 源。
@@ -530,13 +530,15 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
         return;
     }
 
-    startUpstreamRequest(client, upstream, headers, request, hasRange, cacheKey, cachePath);
+    startUpstreamRequest(client, upstream, headers, request, hasRange, cacheKey, cachePath,
+                         cacheIdentity);
 }
 
 void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                                        const QHash<QString, QString> &headers,
                                        const Request &request, bool hasRange,
-                                       const QString &cacheKey, const QString &cachePath)
+                                       const QString &cacheKey, const QString &cachePath,
+                                       const QString &cacheIdentity)
 {
     const bool isHead = request.method == QLatin1String("HEAD");
     QByteArray range = request.range.toUtf8();
@@ -588,7 +590,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
     QPointer<QTcpSocket> guard(client);
     m_http->stream(upstream, range, headers,
                    [this, guard, upstream, headers, isHead, hasRange, cacheKey, request,
-                    cachePath, diskRequested, resumeOffset](QNetworkReply *reply) {
+                    cachePath, cacheIdentity, diskRequested, resumeOffset](QNetworkReply *reply) {
         if (guard.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -665,7 +667,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                 Request fresh = request;
                 fresh.range.clear();
                 startUpstreamRequest(client, upstream, headers, fresh, false, cacheKey,
-                                     cachePath);
+                                     cachePath, cacheIdentity);
                 return;
             }
         }
@@ -686,7 +688,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
             return;
         }
         const qint64 cacheLimit =
-            diskRequested ? kMaxDiskCacheEntryBytes : kMaxCacheEntryBytes;
+            diskRequested ? std::numeric_limits<qint64>::max() : kMaxCacheEntryBytes;
         if (!isHead && cacheTotal > 0 && cacheTotal <= cacheLimit) {
             // 200 全量和“从 0/断点开始、未指定结束”的 206 都能缓存整段。
             // 上游已经回明确区间（例如拖动后的 bytes=500000-500100）时保持原样
@@ -710,6 +712,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
             entry->upstream = upstream;
             entry->diskBacked = diskRequested;
             entry->filePath = diskRequested ? cachePath : QString();
+            entry->cacheIdentity = diskRequested ? cacheIdentity : QString();
             if (diskRequested) {
                 const qint64 opened = openCacheFile(*entry, cachePath, initialBytes);
                 if (opened < 0) {
@@ -2099,24 +2102,20 @@ void StreamProxy::resumeCacheUpstream(const QString &key,
 
 bool StreamProxy::cacheHasRoom(qint64 bytes, const QString &keepKey, bool diskBacked)
 {
-    // 先回收空闲/失败条目，再判断配额。全部条目都在服务客户端时 pruneCache
-    // 不会强删，此时只能拒绝新缓存，让请求走直连透传。
+    // 先回收空闲/失败条目，再判断配额。整段落盘缓存写的是用户可见的磁盘文件，
+    // 不做条数/容量拒绝；内存缓存仍保留预算，避免 HLS 分片无限增长。
     pruneCache(keepKey);
+    if (diskBacked)
+        return true;
     if (m_cache.size() >= kMaxCacheEntries)
         return false;
 
     qint64 memoryBytes = 0;
-    qint64 diskBytes = 0;
     for (const auto &entry : std::as_const(m_cache)) {
-        const qint64 size = StreamCacheStore::bytes(*entry);
-        if (entry->diskBacked)
-            diskBytes += size;
-        else
-            memoryBytes += size;
+        if (!entry->diskBacked)
+            memoryBytes += StreamCacheStore::bytes(*entry);
     }
     const qint64 need = qMax<qint64>(bytes, 0);
-    if (diskBacked)
-        return diskBytes + need <= kMaxDiskCacheTotalBytes;
     return memoryBytes + need <= kMaxCacheTotalBytes;
 }
 
@@ -2137,7 +2136,8 @@ void StreamProxy::pruneCache(const QString &keepKey)
                 break;
             }
         }
-        totalBytes += StreamCacheStore::bytes(*entry);
+        if (!entry->diskBacked)
+            totalBytes += StreamCacheStore::bytes(*entry);
         if (entry->failed && !active) {
             drop.append(it.key());
             continue;
@@ -2147,7 +2147,7 @@ void StreamProxy::pruneCache(const QString &keepKey)
     }
     for (const QString &key : std::as_const(drop)) {
         const QSharedPointer<CacheEntry> entry = m_cache.value(key);
-        if (!entry.isNull())
+        if (!entry.isNull() && !entry->diskBacked)
             totalBytes -= StreamCacheStore::bytes(*entry);
         dropCacheEntry(key);
     }
@@ -2174,7 +2174,8 @@ void StreamProxy::pruneCache(const QString &keepKey)
         }
         if (oldestKey.isEmpty())
             break;
-        totalBytes -= StreamCacheStore::bytes(*m_cache.value(oldestKey));
+        if (!m_cache.value(oldestKey)->diskBacked)
+            totalBytes -= StreamCacheStore::bytes(*m_cache.value(oldestKey));
         dropCacheEntry(oldestKey);
     }
 }

@@ -1,5 +1,6 @@
 #include "ui/DownloadController.h"
 
+#include "cache/MediaCache.h"
 #include "download/DownloadManager.h"
 #include "download/DownloadPaths.h"
 #include "download/DownloadTask.h"
@@ -74,6 +75,27 @@ void DownloadController::download(const MediaItem &item)
         fileName = tr("未命名");
     fileName = DownloadTask::sanitizeFileName(fileName, suffix);
     const QString target = m_manager->reserveFilePath(directory, fileName);
+
+    // 播放缓存是给播放器用的无后缀副本；下载是用户要长期保存的文件。
+    // 下载前先看这条目是否已有完整缓存：有就直接异步复制成带正确后缀的
+    // 下载文件，既省一次网络下载，也保留用户可识别的文件名。
+    const QString cached = MediaCache::completeFileForItem(resolved);
+    if (!cached.isEmpty()) {
+        QString queuedPath;
+        bool alreadyQueued = false;
+        const QString copyId = m_manager->importFromCache(resolved, cached, target,
+                                                         &queuedPath, &alreadyQueued);
+        if (alreadyQueued)
+            return;
+        if (!copyId.isEmpty()) {
+            if (queuedPath.isEmpty())
+                queuedPath = target;
+            emit statusMessage(tr("已从播放缓存生成下载：%1")
+                                   .arg(QFileInfo(queuedPath).fileName()));
+            return;
+        }
+        // 缓存读取失败时退回普通网络下载，不让下载入口因此失效。
+    }
 
     const qint64 limit = qint64(AppSettings::downloadLimitMb()) * 1024 * 1024;
     QString queuedPath;

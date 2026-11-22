@@ -42,7 +42,8 @@ QString StreamTokenRegistry::cacheKeyFor(const QUrl &upstream,
 
 QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
                                       const QHash<QString, QString> &headers, int port,
-                                      const QString &cachePath)
+                                      const QString &cachePath,
+                                      const QString &cacheIdentity)
 {
     if (port <= 0 || !upstream.isValid() || upstream.isEmpty())
         return QUrl();
@@ -59,6 +60,8 @@ QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
         // 条目缓存路径，不能因为 token 复用就丢掉落盘关联。
         if (!cachePath.isEmpty())
             m_tokens[existing].cachePath = cachePath;
+        if (!cacheIdentity.isEmpty())
+            m_tokens[existing].cacheIdentity = cacheIdentity;
         return QUrl(QStringLiteral("http://127.0.0.1:%1/stream/%2/").arg(port).arg(existing));
     }
 
@@ -74,6 +77,7 @@ QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
     entry.lastUsedMs = QDateTime::currentMSecsSinceEpoch();
     entry.cacheKey = key;
     entry.cachePath = cachePath;
+    entry.cacheIdentity = cacheIdentity;
     m_tokens.insert(token, entry);
     m_tokenByKey.insert(key, token);
 
