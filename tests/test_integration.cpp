@@ -226,7 +226,7 @@ private slots:
     void downloadManagerSameNameGetsDistinctFiles();
     void downloadManagerImportsCompleteCache();
     void downloadHlsMergesAndRemuxes();
-    void hlsCacheBuilderKeepsSegmentFiles();
+    void hlsCacheBuilderProducesSuffixlessMp4();
     void lyricsServiceCachesOnlinePayload();
     void mediaRemuxConvertsTsToMp4();
     void downloadTaskAllowsVodWithoutEndList();
@@ -824,7 +824,7 @@ void IntegrationTest::downloadHlsMergesAndRemuxes()
     QVERIFY(QFileInfo(mp4Path).size() > 0);
 }
 
-void IntegrationTest::hlsCacheBuilderKeepsSegmentFiles()
+void IntegrationTest::hlsCacheBuilderProducesSuffixlessMp4()
 {
     if (!MediaRemux::isAvailable())
         QSKIP("未找到 ffmpeg，跳过 HLS 后台缓存测试");
@@ -908,36 +908,17 @@ void IntegrationTest::hlsCacheBuilderKeepsSegmentFiles()
 
     MediaCache::State state;
     QVERIFY(MediaCache::readState(completedPath, &state));
-    QCOMPARE(state.extension, QStringLiteral(".m3u8"));
+    QCOMPARE(state.extension, QStringLiteral(".mp4"));
     QCOMPARE(state.identity, MediaCache::cacheIdentity(item));
+    QVERIFY(QFileInfo(completedPath).size() > 0);
 
-    // 新行为：不合并、不转 MP4，正文是引用分片目录的本地 m3u8，
-    // 原始 TS 分片逐片保留在 segments/ 下。
-    QFile localPlaylist(completedPath);
-    QVERIFY(localPlaylist.open(QIODevice::ReadOnly));
-    const QString playlistText = QString::fromUtf8(localPlaylist.readAll());
-    // Windows 下未关闭的只读句柄会阻止随后删除正文；先释放再验证清理。
-    localPlaylist.close();
-    QVERIFY(playlistText.contains(QStringLiteral("segments/seg_00000.ts")));
-    QVERIFY(playlistText.contains(QStringLiteral("segments/seg_00001.ts")));
-    QVERIFY(playlistText.contains(QStringLiteral("#EXT-X-ENDLIST")));
-
-    const QString segmentDir =
-        QFileInfo(completedPath).absolutePath() + QStringLiteral("/segments");
-    const QFileInfo seg0(segmentDir + QStringLiteral("/seg_00000.ts"));
-    const QFileInfo seg1(segmentDir + QStringLiteral("/seg_00001.ts"));
-    QVERIFY(seg0.exists());
-    QVERIFY(seg1.exists());
-    QCOMPARE(seg0.size(), qint64(split));
-    QCOMPARE(seg1.size(), qint64(tsBytes.size() - split));
-
-    QVERIFY(!QFileInfo::exists(completedPath + QStringLiteral(".ts")));
-    QVERIFY(!QFileInfo::exists(completedPath + QStringLiteral(".mvpdownload")));
-    QVERIFY(!QFileInfo::exists(completedPath + QStringLiteral(".mvpremux")));
+    // 合并 TS 只是中间产物，缓存成功必须只留无后缀正文 + .json。
+    const QString tsPath = completedPath + QStringLiteral(".ts");
+    QVERIFY(!QFileInfo::exists(tsPath));
+    QVERIFY(!QFileInfo::exists(tsPath + QStringLiteral(".mvpdownload")));
 
     QVERIFY(MediaCache::removeForItem(item));
     QVERIFY(!QFileInfo::exists(completedPath));
-    QVERIFY(!QDir(segmentDir).exists());
 }
 
 void IntegrationTest::lyricsServiceCachesOnlinePayload()

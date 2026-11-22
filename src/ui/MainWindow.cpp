@@ -94,11 +94,6 @@ MainWindow::MainWindow(QWidget *parent)
                 ui->label_status->setText(
                     tr("影视缓存未完成：%1（%2）").arg(item.displayName(), message));
             });
-    connect(m_hlsCache, &HlsCacheBuilder::progressChanged, this,
-            [this](const MediaItem &item, int percent) {
-                ui->label_status->setText(
-                    tr("后台影视缓存：%1 %2%").arg(item.displayName()).arg(percent));
-            });
 
     // 播放列表为安全落盘不保存 Cookie；播放/下载前按 sourceId 从源配置
     // 恢复内存态凭据，源配置被更新或删除后也自然跟随。
@@ -245,14 +240,15 @@ MainWindow::MainWindow(QWidget *parent)
                     m_musicVisual->hide();
                     ui->videoWidget->show();
                 }
-                // HLS 影视开始在后台补齐整段缓存。切歌、切到别的直链视频
-                // 都不能中止它：日志里用户只切到音乐 90 秒，101 个分片尚未
-                // 下载完就被 cancel 清空，结果永远看不到完整缓存。这里只在新
-                // HLS 条目 start() 内部替换旧任务，删除条目则由
-                // playbackInvalidated 负责 cancelAndRemove。
-                if (m_hlsCache != nullptr && item.type == MediaType::Video
-                    && item.online && playbackIsHls(item)) {
-                    m_hlsCache->start(item);
+                // HLS 影视开始在后台补齐整段缓存；切到音乐/直链视频时
+                // 中止上一个条目的半成品，但保留已经完成的 MP4。
+                if (m_hlsCache != nullptr) {
+                    if (item.type == MediaType::Video && item.online
+                        && playbackIsHls(item)) {
+                        m_hlsCache->start(item);
+                    } else {
+                        m_hlsCache->cancel();
+                    }
                 }
             });
     connect(m_player, &PlaybackController::playbackStateChanged, this,
