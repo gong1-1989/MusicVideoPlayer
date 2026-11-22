@@ -175,7 +175,10 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
     QJsonParseError parseError{};
     const QJsonDocument document = QJsonDocument::fromJson(output, &parseError);
     if (parseError.error != QJsonParseError::NoError) {
-        qCWarning(lcExternal) << "解析器输出不是 JSON：" << output.left(160);
+        // 解析器输出可能包含带签名的 streamUrl，失败日志只记录大小和错误位置。
+        qCWarning(lcExternal) << "解析器输出不是 JSON：输出" << output.size()
+                              << "字节，错误" << parseError.errorString()
+                              << "位置" << parseError.offset;
         finish(tr("解析器输出不是 JSON"));
         return;
     }
@@ -222,10 +225,14 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
                                  item.webUrl);
         item.durationMs = static_cast<qint64>(object.value(QStringLiteral("durationMs")).toDouble(0));
         item.sourceId = m_config.id;
+        item.sourceOrigin = item.webUrl.isValid() && !item.webUrl.host().isEmpty()
+                                ? item.webUrl
+                                : QUrl(m_config.urlTemplate);
         item.online = true;
         item.headers = m_config.headers;
         if (!m_config.cookie.isEmpty())
             item.headers.insert(QStringLiteral("Cookie"), m_config.cookie);
+        item.headers = HeaderPolicy::withSourceHeaders(item.headers, item.sourceOrigin);
 
         if (item.title.isEmpty() || item.url.isEmpty() || item.url.isRelative()
             || !item.url.isValid()) {

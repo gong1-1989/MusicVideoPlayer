@@ -11,6 +11,8 @@
 #include <QMessageBox>
 #include <QUrl>
 
+#include <utility>
+
 DownloadController::DownloadController(HttpClient *http, QWidget *dialogParent, QObject *parent)
     : QObject(parent)
     , m_http(http)
@@ -30,14 +32,20 @@ DownloadController::DownloadController(HttpClient *http, QWidget *dialogParent, 
             this, &DownloadController::itemDownloaded);
 }
 
+void DownloadController::setMediaItemResolver(std::function<MediaItem(const MediaItem &)> resolver)
+{
+    m_itemResolver = std::move(resolver);
+}
+
 void DownloadController::download(const MediaItem &item)
 {
-    if (!item.online) {
+    const MediaItem resolved = m_itemResolver ? m_itemResolver(item) : item;
+    if (!resolved.online) {
         emit statusMessage(tr("本地文件无需下载"));
         return;
     }
 
-    const QUrl source = preferredPlaybackUrl(item);
+    const QUrl source = preferredPlaybackUrl(resolved);
     if (!source.isValid()
         || (source.scheme() != QLatin1String("http")
             && source.scheme() != QLatin1String("https"))) {
@@ -56,15 +64,15 @@ void DownloadController::download(const MediaItem &item)
 
     const bool hls = DownloadTask::looksLikeHls(source);
     const QString suffix =
-        DownloadPaths::suffixForDownload(source, hls, item.type == MediaType::Video);
-    QString fileName = item.title.trimmed();
+        DownloadPaths::suffixForDownload(source, hls, resolved.type == MediaType::Video);
+    QString fileName = resolved.title.trimmed();
     if (fileName.isEmpty())
         fileName = tr("未命名");
     fileName = DownloadTask::sanitizeFileName(fileName, suffix);
-    const QString target = DownloadPaths::uniqueFilePath(directory, fileName);
+    const QString target = m_manager->reserveFilePath(directory, fileName);
 
     const qint64 limit = qint64(AppSettings::downloadLimitMb()) * 1024 * 1024;
-    m_manager->enqueue(item, source, item.headers, target, hls, limit);
+    m_manager->enqueue(resolved, source, resolved.headers, target, hls, limit);
 
     emit statusMessage(hls
                            ? tr("已加入下载：%1（HLS 完成后自动转 MP4）").arg(QFileInfo(target).fileName())

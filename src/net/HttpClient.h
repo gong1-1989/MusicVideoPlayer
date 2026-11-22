@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <QUrl>
 
 #include <functional>
 
@@ -13,7 +14,6 @@
 
 class QNetworkAccessManager;
 class QNetworkReply;
-class QUrl;
 
 /// 统一网络入口：集中管理 UA、Referer、Cookie、超时与重定向策略，
 /// 业务模块不再各自拼请求头。
@@ -30,13 +30,16 @@ public:
     /// maxBytes 是接收过程中的硬上限：超过即中止，避免异常响应先占满内存。
     QNetworkReply *get(const QUrl &url, const QByteArray &range = QByteArray(),
                        const QHash<QString, QString> &headers = {},
-                       qint64 maxBytes = NetLimits::kJsonBytes);
+                       qint64 maxBytes = NetLimits::kJsonBytes,
+                       const QUrl &sourceOrigin = QUrl());
     QNetworkReply *postForm(const QUrl &url, const QByteArray &body,
                             const QHash<QString, QString> &headers = {},
-                            qint64 maxBytes = NetLimits::kJsonBytes);
+                            qint64 maxBytes = NetLimits::kJsonBytes,
+                            const QUrl &sourceOrigin = QUrl());
     QNetworkReply *postJson(const QUrl &url, const QByteArray &body,
                             const QHash<QString, QString> &headers = {},
-                            qint64 maxBytes = NetLimits::kJsonBytes);
+                            qint64 maxBytes = NetLimits::kJsonBytes,
+                            const QUrl &sourceOrigin = QUrl());
 
     /// 手动跟随重定向（含 https→http 降级），把最终可读的 reply 交给 onReady。
     /// onReady 只调用一次；重定向超限或目标协议不被允许时回调 nullptr。
@@ -45,12 +48,13 @@ public:
                const QHash<QString, QString> &headers, const ReplyHandler &onReady);
     void fetch(const QUrl &url, const QByteArray &range,
                const QHash<QString, QString> &headers, const ReplyHandler &onReady,
-               qint64 maxBytes);
+               qint64 maxBytes, const QUrl &sourceOrigin = QUrl());
 
     /// 与 fetch 相同，但在最终响应头到达时立即回调，正文仍可继续 readyRead。
     /// 用于流式代理/下载；调用方负责连接 readyRead、finished 并 deleteLater。
     void stream(const QUrl &url, const QByteArray &range,
-                const QHash<QString, QString> &headers, const ReplyHandler &onReady);
+                const QHash<QString, QString> &headers, const ReplyHandler &onReady,
+                const QUrl &sourceOrigin = QUrl());
 
     /// 给一个已经在跑的 reply 追加接收上限。流式接口在识别出“这是播放列表”
     /// 之后用它，避免把 m3u8 当音视频无限缓冲。
@@ -73,7 +77,7 @@ private:
     void fetchInternal(const QUrl &url, const QByteArray &range,
                        const QHash<QString, QString> &headers,
                        const ReplyHandler &onReady, int hop, bool deliverOnHeaders,
-                       qint64 maxBytes);
+                       qint64 maxBytes, const QUrl &sourceOrigin);
     QNetworkReply *trackReply(QNetworkReply *reply, qint64 maxBytes = 0);
 
     QNetworkAccessManager *m_nam;

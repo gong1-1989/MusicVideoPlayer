@@ -1678,13 +1678,13 @@ void StreamProxy::pruneCache(const QString &keepKey)
                 break;
             }
         }
+        totalBytes += StreamCacheStore::bytes(*entry);
         if (entry->failed && !active) {
             drop.append(it.key());
             continue;
         }
         if (!active && entry->lastUsedMs > 0 && entry->lastUsedMs < now - kCacheIdleMs)
             drop.append(it.key());
-        totalBytes += StreamCacheStore::bytes(*entry);
     }
     for (const QString &key : std::as_const(drop)) {
         const QSharedPointer<CacheEntry> entry = m_cache.value(key);

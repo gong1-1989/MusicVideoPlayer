@@ -116,12 +116,15 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
         const QByteArray body = renderTemplate(m_config.bodyTemplate, bodyVars).toUtf8();
         if (m_config.bodyIsJson) {
             headers.insert(QStringLiteral("Content-Type"), QStringLiteral("application/json"));
-            m_reply = m_http->postJson(requestUrl, body, headers);
+            m_reply = m_http->postJson(requestUrl, body, headers,
+                                       NetLimits::kJsonBytes, m_originUrl);
         } else {
-            m_reply = m_http->postForm(requestUrl, body, headers);
+            m_reply = m_http->postForm(requestUrl, body, headers,
+                                       NetLimits::kJsonBytes, m_originUrl);
         }
     } else {
-        m_reply = m_http->get(requestUrl, QByteArray(), headers);
+        m_reply = m_http->get(requestUrl, QByteArray(), headers,
+                              NetLimits::kJsonBytes, m_originUrl);
     }
 
     if (m_reply.isNull()) {
@@ -240,9 +243,13 @@ void ConfigSearchProvider::onReplyFinished()
         base.webUrl = normalizeUrl(mapString(node, m_config.fields,
                                               QStringLiteral("webUrl"), vars), m_baseUrl);
         base.sourceId = m_config.id;
+        base.sourceOrigin = m_originUrl;
         base.headers = m_config.headers;
         if (!m_config.cookie.isEmpty())
             base.headers.insert(QStringLiteral("Cookie"), m_config.cookie);
+        // 只配置 Cookie 的源也要补上 Referer/Origin，否则跨域直链无法判断
+        // 凭据属于谁，HeaderPolicy 会按 fail-closed 直接裁掉。
+        base.headers = HeaderPolicy::withSourceHeaders(base.headers, base.sourceOrigin);
         base.online = true;
         // 影片展示字段：没有对应配置就留空，列表会自动跳过
         base.posterUrl = normalizeUrl(mapString(node, m_config.fields,
@@ -372,7 +379,8 @@ void ConfigSearchProvider::launchDetails()
         // 详情接口可能被配置到另一个 host；只把凭据留给搜索源站。
         headers = HeaderPolicy::sanitizedForTarget(requestUrl, headers, m_originUrl);
 
-        QNetworkReply *reply = m_http->get(requestUrl, QByteArray(), headers);
+        QNetworkReply *reply = m_http->get(requestUrl, QByteArray(), headers,
+                                           NetLimits::kJsonBytes, m_originUrl);
         if (reply == nullptr) {
             ++m_filtered;
             continue;

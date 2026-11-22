@@ -20,6 +20,7 @@ QFile *g_logFile = nullptr;
 QString g_logPath;
 int g_writesSinceCheck = 0;
 qint64 g_unflushedBytes = 0;
+qint64 g_lastOpenAttemptMs = 0;
 QElapsedTimer g_lastFlush;
 constexpr qint64 kMaxLogBytes = 8LL * 1024 * 1024;
 constexpr int kRotateCheckEvery = 512;
@@ -78,24 +79,32 @@ void messageHandler(QtMsgType type, const QMessageLogContext &context, const QSt
         QMutexLocker locker(&g_logMutex);
 
         if (g_logFile == nullptr) {
-            // 日志只放程序目录下的 log/，不再回退用户 AppData
-            const QString appDir = QCoreApplication::applicationDirPath();
-            const QString localDir = QDir(appDir).filePath(QStringLiteral("log"));
-            QDir().mkpath(localDir);
-            const QString localPath =
-                QDir(localDir).filePath(QStringLiteral("MusicVideoPlayer.log"));
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            // 日志路径不可写时不要每条日志都尝试打开；5 秒重试一次即可。
+            if (now - g_lastOpenAttemptMs >= 5000) {
+                g_lastOpenAttemptMs = now;
 
-            if (QFileInfo(localPath).size() >= kMaxLogBytes)
-                rotateLog(localPath);
+                // 日志只放程序目录下的 log/，不再回退用户 AppData
+                const QString appDir = QCoreApplication::applicationDirPath();
+                const QString localDir = QDir(appDir).filePath(QStringLiteral("log"));
+                QDir().mkpath(localDir);
+                const QString localPath =
+                    QDir(localDir).filePath(QStringLiteral("MusicVideoPlayer.log"));
 
-            g_logFile = new QFile(localPath);
-            if (!g_logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-                delete g_logFile;
-                g_logFile = nullptr;
-            } else {
-                g_logPath = localPath;
+                if (QFileInfo(localPath).size() >= kMaxLogBytes)
+                    rotateLog(localPath);
+
+                g_logFile = new QFile(localPath);
+                if (!g_logFile->open(QIODevice::WriteOnly | QIODevice::Append
+                                     | QIODevice::Text)) {
+                    fprintf(stderr, "日志文件打开失败：%s\n", qPrintable(localPath));
+                    delete g_logFile;
+                    g_logFile = nullptr;
+                } else {
+                    g_logPath = localPath;
+                }
+                g_lastFlush.start();
             }
-            g_lastFlush.start();
         }
 
         if (g_logFile != nullptr && g_logFile->isOpen() && !g_logPath.isEmpty()) {
@@ -114,9 +123,22 @@ void messageHandler(QtMsgType type, const QMessageLogContext &context, const QSt
                     // 轮转失败就继续用原文件追加，不丢日志
                     rotateLog(g_logPath);
                     g_logFile->setFileName(g_logPath);
-                    g_logFile->open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+                    if (!g_logFile->open(QIODevice::WriteOnly | QIODevice::Append
+                                         | QIODevice::Text)) {
+                        // 重新打开失败时不能留下“句柄存在但已关闭”的假状态：
+                        // 否则后续写入全部进入 isOpen()==false 分支，且再也不会重试。
+                        fprintf(stderr, "日志轮转后打开失败：%s\n", qPrintable(g_logPath));
+                        delete g_logFile;
+                        g_logFile = nullptr;
+                        g_logPath.clear();
+                        g_unflushedBytes = 0;
+                        g_lastOpenAttemptMs = QDateTime::currentMSecsSinceEpoch();
+                    }
                 }
             }
+
+            if (g_logFile == nullptr || !g_logFile->isOpen())
+                return;
 
             // WARN 及以上立即落盘；INFO/DEBUG 按时间或字节批量 flush，避免每个分片回调同步磁盘写。
             if (urgent || g_unflushedBytes >= kFlushBytes

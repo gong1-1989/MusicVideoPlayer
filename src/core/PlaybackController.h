@@ -9,6 +9,8 @@
 #include <QPointer>
 #include <QString>
 
+#include <functional>
+
 class QAudioOutput;
 class QThread;
 class StreamProxy;
@@ -32,6 +34,9 @@ public:
 
     void setPlaylist(PlaylistModel *playlist);
     PlaylistModel *playlist() const { return m_playlist.data(); }
+    /// 播放前从 SourceRegistry 恢复内存态 Cookie；只影响播放副本，
+    /// 不回写播放列表模型，避免凭据再次落盘。
+    void setMediaItemResolver(std::function<MediaItem(const MediaItem &)> resolver);
 
     void playRow(int row);
     void togglePlayPause();
@@ -88,6 +93,7 @@ private:
     QThread *m_proxyThread;
     bool m_proxyReady = false;
     QPointer<PlaylistModel> m_playlist;
+    std::function<MediaItem(const MediaItem &)> m_itemResolver;
     int m_row = -1;
     Mode m_mode = Mode::ListLoop;
     int m_volume = 60;

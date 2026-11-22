@@ -7,6 +7,8 @@
 #include <QPointer>
 #include <QString>
 
+#include <functional>
+
 class DownloadManager;
 class DownloadManagerDialog;
 class HttpClient;
@@ -20,6 +22,9 @@ class DownloadController : public QObject
 
 public:
     DownloadController(HttpClient *http, QWidget *dialogParent, QObject *parent = nullptr);
+
+    /// 下载前按 sourceId 从源配置补回内存态 Cookie；不改变落盘内容。
+    void setMediaItemResolver(std::function<MediaItem(const MediaItem &)> resolver);
 
     void download(const MediaItem &item);
     void openManager();
@@ -37,6 +42,7 @@ private:
     QWidget *m_dialogParent;
     DownloadManager *m_manager = nullptr;
     QPointer<DownloadManagerDialog> m_dialog;
+    std::function<MediaItem(const MediaItem &)> m_itemResolver;
     QString m_lastStatus;
 };
 

@@ -12,6 +12,8 @@
 #include <QUrl>
 #include <QVector>
 
+#include <functional>
+
 class HttpClient;
 class QNetworkReply;
 
@@ -37,6 +39,11 @@ public:
     /// 在事件循环开始前设置续传点；bytesWritten 必须是完整前缀的字节数，
     /// segmentIndex 是 HLS 已完成分片数。
     void setResumeState(qint64 bytesWritten, int segmentIndex, bool hls = false);
+
+    /// 源站地址只用于裁剪 Cookie/Authorization 的作用域，不是流地址本身。
+    void setOriginUrl(const QUrl &origin);
+    /// 目标路径冲突时由下载管理器重新分配，绝不覆盖已有文件。
+    void setPathResolver(std::function<QString(const QString &)> resolver);
 
     /// 去掉 Windows 非法字符并补扩展名
     static QString sanitizeFileName(const QString &name, const QString &suffix);
@@ -107,6 +114,7 @@ private:
     HttpClient *m_http;
     QUrl m_url;
     QUrl m_originUrl;
+    std::function<QString(const QString &)> m_pathResolver;
     QString m_filePath;
     QHash<QString, QString> m_headers;
     QPointer<QNetworkReply> m_reply;

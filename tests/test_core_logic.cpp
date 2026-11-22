@@ -487,6 +487,7 @@ private slots:
     void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
+    void headerPolicyFailsClosedWithoutOrigin();
     void playlistSnifferRecognizesBody();
     void downloadHlsVerifiesSegmentsAndMapRange();
     void configMapperReadsNestedPaths();
@@ -903,7 +904,7 @@ void CoreLogicTest::sourceTimeoutUsesConfiguredValue()
 void CoreLogicTest::httpLogUrlRedactsSignature()
 {
     const QString text = HttpClient::redactUrl(
-        QUrl(QStringLiteral("https://cdn.example.com/a.m3u8?id=42&sign=abc123&token=xyz&key=kk&vuutv=vv")));
+        QUrl(QStringLiteral("https://cdn.example.com/a.m3u8?id=42&sign=abc123&token=xyz&key=kk&vuutv=vv&sig=s1&hdnts=h1&hash=hh&md5=mm")));
     const QUrlQuery query{QUrl(text)};
 
     QCOMPARE(query.queryItemValue(QStringLiteral("id")), QStringLiteral("42"));
@@ -911,6 +912,10 @@ void CoreLogicTest::httpLogUrlRedactsSignature()
     QCOMPARE(query.queryItemValue(QStringLiteral("token")), QStringLiteral("***"));
     QCOMPARE(query.queryItemValue(QStringLiteral("key")), QStringLiteral("***"));
     QCOMPARE(query.queryItemValue(QStringLiteral("vuutv")), QStringLiteral("***"));
+    QCOMPARE(query.queryItemValue(QStringLiteral("sig")), QStringLiteral("***"));
+    QCOMPARE(query.queryItemValue(QStringLiteral("hdnts")), QStringLiteral("***"));
+    QCOMPARE(query.queryItemValue(QStringLiteral("hash")), QStringLiteral("***"));
+    QCOMPARE(query.queryItemValue(QStringLiteral("md5")), QStringLiteral("***"));
     QVERIFY(!text.contains(QStringLiteral("abc123")));
     QVERIFY(!text.contains(QStringLiteral("xyz")));
 
@@ -965,6 +970,42 @@ void CoreLogicTest::headerPolicyStripsSecretsAcrossHost()
         HeaderPolicy::sanitizedForTarget(QUrl(QStringLiteral("http://source.example/a")),
                                          headers);
     QVERIFY(!downgrade.contains(QStringLiteral("Cookie")));
+}
+
+void CoreLogicTest::headerPolicyFailsClosedWithoutOrigin()
+{
+    QHash<QString, QString> headers;
+    headers.insert(QStringLiteral("Cookie"), QStringLiteral("sid=secret"));
+    headers.insert(QStringLiteral("Authorization"), QStringLiteral("Bearer secret"));
+    headers.insert(QStringLiteral("User-Agent"), QStringLiteral("MVP"));
+
+    // 只有 Cookie、没有 Referer 时，绝对 CDN 地址不能拿到源站凭据。
+    const QHash<QString, QString> noOrigin =
+        HeaderPolicy::sanitizedForTarget(QUrl(QStringLiteral("https://cdn.example/seg.ts")),
+                                         headers);
+    QVERIFY(!noOrigin.contains(QStringLiteral("Cookie")));
+    QVERIFY(!noOrigin.contains(QStringLiteral("Authorization")));
+    QCOMPARE(noOrigin.value(QStringLiteral("User-Agent")), QStringLiteral("MVP"));
+
+    // 显式源站才允许发敏感头；跨 host 仍剥离。
+    const QUrl source(QStringLiteral("https://source.example/"));
+    const QHash<QString, QString> sameHost =
+        HeaderPolicy::sanitizedForTarget(QUrl(QStringLiteral("https://source.example/a")),
+                                         headers, source);
+    QVERIFY(sameHost.contains(QStringLiteral("Cookie")));
+
+    const QHash<QString, QString> crossHost =
+        HeaderPolicy::sanitizedForTarget(QUrl(QStringLiteral("https://cdn.example/a")),
+                                         headers, source);
+    QVERIFY(!crossHost.contains(QStringLiteral("Cookie")));
+    QVERIFY(!crossHost.contains(QStringLiteral("Authorization")));
+
+    const QHash<QString, QString> withHeaders =
+        HeaderPolicy::withSourceHeaders(headers, source);
+    QCOMPARE(withHeaders.value(QStringLiteral("Referer")),
+             QStringLiteral("https://source.example/"));
+    QCOMPARE(withHeaders.value(QStringLiteral("Origin")),
+             QStringLiteral("https://source.example"));
 }
 
 void CoreLogicTest::downloadHlsVerifiesSegmentsAndMapRange()

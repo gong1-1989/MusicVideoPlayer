@@ -695,6 +695,7 @@ void SearchPanelController::handleDirectMediaLink(const QUrl &url)
     item.type = audio ? MediaType::Music : MediaType::Video;
     item.title = directMediaTitle(url);
     item.url = url;
+    item.sourceOrigin = url;
     item.online = true;
     item.sourceId = QStringLiteral("link");
     item.quality = inferQuality(item.title + QLatin1Char(' ') + url.toString(), item.type);
@@ -758,6 +759,7 @@ void SearchPanelController::handleWebPageLink(const QUrl &url)
                 item.title = directMediaTitle(mediaUrl);
             item.url = mediaUrl;
             item.webUrl = url;
+            item.sourceOrigin = url;
             item.online = true;
             item.sourceId = QStringLiteral("link");
             item.headers.insert(QStringLiteral("Referer"), url.toString());

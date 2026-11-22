@@ -76,6 +76,14 @@ MainWindow::MainWindow(QWidget *parent)
     // 下载对话框、HLS 后缀处理、任务进度与结果提示交给控制器
     m_downloads = new DownloadController(m_http, this, this);
 
+    // 播放列表为安全落盘不保存 Cookie；播放/下载前按 sourceId 从源配置
+    // 恢复内存态凭据，源配置被更新或删除后也自然跟随。
+    const auto credentialResolver = [this](const MediaItem &item) {
+        return m_registry->mediaItemWithCredentials(item);
+    };
+    m_player->setMediaItemResolver(credentialResolver);
+    m_downloads->setMediaItemResolver(credentialResolver);
+
     // 搜索整体从左侧拆成独立窗口：主界面只保留播放列表，
     // 搜索窗口在点搜索结果播放时自动隐藏，由侧栏搜索按钮再次打开。
     m_searchWindow = new SearchWindow(m_coordinator, m_registry, m_http, this);

@@ -1,7 +1,9 @@
 #include "core/PlaylistModel.h"
 #include "core/PlaylistStore.h"
 #include "download/DownloadJob.h"
+#include "download/DownloadManager.h"
 #include "download/DownloadPaths.h"
+#include "net/HttpClient.h"
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
 #include "util/SecretStore.h"
@@ -55,6 +57,9 @@ private slots:
     void sourceRegistryUnwritableDataDirFails();
     void downloadJobRoundTripEncryptsSensitiveHeaders();
     void downloadPathsAvoidOverwriteAndPickSuffix();
+    void downloadPathsTreatPartialAsOccupied();
+    void downloadManagerReservesActiveTarget();
+    void sourceRegistryRehydratesPlaylistCredentials();
 
 private:
     QTemporaryDir m_tempDir;
@@ -379,6 +384,99 @@ void StorageTest::downloadPathsAvoidOverwriteAndPickSuffix()
     QCOMPARE(DownloadPaths::suffixForDownload(
                  QUrl(QStringLiteral("https://example.com/play?id=1")), false, false),
              QStringLiteral("mp3"));
+}
+
+void StorageTest::downloadPathsTreatPartialAsOccupied()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("downloads-partial"));
+    QVERIFY(QDir().mkpath(dir));
+
+    const QString base = QDir(dir).filePath(QStringLiteral("半成品.mp4"));
+    QFile partial(base + QStringLiteral(".mvpdownload"));
+    QVERIFY(partial.open(QIODevice::WriteOnly));
+    partial.write("partial");
+    partial.close();
+
+    // 最终文件不存在，但同名半成品存在时也不能复用，否则两个任务会交错写。
+    const QString reserved = DownloadPaths::uniqueFilePath(dir, QStringLiteral("半成品.mp4"));
+    QCOMPARE(reserved, QDir(dir).filePath(QStringLiteral("半成品 (1).mp4")));
+
+    // 队列内已预留的路径也算冲突，即使磁盘上还看不到文件。
+    const QString queueReserved =
+        DownloadPaths::uniqueFilePath(dir, QStringLiteral("队列占用.mp4"),
+                                      [](const QString &candidate) {
+                                          return candidate.endsWith(QStringLiteral("队列占用.mp4"));
+                                      });
+    QCOMPARE(queueReserved, QDir(dir).filePath(QStringLiteral("队列占用 (1).mp4")));
+}
+
+void StorageTest::downloadManagerReservesActiveTarget()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("downloads-queue"));
+    QVERIFY(QDir().mkpath(dir));
+    const QString base = QDir(dir).filePath(QStringLiteral("同名.mp3"));
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("同名");
+    item.url = QUrl(QStringLiteral("http://127.0.0.1:1/a.mp3"));
+    item.online = true;
+    item.sourceId = QStringLiteral("test");
+    QString ignored;
+    ignored = manager.enqueue(item, item.url, {}, base, false, 1024);
+    QVERIFY(!ignored.isEmpty());
+
+    // 第一个任务已经预留 base，第二个同名任务必须自动换名。
+    const QString reserved = manager.reserveFilePath(dir, QStringLiteral("同名.mp3"));
+    QCOMPARE(reserved, QDir(dir).filePath(QStringLiteral("同名 (1).mp3")));
+    manager.shutdownForExit();
+}
+
+void StorageTest::sourceRegistryRehydratesPlaylistCredentials()
+{
+    SourceRegistry registry;
+    QVERIFY(registry.load());
+
+    SourceConfig config;
+    config.id = QStringLiteral("cred-test");
+    config.name = QStringLiteral("凭据测试源");
+    config.kind = QStringLiteral("config");
+    config.mediaType = MediaType::Music;
+    config.urlTemplate = QStringLiteral("https://source.example/api?q={keyword}");
+    config.fields.insert(QStringLiteral("title"), QStringLiteral("title"));
+    config.fields.insert(QStringLiteral("streamUrl"), QStringLiteral("url"));
+    config.cookie = QStringLiteral("sid=playlist-secret");
+    config.headers.insert(QStringLiteral("Authorization"),
+                          QStringLiteral("Bearer playlist-token"));
+    QVERIFY(registry.upsert(config));
+
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("已保存条目");
+    item.url = QUrl(QStringLiteral("https://source.example/a.mp3"));
+    item.online = true;
+    item.sourceId = config.id;
+
+    // 模拟播放列表持久化：落盘前剥掉 Cookie，重启后从 JSON 读回。
+    const QJsonObject stored = mediaItemToJson(item);
+    const MediaItem restored = mediaItemFromJson(stored);
+    QVERIFY(!restored.headers.contains(QStringLiteral("Cookie")));
+
+    SourceRegistry reloaded;
+    QVERIFY(reloaded.load());
+    const MediaItem hydrated = reloaded.mediaItemWithCredentials(restored);
+    QCOMPARE(hydrated.sourceOrigin, QUrl(config.urlTemplate));
+    QCOMPARE(QUrl(hydrated.headers.value(QStringLiteral("Referer"))),
+             QUrl(config.urlTemplate));
+    QVERIFY(hydrated.headers.contains(QStringLiteral("Origin")));
+    if (SecretStore::isAvailable()) {
+        QCOMPARE(hydrated.headers.value(QStringLiteral("Cookie")),
+                 QStringLiteral("sid=playlist-secret"));
+        QCOMPARE(hydrated.headers.value(QStringLiteral("Authorization")),
+                 QStringLiteral("Bearer playlist-token"));
+    }
 }
 
 QTEST_GUILESS_MAIN(StorageTest)

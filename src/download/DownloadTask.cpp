@@ -16,6 +16,8 @@
 #include <QStringList>
 #include <QTimer>
 
+#include <utility>
+
 Q_LOGGING_CATEGORY(lcDownload, "mvp.download")
 
 namespace {
@@ -46,7 +48,8 @@ DownloadTask::DownloadTask(HttpClient *http,
     : QObject(parent)
     , m_http(http)
     , m_url(url)
-    , m_originUrl(url)
+    // 源站不能默认成流地址：CDN 直链会把 Cookie 当成发给 CDN 自己的。
+    , m_originUrl(HeaderPolicy::originFromHeaders(headers))
     , m_filePath(filePath)
     , m_headers(headers)
 {
@@ -157,6 +160,17 @@ void DownloadTask::setResumeState(qint64 bytesWritten, int segmentIndex, bool hl
         m_isHls = true;
 }
 
+void DownloadTask::setOriginUrl(const QUrl &origin)
+{
+    if (origin.isValid() && !origin.host().isEmpty())
+        m_originUrl = origin;
+}
+
+void DownloadTask::setPathResolver(std::function<QString(const QString &)> resolver)
+{
+    m_pathResolver = std::move(resolver);
+}
+
 QString DownloadTask::partialPath() const
 {
     return m_filePath + QStringLiteral(".mvpdownload");
@@ -205,7 +219,7 @@ void DownloadTask::startDirectRequest()
             return;
         }
         self->onHeaders(reply);
-    });
+    }, m_originUrl);
 }
 
 void DownloadTask::onHeaders(QNetworkReply *reply)
@@ -420,7 +434,7 @@ void DownloadTask::startPlaylistFetch(const QUrl &url, int hop)
         });
         if (reply->isFinished() && !self.isNull())
             self->onPlaylistFinished(reply);
-    });
+    }, m_originUrl);
 }
 
 bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QUrl *variantUrl,
@@ -721,7 +735,7 @@ void DownloadTask::startNextSegment()
             self->writeReplyData(reply);
         if (reply->isFinished())
             self->onSegmentFinished(reply);
-    });
+    }, m_originUrl);
 }
 
 void DownloadTask::onSegmentFinished(QNetworkReply *reply)
@@ -826,7 +840,12 @@ bool DownloadTask::switchToHlsFile()
     QString base = m_filePath;
     if (dot > slash && dot >= 0)
         base = m_filePath.left(dot);
-    const QString newPath = base + QStringLiteral(".ts");
+    QString newPath = base + QStringLiteral(".ts");
+    if (m_pathResolver) {
+        const QString resolved = m_pathResolver(newPath);
+        if (!resolved.isEmpty())
+            newPath = resolved;
+    }
 
     if (m_file != nullptr) {
         const QString oldPartial = partialPath();
@@ -860,9 +879,17 @@ void DownloadTask::commitFile()
     m_file->deleteLater();
     m_file = nullptr;
 
-    if (QFile::exists(m_filePath))
-        QFile::remove(m_filePath);
-    if (!QFile::rename(temp, m_filePath)) {
+    // 下载期间用户可能新建了同名文件，另一个任务也可能刚好完成并占用了
+    // 这个路径。最终提交必须重新确认，冲突时换成新名字，绝不删除已有文件。
+    QString finalPath = m_filePath;
+    if (QFileInfo::exists(finalPath) && m_pathResolver) {
+        const QString resolved = m_pathResolver(finalPath);
+        if (!resolved.isEmpty())
+            finalPath = resolved;
+    }
+    m_filePath = finalPath;
+
+    if (!QFile::rename(temp, finalPath)) {
         fail(tr("保存文件失败：无法把临时文件改名到 %1").arg(m_filePath));
         return;
     }
@@ -951,8 +978,9 @@ void DownloadTask::cancel()
         m_file->deleteLater();
         m_file = nullptr;
     }
+    // 只删当前任务自己的半成品；最终文件可能已经属于另一个同名任务或用户，
+    // 不能在这里无条件删除。
     QFile::remove(temp);
-    QFile::remove(m_filePath);
 
     emit failed(tr("下载已取消"));
     emit finished();

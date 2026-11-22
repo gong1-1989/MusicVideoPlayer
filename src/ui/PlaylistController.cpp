@@ -295,6 +295,7 @@ bool PlaylistController::updateDownloadedItem(const MediaItem &source, const QSt
             item.online = false;
             item.sourceId.clear();
             item.webUrl = QUrl();
+            item.sourceOrigin = QUrl();
             item.headers.clear();
             item.alternateUrls.clear();
             item.positionMs = 0;

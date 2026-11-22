@@ -10,6 +10,8 @@
 #include <QThread>
 #include <QTimer>
 
+#include <utility>
+
 Q_LOGGING_CATEGORY(lcPlayer, "mvp.player")
 
 PlaybackController::PlaybackController(QObject *parent)
@@ -62,7 +64,8 @@ PlaybackController::PlaybackController(QObject *parent)
 
         if (!m_proxyReady || m_proxy == nullptr || !hasCurrentItem())
             return;
-        const MediaItem item = currentItem();
+        const MediaItem modelItem = currentItem();
+        const MediaItem item = m_itemResolver ? m_itemResolver(modelItem) : modelItem;
         const QUrl playbackUrl = preferredPlaybackUrl(item);
         if (!item.online || !isHlsUrl(playbackUrl))
             return;
@@ -159,6 +162,12 @@ PlaybackController::~PlaybackController()
     m_proxy = nullptr;
 }
 
+void PlaybackController::setMediaItemResolver(
+    std::function<MediaItem(const MediaItem &)> resolver)
+{
+    m_itemResolver = std::move(resolver);
+}
+
 void PlaybackController::setPlaylist(PlaylistModel *playlist)
 {
     if (m_playlist.data() == playlist)
@@ -222,6 +231,10 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
         return;
     }
 
+    // 播放列表落盘时不保存 Cookie；播放这一份副本按 sourceId 从源配置
+    // 恢复内存态凭据，模型本身仍保持脱敏内容。
+    const MediaItem playbackItem = m_itemResolver ? m_itemResolver(item) : item;
+
     m_row = row;
     m_unavailableReason.clear();
     m_lastPrefetchPosition = -1;
@@ -236,13 +249,13 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
 
     // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
     // 本地文件直接用 file:// 播放。视频优先 mp4/flv，HLS 只做回退。
-    const QUrl playbackUrl = preferredPlaybackUrl(item);
+    const QUrl playbackUrl = preferredPlaybackUrl(playbackItem);
     QUrl source = playbackUrl;
-    if (item.online && m_proxyReady && m_proxyThread->isRunning()) {
+    if (playbackItem.online && m_proxyReady && m_proxyThread->isRunning()) {
         QUrl proxied;
         const bool invoked = QMetaObject::invokeMethod(
             m_proxy,
-            [proxy = m_proxy, url = playbackUrl, headers = item.headers, &proxied] {
+            [proxy = m_proxy, url = playbackUrl, headers = playbackItem.headers, &proxied] {
                 proxied = proxy->proxyUrlFor(url, headers);
             },
             Qt::BlockingQueuedConnection);

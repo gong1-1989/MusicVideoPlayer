@@ -29,6 +29,9 @@ public:
     QString enqueue(const MediaItem &item, const QUrl &url,
                     const QHash<QString, QString> &headers,
                     const QString &filePath, bool hls, qint64 maxBytes);
+    /// 在下载队列范围内分配不冲突的目标名；先由界面调用显示文件名，
+    /// enqueue 内部还会再校验一次，避免调用方绕过队列。
+    QString reserveFilePath(const QString &directory, const QString &fileName) const;
     const QVector<DownloadJob> &jobs() const { return m_jobs; }
 
     int activeCount() const;
@@ -51,15 +54,19 @@ signals:
 
 private:
     int indexOf(const QString &id) const;
+    QString reserveFilePath(const QString &directory, const QString &fileName,
+                            const QString &ignoreId) const;
+    bool isPathReserved(const QString &path, const QString &ignoreId) const;
     void load();
     void saveNow();
     void scheduleSave();
     void scheduleNotify();
+    void scheduleRemoveFile(const QString &path, int attempt = 0);
+    void pumpQueue();
     void startJob(const QString &id);
     void startRemux(const QString &id);
     void finishJob(const QString &id, const QString &path, bool success,
                    const QString &message);
-    static QString uniqueMp4Path(const QString &tsPath);
 
     HttpClient *m_http = nullptr;
     QVector<DownloadJob> m_jobs;

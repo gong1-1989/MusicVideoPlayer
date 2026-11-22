@@ -8,6 +8,20 @@
 
 namespace {
 
+QString normalizedPath(const QString &path)
+{
+    return QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+}
+
+/// 最终文件、半成品、HLS 中间文件任意一个存在，都不能再分给同一路径。
+bool occupiedOnDisk(const QString &path)
+{
+    return QFileInfo::exists(path)
+        || QFileInfo::exists(path + QStringLiteral(".mvpdownload"))
+        || QFileInfo::exists(path + QStringLiteral(".ts"))
+        || QFileInfo::exists(path + QStringLiteral(".ts.mvpdownload"));
+}
+
 QString normalizedSuffix(const QUrl &url)
 {
     QString suffix = QFileInfo(url.path()).suffix().toLower();
@@ -20,11 +34,19 @@ QString normalizedSuffix(const QUrl &url)
 
 namespace DownloadPaths {
 
-QString uniqueFilePath(const QString &directory, const QString &fileName)
+QString uniqueFilePath(const QString &directory, const QString &fileName,
+                       const PathInUse &inUse)
 {
     const QDir dir(directory);
     const QString base = dir.absoluteFilePath(fileName);
-    if (!QFileInfo::exists(base))
+    auto occupied = [&](const QString &candidate) {
+        if (occupiedOnDisk(candidate))
+            return true;
+        return inUse
+            && (inUse(candidate)
+                || inUse(candidate + QStringLiteral(".mvpdownload")));
+    };
+    if (!occupied(base))
         return base;
 
     const QFileInfo original(base);
@@ -34,11 +56,30 @@ QString uniqueFilePath(const QString &directory, const QString &fileName)
     for (int i = 1; i < 10000; ++i) {
         const QString candidate =
             dir.absoluteFilePath(QStringLiteral("%1 (%2)%3").arg(stem).arg(i).arg(tail));
-        if (!QFileInfo::exists(candidate))
+        if (!occupied(candidate))
+            return candidate;
+    }
+    for (int i = 1; i < 10000; ++i) {
+        const QString candidate =
+            dir.absoluteFilePath(QStringLiteral("%1 (copy %2)%3").arg(stem).arg(i).arg(tail));
+        if (!occupied(candidate))
             return candidate;
     }
     return dir.absoluteFilePath(
         QStringLiteral("%1 (copy)%2").arg(stem, tail));
+}
+
+bool pathsReferToSameFile(const QString &a, const QString &b)
+{
+    if (a.isEmpty() || b.isEmpty())
+        return false;
+    const QString left = normalizedPath(a);
+    const QString right = normalizedPath(b);
+#ifdef Q_OS_WIN
+    return left.compare(right, Qt::CaseInsensitive) == 0;
+#else
+    return left == right;
+#endif
 }
 
 QString suffixForDownload(const QUrl &url, bool hls, bool video)

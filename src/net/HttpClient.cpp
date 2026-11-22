@@ -80,7 +80,8 @@ bool isSafeHeader(const QString &name, const QByteArray &value)
     return !value.contains('\r') && !value.contains('\n') && !value.contains('\0');
 }
 
-QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &extra)
+QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &extra,
+                             const QUrl &sourceOrigin)
 {
     QNetworkRequest request(url);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
@@ -100,9 +101,10 @@ QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &ext
     }
 
     // 各搜索源自定义的头放在最后，允许覆盖上面的默认值。
-    // 敏感头（Cookie/Authorization 等）只允许发往 Referer/Origin 对应的源站；
-    // 跨 host 或 https→http 降级时统一剥离，避免直链/分片把凭据带到第三方。
-    const QHash<QString, QString> safeHeaders = HeaderPolicy::sanitizedForTarget(url, extra);
+    // 敏感头（Cookie/Authorization 等）只允许发往显式源站；没有源站信息时
+    // 也剥离，避免只配 Cookie 没配 Referer 的源把凭据发给 CDN。
+    const QHash<QString, QString> safeHeaders =
+        HeaderPolicy::sanitizedForTarget(url, extra, sourceOrigin);
     for (auto it = safeHeaders.cbegin(); it != safeHeaders.cend(); ++it) {
         const QString key = it.key();
         const QByteArray value = it.value().toUtf8();
@@ -132,26 +134,29 @@ HttpClient::HttpClient(QObject *parent)
 }
 
 QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
-                               const QHash<QString, QString> &headers, qint64 maxBytes)
+                               const QHash<QString, QString> &headers, qint64 maxBytes,
+                               const QUrl &sourceOrigin)
 {
     qCDebug(lcHttp) << "GET" << redactUrl(url) << "分段" << range;
-    QNetworkRequest request = buildRequest(url, headers);
+    QNetworkRequest request = buildRequest(url, headers, sourceOrigin);
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
     return trackReply(m_nam->get(request), maxBytes);
 }
 
 QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body,
-                                    const QHash<QString, QString> &headers, qint64 maxBytes)
+                                    const QHash<QString, QString> &headers, qint64 maxBytes,
+                                    const QUrl &sourceOrigin)
 {
-    return postJson(url, body, headers, maxBytes);
+    return postJson(url, body, headers, maxBytes, sourceOrigin);
 }
 
 QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
-                                    const QHash<QString, QString> &headers, qint64 maxBytes)
+                                    const QHash<QString, QString> &headers, qint64 maxBytes,
+                                    const QUrl &sourceOrigin)
 {
     qCDebug(lcHttp) << "POST" << redactUrl(url) << "请求体" << body.size() << "字节";
-    QNetworkRequest request = buildRequest(url, headers);
+    QNetworkRequest request = buildRequest(url, headers, sourceOrigin);
     const QByteArray contentType =
         headers.value(QStringLiteral("Content-Type"),
                       QStringLiteral("application/x-www-form-urlencoded")).toUtf8();
@@ -172,15 +177,16 @@ void HttpClient::fetch(const QUrl &url, const QByteArray &range,
 
 void HttpClient::fetch(const QUrl &url, const QByteArray &range,
                        const QHash<QString, QString> &headers, const ReplyHandler &onReady,
-                       qint64 maxBytes)
+                       qint64 maxBytes, const QUrl &sourceOrigin)
 {
-    fetchInternal(url, range, headers, onReady, 0, false, maxBytes);
+    fetchInternal(url, range, headers, onReady, 0, false, maxBytes, sourceOrigin);
 }
 
 void HttpClient::stream(const QUrl &url, const QByteArray &range,
-                        const QHash<QString, QString> &headers, const ReplyHandler &onReady)
+                        const QHash<QString, QString> &headers, const ReplyHandler &onReady,
+                        const QUrl &sourceOrigin)
 {
-    fetchInternal(url, range, headers, onReady, 0, true, 0);
+    fetchInternal(url, range, headers, onReady, 0, true, 0, sourceOrigin);
 }
 
 QNetworkReply *HttpClient::trackReply(QNetworkReply *reply, qint64 maxBytes)
@@ -230,7 +236,7 @@ void HttpClient::abortAll()
 void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
                                const QHash<QString, QString> &headers,
                                const ReplyHandler &onReady, int hop, bool deliverOnHeaders,
-                               qint64 maxBytes)
+                               qint64 maxBytes, const QUrl &sourceOrigin)
 {
     if (hop > kMaxRedirects || !isAllowedScheme(url)) {
         qCWarning(lcHttp) << "重定向链被拒绝：" << redactUrl(url) << "第" << hop << "跳";
@@ -238,7 +244,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
         return;
     }
 
-    QNetworkRequest request = buildRequest(url, headers);
+    QNetworkRequest request = buildRequest(url, headers, sourceOrigin);
     // 默认的 NoLessSafeRedirectPolicy 会拒绝 https→http 的降级跳转，
     // 而 163 的 outer/url 恰好 302 到 http 的 CDN，所以这里改为手动跟随。
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
@@ -253,7 +259,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
 
     connect(reply, &QNetworkReply::metaDataChanged, this,
             [this, reply, url, range, headers, onReady, hop, delivered, deliverOnHeaders,
-             maxBytes] {
+             maxBytes, sourceOrigin] {
         if (*delivered)
             return;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -280,7 +286,8 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
         }
         qCInfo(lcHttp) << "重定向" << status << redactUrl(url) << "->" << redactUrl(next);
         const QHash<QString, QString> nextHeaders = headersForRedirect(headers, url, next);
-        fetchInternal(next, range, nextHeaders, onReady, hop + 1, deliverOnHeaders, maxBytes);
+        fetchInternal(next, range, nextHeaders, onReady, hop + 1, deliverOnHeaders,
+                      maxBytes, sourceOrigin);
     });
 
     connect(reply, &QNetworkReply::finished, this,
@@ -362,10 +369,13 @@ QString HttpClient::redactUrl(const QUrl &url)
         const QString lower = segment.toLower();
         const bool namedSecret = lower == QLatin1String("sign")
             || lower == QLatin1String("signature")
+            || lower == QLatin1String("sig")
             || lower == QLatin1String("token")
             || lower == QLatin1String("auth")
             || lower == QLatin1String("session")
-            || lower == QLatin1String("credential");
+            || lower == QLatin1String("credential")
+            || lower == QLatin1String("hash")
+            || lower == QLatin1String("md5");
         const bool longOpaque = segment.size() >= 20
             && !segment.contains(QLatin1Char('.'))
             && !segment.contains(QLatin1Char('%'))
@@ -399,6 +409,12 @@ QString HttpClient::redactUrl(const QUrl &url)
                                || key.contains(QLatin1String("credential"))
                                || key.contains(QLatin1String("vkey"))
                                || key.contains(QLatin1String("vuutv"))
+                               || key.contains(QLatin1String("hdnts"))
+                               || key.contains(QLatin1String("hash"))
+                               || key.contains(QLatin1String("md5"))
+                               || key.contains(QLatin1String("sha1"))
+                               || key.contains(QLatin1String("sha256"))
+                               || key == QLatin1String("sig")
                                || key == QLatin1String("key")
                                || key == QLatin1String("timestamp");
         clean.addQueryItem(item.first, sensitive ? QStringLiteral("***") : item.second);

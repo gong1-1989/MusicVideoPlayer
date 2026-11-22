@@ -28,6 +28,7 @@ signals:
 
 private:
     QProcess *m_process = nullptr;
+    QString m_tempPath;
     bool m_timedOut = false;
 };
 

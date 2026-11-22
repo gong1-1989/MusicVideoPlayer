@@ -41,6 +41,9 @@ QString MediaRemux::ffmpegExecutable()
 
 void MediaRemux::cancel()
 {
+    if (!m_tempPath.isEmpty())
+        QFile::remove(m_tempPath);
+    m_tempPath.clear();
     if (m_process == nullptr)
         return;
     QProcess *process = m_process;
@@ -73,7 +76,9 @@ void MediaRemux::remuxToMp4(const QString &inputPath, const QString &outputPath)
     }
 
     QDir().mkpath(QFileInfo(outputPath).absolutePath());
-    QFile::remove(outputPath);
+    // 先写临时文件，成功后只在目标不存在时改名，绝不覆盖已有的同名 MP4。
+    m_tempPath = outputPath + QStringLiteral(".mvpremux");
+    QFile::remove(m_tempPath);
 
     m_timedOut = false;
     m_process = new QProcess(this);
@@ -89,26 +94,29 @@ void MediaRemux::remuxToMp4(const QString &inputPath, const QString &outputPath)
 #endif
 
     connect(m_process, &QProcess::errorOccurred, this,
-            [this, outputPath](QProcess::ProcessError error) {
+            [this, outputPath, tempPath = m_tempPath](QProcess::ProcessError error) {
                 if (error != QProcess::FailedToStart || m_process == nullptr)
                     return;
                 const QString detail = m_process->errorString();
                 m_process->deleteLater();
                 m_process = nullptr;
+                QFile::remove(tempPath);
+                m_tempPath.clear();
                 emit finished(false, outputPath,
                               tr("FFmpeg 启动失败：%1").arg(detail));
             });
 
     connect(m_process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, outputPath](int exitCode, QProcess::ExitStatus status) {
+            this, [this, outputPath, tempPath = m_tempPath](int exitCode,
+                                                            QProcess::ExitStatus status) {
                 if (m_process == nullptr)
                     return;
                 const QString log =
                     QString::fromUtf8(m_process->readAll()).trimmed();
                 const bool normal = status == QProcess::NormalExit && exitCode == 0;
-                const bool outputOk = QFileInfo(outputPath).exists()
-                                      && QFileInfo(outputPath).size() > 0;
-                const bool success = normal && outputOk && !m_timedOut;
+                const bool outputOk = QFileInfo(tempPath).exists()
+                                      && QFileInfo(tempPath).size() > 0;
+                bool success = normal && outputOk && !m_timedOut;
 
                 QString error;
                 if (m_timedOut)
@@ -120,8 +128,19 @@ void MediaRemux::remuxToMp4(const QString &inputPath, const QString &outputPath)
                 else if (!log.isEmpty())
                     error = log.right(2000);
 
+                if (success && QFileInfo::exists(outputPath)) {
+                    success = false;
+                    error = tr("目标 MP4 已存在，未覆盖：%1").arg(outputPath);
+                } else if (success && !QFile::rename(tempPath, outputPath)) {
+                    success = false;
+                    error = tr("无法把临时 MP4 改名到 %1").arg(outputPath);
+                }
+                if (!success)
+                    QFile::remove(tempPath);
+
                 m_process->deleteLater();
                 m_process = nullptr;
+                m_tempPath.clear();
                 emit finished(success, outputPath, error);
             });
 
@@ -135,7 +154,7 @@ void MediaRemux::remuxToMp4(const QString &inputPath, const QString &outputPath)
         QStringLiteral("-c"), QStringLiteral("copy"),
         QStringLiteral("-movflags"), QStringLiteral("+faststart"),
         QStringLiteral("-f"), QStringLiteral("mp4"),
-        outputPath,
+        m_tempPath,
     };
     m_process->start(ffmpeg, arguments);
 

@@ -88,6 +88,7 @@ struct MediaItem
     QStringList alternateUrls;
     QUrl lyricUrl;
     QUrl webUrl;                    // 原始页面，便于回看来源
+    QUrl sourceOrigin;              // 源站地址，用于裁剪 Cookie/Authorization 作用域
     QString sourceId;               // 来自哪个搜索源（本地文件为空）
     QHash<QString, QString> headers; // 播放/下载要补的请求头（Referer 等；敏感头按目标 host 过滤）
     bool online = false;
@@ -251,6 +252,8 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
         object.insert(QStringLiteral("lyricUrl"), item.lyricUrl.toString());
     if (!item.webUrl.isEmpty())
         object.insert(QStringLiteral("webUrl"), item.webUrl.toString());
+    if (!item.sourceOrigin.isEmpty())
+        object.insert(QStringLiteral("sourceOrigin"), item.sourceOrigin.toString());
     if (!item.sourceId.isEmpty())
         object.insert(QStringLiteral("sourceId"), item.sourceId);
     const QHash<QString, QString> safeHeaders = HeaderPolicy::persistedHeaders(item.headers);
@@ -298,6 +301,7 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
     }
     item.lyricUrl = QUrl(object.value(QStringLiteral("lyricUrl")).toString());
     item.webUrl = QUrl(object.value(QStringLiteral("webUrl")).toString());
+    item.sourceOrigin = QUrl(object.value(QStringLiteral("sourceOrigin")).toString());
     item.sourceId = object.value(QStringLiteral("sourceId")).toString();
     const QJsonObject headers = object.value(QStringLiteral("headers")).toObject();
     for (auto it = headers.constBegin(); it != headers.constEnd(); ++it) {

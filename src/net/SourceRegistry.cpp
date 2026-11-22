@@ -1,5 +1,6 @@
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
+#include "util/HeaderPolicy.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -369,6 +370,43 @@ SourceConfig SourceRegistry::sourceById(const QString &id) const
             return config;
     }
     return SourceConfig();
+}
+
+MediaItem SourceRegistry::mediaItemWithCredentials(const MediaItem &item) const
+{
+    if (item.sourceId.isEmpty())
+        return item;
+
+    const SourceConfig config = sourceById(item.sourceId);
+    if (config.id.isEmpty())
+        return item;
+
+    MediaItem result = item;
+    QUrl origin = result.sourceOrigin;
+    if (!origin.isValid() || origin.host().isEmpty()) {
+        if (!config.urlTemplate.isEmpty())
+            origin = QUrl(config.urlTemplate);
+        else if (!result.webUrl.isEmpty())
+            origin = result.webUrl;
+    }
+
+    if (origin.isValid() && !origin.host().isEmpty()) {
+        result.sourceOrigin = origin;
+        // 源配置更新后旧条目的 Referer 可能过期，按当前源站重建；
+        // 配置里的显式 Referer/Origin 仍会在下面覆盖回来。
+        result.headers.remove(QStringLiteral("Referer"));
+        result.headers.remove(QStringLiteral("Origin"));
+        result.headers = HeaderPolicy::withSourceHeaders(result.headers, origin);
+    }
+
+    // 播放列表落盘时剥离了敏感头，这里只从内存中的 SourceRegistry 恢复，
+    // 不把 Cookie 重新写回磁盘。
+    for (auto it = config.headers.cbegin(); it != config.headers.cend(); ++it)
+        result.headers.insert(it.key(), it.value());
+    if (!config.cookie.isEmpty())
+        result.headers.insert(QStringLiteral("Cookie"), config.cookie);
+
+    return result;
 }
 
 bool SourceRegistry::upsert(const SourceConfig &config)

@@ -21,6 +21,9 @@ public:
     QVector<SourceConfig> sources() const { return m_sources; }
     QVector<SourceConfig> enabledSources() const;
     SourceConfig sourceById(const QString &id) const;
+    /// 从源配置恢复内存态凭据和源站地址。播放列表落盘时会剥掉 Cookie，
+    /// 重启后必须按 sourceId 重新注入，否则需要登录的源会 403。
+    MediaItem mediaItemWithCredentials(const MediaItem &item) const;
 
     bool upsert(const SourceConfig &config);
     bool remove(const QString &id);
