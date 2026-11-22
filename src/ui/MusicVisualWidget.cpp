@@ -1,9 +1,12 @@
 #include "ui/MusicVisualWidget.h"
 
+#include "audio/AudioSpectrumAnalyzer.h"
+
 #include <QEvent>
 #include <QFontMetrics>
 #include <QHideEvent>
 #include <QLinearGradient>
+#include <QLoggingCategory>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRadialGradient>
@@ -14,6 +17,8 @@
 #include <QtMath>
 
 #include <utility>
+
+Q_LOGGING_CATEGORY(lcMusicVisual, "mvp.ui.musicvisual")
 
 namespace {
 
@@ -49,13 +54,32 @@ MusicVisualWidget::MusicVisualWidget(QWidget *parent)
         m_phase += m_playing ? 0.055 : 0.012;
         if (m_phase > 10000.0)
             m_phase = 0.0;
+        if (m_audioSpectrumAge < 1000)
+            m_audioSpectrumAge += 33;
         update();
     });
+
+    m_spectrum = new AudioSpectrumAnalyzer(this);
+    connect(m_spectrum, &AudioSpectrumAnalyzer::levelsChanged,
+            this, &MusicVisualWidget::setAudioSpectrum);
+    connect(m_spectrum, &AudioSpectrumAnalyzer::unavailable, this,
+            [this](const QString &reason) {
+                // 采集不可用时清空真实频谱，绘制层会自动回到原来的正弦动画。
+                m_audioSpectrum.clear();
+                m_audioSpectrumAge = 1000;
+                qCWarning(lcMusicVisual) << reason;
+            });
 
     if (parent != nullptr) {
         parent->installEventFilter(this);
         setGeometry(parent->rect());
     }
+}
+
+MusicVisualWidget::~MusicVisualWidget()
+{
+    if (m_spectrum != nullptr)
+        m_spectrum->stopCapture();
 }
 
 void MusicVisualWidget::setTrack(const MediaItem &item)
@@ -64,6 +88,8 @@ void MusicVisualWidget::setTrack(const MediaItem &item)
     m_cover = QPixmap();
     m_coverScaled = QPixmap();
     m_coverScaledRadius = 0;
+    m_audioSpectrum.clear();
+    m_audioSpectrumAge = 1000;
     if (!item.online && item.posterUrl.isLocalFile()) {
         QPixmap loaded(item.posterUrl.toLocalFile());
         if (!loaded.isNull())
@@ -85,6 +111,12 @@ void MusicVisualWidget::setPlaying(bool playing)
         else
             m_timer->stop();
     }
+    if (!m_playing) {
+        // 暂停/停止时保留最后一帧真实频谱并定格；只有从未拿到真实数据时
+        // 才让绘制层回退拟真动画，避免暂停后反而出现满屏假能量。
+        m_audioSpectrumAge = m_audioSpectrum.size() == 46 ? 0 : 1000;
+    }
+    updateCaptureState();
     update();
 }
 
@@ -148,6 +180,7 @@ void MusicVisualWidget::showEvent(QShowEvent *event)
     // 暂停状态下显示只画一次静态画面，不为动画空转。
     if (m_timer != nullptr && m_playing && !m_timer->isActive())
         m_timer->start();
+    updateCaptureState();
 }
 
 void MusicVisualWidget::hideEvent(QHideEvent *event)
@@ -155,6 +188,30 @@ void MusicVisualWidget::hideEvent(QHideEvent *event)
     QWidget::hideEvent(event);
     if (m_timer != nullptr)
         m_timer->stop();
+    if (m_spectrum != nullptr)
+        m_spectrum->stopCapture();
+}
+
+void MusicVisualWidget::updateCaptureState()
+{
+    if (m_spectrum == nullptr)
+        return;
+    const bool shouldCapture = m_playing && isVisible();
+    if (shouldCapture) {
+        if (!m_spectrum->isCapturing())
+            m_spectrum->startCapture();
+    } else if (m_spectrum->isCapturing()) {
+        m_spectrum->stopCapture();
+    }
+}
+
+void MusicVisualWidget::setAudioSpectrum(const QVector<float> &levels)
+{
+    if (!m_playing || levels.isEmpty())
+        return;
+    m_audioSpectrum = levels;
+    m_audioSpectrumAge = 0;
+    // 正常播放时 33ms 定时器已在重绘，这里不额外 update()，避免双倍刷新。
 }
 
 bool MusicVisualWidget::eventFilter(QObject *watched, QEvent *event)
@@ -203,29 +260,33 @@ void MusicVisualWidget::drawBackground(QPainter &painter, const QRectF &rect)
 
 void MusicVisualWidget::drawSpectrum(QPainter &painter, const QRectF &rect)
 {
-    const qreal count = 46.0;
+    const int count = 46;
+    const bool live = m_audioSpectrum.size() == count && m_audioSpectrumAge <= 300;
     const qreal gap = qMax(2.0, rect.width() / 620.0);
     const qreal totalWidth = rect.width() * 0.86;
     const qreal barWidth = (totalWidth - gap * (count - 1)) / count;
     const qreal baseY = rect.height() * 0.88;
-    const qreal maxHeight = rect.height() * (m_playing ? 0.20 : 0.07);
-
-    QLinearGradient barGradient(0, baseY - maxHeight, 0, baseY);
-    barGradient.setColorAt(0.0, withAlpha(m_accent.lighter(135), 225));
-    barGradient.setColorAt(0.55, withAlpha(QColor(86, 190, 255), 190));
-    barGradient.setColorAt(1.0, withAlpha(QColor(255, 104, 190), 150));
+    const qreal maxHeight = rect.height() * ((m_playing || live) ? 0.20 : 0.07);
 
     painter.setPen(Qt::NoPen);
-    for (int i = 0; i < int(count); ++i) {
-        // 用相位错开的正弦叠加做拟真频谱：稳定、不影响布局，也不额外解码音频。
-        const qreal a = qSin(m_phase * 2.1 + i * 0.52) * 0.5 + 0.5;
-        const qreal b = qSin(m_phase * 3.7 + i * 1.17) * 0.5 + 0.5;
-        const qreal c = qSin(m_phase * 0.9 + i * 0.21) * 0.5 + 0.5;
-        const qreal level = 0.16 + (a * 0.46 + b * 0.30 + c * 0.24) * 0.84;
+    for (int i = 0; i < count; ++i) {
+        qreal level = 0.0;
+        if (live) {
+            // 真实频谱：WASAPI 采到的当前系统音频，低频鼓点和高频乐器各自对应。
+            // dBFS 映射后再做一次 gamma，让系统音量偏低时也能看清细节。
+            level = qBound(0.0, qreal(m_audioSpectrum.at(i)), 1.0);
+            level = qPow(level, 0.72);
+        } else {
+            // 采集不可用/尚未出首帧时的兜底：保留原来的拟真动画，不留空舞台。
+            const qreal a = qSin(m_phase * 2.1 + i * 0.52) * 0.5 + 0.5;
+            const qreal b = qSin(m_phase * 3.7 + i * 1.17) * 0.5 + 0.5;
+            const qreal c = qSin(m_phase * 0.9 + i * 0.21) * 0.5 + 0.5;
+            level = 0.16 + (a * 0.46 + b * 0.30 + c * 0.24) * 0.84;
+        }
         const qreal h = maxHeight * level;
         const QRectF bar(rect.left() + (rect.width() - totalWidth) / 2.0
                              + i * (barWidth + gap),
-                         baseY - h, barWidth, h + 8.0);
+                         baseY - h, barWidth, h + (live ? 2.0 : 8.0));
         QLinearGradient barGrad(bar.topLeft(), bar.bottomLeft());
         barGrad.setColorAt(0.0, withAlpha(m_accent.lighter(130), 210));
         barGrad.setColorAt(1.0, withAlpha(QColor(255, 98, 190), 62));

@@ -1,4 +1,5 @@
 #include "lyrics/LrcParser.h"
+#include "audio/SpectrumMath.h"
 #include "core/PlaybackController.h"
 #include "core/PlaylistModel.h"
 #include "download/DownloadTask.h"
@@ -35,6 +36,9 @@
 #include <QTest>
 #include <QTimer>
 #include <QUrlQuery>
+
+#include <cmath>
+#include <limits>
 
 namespace {
 
@@ -473,6 +477,7 @@ class CoreLogicTest : public QObject
 
 private slots:
     void timeFormat();
+    void spectrumMathMapsToneToBand();
     void lrcParseWithOffsetAndMultipleTimestamps();
     void lrcIndexAt();
     void mediaItemJsonRoundTrip();
@@ -519,6 +524,56 @@ void CoreLogicTest::timeFormat()
     QCOMPARE(TimeFormat::formatMs(0), QStringLiteral("00:00"));
     QCOMPARE(TimeFormat::formatMs(61'000), QStringLiteral("01:01"));
     QCOMPARE(TimeFormat::formatMs(3'600'000), QStringLiteral("1:00:00"));
+}
+
+void CoreLogicTest::spectrumMathMapsToneToBand()
+{
+    constexpr int sampleRate = 48000;
+    QVector<float> silence(SpectrumMath::kFftSize, 0.0f);
+    const QVector<float> silentLevels = SpectrumMath::analyze(silence, sampleRate);
+    QCOMPARE(silentLevels.size(), SpectrumMath::kBandCount);
+    for (float level : silentLevels)
+        QVERIFY(level < 0.01f);
+
+    auto tone = [](double amplitude, double hz) {
+        QVector<float> samples(SpectrumMath::kFftSize);
+        for (int i = 0; i < samples.size(); ++i) {
+            samples[i] = float(amplitude
+                               * std::sin(2.0 * 3.14159265358979323846 * hz * i
+                                          / double(sampleRate)));
+        }
+        return samples;
+    };
+
+    const QVector<float> loud = SpectrumMath::analyze(tone(0.5, 440.0), sampleRate);
+    const QVector<float> quiet = SpectrumMath::analyze(tone(0.08, 440.0), sampleRate);
+    QCOMPARE(loud.size(), SpectrumMath::kBandCount);
+
+    int peakBand = 0;
+    for (int i = 1; i < loud.size(); ++i) {
+        if (loud.at(i) > loud.at(peakBand))
+            peakBand = i;
+    }
+    const double expected =
+        std::log(440.0 / 40.0) / std::log(16000.0 / 40.0) * SpectrumMath::kBandCount;
+    QVERIFY2(qAbs(peakBand - int(expected)) <= 2,
+             qPrintable(QStringLiteral("440Hz 落到频段 %1，预期约 %2")
+                            .arg(peakBand)
+                            .arg(int(expected))));
+    QVERIFY(loud.at(peakBand) > 0.8f);
+    QVERIFY(quiet.at(peakBand) > 0.1f);
+    QVERIFY(quiet.at(peakBand) < loud.at(peakBand));
+
+    // 解码/重采样异常时可能混入 NaN 或无穷；频谱层必须把它们当静音，
+    // 不能把非有限值传进柱子高度。
+    QVector<float> poisoned = tone(0.5, 440.0);
+    poisoned[10] = std::numeric_limits<float>::quiet_NaN();
+    poisoned[11] = std::numeric_limits<float>::infinity();
+    const QVector<float> sanitized = SpectrumMath::analyze(poisoned, sampleRate);
+    QCOMPARE(sanitized.size(), SpectrumMath::kBandCount);
+    for (float level : sanitized)
+        QVERIFY(std::isfinite(level));
+    QVERIFY(sanitized.at(peakBand) > 0.8f);
 }
 
 void CoreLogicTest::lrcParseWithOffsetAndMultipleTimestamps()

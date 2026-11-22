@@ -34,6 +34,10 @@ endfunction()
 # 播放/播放列表/网络/歌词/下载全部沉到 mvp_core，界面层只做装配。
 qt_add_library(mvp_core STATIC
     src/media/MediaItem.h
+    src/audio/SpectrumMath.h
+    src/audio/SpectrumMath.cpp
+    src/audio/AudioSpectrumAnalyzer.h
+    src/audio/AudioSpectrumAnalyzer.cpp
     src/util/HeaderPolicy.h
     src/util/PlaylistSniffer.h
     src/util/PlaylistSniffer.cpp
@@ -106,8 +110,9 @@ target_link_libraries(mvp_core PUBLIC
     Qt6::Multimedia
 )
 if(WIN32)
-    # 源配置凭据使用 DPAPI 加密，避免 sources.json 出现明文 Cookie
-    target_link_libraries(mvp_core PUBLIC crypt32)
+    # 源配置凭据使用 DPAPI 加密，避免 sources.json 出现明文 Cookie；
+    # 动感视图的 WASAPI Loopback 需要 COM 接口。
+    target_link_libraries(mvp_core PUBLIC crypt32 ole32)
 endif()
 mvp_enable_warnings(mvp_core)
 
