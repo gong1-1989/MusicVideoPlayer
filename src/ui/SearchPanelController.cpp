@@ -408,6 +408,7 @@ void SearchPanelController::setupUi()
             this, &SearchPanelController::handleActivated);
 
     connect(m_coordinator, &SearchCoordinator::searchStarted, this, [this] {
+        m_suggestionsSuppressed = true;
         hideSuggestions();
         m_ui.searchButton->setEnabled(true);
         applyButtonIcons(true);
@@ -537,7 +538,12 @@ void SearchPanelController::setupDiscoveryFeatures()
     // 历史 + 热门 + 当前结果标题组成联想词库。联想列表是搜索窗内的普通子控件，
     // 不使用 QCompleter 的顶层 popup：独立对话框里 popup 会变成最上层窗口，
     // 抢走焦点和鼠标并吞掉点击，用户看到的就是整个搜索窗无响应。
-    connect(m_ui.edit, &QLineEdit::textChanged, this, [this] { updateSuggestions(false); });
+    connect(m_ui.edit, &QLineEdit::textChanged, this, [this] {
+        // 用户实际改字时恢复联想；toggleSearch 之后程序不再改文本，
+        // 所以结果返回时不会被 rebuildSuggestions() 重新弹出来。
+        m_suggestionsSuppressed = false;
+        updateSuggestions(false);
+    });
     if (m_ui.suggestList != nullptr) {
         connect(m_ui.suggestList, &QListWidget::itemClicked, this,
                 [this](QListWidgetItem *item) { applySuggestion(item); });
@@ -579,6 +585,12 @@ void SearchPanelController::updateSuggestions(bool showAll)
 {
     if (m_ui.suggestList == nullptr || m_ui.edit == nullptr)
         return;
+
+    // 搜索已发起/结果已返回：联想层保持关闭，不能挡住结果列表。
+    if (m_suggestionsSuppressed) {
+        hideSuggestions();
+        return;
+    }
 
     const QString prefix = m_ui.edit->text().trimmed();
     if (prefix.isEmpty() && !showAll) {
@@ -807,6 +819,8 @@ void SearchPanelController::applyButtonIcons(bool busy)
 
 void SearchPanelController::toggleSearch()
 {
+    // 从点击搜索/回车开始，联想层就不再参与，直到用户重新编辑关键词。
+    m_suggestionsSuppressed = true;
     hideSuggestions();
     if (m_coordinator->isBusy()) {
         cancelSearch();
@@ -882,11 +896,14 @@ bool SearchPanelController::eventFilter(QObject *watched, QEvent *event)
     if (watched == m_ui.edit) {
         if (event->type() == QEvent::FocusIn) {
             // 只有鼠标点进输入框才展开历史/热门；打开窗口时的程序聚焦不弹列表。
-            if (static_cast<QFocusEvent *>(event)->reason() == Qt::MouseFocusReason)
+            if (static_cast<QFocusEvent *>(event)->reason() == Qt::MouseFocusReason) {
+                m_suggestionsSuppressed = false;
                 updateSuggestions(true);
+            }
         } else if (event->type() == QEvent::MouseButtonPress
                    && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
             // 输入框已经持有焦点时再点一次不会再发 FocusIn，这里补一次展开。
+            m_suggestionsSuppressed = false;
             updateSuggestions(true);
         } else if (event->type() == QEvent::FocusOut) {
             hideSuggestions();
@@ -951,6 +968,9 @@ void SearchPanelController::showResults(const QVector<MediaItem> &items)
     m_page = 0;
     setAreaVisible(true);
     rebuildSuggestions();
+    // rebuildSuggestions() 更新词库但不再主动弹层；这里再明确收一次，
+    // 防止结果返回时鼠标恰好仍停在输入框上把联想层重新显示出来。
+    hideSuggestions();
     applyFilters();
     schedulePageSizeRefresh();
 }

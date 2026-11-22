@@ -158,6 +158,32 @@ bool PlaylistModel::refreshItem(int row, const MediaItem &item)
     return true;
 }
 
+bool PlaylistModel::updatePlaybackPosition(int row, qint64 positionMs, qint64 durationMs)
+{
+    if (row < 0 || row >= m_items.size())
+        return false;
+    MediaItem &item = m_items[row];
+    if (item.type != MediaType::Video)
+        return false;
+
+    bool changed = false;
+    if (durationMs > 0 && item.durationMs != durationMs) {
+        item.durationMs = durationMs;
+        changed = true;
+    }
+    const qint64 bounded = qMax<qint64>(0, positionMs);
+    if (item.positionMs != bounded) {
+        item.positionMs = bounded;
+        changed = true;
+    }
+    if (!changed)
+        return false;
+
+    const QModelIndex indexAtRow = index(row, 0);
+    emit dataChanged(indexAtRow, indexAtRow);
+    return true;
+}
+
 bool PlaylistModel::removeRow(int row)
 {
     if (row < 0 || row >= m_items.size())

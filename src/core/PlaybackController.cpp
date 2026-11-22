@@ -47,6 +47,15 @@ PlaybackController::PlaybackController(QObject *parent)
     connect(m_player, &QMediaPlayer::positionChanged,
             this, &PlaybackController::positionChanged);
     connect(m_player, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
+        if (position > 0)
+            m_lastKnownPosition = position;
+        // 媒体已加载且位置在推进，说明这一轮确实播起来了：后续错误不能再
+        // 被当成“加载失败”而自动切歌，同时清掉启动阶段的连续失败计数。
+        if (!m_playAttemptStarted && position >= 1000
+            && m_player->playbackState() != QMediaPlayer::StoppedState) {
+            m_playAttemptStarted = true;
+            m_consecutiveErrors = 0;
+        }
         // 加载完成时立刻 setPosition 可能被随后的 play() 重置回 0；
         // 这里以播放器真实上报的位置为准，确认到达目标前保留待恢复任务并限次重试。
         if (m_pendingResumeMs > 0) {
@@ -100,8 +109,18 @@ PlaybackController::PlaybackController(QObject *parent)
                 qCWarning(lcPlayer) << "播放出错：" << text;
                 emit errorOccurred(text);
 
-                // 单曲失败不应把整个列表卡死：跳过这一首继续下一首；
-                // 连续失败达到列表长度就停下，避免所有源都坏时无限循环。
+                // 已经播到中途才出错（网络抖动、分片过期、解码失败），说明
+                // 不是“这一条根本打不开”。此时自动 next 会表现为“没播完就跳歌”，
+                // 因此停在当前曲目并保留错误提示，让用户自己决定重试或换歌。
+                if (m_playAttemptStarted) {
+                    qCWarning(lcPlayer) << "播放中途失败，保留当前曲目，不自动切歌";
+                    m_playAttemptStarted = false;
+                    m_player->stop();
+                    return;
+                }
+
+                // 启动阶段失败才允许跳过；连续失败达到列表长度就停下，
+                // 避免所有源都坏时无限循环。
                 if (++m_consecutiveErrors < rowCount()) {
                     QTimer::singleShot(0, this, &PlaybackController::next);
                 } else {
@@ -219,6 +238,11 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     saveCurrentVideoPosition();
     m_pendingResumeMs = -1;
     m_pendingResumeIdentity.clear();
+    // 新一轮播放从“尚未出声”开始；只有真正走到可播位置才会翻转，
+    // 这样启动失败可以跳过，中途网络/解码错误不会冒充“播完了”。
+    m_playAttemptStarted = false;
+    m_lastKnownPosition = 0;
+    m_earlyEndRecoveries = 0;
 
     // 用户主动点歌视为重新开始一轮；自动跳过则保留连续失败计数，
     // 否则每个坏源都“加载一下再报错”会无限循环。
@@ -461,8 +485,34 @@ void PlaybackController::onMediaStatusChanged(QMediaPlayer::MediaStatus status)
     if (status != QMediaPlayer::EndOfMedia)
         return;
 
+    // 源在中间断开/只返回了试听片段时，播放器也会报 EndOfMedia。
+    // 先比对“最后位置”和已知总时长，明显没到结尾就原地续播，
+    // 绝不能像正常播完一样切下一首（这正是用户看到的“2 分钟就切歌”）。
+    const MediaItem finishedItem = currentItem();
+    const qint64 playerDuration = m_player->duration();
+    const qint64 expectedDuration = qMax(playerDuration, finishedItem.durationMs);
+    const qint64 endPosition = qMax(m_player->position(), m_lastKnownPosition);
+    if (expectedDuration > 0 && endPosition + 5000 < expectedDuration) {
+        if (m_earlyEndRecoveries < 3) {
+            ++m_earlyEndRecoveries;
+            qCWarning(lcPlayer) << "提前结束，疑似源被截断" << finishedItem.displayName()
+                                << "位置" << endPosition << "总时长" << expectedDuration
+                                << "第" << m_earlyEndRecoveries << "次续播";
+            m_player->setPosition(qMax<qint64>(0, endPosition - 2000));
+            QTimer::singleShot(300, this, [this] {
+                if (hasCurrentItem())
+                    m_player->play();
+            });
+        } else {
+            qCWarning(lcPlayer) << "多次原地续播仍提前结束，停止并保留当前曲目";
+            m_player->stop();
+        }
+        return;
+    }
+
     // 完整播完一首才算“这一轮源是好的”，清空连续失败计数。
     m_consecutiveErrors = 0;
+    m_earlyEndRecoveries = 0;
 
     if (m_mode == Mode::SingleLoop) {
         // 单曲循环由 QMediaPlayer::setLoops(Infinite) 负责续播，这里不再手工重播，
@@ -486,17 +536,15 @@ void PlaybackController::saveCurrentVideoPosition()
         return;
 
     const qint64 duration = m_player->duration();
-    if (duration > 0)
-        item.durationMs = duration;
 
     // 片头 3 秒内视为没看；片尾 3 秒内清掉旧进度，下次从头播放。
-    if (position < 3000 || (duration > 0 && position >= duration - 3000))
-        item.positionMs = 0;
-    else
-        item.positionMs = position;
+    const qint64 savedPosition =
+        (position < 3000 || (duration > 0 && position >= duration - 3000)) ? 0 : position;
 
-    if (m_playlist->updateItem(m_row, item)) {
-        qCInfo(lcPlayer) << "已写入列表视频进度" << item.displayName() << item.positionMs;
+    // 用专用入口写进度：updateItem 是“搜索刷新”，按设计不碰 positionMs，
+    // 之前把进度塞进 updateItem 会被静默丢弃，导致只有退出时才像保存了。
+    if (m_playlist->updatePlaybackPosition(m_row, savedPosition, duration)) {
+        qCInfo(lcPlayer) << "已写入列表视频进度" << item.displayName() << savedPosition;
         emit currentItemPositionUpdated(m_row);
     }
 }

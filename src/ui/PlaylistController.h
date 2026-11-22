@@ -63,6 +63,8 @@ signals:
     void statusMessage(const QString &text);
     /// 当前播放项被删除或列表被清空：窗口需要复位进度、时间与歌词
     void playbackInvalidated();
+    /// 用户在右键菜单要求把网络/试听条目下载到本地；由窗口转交 DownloadController
+    void downloadRequested(const MediaItem &item);
 
 private:
     void bindView(QListView *view, PlaylistModel *model, MediaType type);

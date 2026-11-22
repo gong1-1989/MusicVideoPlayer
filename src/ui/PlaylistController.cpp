@@ -269,6 +269,19 @@ void PlaylistController::playItem(const MediaItem &item)
     if (!item.isValid())
         return;
 
+    // 试听只是音乐搜索的临时语义：用户点视频结果是要正常观看，
+    // 不应把它临时化、也不应在列表里显示“试听/不持久化”。
+    if (item.type == MediaType::Video) {
+        addSearchItem(item, MediaType::Video);
+        const int row = m_videoModel->indexOf(item);
+        if (row < 0)
+            return;
+        m_player->setPlaylist(m_videoModel);
+        m_player->playRow(row);
+        m_ui.tabs->setCurrentIndex(1);
+        return;
+    }
+
     PlaylistModel *model = modelFor(item.type);
     // 搜索结果试听只临时进模型；不能顺手 save()，否则用户只是点开听一下，
     // 列表文件就被悄悄改写。previewOnly 由所有保存入口统一过滤。
@@ -515,11 +528,19 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
         menu.addSeparator();
     }
     QAction *playAction = nullptr;
+    QAction *downloadAction = nullptr;
     QAction *savePreviewAction = nullptr;
     QAction *removeAction = nullptr;
+    MediaItem selectedItem;
     if (index.isValid()) {
-        if (model->itemAt(index.row()).previewOnly) {
+        selectedItem = model->itemAt(index.row());
+        if (selectedItem.previewOnly) {
             savePreviewAction = menu.addAction(tr("保存到播放列表（试听条目）"));
+            menu.addSeparator();
+        }
+        // 下载入口只对“还没有本地副本”的条目出现：网络直链和试听条目。
+        if (selectedItem.online || selectedItem.previewOnly) {
+            downloadAction = menu.addAction(tr("下载到本地…"));
             menu.addSeparator();
         }
         playAction = menu.addAction(tr("播放"));
@@ -538,7 +559,9 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     if (chosen == nullptr)
         return;
 
-    if (chosen == playAction) {
+    if (chosen == downloadAction) {
+        emit downloadRequested(selectedItem);
+    } else if (chosen == playAction) {
         playRow(type, index.row());
     } else if (chosen == savePreviewAction) {
         promotePreviewRow(type, index.row());

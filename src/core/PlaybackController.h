@@ -99,6 +99,14 @@ private:
     /// 代理发现上游不是音视频时记下的原因，用来替代播放器含糊的报错
     QString m_unavailableReason;
     int m_consecutiveErrors = 0;
+    /// 当前这一轮播放是否已经真正开始出声/出画面。
+    /// 启动阶段的连续失败可以自动跳过；已经播到中途的错误不能偷偷切歌。
+    bool m_playAttemptStarted = false;
+    /// 播放器最后一次上报的播放位置。EndOfMedia 时 position 可能已被清零，
+    /// 需要靠它判断“真的播完”还是“源在中间被截断”。
+    qint64 m_lastKnownPosition = 0;
+    /// 同一次播放里已经尝试从提前结束处续播的次数，避免坏源无限重试。
+    int m_earlyEndRecoveries = 0;
     /// 上一次向代理提交正常播放预取的位置，避免每个 positionChanged 都重复排队
     qint64 m_lastPrefetchPosition = -1;
     /// 待恢复的视频位置；-1 表示没有待恢复任务

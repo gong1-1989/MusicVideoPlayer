@@ -180,10 +180,10 @@ void UiLogicTest::themeFontScaleChangesFixedPixelSizes()
     const QString qss = QStringLiteral(
         "QWidget { font-size: 13px; } QLabel { font-size: 15px; }");
 
-    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 100), qss);
-    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 125),
-             QStringLiteral("QWidget { font-size: 16px; } QLabel { font-size: 19px; }"));
-    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 80),
+    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 13), qss);
+    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 16),
+             QStringLiteral("QWidget { font-size: 16px; } QLabel { font-size: 18px; }"));
+    QCOMPARE(ThemeManager::scaledStyleSheet(qss, 10),
              QStringLiteral("QWidget { font-size: 10px; } QLabel { font-size: 12px; }"));
 }
 

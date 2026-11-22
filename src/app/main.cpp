@@ -8,9 +8,12 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QIcon>
+#include <QLinearGradient>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QLockFile>
@@ -18,6 +21,10 @@
 #include <QMessageBox>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QPainter>
+#include <QPixmap>
+#include <QScreen>
+#include <QSplashScreen>
 #include <QStyleFactory>
 #include <QThread>
 #include <QTimer>
@@ -213,6 +220,87 @@ bool notifyRunningInstance()
     return false;
 }
 
+/// 启动页：中间是应用图标，下面带名称、加载提示和一条流动进度光带。
+/// 用代码绘制而不是额外图片，主题/版本变化时只需改这一处。
+QPixmap splashPixmap(int phase)
+{
+    const int width = 560;
+    const int height = 320;
+    QPixmap pixmap(width, height);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    const QRectF card(10.0, 10.0, width - 20.0, height - 20.0);
+    QLinearGradient background(card.topLeft(), card.bottomRight());
+    background.setColorAt(0.0, QColor(12, 18, 40));
+    background.setColorAt(0.55, QColor(18, 24, 58));
+    background.setColorAt(1.0, QColor(32, 22, 72));
+    painter.setPen(QPen(QColor(116, 146, 255, 90), 1.0));
+    painter.setBrush(background);
+    painter.drawRoundedRect(card, 24.0, 24.0);
+
+    // 图标背后的冷色光晕，让深色卡片不至于像一块纯黑底。
+    const QPointF iconCenter(width / 2.0, 104.0);
+    QRadialGradient glow(iconCenter, 92.0);
+    glow.setColorAt(0.0, QColor(92, 124, 255, 90));
+    glow.setColorAt(1.0, QColor(92, 124, 255, 0));
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(glow);
+    painter.drawEllipse(iconCenter, 92.0, 92.0);
+
+    const QRectF iconRect(iconCenter.x() - 52.0, iconCenter.y() - 52.0, 104.0, 104.0);
+    QIcon(QStringLiteral(":/icons/app-icon.png"))
+        .paint(&painter, iconRect.toRect(), Qt::AlignCenter, QIcon::Normal, QIcon::Off);
+
+    QFont titleFont = painter.font();
+    titleFont.setPixelSize(26);
+    titleFont.setBold(true);
+    painter.setFont(titleFont);
+    painter.setPen(QColor(241, 246, 255));
+    painter.drawText(QRectF(0.0, 166.0, width, 34.0), Qt::AlignCenter,
+                     QStringLiteral("MusicVideoPlayer"));
+
+    QFont subtitleFont = painter.font();
+    subtitleFont.setPixelSize(13);
+    subtitleFont.setBold(false);
+    painter.setFont(subtitleFont);
+    painter.setPen(QColor(170, 186, 224));
+    const int dots = phase % 4;
+    painter.drawText(QRectF(0.0, 204.0, width, 24.0), Qt::AlignCenter,
+                     QStringLiteral("正在加载播放引擎") + QString(dots, QLatin1Char('.')));
+
+    QFont versionFont = painter.font();
+    versionFont.setPixelSize(11);
+    painter.setFont(versionFont);
+    painter.setPen(QColor(126, 142, 184));
+    painter.drawText(QRectF(0.0, 236.0, width, 20.0), Qt::AlignCenter,
+                     QStringLiteral("v%1").arg(QCoreApplication::applicationVersion()));
+
+    // 流动光带：12 帧循环，不依赖第三方动画库。
+    const qreal barWidth = 300.0;
+    const qreal barHeight = 4.0;
+    const qreal barLeft = (width - barWidth) / 2.0;
+    const qreal barTop = height - 44.0;
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(255, 255, 255, 18));
+    painter.drawRoundedRect(QRectF(barLeft, barTop, barWidth, barHeight), 2.0, 2.0);
+
+    const qreal segment = 72.0;
+    const qreal travel = barWidth - segment;
+    const qreal start = barLeft + travel * ((phase % 12) / 11.0);
+    QLinearGradient sweep(start, 0.0, start + segment, 0.0);
+    sweep.setColorAt(0.0, QColor(96, 180, 255, 0));
+    sweep.setColorAt(0.45, QColor(96, 180, 255, 210));
+    sweep.setColorAt(0.7, QColor(168, 126, 255, 220));
+    sweep.setColorAt(1.0, QColor(168, 126, 255, 0));
+    painter.setBrush(sweep);
+    painter.drawRoundedRect(QRectF(start, barTop, segment, barHeight), 2.0, 2.0);
+
+    return pixmap;
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -221,6 +309,7 @@ int main(int argc, char *argv[])
     QCoreApplication::setOrganizationName(QStringLiteral("MusicVideoPlayer"));
     QCoreApplication::setApplicationName(QStringLiteral("MusicVideoPlayer"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2"));
+    app.setWindowIcon(QIcon(QStringLiteral(":/icons/app-icon.png")));
 
     QLoggingCategory::setFilterRules(QStringLiteral("mvp.*.debug=false"));
 
@@ -290,8 +379,35 @@ int main(int argc, char *argv[])
         }
     });
 
+    // 主窗口构造前先亮出启动页：窗口初始化包含源注册、播放列表恢复和
+    // 网络代理启动，冷启动时不应只看到一段空白。
+    QSplashScreen splash(splashPixmap(0));
+    splash.setAttribute(Qt::WA_TranslucentBackground);
+    splash.setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    QElapsedTimer splashClock;
+    splashClock.start();
+    splash.show();
+    app.processEvents();
+
+    int splashPhase = 1;
+    QTimer splashTimer;
+    QObject::connect(&splashTimer, &QTimer::timeout, &app, [&] {
+        splash.setPixmap(splashPixmap(splashPhase++));
+        splash.raise();
+    });
+    splashTimer.start(140);
+
     MainWindow window;
     mainWindow = &window;
     window.show();
+    // 构造很快的机器上，启动页否则只会闪几十毫秒，看起来像没出现。
+    // 保留至少 0.9 秒展示时间，同时继续处理事件让流动光带保持动画。
+    constexpr int kMinSplashMs = 900;
+    while (splashClock.elapsed() < kMinSplashMs) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(10);
+    }
+    splash.finish(&window);
+    splashTimer.stop();
     return app.exec();
 }

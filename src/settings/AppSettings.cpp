@@ -7,7 +7,8 @@
 namespace {
 
 const char kTheme[] = "ui/theme";
-const char kFontPercent[] = "ui/fontPercent";
+const char kFontSizePx[] = "ui/fontSizePx";
+const char kLegacyFontPercent[] = "ui/fontPercent";
 const char kWindowPreset[] = "ui/windowPreset";
 const char kGeometry[] = "ui/geometry";
 const char kVolume[] = "playback/volume";
@@ -26,7 +27,9 @@ const char kControlsAutoHide[] = "ui/controlsAutoHide";
 
 const char kDefaultTheme[] = "dark";
 const char kDefaultWindowPreset[] = "auto";
-const int kDefaultFontPercent = 100;
+const int kDefaultFontSizePx = 13;
+const int kMinFontSizePx = 9;
+const int kMaxFontSizePx = 20;
 const int kDefaultVolume = 60;
 const int kDefaultSearchLimit = 20;
 const int kDefaultDownloadLimitMb = 8192;
@@ -51,16 +54,28 @@ void setThemeId(const QString &id)
     settings().setValue(QLatin1String(kTheme), id);
 }
 
-int uiFontPercent()
+int uiFontSizePx()
 {
-    const int value =
-        settings().value(QLatin1String(kFontPercent), kDefaultFontPercent).toInt();
-    return qBound(80, value, 150);
+    QSettings store;
+    if (store.contains(QLatin1String(kFontSizePx))) {
+        return qBound(kMinFontSizePx,
+                      store.value(QLatin1String(kFontSizePx), kDefaultFontSizePx).toInt(),
+                      kMaxFontSizePx);
+    }
+
+    // 旧版本保存的是 80..150 的百分比，首次升级时换算成真实像素字号；
+    // 以 13px 为 100%，避免老用户一启动字号突然变化。
+    const int legacyPercent =
+        store.value(QLatin1String(kLegacyFontPercent), 100).toInt();
+    return qBound(kMinFontSizePx,
+                  qRound(kDefaultFontSizePx * qBound(80, legacyPercent, 150) / 100.0),
+                  kMaxFontSizePx);
 }
 
-void setUiFontPercent(int percent)
+void setUiFontSizePx(int pixels)
 {
-    settings().setValue(QLatin1String(kFontPercent), qBound(80, percent, 150));
+    settings().setValue(QLatin1String(kFontSizePx),
+                        qBound(kMinFontSizePx, pixels, kMaxFontSizePx));
 }
 
 QString windowPresetId()

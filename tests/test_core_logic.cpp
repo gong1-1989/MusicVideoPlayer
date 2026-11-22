@@ -486,6 +486,7 @@ private slots:
     void mediaIdentityUsesStableWebUrl();
     void dedupeItemsKeepsFirstOccurrence();
     void playlistModelRefreshesSignedUrlWithoutLosingProgress();
+    void playlistModelUpdatesPlaybackPositionSeparately();
     void playbackModeTextMatchesCompactLabels();
     void sourceConfigJsonRoundTrip();
     void sourceConfigSecretsNotPlaintext();
@@ -801,6 +802,38 @@ void CoreLogicTest::playlistModelRefreshesSignedUrlWithoutLosingProgress()
 
     // 再次刷新相同内容不应产生无意义的数据变更。
     QVERIFY(!model.refreshItem(0, fresh));
+}
+
+void CoreLogicTest::playlistModelUpdatesPlaybackPositionSeparately()
+{
+    PlaylistModel model;
+
+    MediaItem video;
+    video.type = MediaType::Video;
+    video.title = QStringLiteral("第二集");
+    video.online = true;
+    video.url = QUrl(QStringLiteral("https://cdn.example.com/b.mp4"));
+    QVERIFY(model.addItem(video));
+
+    // 进度只能通过专用入口写入：停止、切歌、退出时都能落盘。
+    QVERIFY(model.updatePlaybackPosition(0, 61 * 1000, 4 * 60 * 1000));
+    QCOMPARE(model.itemAt(0).positionMs, qint64(61 * 1000));
+    QCOMPARE(model.itemAt(0).durationMs, qint64(4 * 60 * 1000));
+    QVERIFY(!model.updatePlaybackPosition(0, 61 * 1000, 4 * 60 * 1000));
+
+    // 搜索结果刷新仍然不能碰用户看到一半的进度。
+    MediaItem refreshed = model.itemAt(0);
+    refreshed.url = QUrl(QStringLiteral("https://cdn.example.com/b.mp4?token=new"));
+    refreshed.positionMs = 0;
+    QVERIFY(model.refreshItem(0, refreshed));
+    QCOMPARE(model.itemAt(0).positionMs, qint64(61 * 1000));
+
+    MediaItem music;
+    music.type = MediaType::Music;
+    music.title = QStringLiteral("歌");
+    music.url = QUrl(QStringLiteral("https://cdn.example.com/song.mp3"));
+    QVERIFY(model.addItem(music));
+    QVERIFY(!model.updatePlaybackPosition(1, 5000, 5000));
 }
 
 void CoreLogicTest::playbackModeTextMatchesCompactLabels()

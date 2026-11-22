@@ -129,7 +129,7 @@
              </widget>
             </item>
             <item row="1" column="1">
-             <widget class="QComboBox" name="combo_fontPercent"/>
+             <widget class="QComboBox" name="combo_fontSize"/>
             </item>
             <item row="2" column="1">
              <widget class="QLabel" name="label_themeHint">
@@ -137,7 +137,7 @@
                <string>label_hint</string>
               </property>
               <property name="text">
-               <string>字体大小与主题都在点击“保存”后立即生效；点击“取消”不会改变当前外观。</string>
+               <string>字号使用真实像素值（默认 13 px），列表、设置页和音乐动感视图一起生效；点击“保存”后应用。</string>
               </property>
               <property name="wordWrap">
                <bool>true</bool>
@@ -546,6 +546,117 @@
             </property>
             <property name="text">
              <string>每个源是一份配置（搜索地址 + 字段对应）。可在这里新增、试搜、导入导出。</string>
+            </property>
+            <property name="wordWrap">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QFrame" name="card_about">
+         <property name="objectName">
+          <string>settingsCard</string>
+         </property>
+         <property name="frameShape">
+          <enum>QFrame::NoFrame</enum>
+         </property>
+         <layout class="QVBoxLayout" name="layout_aboutCard">
+          <property name="spacing">
+           <number>10</number>
+          </property>
+          <property name="leftMargin">
+           <number>18</number>
+          </property>
+          <property name="topMargin">
+           <number>14</number>
+          </property>
+          <property name="rightMargin">
+           <number>18</number>
+          </property>
+          <property name="bottomMargin">
+           <number>16</number>
+          </property>
+          <item>
+           <widget class="QLabel" name="label_aboutTitle">
+            <property name="objectName">
+             <string>label_sectionTitle</string>
+            </property>
+            <property name="text">
+             <string>关于</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <layout class="QGridLayout" name="grid_about">
+            <property name="horizontalSpacing">
+             <number>14</number>
+            </property>
+            <property name="verticalSpacing">
+             <number>8</number>
+            </property>
+            <item row="0" column="0">
+             <widget class="QLabel" name="label_aboutNameCaption">
+              <property name="objectName">
+               <string>label_hint</string>
+              </property>
+              <property name="text">
+               <string>名称</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QLabel" name="label_aboutName">
+              <property name="text">
+               <string>MusicVideoPlayer</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="label_aboutAuthorCaption">
+              <property name="objectName">
+               <string>label_hint</string>
+              </property>
+              <property name="text">
+               <string>作者</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QLabel" name="label_aboutAuthor">
+              <property name="text">
+               <string>gong1-1989</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="0">
+             <widget class="QLabel" name="label_aboutVersionCaption">
+              <property name="objectName">
+               <string>label_hint</string>
+              </property>
+              <property name="text">
+               <string>版本</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QLabel" name="label_aboutVersion">
+              <property name="text">
+               <string>0.2</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QLabel" name="label_aboutHint">
+            <property name="objectName">
+             <string>label_hint</string>
+            </property>
+            <property name="text">
+             <string>基于 Qt 6 与 FFmpeg 构建，支持本地与网络音乐、影视播放和下载。</string>
             </property>
             <property name="wordWrap">
              <bool>true</bool>

@@ -54,7 +54,7 @@ private:
     bool m_sourcesDirty = false;
 
     QComboBox *m_theme = nullptr;
-    QComboBox *m_fontPercent = nullptr;
+    QComboBox *m_fontSize = nullptr;
     QComboBox *m_windowSize = nullptr;
     QSlider *m_volume = nullptr;
     QLabel *m_volumeValue = nullptr;

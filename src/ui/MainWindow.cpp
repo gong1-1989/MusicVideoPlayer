@@ -125,6 +125,38 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const QString &text) { ui->label_status->setText(text); });
     connect(m_playlists, &PlaylistController::playbackInvalidated,
             this, &MainWindow::clearPlaybackUi);
+    connect(m_playlists, &PlaylistController::downloadRequested, this,
+            [this](const MediaItem &item) { m_downloads->download(item); });
+    // 视频进度一旦写回模型就立刻落盘：停止、切音乐、切视频、退出都会经过
+    // PlaybackController::saveCurrentVideoPosition()，不能只在退出时保存。
+    connect(m_player, &PlaybackController::currentItemPositionUpdated, m_playlists,
+            [this](int) {
+                if (!m_playlists->save())
+                    qCWarning(lcWindow) << "视频进度写入播放列表失败，等待下次保存重试";
+            });
+    connect(m_player, &PlaybackController::currentItemChanged, this,
+            [this](const MediaItem &item, int) {
+                if (!m_pendingSearchPlayIdentity.isEmpty()
+                    && mediaIdentity(item) != m_pendingSearchPlayIdentity) {
+                    m_pendingSearchPlayIdentity.clear();
+                }
+            });
+    connect(m_player, &PlaybackController::errorOccurred, this,
+            [this](const QString &message) {
+                if (m_pendingSearchPlayIdentity.isEmpty() || !m_player->hasCurrentItem())
+                    return;
+                if (mediaIdentity(m_player->currentItem()) != m_pendingSearchPlayIdentity)
+                    return;
+                m_pendingSearchPlayIdentity.clear();
+                // 放到下一轮事件循环：先让播放器完成本次错误处理/自动跳过，
+                // 再把原因明确告诉用户，避免模态框卡在信号回调里。
+                QTimer::singleShot(0, this, [this, message] {
+                    QMessageBox::warning(
+                        this, tr("无法播放搜索结果"),
+                        tr("这个搜索条目没有返回可播放的内容。\n\n原因：%1\n\n"
+                           "可以换一个来源、重新搜索，或稍后再试。").arg(message));
+                });
+            });
 
     // 歌词加载与当前行定位只产出数据信号，实际绘制在音乐视觉层完成
     m_lyrics = new LyricsController(m_http, this);
@@ -139,8 +171,8 @@ MainWindow::MainWindow(QWidget *parent)
     panelUi.centerLayout = ui->layout_center;
     m_panels = new PanelOverlayController(panelUi, this);
 
-    // 全屏窗口与视频面搬运：控制条复用上面这根已经接好播放信号的 panelTransport
-    m_fullscreen = new FullscreenController(ui->videoWidget, ui->layout_videoStage,
+    // 全屏窗口：新建独立视频控件并接管播放器视频输出，避免重挂原生视频子窗丢帧
+    m_fullscreen = new FullscreenController(ui->videoWidget, m_player->mediaPlayer(),
                                             ui->panelTransport, ui->layout_center,
                                             m_panels, 16.0, this);
 
@@ -553,7 +585,25 @@ void MainWindow::on_btn_fullscreen_clicked()
 
 void MainWindow::playSearchItem(const MediaItem &item)
 {
-    m_playlists->playItem(item);
+    MediaItem playable = item;
+    // 搜索源理论上都填了 online，但外部解析器/手工直链偶尔会漏；
+    // 只要地址是 http(s) 就按网络条目走代理和请求头，别让签名直链裸奔。
+    const QString scheme = playable.url.scheme().toLower();
+    if (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
+        playable.online = true;
+
+    if (!playable.isValid() || playable.url.isRelative()) {
+        ui->label_status->setText(tr("搜索结果缺少可播放地址，换一个来源或重新搜索试试"));
+        qCWarning(lcWindow) << "搜索结果地址无效" << playable.title
+                            << playable.url.toString();
+        return;
+    }
+
+    m_pendingSearchPlayIdentity = mediaIdentity(playable);
+    qCInfo(lcWindow) << "播放搜索结果" << playable.displayName()
+                     << (playable.online ? "网络" : "本地")
+                     << HttpClient::redactUrl(playable.url);
+    m_playlists->playItem(playable);
 }
 
 void MainWindow::addSearchItemToPlaylist(const MediaItem &item, MediaType type)

@@ -54,24 +54,26 @@ bool ThemeManager::apply(const QString &id)
     }
 
     const QString styleSheet = ThemeManager::scaledStyleSheet(
-        QString::fromUtf8(file.readAll()), AppSettings::uiFontPercent());
+        QString::fromUtf8(file.readAll()), AppSettings::uiFontSizePx());
     if (qApp != nullptr)
         qApp->setStyleSheet(styleSheet);
 
     m_currentId = theme.id;
     qCInfo(lcTheme) << "已应用主题：" << theme.id
-                    << "字体缩放：" << AppSettings::uiFontPercent() << "%";
+                    << "界面字号：" << AppSettings::uiFontSizePx() << "px";
     emit themeChanged(theme);
     return true;
 }
 
-QString ThemeManager::scaledStyleSheet(const QString &qss, int percent)
+QString ThemeManager::scaledStyleSheet(const QString &qss, int basePx)
 {
-    const int bounded = qBound(80, percent, 150);
-    if (bounded == 100)
+    const int bounded = qBound(9, basePx, 20);
+    // 主题以 13px 为正文基准；用户选 15px 时，12/11px 的辅助文字也同步上移 2px，
+    // 保持“正文/辅助文字”的层级差，而不是把所有字号粗暴拉成同一个值。
+    const int delta = bounded - 13;
+    if (delta == 0)
         return qss;
 
-    // 主题里的字号混用 12/13/15/16px，只替换数值，保留原有选择器与其它样式。
     QRegularExpression expression(QStringLiteral("font-size\\s*:\\s*(\\d+)\\s*px"));
     QString scaled;
     int cursor = 0;
@@ -80,7 +82,7 @@ QString ThemeManager::scaledStyleSheet(const QString &qss, int percent)
         const QRegularExpressionMatch match = matches.next();
         scaled += qss.mid(cursor, match.capturedStart() - cursor);
         const int sourcePx = match.captured(1).toInt();
-        const int targetPx = qMax(9, qRound(sourcePx * bounded / 100.0));
+        const int targetPx = qMax(9, sourcePx + delta);
         scaled += QStringLiteral("font-size: %1px").arg(targetPx);
         cursor = match.capturedEnd();
     }

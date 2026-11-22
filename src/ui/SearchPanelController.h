@@ -105,6 +105,9 @@ private:
     QComboBox *m_qualityFilter = nullptr;
     /// 联想候选词库；不再使用 QCompleter 的原生弹出窗口，避免顶层 popup 抢焦点
     QStringList m_suggestions;
+    /// 搜索发起后抑制联想弹层：结果返回时 rebuildSuggestions() 不能再把列表顶出来，
+    /// 只有用户重新点进输入框或实际改字后才恢复。
+    bool m_suggestionsSuppressed = false;
 
     /// 完整结果留在内存，筛选后的可见结果再按页切片
     QVector<MediaItem> m_results;

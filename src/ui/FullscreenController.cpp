@@ -4,29 +4,38 @@
 #include "ui/VideoSurface.h"
 
 #include <QCursor>
+#include <QDebug>
 #include <QEvent>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QLayout>
+#include <QMediaPlayer>
 #include <QMouseEvent>
+#include <QSizePolicy>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QVideoWidget>
 #include <QWidget>
 
-FullscreenController::FullscreenController(VideoSurface *surface, QVBoxLayout *stageLayout,
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
+FullscreenController::FullscreenController(VideoSurface *surface, QMediaPlayer *player,
                                            QWidget *transport, QVBoxLayout *centerLayout,
                                            PanelOverlayController *panels,
                                            qreal stageCornerRadius, QObject *parent)
     : QObject(parent)
     , m_surface(surface)
-    , m_stageLayout(stageLayout)
+    , m_player(player)
     , m_transport(transport)
     , m_centerLayout(centerLayout)
     , m_panels(panels)
     , m_stageCornerRadius(stageCornerRadius)
 {
     Q_ASSERT(m_surface != nullptr);
-    Q_ASSERT(m_stageLayout != nullptr);
+    Q_ASSERT(m_player != nullptr);
     Q_ASSERT(m_transport != nullptr);
     Q_ASSERT(m_centerLayout != nullptr);
     Q_ASSERT(m_panels != nullptr);
@@ -35,10 +44,20 @@ FullscreenController::FullscreenController(VideoSurface *surface, QVBoxLayout *s
     m_hideTimer->setSingleShot(true);
     m_hideTimer->setInterval(2600);
     connect(m_hideTimer, &QTimer::timeout, this, &FullscreenController::hideControls);
+
+#ifdef Q_OS_WIN
+    // 原生视频窗口会在 WM_SETCURSOR 里把自己的箭头光标恢复回来；
+    // 应用级事件过滤器拦截这条消息，全屏空闲时才能真正隐藏系统光标。
+    QGuiApplication::instance()->installNativeEventFilter(this);
+#endif
 }
 
 FullscreenController::~FullscreenController()
 {
+#ifdef Q_OS_WIN
+    if (QGuiApplication::instance() != nullptr)
+        QGuiApplication::instance()->removeNativeEventFilter(this);
+#endif
     if (m_window != nullptr)
         exitFullScreen();
 }
@@ -65,10 +84,21 @@ void FullscreenController::enterFullScreen()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
-    m_surface->setParent(window);
-    m_surface->setCornerRadius(0.0);
-    layout->addWidget(m_surface);
-    m_surface->show();
+    // 主窗里的 QVideoWidget 不搬动：Qt 在 Windows 上重挂原生视频子窗后，
+    // 播放过程中会再次丢失呈现目标，表现为首次全屏过几秒变黑。
+    // 这里在独立全屏窗内新建视频控件，并把播放器的视频输出切过来。
+    m_fsVideo = new QVideoWidget(window);
+    m_fsVideo->setObjectName(QStringLiteral("fullScreenVideo"));
+    m_fsVideo->setAspectRatioMode(Qt::KeepAspectRatio);
+    m_fsVideo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_fsVideo->setMouseTracking(true);
+    m_fsVideo->setStyleSheet(QStringLiteral("background: black;"));
+    layout->addWidget(m_fsVideo);
+    m_videoWidget = m_fsVideo;
+
+    if (QWidget *mainVideoWidget = m_surface->videoWidget())
+        mainVideoWidget->hide();
+    m_player->setVideoSink(m_fsVideo->videoSink());
 
     // 控制条本来可能挂在主窗口布局里，也可能已经是贴边浮层；先记住原状态再搬。
     m_transportHost = m_transport->parentWidget();
@@ -77,6 +107,9 @@ void FullscreenController::enterFullScreen()
         m_centerLayout->removeWidget(m_transport);
 
     m_panels->setEdgeDetectionEnabled(false);
+    // QVideoWidget 是原生子窗口，普通 QWidget 兄弟即使 raise() 也压不住它；
+    // 控制条必须自己也成为原生窗口，才能在全屏视频画面上正确悬浮。
+    m_transport->setAttribute(Qt::WA_NativeWindow, true);
     m_transport->setParent(window);
     m_transport->setProperty("fullscreen", true);
     if (QStyle *style = m_transport->style()) {
@@ -87,26 +120,45 @@ void FullscreenController::enterFullScreen()
     m_transport->raise();
 
     window->setMouseTracking(true);
-    m_surface->setMouseTracking(true);
     m_transport->setMouseTracking(true);
     window->installEventFilter(this);
-    m_surface->installEventFilter(this);
     m_transport->installEventFilter(this);
 
-    // QVideoWidget 是原生子窗口，鼠标在视频画面上移动时事件不会冒泡到
-    // VideoSurface；必须单独监听，否则控制条计时器收不到活动信号。
-    m_videoWidget = m_surface->videoWidget();
+    // QVideoWidget 是原生子窗口，鼠标事件不会冒泡到外层；单独监听它。
     if (m_videoWidget != nullptr) {
         m_videoWidget->setMouseTracking(true);
         m_videoWidget->installEventFilter(this);
     }
 
     window->showFullScreen();
+    window->raise();
+    window->activateWindow();
     window->setFocus();
     m_window = window;
+    m_lastMouseGlobalPos = QCursor::pos();
+    setCursorHidden(false);
 
     updateControlGeometry();
     showControls();
+
+    QTimer::singleShot(0, window, [this, window] {
+        if (m_window != window)
+            return;
+        if (QLayout *windowLayout = window->layout())
+            windowLayout->activate();
+        if (m_fsVideo != nullptr) {
+            m_fsVideo->show();
+            m_fsVideo->raise();
+            m_fsVideo->update();
+        }
+        updateControlGeometry();
+    });
+    QTimer::singleShot(120, window, [this, window] {
+        if (m_window != window)
+            return;
+        if (m_fsVideo != nullptr)
+            m_fsVideo->update();
+    });
 }
 
 void FullscreenController::exitFullScreen()
@@ -115,17 +167,22 @@ void FullscreenController::exitFullScreen()
         return;
 
     QWidget *window = m_window;
-    m_window = nullptr;
     if (m_hideTimer != nullptr)
         m_hideTimer->stop();
+    setCursorHidden(false);
+    m_window = nullptr;
 
     window->removeEventFilter(this);
-    m_surface->removeEventFilter(this);
     m_transport->removeEventFilter(this);
     if (m_videoWidget != nullptr) {
         m_videoWidget->removeEventFilter(this);
         m_videoWidget = nullptr;
     }
+
+    // 先把视频输出切回主窗，再关闭全屏窗；否则播放器仍指向即将销毁的控件。
+    m_player->setVideoSink(m_surface->sink());
+    m_surface->resumeFrames();
+    m_surface->update();
 
     m_transport->hide();
     m_transport->setParent(m_transportHost);
@@ -137,13 +194,16 @@ void FullscreenController::exitFullScreen()
     if (m_transportWasInLayout)
         m_centerLayout->addWidget(m_transport);
 
-    m_stageLayout->addWidget(m_surface);
     m_surface->setCornerRadius(m_stageCornerRadius);
     m_surface->show();
 
     m_panels->setEdgeDetectionEnabled(true);
     m_panels->reposition();
 
+    if (m_fsVideo != nullptr) {
+        m_fsVideo->hide();
+        m_fsVideo = nullptr;
+    }
     window->close();
     window->deleteLater();
 }
@@ -168,6 +228,7 @@ void FullscreenController::showControls()
     if (m_window == nullptr)
         return;
 
+    setCursorHidden(false);
     updateControlGeometry();
     m_transport->show();
     m_transport->raise();
@@ -194,10 +255,132 @@ void FullscreenController::hideControls()
     // 鼠标停在控制条上也算“无操作”，到时间同样隐藏；
     // 下一次移动会重新显示，避免控制条永久压在画面上。
     m_transport->hide();
+    // 控制条和鼠标一起收起，全屏观影时不再有箭头停在画面中央。
+    m_lastMouseGlobalPos = QCursor::pos();
+    setCursorHidden(true);
+    qInfo() << "全屏控制条已隐藏，光标隐藏状态：" << m_cursorOverrideActive;
 }
 
-bool FullscreenController::eventFilter(QObject *watched, QEvent *event)
+void FullscreenController::setCursorHidden(bool hidden)
 {
+    if (m_window == nullptr)
+        return;
+
+    if (hidden) {
+        if (m_cursorOverrideActive)
+            return;
+        m_cursorOverrideActive = true;
+        m_window->setCursor(Qt::BlankCursor);
+        if (m_surface != nullptr)
+            m_surface->setCursor(Qt::BlankCursor);
+        if (m_videoWidget != nullptr)
+            m_videoWidget->setCursor(Qt::BlankCursor);
+        // QVideoWidget 是原生子窗口，WM_SETCURSOR 可能绕开 Qt 的控件光标；
+        // 再用应用级覆盖光标和 Win32 原生光标兜底，确保空闲时真正看不到箭头。
+        QGuiApplication::setOverrideCursor(Qt::BlankCursor);
+#ifdef Q_OS_WIN
+        // 只改光标形状仍可能被原生视频子窗的 WM_SETCURSOR 复原；
+        // 同时把 Win32 光标显示计数减一，确保系统级真正不可见。
+        if (m_cursorHideSteps == 0) {
+            int count = ::ShowCursor(FALSE);
+            m_cursorHideSteps = 1;
+            // Windows 的显示计数可能被其他 UI/远程控制工具抬到正数，
+            // 只减一次仍可见；一直减到负数再开始恢复，隐藏才可靠。
+            while (count > 0) {
+                count = ::ShowCursor(FALSE);
+                ++m_cursorHideSteps;
+            }
+        }
+        ::SetCursor(nullptr);
+#endif
+        QTimer::singleShot(80, m_window, [this] {
+            if (m_window == nullptr || !m_cursorOverrideActive)
+                return;
+#ifdef Q_OS_WIN
+            ::SetCursor(nullptr);
+#endif
+        });
+        return;
+    }
+
+    if (!m_cursorOverrideActive)
+        return;
+    qInfo() << "全屏光标恢复显示";
+    m_cursorOverrideActive = false;
+    QGuiApplication::restoreOverrideCursor();
+    m_window->setCursor(Qt::ArrowCursor);
+    if (m_surface != nullptr)
+        m_surface->setCursor(Qt::ArrowCursor);
+    if (m_videoWidget != nullptr)
+        m_videoWidget->setCursor(Qt::ArrowCursor);
+#ifdef Q_OS_WIN
+    while (m_cursorHideSteps > 0) {
+        ::ShowCursor(TRUE);
+        --m_cursorHideSteps;
+    }
+    ::SetCursor(::LoadCursor(nullptr, IDC_ARROW));
+#endif
+}
+
+#ifdef Q_OS_WIN
+bool FullscreenController::nativeEventFilter(const QByteArray &eventType, void *message,
+                                             qintptr *result)
+{
+    Q_UNUSED(eventType)
+    if (message == nullptr)
+        return false;
+
+    MSG *msg = static_cast<MSG *>(message);
+    if (msg->message == WM_MOUSEMOVE) {
+        // 原生视频子窗会吞掉部分 Qt 鼠标事件；用窗口消息兜底，
+        // 保证隐藏光标后移动鼠标能恢复，并且靠近底边能唤出控制条。
+        if (m_window == nullptr || !m_window->isFullScreen())
+            return false;
+        const QPoint global(msg->pt.x, msg->pt.y);
+        if (global == m_lastMouseGlobalPos)
+            return false;
+        m_lastMouseGlobalPos = global;
+        setCursorHidden(false);
+        const QPoint local = m_window->mapFromGlobal(global);
+        if (local.y() >= m_window->height() - 90)
+            showControls();
+        else
+            scheduleHideControls();
+        return false;
+    }
+    if (!m_cursorOverrideActive)
+        return false;
+    if (msg->message == WM_SETCURSOR) {
+        // 返回 TRUE 表示已处理，阻止 Qt/原生视频子窗把箭头光标重新设回来。
+        ::SetCursor(nullptr);
+        if (result != nullptr)
+            *result = 1;
+        return true;
+    }
+    return false;
+}
+#endif
+
+bool FullscreenController::eventFilter(QObject *watched, QEvent *event){
+    // 任何真实的鼠标活动都先恢复光标；空闲计时结束后再一起隐藏。
+    if (m_window != nullptr) {
+        if (event->type() == QEvent::MouseMove) {
+            // 设置光标形状本身会触发一批合成 MouseMove，坐标没有变化，
+            // 不能把它们当成用户活动，否则光标刚藏起来就被自己弹回来。
+            const QPoint global = QCursor::pos();
+            if (global != m_lastMouseGlobalPos) {
+                m_lastMouseGlobalPos = global;
+                setCursorHidden(false);
+                scheduleHideControls();
+            }
+        } else if (event->type() == QEvent::MouseButtonPress
+                   || event->type() == QEvent::MouseButtonRelease
+                   || event->type() == QEvent::Wheel) {
+            setCursorHidden(false);
+            scheduleHideControls();
+        }
+    }
+
     if (m_window != nullptr && watched == m_window) {
         if (event->type() == QEvent::KeyPress) {
             auto *keyEvent = static_cast<QKeyEvent *>(event);

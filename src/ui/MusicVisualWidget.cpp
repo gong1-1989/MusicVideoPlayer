@@ -1,6 +1,7 @@
 #include "ui/MusicVisualWidget.h"
 
 #include "audio/AudioSpectrumAnalyzer.h"
+#include "settings/AppSettings.h"
 
 #include <QEvent>
 #include <QFontMetrics>
@@ -460,9 +461,12 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
     const qreal left = rect.left() + rect.width() * 0.075;
     const qreal maxWidth = qMax(120.0, rect.width() * (rect.width() < 620 ? 0.84 : 0.52));
     const qreal top = rect.top() + rect.height() * 0.16;
+    // 动感视图曾经按窗口高度算字号，窗口越大字越夸张；现在统一以设置里的
+    // 真实基础字号为锚点，只给歌名增加一档强调，其余文字与播放列表贴近。
+    const int basePx = qBound(9, AppSettings::uiFontSizePx(), 20);
 
     QFont titleFont = font();
-    titleFont.setPointSizeF(qMax(15.0, rect.height() / 15.0));
+    titleFont.setPixelSize(basePx + 4);
     titleFont.setBold(true);
     painter.setFont(titleFont);
     painter.setPen(QColor(240, 247, 255));
@@ -470,20 +474,20 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
     const QString title = titleMetrics.elidedText(
         m_item.title.isEmpty() ? tr("未知曲目") : m_item.title, Qt::ElideRight,
         int(maxWidth));
-    painter.drawText(QRectF(left, top, maxWidth, titleMetrics.height() + 8),
+    painter.drawText(QRectF(left, top, maxWidth, titleMetrics.height() + 4),
                      Qt::AlignLeft | Qt::AlignVCenter, title);
 
-    const qreal subtitleTop = top + titleMetrics.height() + 14;
+    const qreal subtitleTop = top + titleMetrics.height() + 8;
     QFont subtitleFont = font();
-    subtitleFont.setPointSizeF(qMax(9.5, rect.height() / 28.0));
+    subtitleFont.setPixelSize(basePx);
     painter.setFont(subtitleFont);
     painter.setPen(withAlpha(QColor(205, 222, 255), 205));
+    const QFontMetrics subtitleMetrics(subtitleFont);
     const QString subtitle =
         m_item.artist.isEmpty() ? tr("未知歌手") : m_item.artist;
-    painter.drawText(QRectF(left, subtitleTop, maxWidth, fontMetrics().height() + 10),
+    painter.drawText(QRectF(left, subtitleTop, maxWidth, subtitleMetrics.height() + 4),
                      Qt::AlignLeft | Qt::AlignVCenter,
-                     QFontMetrics(subtitleFont).elidedText(subtitle, Qt::ElideRight,
-                                                          int(maxWidth)));
+                     subtitleMetrics.elidedText(subtitle, Qt::ElideRight, int(maxWidth)));
 
     // 品质 / 来源小徽标：与搜索结果保持同一套信息口径。
     QStringList tags;
@@ -493,17 +497,17 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
     if (!m_playing)
         tags.append(tr("已暂停"));
 
-    const qreal badgeTop = subtitleTop + fontMetrics().height() + 24;
+    const qreal badgeTop = subtitleTop + subtitleMetrics.height() + 14;
     qreal badgeLeft = left;
     QFont badgeFont = font();
-    badgeFont.setPointSizeF(qMax(8.5, rect.height() / 34.0));
+    badgeFont.setPixelSize(qMax(9, basePx - 2));
     painter.setFont(badgeFont);
     const QFontMetrics badgeMetrics(badgeFont);
     for (const QString &tag : std::as_const(tags)) {
-        const qreal width = badgeMetrics.horizontalAdvance(tag) + 18.0;
+        const qreal width = badgeMetrics.horizontalAdvance(tag) + 16.0;
         if (badgeLeft + width > left + maxWidth)
             break;
-        QRectF badge(badgeLeft, badgeTop, width, badgeMetrics.height() + 8);
+        QRectF badge(badgeLeft, badgeTop, width, badgeMetrics.height() + 6);
         painter.setPen(QPen(withAlpha(QColor(170, 210, 255), 55), 1));
         painter.setBrush(withAlpha(QColor(80, 120, 255), 34));
         painter.drawRoundedRect(badge, badge.height() / 2.0, badge.height() / 2.0);
@@ -518,13 +522,13 @@ void MusicVisualWidget::drawLyrics(QPainter &painter, const QRectF &rect)
     if (m_lyrics.isEmpty())
         return;
 
-    // 歌词让到左下：右上留给唱片，顶部留给曲目信息，底部频谱只作背景。
+    // 歌词整体水平居中；顶部留给曲目信息、右上留给唱片，底部避开频谱高光。
     const bool compact = rect.width() < 720.0;
-    const qreal left = rect.left() + rect.width() * 0.075;
-    const qreal width = compact ? rect.width() * 0.85 : rect.width() * 0.46;
-    const qreal top = rect.top() + rect.height() * 0.46;
-    const qreal height = rect.height() * 0.34;
-    if (width < 160.0 || height < 80.0)
+    const qreal width = rect.width() * (compact ? 0.86 : 0.68);
+    const qreal left = rect.center().x() - width / 2.0;
+    const qreal top = rect.top() + rect.height() * 0.40;
+    const qreal height = rect.height() * 0.24;
+    if (width < 160.0 || height < 70.0)
         return;
 
     const int visible = 5;
@@ -534,10 +538,10 @@ void MusicVisualWidget::drawLyrics(QPainter &painter, const QRectF &rect)
 
     const qreal rowHeight = height / visible;
     const qreal centerY = top + height / 2.0;
+    const int basePx = qBound(9, AppSettings::uiFontSizePx(), 20);
 
     QFont lyricFont = font();
-    const qreal baseSize = qMax(9.0, rect.height() / 44.0);
-    const qreal currentSize = qMax(11.0, rect.height() / 34.0);
+    lyricFont.setPixelSize(basePx);
 
     for (int row = 0; row < visible; ++row) {
         const int index = first + row;
@@ -552,40 +556,58 @@ void MusicVisualWidget::drawLyrics(QPainter &painter, const QRectF &rect)
         const int distance = m_lyricIndex >= 0 ? qAbs(index - m_lyricIndex)
                                               : qAbs(row - 2);
 
-        // 上下边缘渐隐，让歌词浮在画面里而不是像一块贴上去的列表。
+        // 上下边缘渐隐：中间最亮，外侧两行变暗，形成舞台景深。
         const qreal rowCenter = top + (row + 0.5) * rowHeight;
-        const qreal edge = 1.0 - qAbs(rowCenter - centerY) / (height / 2.0);
-        const qreal edgeAlpha = qBound(0.18, 1.0 - edge * edge * 0.7, 1.0);
-        const int alpha = qBound(40, int((current ? 235 : 120 + 45 / (distance + 1))
+        const qreal edge = qBound(0.0, 1.0 - qAbs(rowCenter - centerY) / (height / 2.0), 1.0);
+        const qreal edgeAlpha = 0.30 + 0.70 * edge;
+        const int alpha = qBound(40, int((current ? 255 : 118 + 42 / (distance + 1))
                                          * edgeAlpha),
                                  255);
 
-        lyricFont.setPointSizeF(current ? currentSize : baseSize);
+        lyricFont.setPixelSize(current ? basePx + 4 : basePx);
         lyricFont.setBold(current);
         painter.setFont(lyricFont);
 
         const QRectF rowRect(left, rowCenter - rowHeight / 2.0, width, rowHeight);
-        const int textWidth = int(width - 24.0);
-        const QString elided =
-            QFontMetrics(lyricFont).elidedText(text, Qt::ElideRight, textWidth);
+        const int textWidth = int(width - 32.0);
+        const QFontMetrics lyricMetrics(lyricFont);
+        const QString elided = lyricMetrics.elidedText(text, Qt::ElideRight, textWidth);
 
         if (current) {
-            // 当前句加一条短发光短线，替代原来的整行背景块。
-            const qreal markerY = rowCenter;
-            QLinearGradient marker(left - 10.0, markerY, left + 22.0, markerY);
-            marker.setColorAt(0.0, QColor(0, 0, 0, 0));
-            marker.setColorAt(0.5, withAlpha(m_accent.lighter(150), 220));
-            marker.setColorAt(1.0, withAlpha(m_accent, 0));
+            // 当前句：短发光底带 + 居中下划线，配合更大加粗的字号，
+            // 让它在整块歌词里明确成为视觉焦点，而不是只靠一条左侧短线。
+            const qreal bandWidth =
+                qMin(width, qMax<qreal>(120.0, lyricMetrics.horizontalAdvance(elided) + 48.0));
+            const QRectF band(rect.center().x() - bandWidth / 2.0,
+                              rowCenter - rowHeight / 2.0 + 2.0,
+                              bandWidth, rowHeight - 4.0);
+            QLinearGradient halo(band.left(), rowCenter, band.right(), rowCenter);
+            halo.setColorAt(0.0, QColor(0, 0, 0, 0));
+            halo.setColorAt(0.5, withAlpha(m_accent, 52));
+            halo.setColorAt(1.0, QColor(0, 0, 0, 0));
             painter.setPen(Qt::NoPen);
-            painter.setBrush(marker);
-            painter.drawRoundedRect(QRectF(left - 10.0, markerY - 1.5, 32.0, 3.0), 1.5, 1.5);
+            painter.setBrush(halo);
+            painter.drawRoundedRect(band, 8.0, 8.0);
+
+            const qreal underlineWidth = qBound(36.0, bandWidth * 0.34, 82.0);
+            QLinearGradient underline(rect.center().x() - underlineWidth / 2.0,
+                                      rowCenter, rect.center().x() + underlineWidth / 2.0,
+                                      rowCenter);
+            underline.setColorAt(0.0, withAlpha(m_accent, 0));
+            underline.setColorAt(0.5, withAlpha(m_accent.lighter(155), 220));
+            underline.setColorAt(1.0, withAlpha(m_accent, 0));
+            painter.setBrush(underline);
+            painter.drawRoundedRect(
+                QRectF(rect.center().x() - underlineWidth / 2.0,
+                       rowCenter + rowHeight / 2.0 - 3.0, underlineWidth, 2.4),
+                1.2, 1.2);
         }
 
-        painter.setPen(QColor(0, 0, 0, qMin(170, alpha)));
+        painter.setPen(QColor(0, 0, 0, qMin(180, alpha)));
         painter.drawText(rowRect.translated(0, 1.5),
                          Qt::AlignHCenter | Qt::AlignVCenter, elided);
 
-        QColor color = current ? m_accent.lighter(165) : QColor(215, 228, 255);
+        QColor color = current ? QColor(248, 252, 255) : QColor(215, 228, 255);
         color.setAlpha(alpha);
         painter.setPen(color);
         painter.drawText(rowRect, Qt::AlignHCenter | Qt::AlignVCenter, elided);

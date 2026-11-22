@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.21)
 
 project(MusicVideoPlayer VERSION 0.2 LANGUAGES CXX)
 
+# Windows 资源脚本负责 exe 图标与文件属性；需要显式启用 RC 语言，
+# 否则部分生成器不会把 .rc 编进可执行文件。
+if(WIN32)
+    enable_language(RC)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -122,7 +128,15 @@ endif()
 mvp_enable_warnings(mvp_core)
 
 # ---------------------------------------------------------------- 应用入口
+# 应用图标和版本信息由 .rc 编进 exe；图标路径用绝对路径生成，
+# 避免 windres 在 build 目录下解析相对路径失败。
+set(MVP_APP_RESOURCE "")
+if(WIN32)
+    configure_file(resources/app.rc.in ${CMAKE_CURRENT_BINARY_DIR}/app.rc @ONLY)
+    set(MVP_APP_RESOURCE ${CMAKE_CURRENT_BINARY_DIR}/app.rc)
+endif()
 qt_add_executable(MusicVideoPlayer WIN32
+    ${MVP_APP_RESOURCE}
     src/app/main.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
@@ -249,6 +263,13 @@ qt_add_resources(MusicVideoPlayer "app_themes"
     PREFIX "/themes"
     BASE "resources/themes"
     FILES resources/themes/dark.qss resources/themes/light.qss
+)
+
+# 运行时窗口图标与启动页共用同一份 PNG，避免各处再画一个近似图标
+qt_add_resources(MusicVideoPlayer "app_icons"
+    PREFIX "/icons"
+    BASE "resources/icons"
+    FILES resources/icons/app-icon.png
 )
 
 set_target_properties(MusicVideoPlayer PROPERTIES

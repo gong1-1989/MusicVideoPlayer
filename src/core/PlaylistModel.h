@@ -53,6 +53,9 @@ public:
     MediaItem itemAt(int row) const;
     /// 就地更新一行（例如保存视频播放进度），身份和行号不变，界面收到 dataChanged。
     bool updateItem(int row, const MediaItem &item);
+    /// 只更新视频播放进度。播放进度是可变的运行时状态，不能混进
+    /// 搜索结果刷新逻辑，否则刷新直链时会把用户看到一半的位置覆盖掉。
+    bool updatePlaybackPosition(int row, qint64 positionMs, qint64 durationMs);
     int indexOf(const MediaItem &item) const;
     int size() const { return m_items.size(); }
     bool isEmpty() const { return m_items.isEmpty(); }

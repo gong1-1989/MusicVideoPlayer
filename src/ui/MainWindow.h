@@ -89,6 +89,9 @@ private:
     QFrame *m_volumePopup = nullptr;
     QLabel *m_volumeLabel = nullptr;
     MusicVisualWidget *m_musicVisual = nullptr;
+    /// 刚刚从搜索窗口点播的条目身份；启动失败时用它弹一次明确的错误，
+    /// 而不是搜索窗关掉后用户只看到“点了没反应”。
+    QString m_pendingSearchPlayIdentity;
 };
 
 #endif // MAINWINDOW_H

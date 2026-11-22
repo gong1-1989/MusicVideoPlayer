@@ -16,9 +16,10 @@ namespace AppSettings {
 // ---------------------------------------------------------------- 外观
 QString themeId();                 ///< "dark" / "light"
 void setThemeId(const QString &id);
-/// 界面字体缩放百分比，默认 100，范围 80..150；ThemeManager 会把 QSS 里的 px 字号统一缩放
-int uiFontPercent();
-void setUiFontPercent(int percent);
+/// 界面基础字号（px），默认 13，范围 9..20；ThemeManager 会把 QSS 里的
+/// 11/12/13px 按相对差值同步调整，音乐动感视图也直接读取它。
+int uiFontSizePx();
+void setUiFontSizePx(int pixels);
 
 // ---------------------------------------------------------------- 窗口
 QString windowPresetId();          ///< WindowPreset 的 id，含 "last"

@@ -47,6 +47,9 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
 
     setWindowTitle(tr("系统设置"));
     setModal(true);
+    // 版本号以 main.cpp 的 setApplicationVersion 为准，避免关于卡和构建配置各写一份。
+    if (!QCoreApplication::applicationVersion().isEmpty())
+        ui->label_aboutVersion->setText(QCoreApplication::applicationVersion());
 
     const QRect available = screen() != nullptr ? screen()->availableGeometry()
                                                 : QRect(0, 0, 1280, 800);
@@ -92,7 +95,7 @@ void SettingsDialog::updateColumnLayout()
 
     // 150% 字体时左右两列的总最小宽度会超过滚动区，右列被裁掉；
     // 窄窗口同理。这里改成上下铺开，让全部设置都能纵向滚动到。
-    const bool single = AppSettings::uiFontPercent() > 100 || width() < 760;
+    const bool single = AppSettings::uiFontSizePx() > 13 || width() < 760;
     if (single == m_singleColumn)
         return;
 
@@ -112,7 +115,7 @@ void SettingsDialog::updateColumnLayout()
 void SettingsDialog::bindUi()
 {
     m_theme = ui->combo_theme;
-    m_fontPercent = ui->combo_fontPercent;
+    m_fontSize = ui->combo_fontSize;
     m_windowSize = ui->combo_windowSize;
     m_volume = ui->slider_volume;
     m_volumeValue = ui->label_volumeValue;
@@ -129,10 +132,10 @@ void SettingsDialog::bindUi()
     for (const ThemeInfo &theme : ThemeManager::instance().themes())
         m_theme->addItem(theme.name, theme.id);
 
-    for (int percent : {90, 100, 110, 125, 150})
-        m_fontPercent->addItem(tr("%1%").arg(percent), percent);
-    m_fontPercent->setToolTip(
-        tr("只缩放界面字体与列表行高，不改变窗口分辨率；高分屏下比整体 150% 缩放更灵活。"));
+    for (int pixels : {10, 11, 12, 13, 14, 15, 16, 18, 20})
+        m_fontSize->addItem(tr("%1 px").arg(pixels), pixels);
+    m_fontSize->setToolTip(
+        tr("真实像素字号，默认 13 px；列表、设置页和音乐动感视图都会一起调整。"));
 
     // ---------------------------------------------------------- 窗口
     int presetCount = 0;
@@ -208,13 +211,13 @@ void SettingsDialog::loadValues()
     if (themeIndex >= 0)
         m_theme->setCurrentIndex(themeIndex);
 
-    const int fontPercent = AppSettings::uiFontPercent();
-    int fontIndex = m_fontPercent->findData(fontPercent);
+    const int fontSize = AppSettings::uiFontSizePx();
+    int fontIndex = m_fontSize->findData(fontSize);
     if (fontIndex < 0) {
-        m_fontPercent->addItem(tr("%1%（当前配置）").arg(fontPercent), fontPercent);
-        fontIndex = m_fontPercent->count() - 1;
+        m_fontSize->addItem(tr("%1 px（当前配置）").arg(fontSize), fontSize);
+        fontIndex = m_fontSize->count() - 1;
     }
-    m_fontPercent->setCurrentIndex(fontIndex);
+    m_fontSize->setCurrentIndex(fontIndex);
 
     const int windowIndex = m_windowSize->findData(AppSettings::windowPresetId());
     if (windowIndex >= 0)
@@ -327,7 +330,7 @@ void SettingsDialog::accept()
     }
 
     AppSettings::setThemeId(m_theme->currentData().toString());
-    AppSettings::setUiFontPercent(m_fontPercent->currentData().toInt());
+    AppSettings::setUiFontSizePx(m_fontSize->currentData().toInt());
     AppSettings::setWindowPresetId(m_windowSize->currentData().toString());
     AppSettings::setDefaultVolume(m_volume->value());
     AppSettings::setSearchLimit(m_searchLimit->currentData().toInt());
@@ -338,7 +341,7 @@ void SettingsDialog::accept()
     AppSettings::setControlsAutoHide(m_controlsAutoHide->isChecked());
 
     qCInfo(lcSettings) << "系统设置已保存：主题" << m_theme->currentData().toString()
-                       << "字体" << m_fontPercent->currentData().toInt()
+                       << "字号" << m_fontSize->currentData().toInt() << "px"
                        << "窗口" << m_windowSize->currentData().toString() << "音量"
                        << m_volume->value() << "单源条数" << m_searchLimit->currentData().toInt()
                        << "下载上限" << m_downloadLimit->currentData().toInt() << "MB";
