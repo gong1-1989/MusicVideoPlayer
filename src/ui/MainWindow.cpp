@@ -207,7 +207,7 @@ MainWindow::MainWindow(QWidget *parent)
     UiIcons::apply(ui->btn_settings, QStringLiteral("settings"),
                    tr("系统设置 (Ctrl+,)"), 20);
     UiIcons::apply(ui->btn_openSearch, QStringLiteral("search"),
-                   tr("搜索发现"), 18, QColor(Qt::white));
+                   tr("搜索发现"), 20);
     UiIcons::apply(ui->btn_fullscreen, QStringLiteral("fullscreen"),
                    tr("全屏 / 退出全屏"), 20);
     UiIcons::apply(ui->btn_downloads, QStringLiteral("downloads"),
@@ -220,7 +220,7 @@ MainWindow::MainWindow(QWidget *parent)
                 UiIcons::apply(ui->btn_settings, QStringLiteral("settings"),
                                tr("系统设置 (Ctrl+,)"), 20);
                 UiIcons::apply(ui->btn_openSearch, QStringLiteral("search"),
-                               tr("搜索发现"), 18, QColor(Qt::white));
+                               tr("搜索发现"), 20);
                 UiIcons::apply(ui->btn_fullscreen, QStringLiteral("fullscreen"),
                                tr("全屏 / 退出全屏"), 20);
                 UiIcons::apply(ui->btn_downloads, QStringLiteral("downloads"),
@@ -269,6 +269,13 @@ void MainWindow::setupConnections()
 {
     connect(ui->btn_openSearch, &QPushButton::clicked,
             this, &MainWindow::showSearchWindow);
+
+    // 播放列表目前是自动保存；再给一个显式保存入口，便于确认修改真的落盘。
+    auto *savePlaylistShortcut = new QShortcut(QKeySequence::Save, this);
+    connect(savePlaylistShortcut, &QShortcut::activated, this, [this] {
+        if (m_playlists != nullptr)
+            m_playlists->saveNow();
+    });
     connect(m_transport, &PlaybackUiController::statusMessage, this,
             [this](const QString &text) { ui->label_status->setText(text); });
     connect(m_transport, &PlaybackUiController::currentItemChanged, this,
@@ -496,11 +503,13 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
 void MainWindow::updateControlBarCentering()
 {
-    // 右侧辅助区（模式/全屏/设置/音量）有真实最小宽度；把左侧列设成同样的最小宽度，
-    // QGrid 的两列 stretch 都是 1，中间播放键组才会落在面板正中央。
-    const int auxWidth = ui->layout_auxButtons->minimumSize().width();
-    ui->layout_controls->setColumnMinimumWidth(0, auxWidth);
-    ui->layout_controls->setColumnMinimumWidth(2, auxWidth);
+    // 左右两组辅助按钮宽度不同；两列都取较宽的一侧做最小宽度，
+    // 中间播放键组才会留在面板正中央，不会因为左侧新增按钮而偏移。
+    const int leftWidth = ui->layout_controlLeftButtons->minimumSize().width();
+    const int rightWidth = ui->layout_auxButtons->minimumSize().width();
+    const int columnWidth = qMax(leftWidth, rightWidth);
+    ui->layout_controls->setColumnMinimumWidth(0, columnWidth);
+    ui->layout_controls->setColumnMinimumWidth(2, columnWidth);
     ui->layout_controls->invalidate();
 }
 

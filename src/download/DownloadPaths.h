@@ -15,6 +15,9 @@ using PathInUse = std::function<bool(const QString &)>;
 QString uniqueFilePath(const QString &directory, const QString &fileName,
                        const PathInUse &inUse = PathInUse());
 
+/// 下载根目录下按媒体类型分“音乐”“影视”子目录，避免音频和视频混在一起。
+QString mediaDirectory(const QString &root, bool video);
+
 /// 比较两个路径是否指向同一个文件；Windows 下按大小写不敏感处理。
 bool pathsReferToSameFile(const QString &a, const QString &b);
 /// 根据地址和是否 HLS 选默认扩展名。HLS 统一先落 .ts，下载完成后再无损转 MP4。

@@ -70,48 +70,6 @@
         <number>16</number>
        </property>
        <item>
-        <layout class="QHBoxLayout" name="layout_brandHeader">
-         <property name="spacing">
-          <number>8</number>
-         </property>
-         <item>
-          <spacer name="spacer_brand">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>20</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-         <item>
-          <widget class="QPushButton" name="btn_openSearch">
-           <property name="minimumSize">
-            <size>
-             <width>38</width>
-             <height>38</height>
-            </size>
-           </property>
-           <property name="maximumSize">
-            <size>
-             <width>38</width>
-             <height>38</height>
-            </size>
-           </property>
-           <property name="toolTip">
-            <string>搜索发现</string>
-           </property>
-           <property name="text">
-            <string></string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </item>
-       <item>
         <widget class="QFrame" name="brandLine">
          <property name="frameShape">
           <enum>QFrame::NoFrame</enum>
@@ -360,20 +318,93 @@
             <number>8</number>
            </property>
            <item row="0" column="0">
-            <spacer name="spacer_controlsLeft">
-             <property name="orientation">
-              <enum>Qt::Horizontal</enum>
+            <layout class="QHBoxLayout" name="layout_controlLeftButtons">
+             <property name="spacing">
+              <number>8</number>
              </property>
-             <property name="sizeType">
-              <enum>QSizePolicy::Expanding</enum>
-             </property>
-             <property name="sizeHint" stdset="0">
-              <size>
-               <width>24</width>
-               <height>20</height>
-              </size>
-             </property>
-            </spacer>
+             <item>
+              <widget class="QPushButton" name="btn_openSearch">
+               <property name="minimumSize">
+                <size>
+                 <width>38</width>
+                 <height>38</height>
+                </size>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>38</width>
+                 <height>38</height>
+                </size>
+               </property>
+               <property name="toolTip">
+                <string>搜索发现</string>
+               </property>
+               <property name="text">
+                <string></string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btn_downloads">
+               <property name="minimumSize">
+                <size>
+                 <width>38</width>
+                 <height>38</height>
+                </size>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>38</width>
+                 <height>38</height>
+                </size>
+               </property>
+               <property name="toolTip">
+                <string>下载任务</string>
+               </property>
+               <property name="text">
+                <string></string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btn_settings">
+               <property name="minimumSize">
+                <size>
+                 <width>38</width>
+                 <height>38</height>
+                </size>
+               </property>
+               <property name="maximumSize">
+                <size>
+                 <width>38</width>
+                 <height>38</height>
+                </size>
+               </property>
+               <property name="toolTip">
+                <string>系统设置 (Ctrl+,)</string>
+               </property>
+               <property name="text">
+                <string></string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="spacer_controlLeftTrailing">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeType">
+                <enum>QSizePolicy::Expanding</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>12</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
            </item>
            <item row="0" column="1">
             <layout class="QHBoxLayout" name="layout_transportButtons">
@@ -480,28 +511,6 @@
               </spacer>
              </item>
              <item>
-              <widget class="QPushButton" name="btn_downloads">
-               <property name="minimumSize">
-                <size>
-                 <width>38</width>
-                 <height>38</height>
-                </size>
-               </property>
-               <property name="maximumSize">
-                <size>
-                 <width>38</width>
-                 <height>38</height>
-                </size>
-               </property>
-               <property name="toolTip">
-                <string>下载任务</string>
-               </property>
-               <property name="text">
-                <string></string>
-               </property>
-              </widget>
-             </item>
-             <item>
               <widget class="QPushButton" name="btn_mode">
                <property name="minimumSize">
                 <size>
@@ -539,28 +548,6 @@
                </property>
                <property name="toolTip">
                 <string>全屏 / 退出全屏</string>
-               </property>
-               <property name="text">
-                <string></string>
-               </property>
-              </widget>
-             </item>
-             <item>
-              <widget class="QPushButton" name="btn_settings">
-               <property name="minimumSize">
-                <size>
-                 <width>38</width>
-                 <height>38</height>
-                </size>
-               </property>
-               <property name="maximumSize">
-                <size>
-                 <width>38</width>
-                 <height>38</height>
-                </size>
-               </property>
-               <property name="toolTip">
-                <string>系统设置 (Ctrl+,)</string>
                </property>
                <property name="text">
                 <string></string>

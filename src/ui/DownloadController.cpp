@@ -53,7 +53,11 @@ void DownloadController::download(const MediaItem &item)
         return;
     }
 
-    const QString directory = AppSettings::downloadDir();
+    // 下载根目录由设置决定，其下再按媒体类型分“音乐”“影视”子目录；
+    // 队列里的目标路径仍由唯一文件名生成，避免同名覆盖。
+    const QString root = AppSettings::downloadDir();
+    const QString directory =
+        DownloadPaths::mediaDirectory(root, resolved.type == MediaType::Video);
     if (!QDir().mkpath(directory)) {
         const QString message = tr("无法创建下载目录：%1").arg(directory);
         emit statusMessage(message);

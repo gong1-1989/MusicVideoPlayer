@@ -52,6 +52,8 @@ public:
 
 private:
     void bindUi();
+    /// 给表单控件补鼠标悬停说明：字段含义、可填格式和留空后的行为
+    void configureHoverHelp();
     void reloadList(int targetRow);
     void selectRow(int row);
     void commitFormToDraft();

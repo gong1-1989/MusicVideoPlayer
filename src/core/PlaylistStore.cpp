@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QSaveFile>
+#include <QThread>
 #include <utility>
 
 Q_LOGGING_CATEGORY(lcStore, "mvp.store")
@@ -45,21 +46,32 @@ bool writeFile(const QString &path, const QByteArray &payload)
 
     QDir().mkpath(QFileInfo(path).absolutePath());
 
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
-        return false;
-    const qint64 written = file.write(payload);
-    if (written != payload.size()) {
-        qCWarning(lcStore) << "播放列表写入不完整：" << path
-                           << "，已写入" << written << "字节，应为" << payload.size();
-        file.cancelWriting();
-        return false;
+    // Windows 上杀毒/同步软件可能短暂占用目标文件，QSaveFile 的替换会失败。
+    // 连续重试几次通常能跨过这个窗口；永久无权限时仍会返回失败，不吞错误。
+    QString lastError;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            lastError = file.errorString();
+        } else {
+            const qint64 written = file.write(payload);
+            if (written != payload.size()) {
+                lastError = QStringLiteral("写入不完整：%1/%2 字节")
+                                .arg(written)
+                                .arg(payload.size());
+                file.cancelWriting();
+            } else if (file.commit()) {
+                return true;
+            } else {
+                lastError = file.errorString();
+            }
+        }
+        if (attempt < 2)
+            QThread::msleep(80);
     }
-    if (!file.commit()) {
-        qCWarning(lcStore) << "播放列表写入失败：" << path << "：" << file.errorString();
-        return false;
-    }
-    return true;
+
+    qCWarning(lcStore) << "播放列表写入失败：" << path << "：" << lastError;
+    return false;
 }
 
 /// 损坏文件先备份；时间戳带毫秒并检查重名，避免连续两次 load 生成同名备份。

@@ -46,6 +46,8 @@ private:
     PanelOverlayController *m_panels = nullptr;
     qreal m_stageCornerRadius = 16.0;
     QWidget *m_window = nullptr;
+    /// VideoSurface 内部的原生 QVideoWidget；鼠标事件主要落在它身上
+    QWidget *m_videoWidget = nullptr;
     QPointer<QWidget> m_transportHost;
     QTimer *m_hideTimer = nullptr;
     bool m_transportWasInLayout = false;

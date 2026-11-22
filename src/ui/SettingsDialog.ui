@@ -428,7 +428,10 @@
             <item row="3" column="0">
              <widget class="QLabel" name="label_downloadDirCaption">
               <property name="text">
-               <string>默认下载目录</string>
+               <string>下载根目录</string>
+              </property>
+              <property name="toolTip">
+               <string>音乐下载到该目录下的“音乐”文件夹，影视下载到“影视”文件夹</string>
               </property>
              </widget>
             </item>
@@ -453,7 +456,10 @@
                <item>
                 <widget class="QLineEdit" name="edit_downloadDir">
                  <property name="placeholderText">
-                  <string>下载目录</string>
+                  <string>下载根目录（音乐/影视会自动分子目录）</string>
+                 </property>
+                 <property name="toolTip">
+                  <string>音乐保存到“音乐”子目录，影视保存到“影视”子目录</string>
                  </property>
                 </widget>
                </item>

@@ -5,6 +5,7 @@
 
 #include <QCursor>
 #include <QEvent>
+#include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QStyle>
@@ -92,6 +93,14 @@ void FullscreenController::enterFullScreen()
     m_surface->installEventFilter(this);
     m_transport->installEventFilter(this);
 
+    // QVideoWidget 是原生子窗口，鼠标在视频画面上移动时事件不会冒泡到
+    // VideoSurface；必须单独监听，否则控制条计时器收不到活动信号。
+    m_videoWidget = m_surface->videoWidget();
+    if (m_videoWidget != nullptr) {
+        m_videoWidget->setMouseTracking(true);
+        m_videoWidget->installEventFilter(this);
+    }
+
     window->showFullScreen();
     window->setFocus();
     m_window = window;
@@ -113,6 +122,10 @@ void FullscreenController::exitFullScreen()
     window->removeEventFilter(this);
     m_surface->removeEventFilter(this);
     m_transport->removeEventFilter(this);
+    if (m_videoWidget != nullptr) {
+        m_videoWidget->removeEventFilter(this);
+        m_videoWidget = nullptr;
+    }
 
     m_transport->hide();
     m_transport->setParent(m_transportHost);
@@ -173,13 +186,13 @@ void FullscreenController::hideControls()
     if (m_window == nullptr || m_transport == nullptr)
         return;
 
-    // 鼠标还在控制条上时不能收，否则用户刚移到音量/进度条就消失。
-    const QPoint global = QCursor::pos();
-    const QPoint local = m_transport->mapFromGlobal(global);
-    if (m_transport->rect().contains(local)) {
+    // 正在拖动进度条/音量滑块时不能收；只要鼠标按住，就让控制条继续留着。
+    if (QGuiApplication::mouseButtons() != Qt::NoButton) {
         scheduleHideControls();
         return;
     }
+    // 鼠标停在控制条上也算“无操作”，到时间同样隐藏；
+    // 下一次移动会重新显示，避免控制条永久压在画面上。
     m_transport->hide();
 }
 
@@ -235,11 +248,29 @@ bool FullscreenController::eventFilter(QObject *watched, QEvent *event)
         return QObject::eventFilter(watched, event);
     }
 
+    if (m_window != nullptr && m_videoWidget != nullptr && watched == m_videoWidget) {
+        if (event->type() == QEvent::MouseMove) {
+            const QPoint surfacePos =
+                static_cast<QMouseEvent *>(event)->position().toPoint();
+            const QPoint windowPos = m_window->mapFromGlobal(
+                m_videoWidget->mapToGlobal(surfacePos));
+            // 画面是主要活动区域：靠近底边弹出控制条，其余位置只重置隐藏计时。
+            if (windowPos.y() >= m_window->height() - 90)
+                showControls();
+            else if (m_transport->isVisible())
+                scheduleHideControls();
+        } else if (event->type() == QEvent::Leave) {
+            scheduleHideControls();
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
     if (m_window != nullptr && watched == m_transport) {
         if (event->type() == QEvent::Enter || event->type() == QEvent::MouseMove) {
-            m_hideTimer->stop();
+            // 鼠标在控制条上活动时保持可见，但停止移动 2.6 秒后仍然自动隐藏。
             m_transport->show();
             m_transport->raise();
+            scheduleHideControls();
         } else if (event->type() == QEvent::Leave) {
             scheduleHideControls();
         }

@@ -202,6 +202,21 @@ bool PlaylistController::save()
     return false;
 }
 
+bool PlaylistController::saveNow()
+{
+    if (m_storageBlocked)
+        return save();
+    if (!m_dirty) {
+        emit statusMessage(tr("播放列表已是最新，没有需要保存的修改"));
+        return true;
+    }
+    if (save()) {
+        emit statusMessage(tr("播放列表已保存"));
+        return true;
+    }
+    return false;
+}
+
 bool PlaylistController::retrySave()
 {
     if (!m_dirty)
@@ -388,6 +403,29 @@ bool PlaylistController::updateDownloadedItem(const MediaItem &source, const QSt
     return changed;
 }
 
+bool PlaylistController::promotePreviewRow(MediaType type, int row)
+{
+    PlaylistModel *model = modelFor(type);
+    if (row < 0 || row >= model->rowCount())
+        return false;
+    MediaItem item = model->itemAt(row);
+    if (!item.previewOnly)
+        return true;
+
+    // 试听条目原本被保存入口统一过滤；用户明确选择“保存到播放列表”后
+    // 先清掉标记再保存，否则仍然会被 persistentItems 排除。
+    item.previewOnly = false;
+    if (!model->updateItem(row, item)) {
+        emit statusMessage(tr("无法保存该条目：列表里已存在相同内容"));
+        return false;
+    }
+    if (!save())
+        return false;
+
+    emit statusMessage(tr("已保存到播放列表：%1").arg(item.displayName()));
+    return true;
+}
+
 void PlaylistController::chooseLocalFiles(MediaType type)
 {
     QWidget *parent = m_ui.tabs != nullptr ? m_ui.tabs->window() : nullptr;
@@ -477,8 +515,13 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
         menu.addSeparator();
     }
     QAction *playAction = nullptr;
+    QAction *savePreviewAction = nullptr;
     QAction *removeAction = nullptr;
     if (index.isValid()) {
+        if (model->itemAt(index.row()).previewOnly) {
+            savePreviewAction = menu.addAction(tr("保存到播放列表（试听条目）"));
+            menu.addSeparator();
+        }
         playAction = menu.addAction(tr("播放"));
         removeAction = menu.addAction(tr("从列表移除"));
         menu.addSeparator();
@@ -497,6 +540,8 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
 
     if (chosen == playAction) {
         playRow(type, index.row());
+    } else if (chosen == savePreviewAction) {
+        promotePreviewRow(type, index.row());
     } else if (chosen == removeAction) {
         removeRow(type, index.row());
     } else if (chosen == clearAction) {

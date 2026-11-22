@@ -34,6 +34,13 @@ QString normalizedSuffix(const QUrl &url)
 
 namespace DownloadPaths {
 
+QString mediaDirectory(const QString &root, bool video)
+{
+    if (root.trimmed().isEmpty())
+        return root;
+    return QDir(root).filePath(video ? QStringLiteral("影视") : QStringLiteral("音乐"));
+}
+
 QString uniqueFilePath(const QString &directory, const QString &fileName,
                        const PathInUse &inUse)
 {

@@ -18,6 +18,10 @@ public:
 
     QVideoSink *sink() const;
 
+    /// 原生视频子控件。全屏时要给它也装事件过滤器，否则鼠标在画面上移动
+    /// 时事件只落到这个子控件，外层 VideoSurface 收不到。
+    QWidget *videoWidget() const;
+
     /// 保留接口给 VideoStage；QVideoWidget 是原生窗口，内层圆角由外层舞台边框负责
     void setCornerRadius(qreal radius);
 

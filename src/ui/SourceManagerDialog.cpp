@@ -119,6 +119,7 @@ SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, HttpClient *h
         m_drafts = m_registry->sources();
 
     bindUi();
+    configureHoverHelp();
     reloadList(m_drafts.isEmpty() ? -1 : 0);
 
     // 原生标题栏跟着主题走
@@ -289,6 +290,145 @@ void SourceManagerDialog::bindUi()
         }
         updateActions();
     });
+}
+
+void SourceManagerDialog::configureHoverHelp()
+{
+    auto help = [](QWidget *widget, const QString &text) {
+        if (widget != nullptr)
+            widget->setToolTip(text);
+    };
+    // 标签和输入框用同一段说明：鼠标停在字段名上也能看到解释。
+    auto pair = [&](QLabel *label, QWidget *editor, const QString &text) {
+        help(label, text);
+        help(editor, text);
+    };
+
+    // ---------------------------------------------------------- 左侧列表与操作
+    help(ui->list_sources,
+         tr("勾选表示启用这个搜索源；选中一行后，在右侧编辑它的地址和字段。"
+            "红色条目表示配置失效或站点体检失败，鼠标停在条目上可看具体原因。"));
+    help(ui->btn_add, tr("新建一个空白搜索源，自己填写请求地址和字段对应。"));
+    help(ui->btn_duplicate, tr("复制当前选中的源，适合在已有配置上改出另一个站点。"));
+    help(ui->btn_remove, tr("删除当前选中的源；内置源不能删除，只能停用。"));
+    help(ui->btn_addSite, tr("只填一个网站首页地址，程序会探测搜索接口并推断字段；"
+                            "探测结果确认后才会加入列表。"));
+    help(ui->btn_import, tr("从 JSON 配置文件导入搜索源；如含外部解析器命令，"
+                           "导入时会先展示命令并默认停用。"));
+    help(ui->btn_export, tr("把当前全部搜索源导出为 JSON，便于备份或换机导入。"));
+    help(ui->btn_example, tr("插入一份影视采集接口的空白模板，填上自己的接口地址即可。"));
+
+    // ---------------------------------------------------------- 基本信息
+    help(ui->group_basic,
+         tr("搜索源的基本身份：名称只用于显示；媒体类型决定结果进入音乐还是影视列表。"));
+    pair(ui->label_captionName, ui->edit_name,
+         tr("搜索源显示名称，可任意填写，只影响列表和搜索结果里的来源标签。"));
+    pair(ui->label_captionType, ui->combo_type,
+         tr("这个源返回的内容类型：音乐结果进入音乐列表，视频结果进入影视列表。"));
+    pair(ui->label_captionKind, ui->combo_kind,
+         tr("配置驱动：用 JSON 接口地址和字段映射搜索；内置实现：使用程序自带解析；"
+            "外部解析器：调用本机程序并读取它输出的 JSON。"));
+    pair(ui->label_captionProvider, ui->combo_provider,
+         tr("内置网页型影视解析方式，只需要站点首页地址，不需要专属签名。"));
+    help(ui->label_builtinHint,
+         tr("网页型影视源只解析公开页面，当前只返回影视/视频结果，不处理登录或加密播放。"));
+    pair(ui->label_captionSiteUrl, ui->edit_siteUrl,
+         tr("要抓取的网站首页地址，例如 https://example.com/；程序会从首页和常见搜索路径探测接口。"));
+    pair(ui->label_captionTimeout, ui->spin_timeout,
+         tr("单次请求的超时时间，单位毫秒；选“自动”时由程序按网络情况决定。"));
+
+    // ---------------------------------------------------------- 请求
+    help(ui->group_request,
+         tr("描述一次搜索请求：请求方式、地址、请求体、请求头和结果数组所在位置。"));
+    pair(ui->label_captionMethod, ui->combo_method,
+         tr("GET 把参数拼在地址里；POST 把参数放在请求体里发送。"));
+    pair(ui->label_captionUrl, ui->edit_url,
+         tr("搜索接口地址。可用占位符：{keyword} 替换成关键词，{limit} 替换成期望条数。"
+            "例如 https://api.example.com/search?q={keyword}&n={limit}"));
+    pair(ui->label_captionBody, ui->text_body,
+         tr("仅 POST 使用：填写表单或 JSON 请求体，可使用 {keyword} 和 {limit} 占位符；"
+            "GET 时留空。"));
+    pair(ui->label_captionHeaders, ui->text_headers,
+         tr("每行一个“键: 值”，例如 Referer: https://example.com/。"
+            "需要登录态的 Cookie 建议填到下面的 Cookie 栏。"));
+    pair(ui->label_captionCookie, ui->edit_cookie,
+         tr("可选。接口需要登录时填写 Cookie 原文，例如 token=xxx；"
+            "会随请求发送，也会写入本地源配置。"));
+    pair(ui->label_captionItems, ui->edit_itemsPath,
+         tr("结果数组在响应 JSON 里的路径，用点号分隔，例如 data.list。"
+            "留空表示响应根节点本身就是数组。"));
+
+    // ---------------------------------------------------------- 字段对应
+    help(ui->group_fields,
+         tr("把接口返回 JSON 里的字段名映射到播放器需要的信息；右侧填接口里的键名，"
+            "不是填具体内容。"));
+    pair(ui->label_captionId, ui->edit_idField,
+         tr("条目唯一 id 的字段名，用于拼接详情或播放地址；接口没有 id 时可留空。"));
+    pair(ui->label_captionTitle, ui->edit_titleField,
+         tr("歌名/视频名的字段名，通常必填，例如 name、title、songname。"));
+    pair(ui->label_captionArtist, ui->edit_artistField,
+         tr("歌手/作者的字段名，可留空；例如 artist、singer、author。"));
+    pair(ui->label_captionDuration, ui->edit_durationField,
+         tr("时长字段名，单位按接口原值；如果接口返回秒，程序会按数值判断，可留空。"));
+    pair(ui->label_captionStream, ui->edit_streamField,
+         tr("播放直链字段名，例如 url、play_url。需要自己拼地址时写 @https://host/play?id={id}，"
+            "开头的 @ 表示这是地址模板而不是 JSON 字段名。"));
+    pair(ui->label_captionStreamKind, ui->combo_streamKind,
+         tr("单条直链：一个条目一个播放地址；剧集列表：一个条目里包含多集，"
+            "格式为“名称$地址#名称$地址”。"));
+    pair(ui->label_captionLyric, ui->edit_lyricField,
+         tr("歌词地址字段名，可留空；支持 LRC 文本或歌词接口地址。"));
+    pair(ui->label_captionWeb, ui->edit_webField,
+         tr("原网页地址字段名，可留空；用于显示来源或在浏览器中打开原页面。"));
+    pair(ui->label_captionPoster, ui->edit_posterField,
+         tr("海报/封面地址字段名，可留空。"));
+    pair(ui->label_captionYear, ui->edit_yearField,
+         tr("上映/发行年份字段名，可留空。"));
+    pair(ui->label_captionArea, ui->edit_areaField,
+         tr("地区字段名，可留空。"));
+    pair(ui->label_captionGenre, ui->edit_genreField,
+         tr("题材/分类字段名，可留空。"));
+    pair(ui->label_captionDesc, ui->edit_descriptionField,
+         tr("简介字段名，可留空；结果列表里长文本会自动截断。"));
+
+    // ---------------------------------------------------------- 二次解析
+    help(ui->group_detail,
+         tr("可选。搜索接口只返回 id、不返回直链时，用 id 再请求一次详情接口换出播放地址。"));
+    pair(ui->label_captionDetailUrl, ui->edit_detailUrl,
+         tr("详情接口地址模板，用 {id} 代表条目 id，例如 https://api.example.com/track/{id}。"));
+    pair(ui->label_captionDetailPath, ui->edit_detailItemsPath,
+         tr("详情响应里播放信息所在路径，例如 data；留空表示根节点。"));
+    pair(ui->label_captionDetailStream, ui->edit_detailStreamField,
+         tr("详情响应里的直链字段名，例如 url、stream.url；支持点号路径。"));
+
+    // ---------------------------------------------------------- 过滤 / 外部解析器
+    help(ui->group_filter,
+         tr("可选。命中规则的条目会在搜索结果里被跳过；规则使用 JSON 数组描述。"));
+    help(ui->text_skipIf,
+         tr("填写 JSON 过滤规则，例如按字段等于某值或缺少播放地址时跳过；"
+            "格式可参考输入框里的示例，留空表示不过滤。"));
+    help(ui->group_external,
+         tr("可选。配置无法描述签名或加密时，改为启动本机程序，让程序输出 JSON 结果。"));
+    pair(ui->label_captionCommand, ui->edit_command,
+         tr("要启动的程序：可填 python、node，或程序目录下的脚本、绝对路径的 exe。"
+            "启用外部解析器前会再次确认命令。"));
+    pair(ui->label_captionArguments, ui->edit_arguments,
+         tr("传给程序的参数，可使用 {keyword} 和 {limit} 占位符，"
+            "例如 --keyword={keyword} --limit={limit}。"));
+    help(ui->label_externalHint,
+         tr("外部解析器必须把 JSON 结果打印到标准输出；程序只读取 stdout，"
+            "报错请写到 stderr。"));
+
+    // ---------------------------------------------------------- 底部试搜与保存
+    help(ui->edit_testKeyword,
+         tr("输入关键词后点“试搜当前源”，用当前表单里的配置实际请求一次，先验证再保存。"));
+    help(ui->btn_test,
+         tr("用当前表单配置试搜，不会修改已保存的源；结果会显示在下方列表。"));
+    help(ui->list_test,
+         tr("试搜结果：显示标题、来源和是否有可播放直链；双击或选中后可查看详情。"));
+    help(ui->btn_cancel, tr("放弃本次所有未保存的修改并关闭窗口。"));
+    help(ui->btn_save,
+         tr("把左侧列表和右侧表单的修改写入搜索源配置；关闭窗口后立即生效。"));
 }
 
 void SourceManagerDialog::reloadList(int targetRow)

@@ -22,6 +22,9 @@ VideoSurface::VideoSurface(QWidget *parent)
 
     m_videoWidget = new QVideoWidget(this);
     m_videoWidget->setObjectName(QStringLiteral("videoView"));
+    // 全屏控制条靠鼠标移动重新计时；原生视频窗口必须开启跟踪，
+    // 否则只有按住鼠标时才有 MouseMove，控制条会一直挂在画面上。
+    m_videoWidget->setMouseTracking(true);
     // 视频按比例显示，黑边由 QVideoWidget 自己补，不再由 QPainter 算目标矩形
     m_videoWidget->setAspectRatioMode(Qt::KeepAspectRatio);
     m_videoWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -36,6 +39,11 @@ VideoSurface::VideoSurface(QWidget *parent)
 QVideoSink *VideoSurface::sink() const
 {
     return m_videoWidget != nullptr ? m_videoWidget->videoSink() : nullptr;
+}
+
+QWidget *VideoSurface::videoWidget() const
+{
+    return m_videoWidget;
 }
 
 void VideoSurface::setCornerRadius(qreal radius)

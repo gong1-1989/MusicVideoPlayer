@@ -59,8 +59,8 @@ void setProbePaths(MediaType type, const QStringList &paths);
 int downloadLimitMb();
 void setDownloadLimitMb(int limitMb);
 
-/// 默认下载目录。默认是“下载/MusicVideoPlayer”，下载时直接落到这里，
-/// 不再弹路径选择；设置页可以改成其他目录。
+/// 默认下载根目录。默认是“下载/MusicVideoPlayer”；音乐、影视会分别落到
+/// 根目录下的“音乐”“影视”子目录，设置页可以改成其他根目录。
 QString downloadDir();
 void setDownloadDir(const QString &dir);
 

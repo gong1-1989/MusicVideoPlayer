@@ -246,21 +246,6 @@ QPushButton#btn_search:hover {
                                 stop:1 #5cd0ff);
 }
 
-QPushButton#btn_openSearch {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                stop:0 #7b5bff,
-                                stop:1 #35c2ff);
-    border: 1px solid rgba(255, 255, 255, 70%);
-    border-radius: 19px;
-    padding: 0;
-}
-
-QPushButton#btn_openSearch:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                stop:0 #8f75ff,
-                                stop:1 #5cd0ff);
-}
-
 QWidget#SearchWindow {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                                 stop:0 #f7f8ff,
@@ -307,6 +292,7 @@ QPushButton#btn_play:hover {
 QPushButton#btn_stop,
 QPushButton#btn_mode,
 QPushButton#btn_fullscreen,
+QPushButton#btn_openSearch,
 QPushButton#btn_downloads,
 QPushButton#btn_prev,
 QPushButton#btn_next {

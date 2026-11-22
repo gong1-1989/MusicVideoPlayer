@@ -26,12 +26,19 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
         if (!meta.isEmpty())
             text += QStringLiteral("  ·  ") + meta;
         // 来源放在最前面，长标题被省略时也不会把“本地/网络”截掉。
-        text = (item.online ? QStringLiteral("[网络] ") : QStringLiteral("[本地] ")) + text;
+        // 试听条目只存在于本次运行，必须显式标出，否则用户会以为已经保存。
+        if (item.previewOnly)
+            text = QStringLiteral("[试听] ") + text;
+        else
+            text = (item.online ? QStringLiteral("[网络] ") : QStringLiteral("[本地] ")) + text;
         if (item.online && item.type == MediaType::Video)
             return QStringLiteral("▶ ") + text;
         return text;
     }
     case Qt::ToolTipRole:
+        if (item.previewOnly)
+            return item.detailText()
+                + QStringLiteral("\n试听条目：不会写入播放列表；右键可“保存到播放列表”。");
         return item.detailText();
     case TitleRole:
         return item.title;

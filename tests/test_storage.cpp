@@ -461,6 +461,13 @@ void StorageTest::downloadPathsAvoidOverwriteAndPickSuffix()
     QCOMPARE(DownloadPaths::suffixForDownload(
                  QUrl(QStringLiteral("https://example.com/play?id=1")), false, false),
              QStringLiteral("mp3"));
+
+    // 下载根目录下按媒体类型固定分“音乐”“影视”，根目录为空时保持空值
+    QCOMPARE(DownloadPaths::mediaDirectory(dir, false),
+             QDir(dir).filePath(QStringLiteral("音乐")));
+    QCOMPARE(DownloadPaths::mediaDirectory(dir, true),
+             QDir(dir).filePath(QStringLiteral("影视")));
+    QCOMPARE(DownloadPaths::mediaDirectory(QString(), true), QString());
 }
 
 void StorageTest::downloadPathsTreatPartialAsOccupied()

@@ -228,22 +228,6 @@ QPushButton#btn_search {
     padding: 0;
 }
 
-/* 侧栏只留搜索入口：圆形渐变按钮，点击打开独立搜索窗口 */
-QPushButton#btn_openSearch {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                stop:0 #6d5cff,
-                                stop:1 #22b8ff);
-    border: 1px solid rgba(180, 220, 255, 45%);
-    border-radius: 19px;
-    padding: 0;
-}
-
-QPushButton#btn_openSearch:hover {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                                stop:0 #8272ff,
-                                stop:1 #4acdff);
-}
-
 /* 独立搜索窗口沿用主界面的深色梦幻底色，不再挤在侧栏里 */
 QWidget#SearchWindow {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -307,6 +291,7 @@ QPushButton#btn_stop,
 QPushButton#btn_mode,
 QPushButton#btn_fullscreen,
 QPushButton#btn_downloads,
+QPushButton#btn_openSearch,
 QPushButton#btn_prev,
 QPushButton#btn_next {
     min-width: 38px;

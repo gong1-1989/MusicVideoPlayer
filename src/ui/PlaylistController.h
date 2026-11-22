@@ -39,6 +39,8 @@ public:
 
     void restore();
     bool save();
+    /// 用户主动保存（Ctrl+S 或右键“保存播放列表”）：没有修改时给出明确反馈
+    bool saveNow();
     /// 上次保存失败后保留内存修改；这里重试写盘，成功才清除未保存标记
     bool retrySave();
     /// 主文件读不了且无法备份时为 true：此时任何保存都会覆盖原文件，必须禁止
@@ -69,6 +71,8 @@ private:
     void showContextMenu(MediaType type, QListView *view, PlaylistModel *model,
                          const QPoint &pos);
     void playRow(MediaType type, int row);
+    /// 把搜索结果试听行提升为永久条目并立即写回列表
+    bool promotePreviewRow(MediaType type, int row);
     void setDirty(bool dirty);
     void refreshTabTitles();
 
