@@ -37,6 +37,8 @@ private:
     QVideoWidget *m_videoWidget = nullptr;
     qreal m_radius = 0.0;
     bool m_framesBlocked = false;
+    /// 是否曾经收到过有效帧；恢复收帧时据此决定要不要重新显示原生窗口。
+    bool m_hasFrame = false;
 };
 
 #endif // VIDEOSURFACE_H

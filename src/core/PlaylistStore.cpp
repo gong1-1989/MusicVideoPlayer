@@ -18,6 +18,8 @@ namespace {
 
 const char kMusicKey[] = "music";
 const char kVideoKey[] = "video";
+constexpr qint64 kMaxPlaylistFileBytes = 32 * 1024 * 1024;
+constexpr int kMaxCorruptBackups = 5;
 
 QString keyFor(MediaType type)
 {
@@ -55,6 +57,7 @@ bool writeFile(const QString &path, const QByteArray &payload)
 }
 
 /// 损坏文件先备份；时间戳带毫秒并检查重名，避免连续两次 load 生成同名备份。
+/// 用 rename 而不是 copy：第二次 load 就看不到损坏文件，不会重复备份。
 QString backupCorrupt(const QString &path)
 {
     const QString stamp =
@@ -65,7 +68,17 @@ QString backupCorrupt(const QString &path)
         backup = path + QStringLiteral(".corrupt-") + stamp
             + QStringLiteral("-") + QString::number(suffix++);
     }
-    return QFile::copy(path, backup) ? backup : QString();
+    if (!QFile::rename(path, backup))
+        return QString();
+
+    // 只保留最近几次损坏备份，避免反复启动把备份目录撑大。
+    const QFileInfo info(path);
+    const QString pattern = info.fileName() + QStringLiteral(".corrupt-*");
+    const QFileInfoList backups =
+        QDir(info.absolutePath()).entryInfoList({pattern}, QDir::Files, QDir::Name);
+    for (int i = 0; i < backups.size() - kMaxCorruptBackups; ++i)
+        QFile::remove(backups.at(i).absoluteFilePath());
+    return backup;
 }
 
 /// 读取播放列表文件；文件不存在、打不开或损坏都返回 false。
@@ -78,6 +91,15 @@ bool readPlaylistFile(const QString &path, MediaType type, QVector<MediaItem> *i
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return false;
+
+    if (file.size() > kMaxPlaylistFileBytes) {
+        qCWarning(lcStore) << "播放列表文件超过大小上限，按损坏处理：" << path;
+        file.close();
+        const QString backup = backupCorrupt(path);
+        if (!backup.isEmpty())
+            qCWarning(lcStore) << "playlists.json 已超过上限，原文件备份为" << backup;
+        return false;
+    }
 
     const QByteArray payload = file.readAll();
     file.close();

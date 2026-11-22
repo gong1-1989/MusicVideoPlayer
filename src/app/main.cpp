@@ -33,9 +33,20 @@ constexpr qint64 kFlushBytes = 64LL * 1024;
 bool rotateLog(const QString &path)
 {
     const QString backup = path + QStringLiteral(".1");
-    QFile::remove(backup);
-    if (!QFile::rename(path, backup))
+    const QString stale = backup + QStringLiteral(".old");
+    // 先把旧备份挪到临时名，避免“先删旧备份再 rename”在第二步失败时
+    // 连最后一份可用日志也丢掉；current→.1 失败时再把旧 .1 放回去。
+    QFile::remove(stale);
+    const bool hadBackup = QFile::exists(backup);
+    if (hadBackup && !QFile::rename(backup, stale))
         return false;
+    if (!QFile::rename(path, backup)) {
+        if (hadBackup)
+            QFile::rename(stale, backup);
+        return false;
+    }
+    if (hadBackup)
+        QFile::remove(stale);
     return true;
 }
 

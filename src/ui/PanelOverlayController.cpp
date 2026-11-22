@@ -86,6 +86,12 @@ void PanelOverlayController::updateEdgePanels()
     if (!m_sidebarAutoHide && !m_controlsAutoHide)
         return;
 
+    // 最小化/隐藏时 QCursor::pos() 和窗口几何都没有意义，继续 120ms 取光标只会
+    // 在后台空转；恢复显示后定时器仍在，下一拍自然继续检测。
+    const QWidget *window = m_ui.centralWidget->window();
+    if (window != nullptr && (!window->isVisible() || window->isMinimized()))
+        return;
+
     const QPoint local = m_ui.centralWidget->mapFromGlobal(QCursor::pos());
     const bool inside = m_ui.centralWidget->rect().contains(local);
 

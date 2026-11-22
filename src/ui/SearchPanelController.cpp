@@ -62,7 +62,8 @@ public:
     {
         m_timer.setInterval(40);
         QObject::connect(&m_timer, &QTimer::timeout, view->viewport(), [this] { advance(); });
-        m_timer.start();
+        // 40ms 计时只为悬停标题滚动服务；没有悬停/没有溢出时不应该常驻空转。
+        m_timer.stop();
 
         m_view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         m_view->setMouseTracking(true);
@@ -85,14 +86,21 @@ protected:
                 const QPoint pos = static_cast<QMouseEvent *>(event)->position().toPoint();
                 const QModelIndex index = m_view->indexAt(pos);
                 m_hoveredRow = index.isValid() ? index.row() : -1;
+                // 只有真正悬停到某一行时才启动滚动计时，移出/切页立刻停。
+                if (m_hoveredRow >= 0) {
+                    if (!m_timer.isActive())
+                        m_timer.start();
+                } else {
+                    m_timer.stop();
+                }
             } else if (event->type() == QEvent::Leave) {
                 m_hoveredRow = -1;
+                m_timer.stop();
             } else if (event->type() == QEvent::Hide || event->type() == QEvent::HideToParent) {
                 // 切到另一个列表页后不再 40ms 空转，重新显示时再启动
                 m_timer.stop();
             } else if (event->type() == QEvent::Show || event->type() == QEvent::ShowToParent) {
-                if (!m_timer.isActive())
-                    m_timer.start();
+                // 显示本身不代表有标题在滚动，等 MouseMove 再启动。
             }
         }
         return QStyledItemDelegate::eventFilter(object, event);
@@ -219,23 +227,32 @@ private:
     void advance()
     {
         const int row = m_hoveredRow >= 0 ? m_hoveredRow : m_view->currentIndex().row();
-        if (row < 0)
+        if (row < 0) {
+            m_timer.stop();
             return;
+        }
         const QModelIndex index = m_view->model() ? m_view->model()->index(row, 0, QModelIndex())
                                                   : QModelIndex();
-        if (!index.isValid())
+        if (!index.isValid()) {
+            m_timer.stop();
             return;
+        }
         const QRect rect = m_view->visualRect(index);
-        if (!rect.isValid())
+        if (!rect.isValid()) {
+            m_timer.stop();
             return;
+        }
         // 名称 + 前后两栏的真实宽度，够放就不用动
         const QFontMetrics metrics(m_view->font());
         const QString title = index.data(PlaylistModel::TitleRole).toString();
         const QString artist = index.data(PlaylistModel::ArtistRole).toString();
         const QString text = artist.isEmpty() ? title
                                               : title + QStringLiteral(" - ") + artist;
-        if (metrics.horizontalAdvance(text) <= rect.width() - 180)
+        if (metrics.horizontalAdvance(text) <= rect.width() - 180) {
+            // 没有溢出就没有滚动需求，停掉计时器，避免列表静止时持续唤醒事件循环。
+            m_timer.stop();
             return;
+        }
 
         m_phase += 2;
         if (m_phase > 100000)

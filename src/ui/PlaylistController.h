@@ -44,7 +44,7 @@ public:
     bool hasUnsavedChanges() const { return m_dirty; }
     void ensurePlaylist();
 
-    /// 搜索结果直接播放：已存在则定位，不存在则先加入并保存
+    /// 搜索结果试听：已存在则定位，不存在则临时加入内存模型（不立即持久化）
     void playItem(const MediaItem &item);
     /// 搜索结果加入指定列表（类型以参数为准，支持把视频加入音乐列表）
     void addSearchItem(const MediaItem &item, MediaType type);

@@ -56,7 +56,9 @@ SettingsController::SettingsController(PlaybackController *player, SourceRegistr
 void SettingsController::restore()
 {
     // 音量、播放模式、窗口尺寸全部来自设置，不再有散落的默认值
-    m_player->setVolumePercent(AppSettings::defaultVolume());
+    const int initialVolume = AppSettings::defaultVolume();
+    m_player->setVolumePercent(initialVolume);
+    m_appliedDefaultVolume = initialVolume;
     m_ui.volumeSlider->setValue(m_player->volumePercent());
 
     const int modeValue = AppSettings::playbackMode();
@@ -125,7 +127,12 @@ void SettingsController::apply()
     ThemeManager::instance().apply(AppSettings::themeId());
     resizeToPreset();
 
-    m_player->setVolumePercent(AppSettings::defaultVolume());
+    // 设置页的“默认音量”只在当前音量仍是上一次默认值时即时生效。
+    // 用户在播放/设置页手动调过音量后，从设置页返回不应被默认值打回去。
+    const int newDefault = AppSettings::defaultVolume();
+    if (m_appliedDefaultVolume < 0 || m_player->volumePercent() == m_appliedDefaultVolume)
+        m_player->setVolumePercent(newDefault);
+    m_appliedDefaultVolume = newDefault;
     {
         QSignalBlocker blocker(m_ui.volumeSlider);
         m_ui.volumeSlider->setValue(m_player->volumePercent());

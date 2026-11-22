@@ -99,6 +99,12 @@ QUrl encodeMediaUrl(const QString &decoded)
         return QUrl();
     if (url.host().isEmpty())
         return QUrl();
+    // 远程 HTML 里的播放参数可以伪造 file:///UNC/smb://；这里只接受 http(s)，
+    // 防止后续代理/回退逻辑把本地文件路径当媒体地址。
+    if (url.scheme().compare(QLatin1String("http"), Qt::CaseInsensitive) != 0
+        && url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) != 0) {
+        return QUrl();
+    }
     return QUrl(url.toString(QUrl::FullyEncoded));
 }
 

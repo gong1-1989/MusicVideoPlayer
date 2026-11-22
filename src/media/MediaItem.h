@@ -165,9 +165,9 @@ inline bool isProgressiveVideoUrl(const QUrl &url)
 
 inline bool isHlsUrl(const QUrl &url)
 {
-    const QString path = url.path().toLower();
-    return path.endsWith(QLatin1String(".m3u8"))
-        || url.toString().toLower().contains(QLatin1String(".m3u8"));
+    // 只认 path 后缀：query 里出现 .m3u8 的 MP4 不应被当成 HLS，
+    // 否则会走分片/播放列表分支，直接 502 或误判缓存类型。
+    return url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive);
 }
 
 /// 条目实际播放地址：视频优先 mp4/flv，找不到再回退原地址；

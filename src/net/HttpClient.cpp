@@ -22,6 +22,7 @@ constexpr int kMaxRedirects = 5;
 const char kLimitBytesProperty[] = "mvpReplyLimitBytes";
 const char kLimitExceededProperty[] = "mvpReplyLimitExceeded";
 const char kLimitHookedProperty[] = "mvpReplyLimitHooked";
+const char kReceivedBytesProperty[] = "mvpReplyReceivedBytes";
 
 void abortReplyIfOverLimit(QNetworkReply *reply)
 {
@@ -31,10 +32,11 @@ void abortReplyIfOverLimit(QNetworkReply *reply)
     if (limit <= 0 || reply->property(kLimitExceededProperty).toBool())
         return;
 
-    // QNetworkReply 没有公开“已接收总字节”的 getter；普通 fetch 在 finished
-    // 前不读正文，所以 bytesAvailable 就是当前累积在 reply 里的量。流式接口
-    // 只有识别出播放列表后才设上限，调用方同样没有提前消费正文。
-    const qint64 received = reply->bytesAvailable();
+    // QNetworkReply 没有公开“已接收总字节”的 getter。downloadProgress 的
+    // bytesReceived 是累计值，即使调用方已经 readAll() 消费正文仍然可靠；
+    // bytesAvailable 只能兜底还没触发过 progress 的同步响应。
+    const qint64 received = qMax(reply->property(kReceivedBytesProperty).toLongLong(),
+                                 reply->bytesAvailable());
     if (received <= limit)
         return;
 
@@ -176,9 +178,13 @@ QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
     QNetworkRequest request =
         buildRequest(url, headers, sourceOrigin,
                      QNetworkRequest::SameOriginRedirectPolicy);
-    const QByteArray contentType =
+    QByteArray contentType =
         headers.value(QStringLiteral("Content-Type"),
                       QStringLiteral("application/x-www-form-urlencoded")).toUtf8();
+    // buildRequest 已校验 extra 头；但这里用的仍是未过滤的原始值，配置里
+    // 带 CRLF 的 Content-Type 会绕过循环直接进 QString/QByteArray，必须再查一次。
+    if (!isSafeHeader(QStringLiteral("Content-Type"), contentType))
+        contentType = QByteArrayLiteral("application/x-www-form-urlencoded");
     request.setHeader(QNetworkRequest::ContentTypeHeader, contentType);
     return trackReply(m_nam->post(request, body), maxBytes);
 }
@@ -217,6 +223,13 @@ QNetworkReply *HttpClient::trackReply(QNetworkReply *reply, qint64 maxBytes)
     // 修改容器导致迭代器失效。
     connect(reply, &QNetworkReply::finished, this,
             [this, reply] { m_activeReplies.remove(reply); });
+    // 始终记录累计接收字节，后续再设置上限时不会因为调用方已消费正文而失效。
+    connect(reply, &QNetworkReply::downloadProgress, reply,
+            [reply](qint64 received, qint64) {
+                if (received > reply->property(kReceivedBytesProperty).toLongLong())
+                    reply->setProperty(kReceivedBytesProperty, received);
+                abortReplyIfOverLimit(reply);
+            });
     if (maxBytes > 0)
         limitReplySize(reply, maxBytes);
     return reply;

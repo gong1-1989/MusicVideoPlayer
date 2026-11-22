@@ -44,11 +44,14 @@ private:
 
     MediaItem m_item;
     QPixmap m_cover;
+    /// 按当前圆盘半径预处理好的封面；暂停/静止时不必每帧重新 SmoothScaled。
+    QPixmap m_coverScaled;
     QTimer *m_timer = nullptr;
     QColor m_accent{96, 132, 255};
     QStringList m_lyrics;
     int m_lyricIndex = -1;
     qreal m_phase = 0.0;
+    int m_coverScaledRadius = 0;
     bool m_playing = false;
 };
 

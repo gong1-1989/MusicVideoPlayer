@@ -6,9 +6,9 @@ bool metadataIndicatesPlaylist(const QUrl &url, const QString &contentType)
 {
     if (contentType.toLower().contains(QLatin1String("mpegurl")))
         return true;
-    if (url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive))
-        return true;
-    return url.toString().contains(QLatin1String(".m3u8"), Qt::CaseInsensitive);
+    // 只看 path 后缀。查询串里带 .m3u8（例如 CDN 的签名参数、跳转参数）
+    // 的 MP4 不能因此被当成播放列表。
+    return url.path().endsWith(QLatin1String(".m3u8"), Qt::CaseInsensitive);
 }
 
 bool bodyIsPlaylist(const QByteArray &body)

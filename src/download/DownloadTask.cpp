@@ -22,13 +22,31 @@ Q_LOGGING_CATEGORY(lcDownload, "mvp.download")
 
 namespace {
 
-const QRegularExpression kUriAttribute(QStringLiteral("URI=\"([^\"]*)\""));
+const QRegularExpression kUriAttribute(QStringLiteral("URI\\s*=\\s*\"([^\"]*)\""));
+const QRegularExpression kUriAttributeBare(QStringLiteral("URI\\s*=\\s*([^,\\s]+)"));
 const QRegularExpression kByteRangeAttribute(QStringLiteral("BYTERANGE=\"([^\"]*)\""));
 const QRegularExpression kBandwidth(QStringLiteral("BANDWIDTH=(\\d+)"));
 const QRegularExpression kContentRange(QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)"),
                                        QRegularExpression::CaseInsensitiveOption);
 const QRegularExpression kRequestRange(QStringLiteral("^bytes=(\\d+)-(\\d+)$"),
                                         QRegularExpression::CaseInsensitiveOption);
+
+QString uriAttribute(const QString &line)
+{
+    const QRegularExpressionMatch quoted = kUriAttribute.match(line);
+    if (quoted.hasMatch())
+        return quoted.captured(1).trimmed();
+    // RFC 8216 的 URI 允许不加引号；只按引号解析会漏掉 fMP4 的 init 段。
+    const QRegularExpressionMatch bare = kUriAttributeBare.match(line);
+    return bare.hasMatch() ? bare.captured(1).trimmed() : QString();
+}
+
+bool isHttpUrl(const QUrl &url)
+{
+    return url.isValid() && !url.isEmpty()
+        && (url.scheme().compare(QLatin1String("http"), Qt::CaseInsensitive) == 0
+            || url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) == 0);
+}
 
 QUrl resolveUrl(const QUrl &base, const QString &raw)
 {
@@ -516,12 +534,36 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     m_segments.clear();
     m_nextRangeOffset = 0;
 
+    QUrl mediaBase = baseUrl;
+    bool hasEndList = false;
     QByteArray pendingRange;
     for (QString line : lines) {
         line = line.trimmed();
         if (line.isEmpty())
             continue;
 
+        if (line.startsWith(QLatin1String("#EXT-X-BASE:"))) {
+            QString value = line.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
+            if (value.size() >= 2 && value.startsWith(QLatin1Char('"'))
+                && value.endsWith(QLatin1Char('"'))) {
+                value = value.mid(1, value.size() - 2);
+            }
+            const QUrl candidate = resolveUrl(mediaBase, value);
+            if (!isHttpUrl(candidate)) {
+                if (error != nullptr)
+                    *error = tr("播放列表的基础地址无效");
+                return false;
+            }
+            // #EXT-X-BASE 改变其后所有相对 URI 的解析基准；不更新的话
+            // /hls/master.m3u8 下的相对分片会按错误的目录拼地址。
+            mediaBase = candidate;
+            continue;
+        }
+
+        if (line.startsWith(QLatin1String("#EXT-X-ENDLIST"))) {
+            hasEndList = true;
+            continue;
+        }
         if (line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))) {
             const QRegularExpression methodRe(QStringLiteral("METHOD=([^,\\s]+)"));
             const QRegularExpressionMatch match = methodRe.match(line);
@@ -581,12 +623,10 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         }
 
         if (line.startsWith(QLatin1String("#EXT-X-MAP:"))) {
-            const QRegularExpressionMatch match = kUriAttribute.match(line);
-            if (match.hasMatch()) {
-                const QUrl mapUrl = resolveUrl(baseUrl, match.captured(1));
-                if (!mapUrl.isValid() || mapUrl.isEmpty()
-                    || (mapUrl.scheme() != QLatin1String("http")
-                        && mapUrl.scheme() != QLatin1String("https"))) {
+            const QString uri = uriAttribute(line);
+            if (!uri.isEmpty()) {
+                const QUrl mapUrl = resolveUrl(mediaBase, uri);
+                if (!isHttpUrl(mapUrl)) {
                     if (error != nullptr)
                         *error = tr("初始化分片地址无效");
                     return false;
@@ -627,10 +667,8 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         if (line.startsWith(QLatin1Char('#')))
             continue;
 
-        const QUrl segmentUrl = resolveUrl(baseUrl, line);
-        if (!segmentUrl.isValid()
-            || (segmentUrl.scheme() != QLatin1String("http")
-                && segmentUrl.scheme() != QLatin1String("https"))) {
+        const QUrl segmentUrl = resolveUrl(mediaBase, line);
+        if (!isHttpUrl(segmentUrl)) {
             if (error != nullptr)
                 *error = tr("分片地址无效：%1").arg(line);
             return false;
@@ -648,6 +686,13 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         m_segments.append(segment);
     }
 
+    if (!hasEndList) {
+        if (error != nullptr)
+            *error = tr("播放列表没有 #EXT-X-ENDLIST，可能是直播/仍在更新的列表；"
+                        "现在下载只会得到不完整的文件。");
+        m_segments.clear();
+        return false;
+    }
     return true;
 }
 

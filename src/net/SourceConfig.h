@@ -68,7 +68,7 @@ struct SourceConfig
     QString kindLabel() const;
 };
 
-QJsonObject sourceConfigToJson(const SourceConfig &config);
+QJsonObject sourceConfigToJson(const SourceConfig &config, bool exportPlainSecrets = false);
 SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok = nullptr);
 
 #endif // SOURCECONFIG_H

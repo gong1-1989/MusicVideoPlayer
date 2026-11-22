@@ -11,10 +11,14 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QSaveFile>
+#include <QSet>
 
 Q_LOGGING_CATEGORY(lcRegistry, "mvp.sources")
 
 namespace {
+
+/// 源配置通常只有几十 KB；限制读取上限，避免误选/损坏文件把内存撑满。
+constexpr qint64 kMaxSourceFileBytes = 16 * 1024 * 1024;
 
 /// 预置源：网易云完全由配置描述，fee 过滤规则也在配置里，用户可自行修改
 const char *kSeedSources = R"JSON(
@@ -212,6 +216,11 @@ bool SourceRegistry::load()
             QFile file(primary);
             if (!file.open(QIODevice::ReadOnly)) {
                 parseErrorReason = tr("%1：%2").arg(primary, file.errorString());
+            } else if (file.size() > kMaxSourceFileBytes) {
+                parseErrorReason = tr("%1：文件超过 %2 MB 上限")
+                                       .arg(primary)
+                                       .arg(kMaxSourceFileBytes / (1024 * 1024));
+                file.close();
             } else {
                 QJsonParseError parseError{};
                 const QJsonDocument document =
@@ -260,6 +269,7 @@ bool SourceRegistry::load()
     m_storagePath = selectedPath;
     const QJsonArray array = selectedArray;
     bool dirty = false;
+    QSet<QString> seenIds;
     for (const QJsonValue &entry : array) {
         if (!entry.isObject())
             continue;
@@ -276,6 +286,24 @@ bool SourceRegistry::load()
             dirty = true;
             continue;
         }
+        if (config.id.isEmpty() || seenIds.contains(config.id)) {
+            qCWarning(lcRegistry) << "重复/空 sourceId，已剔除：" << config.id << config.name;
+            dirty = true;
+            continue;
+        }
+        // 内置源 ID 的实现、地址和头部不允许被 sources.json 改写；
+        // 只保留用户对启用状态的选择，避免“自定义源声明 builtin”绕过限制。
+        for (const SourceConfig &seed : seedSources()) {
+            if (!seed.builtin || seed.id != config.id)
+                continue;
+            SourceConfig protectedSeed = seed;
+            protectedSeed.enabled = config.enabled;
+            config = protectedSeed;
+            dirty = true;
+            qCWarning(lcRegistry) << "内置源 ID 被外部配置改写，已恢复预置实现：" << config.id;
+            break;
+        }
+        seenIds.insert(config.id);
         if (!ok) {
             config.enabled = false;
             qCWarning(lcRegistry) << "源配置无效，已停用：" << config.id << config.name;

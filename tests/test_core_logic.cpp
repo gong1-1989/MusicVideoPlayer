@@ -501,6 +501,7 @@ private slots:
     void streamProxyFallsBackWhenHlsRangeIgnored();
     void hlsPlaylistParsesAndIndexes();
     void hlsPlaylistRewritesUris();
+    void hlsPlaylistSameScopeRejectsSiblingDirectory();
     void hlsPlaylistRejectsTooManySegments();
     void streamTokensReuseByUrlAndHeaders();
     void streamTokensExpireByIdleClock();
@@ -935,6 +936,11 @@ void CoreLogicTest::playlistSnifferRecognizesBody()
     QVERIFY(!PlaylistSniffer::metadataIndicatesPlaylist(
         QUrl(QStringLiteral("https://cdn.example.com/signed/abc")),
         QStringLiteral("text/plain")));
+    // query 里带 .m3u8 的 MP4 不是 HLS；只看 path 后缀。
+    const QUrl queryOnlyM3u8(
+        QStringLiteral("https://cdn.example.com/video.mp4?next=.m3u8&token=x"));
+    QVERIFY(!PlaylistSniffer::metadataIndicatesPlaylist(queryOnlyM3u8, QString()));
+    QVERIFY(!isHlsUrl(queryOnlyM3u8));
 
     QVERIFY(PlaylistSniffer::bodyIsPlaylist(QByteArrayLiteral("#EXTM3U\n#EXTINF:1,\na.ts\n")));
     QVERIFY(PlaylistSniffer::bodyIsPlaylist(
@@ -1490,6 +1496,21 @@ void CoreLogicTest::hlsPlaylistRewritesUris()
                 .contains(QStringLiteral("URI=http://127.0.0.1:1234/stream/token/key.bin")));
     QVERIFY(!QString::fromUtf8(unquotedRewritten)
                  .contains(QStringLiteral("URI=\"http://127.0.0.1:1234/stream/token/key.bin\"")));
+}
+
+void CoreLogicTest::hlsPlaylistSameScopeRejectsSiblingDirectory()
+{
+    const QUrl master(QStringLiteral("https://cdn.test/videos/2024/master.m3u8"));
+    const QUrl sameDir(QStringLiteral("https://cdn.test/videos/2024/index.m3u8"));
+    const QUrl sibling(QStringLiteral("https://cdn.test/videos/2024/other/index.m3u8"));
+    const QUrl directChild(QStringLiteral("https://cdn.test/videos/2024/720p/index.m3u8"));
+    const QUrl otherOrigin(QStringLiteral("https://cdn.test:8443/videos/2024/index.m3u8"));
+
+    QVERIFY(HlsPlaylist::sameScope(master, sameDir));
+    // /videos/2024/ 与 /videos/2024/other/ 不能再共用预取列表。
+    QVERIFY(!HlsPlaylist::sameScope(master, sibling));
+    QVERIFY(HlsPlaylist::sameScope(master, directChild));
+    QVERIFY(!HlsPlaylist::sameScope(master, otherOrigin));
 }
 
 void CoreLogicTest::hlsPlaylistRejectsTooManySegments()

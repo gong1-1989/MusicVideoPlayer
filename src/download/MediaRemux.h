@@ -22,6 +22,8 @@ public:
     void remuxToMp4(const QString &inputPath, const QString &outputPath);
     /// 用户移除任务/程序清理时终止正在运行的 FFmpeg，不再发 finished
     void cancel();
+    /// 当前 `.mvpremux` 临时路径；用于调用方在取消后补清残留。
+    QString tempFilePath() const { return m_tempPath; }
 
 signals:
     void finished(bool success, const QString &outputPath, const QString &error);

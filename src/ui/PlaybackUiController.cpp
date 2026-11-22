@@ -114,6 +114,9 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
                 refreshPlayButton(state);
                 if (state == QMediaPlayer::StoppedState) {
                     m_seekTarget = -1;
+                    // 拖动中停止后鼠标可能不会再发 sliderReleased，必须复位，
+                    // 否则下一次播放的 positionChanged 永远不会再更新进度条。
+                    m_userSeeking = false;
                     // 停止后播放器不会再送新帧；不清掉的话上一部视频的最后一帧会一直留在面板上
                     m_surface->clearFrame();
                 } else {
@@ -126,6 +129,9 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
                 m_seekTarget = -1;
                 m_seekPendingTarget = -1;
                 m_seekTimer->stop();
+                // 切歌时同样要清掉“用户正在拖动”的标记，避免旧拖动状态
+                // 把新歌的进度条更新一直挡住。
+                m_userSeeking = false;
                 // 视频切歌/切回音乐时先清掉上一帧，等新视频首帧到达再显示
                 m_surface->clearFrame();
                 emit statusMessage(tr("正在播放：%1").arg(item.displayName()));

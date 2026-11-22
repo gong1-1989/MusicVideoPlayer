@@ -340,6 +340,20 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
             replyError(client, 400, QStringLiteral("Bad stream path"));
             return;
         }
+
+        // token 只应对它登记的那个目录树生效。否则本机其他程序拿到 token 后，
+        // 可以用 `../../` 在同一 host 上访问任意路径，并复带 Cookie/Referer。
+        const QString entryPath = entry.url.path();
+        const int entrySlash = entryPath.lastIndexOf(QLatin1Char('/'));
+        const QString allowedDir =
+            entrySlash >= 0 ? entryPath.left(entrySlash + 1) : QStringLiteral("/");
+        if (allowedDir != QLatin1String("/")
+            && !upstream.path().startsWith(allowedDir, Qt::CaseSensitive)) {
+            qCWarning(lcProxy) << "流转令牌越出作用域：" << HttpClient::redactUrl(upstream)
+                               << "作用域" << allowedDir;
+            replyError(client, 400, QStringLiteral("Bad stream path"));
+            return;
+        }
     }
     if (upstream.isEmpty() || !upstream.isValid()) {
         replyError(client, 400, QStringLiteral("Bad stream path"));

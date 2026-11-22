@@ -147,12 +147,14 @@ int playbackMode()
     const int value = store.contains(QLatin1String(kMode))
                           ? store.value(QLatin1String(kMode)).toInt()
                           : store.value(QStringLiteral("mode"), kDefaultMode).toInt();
-    return value;
+    // 配置可能被手工改成越界值；这里统一收口到 ListLoop/SingleLoop/Random，
+    // 避免调用方各自的 static_cast 落到未定义枚举。
+    return qBound(0, value, 2);
 }
 
 void setPlaybackMode(int mode)
 {
-    settings().setValue(QLatin1String(kMode), mode);
+    settings().setValue(QLatin1String(kMode), qBound(0, mode, 2));
 }
 
 int searchLimit()

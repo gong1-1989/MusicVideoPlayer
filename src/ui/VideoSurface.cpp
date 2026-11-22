@@ -47,6 +47,7 @@ void VideoSurface::setCornerRadius(qreal radius)
 void VideoSurface::clearFrame()
 {
     m_framesBlocked = true;
+    m_hasFrame = false;
     // 直接隐藏原生视频窗口，最后一帧不会继续留在舞台上
     m_videoWidget->hide();
     update();
@@ -55,7 +56,12 @@ void VideoSurface::clearFrame()
 void VideoSurface::resumeFrames()
 {
     m_framesBlocked = false;
-    // 等首帧到达再显示视频窗口，避免上一帧先闪出来
+    // 暂停中切回时播放器不会立刻送新帧；如果之前已有有效帧，主动把原生
+    // 视频窗口显示回来，避免只听到声音、舞台一直保持黑屏。
+    if (m_hasFrame && !m_videoWidget->isVisible()
+        && (window() == nullptr || !window()->isMinimized())) {
+        m_videoWidget->show();
+    }
 }
 
 void VideoSurface::onFrame(const QVideoFrame &frame)
@@ -64,6 +70,7 @@ void VideoSurface::onFrame(const QVideoFrame &frame)
         return;
     if (!frame.isValid())
         return;
+    m_hasFrame = true;
     if (window() != nullptr && window()->isMinimized())
         return;
     if (!m_videoWidget->isVisible())

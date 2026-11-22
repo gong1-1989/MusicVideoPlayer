@@ -41,16 +41,21 @@ QString MediaRemux::ffmpegExecutable()
 
 void MediaRemux::cancel()
 {
+    // Windows 上 FFmpeg 还持有输出文件时删除会失败；必须先终止并等它退出，
+    // 再删 `.mvpremux`，否则大临时文件会留在下载目录里。
+    if (m_process != nullptr) {
+        QProcess *process = m_process;
+        m_process = nullptr;
+        process->disconnect(this);
+        if (process->state() != QProcess::NotRunning) {
+            process->kill();
+            process->waitForFinished(3000);
+        }
+        process->deleteLater();
+    }
     if (!m_tempPath.isEmpty())
         QFile::remove(m_tempPath);
     m_tempPath.clear();
-    if (m_process == nullptr)
-        return;
-    QProcess *process = m_process;
-    m_process = nullptr;
-    process->disconnect(this);
-    process->kill();
-    process->deleteLater();
 }
 
 bool MediaRemux::isAvailable()

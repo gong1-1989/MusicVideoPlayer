@@ -72,11 +72,22 @@ void DownloadController::download(const MediaItem &item)
     const QString target = m_manager->reserveFilePath(directory, fileName);
 
     const qint64 limit = qint64(AppSettings::downloadLimitMb()) * 1024 * 1024;
-    m_manager->enqueue(resolved, source, resolved.headers, target, hls, limit);
+    QString queuedPath;
+    bool alreadyQueued = false;
+    m_manager->enqueue(resolved, source, resolved.headers, target, hls, limit,
+                       &queuedPath, &alreadyQueued);
+    if (alreadyQueued) {
+        // enqueue 已经发出“该条目已在下载队列中”；这里不能再拿预分配但
+        // 未实际使用的 (1) 文件名去提示，否则用户会去找一个不存在的文件。
+        return;
+    }
+    if (queuedPath.isEmpty())
+        queuedPath = target;
 
     emit statusMessage(hls
-                           ? tr("已加入下载：%1（HLS 完成后自动转 MP4）").arg(QFileInfo(target).fileName())
-                           : tr("已加入下载：%1").arg(QFileInfo(target).fileName()));
+                           ? tr("已加入下载：%1（HLS 完成后自动转 MP4）")
+                                 .arg(QFileInfo(queuedPath).fileName())
+                           : tr("已加入下载：%1").arg(QFileInfo(queuedPath).fileName()));
 }
 
 void DownloadController::openManager()

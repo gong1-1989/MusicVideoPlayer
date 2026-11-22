@@ -8,6 +8,7 @@
 #include "ui/SourceProbeDialog.h"
 #include "ui/ThemeManager.h"
 #include "ui_SourceManagerDialog.h"
+#include "util/HeaderPolicy.h"
 
 #include <QComboBox>
 #include <QFile>
@@ -948,6 +949,7 @@ void SourceManagerDialog::onImport()
     commitFormToDraft();
     int replaced = 0;
     int externalDisabled = 0;
+    int protectedSkipped = 0;
     for (SourceConfig &config : imported) {
         // 导入配置不等于授权执行命令：外部解析器一律先停用，
         // 用户之后在列表里勾选时还会再看到一次完整命令行确认。
@@ -955,20 +957,34 @@ void SourceManagerDialog::onImport()
             config.enabled = false;
             ++externalDisabled;
         }
+        // 只有真正的内置实现才允许保留 builtin；普通配置不能靠这个字段
+        // 绕过删除限制。
+        if (config.kind != QLatin1String("builtin"))
+            config.builtin = false;
+
         bool merged = false;
         for (SourceConfig &existing : m_drafts) {
-            if (existing.id == config.id) {
-                existing = config;
+            if (existing.id != config.id)
+                continue;
+            // 内置源 ID 不允许被导入文件覆盖，否则可替换内置实现或绕过删除限制。
+            if (existing.builtin) {
+                ++protectedSkipped;
                 merged = true;
-                ++replaced;
                 break;
             }
+            existing = config;
+            merged = true;
+            ++replaced;
+            break;
         }
         if (!merged)
             m_drafts.append(config);
     }
     reloadList(0);
     QString detail = tr("新增/更新 %1 个源，覆盖同名 %2 个。").arg(imported.size()).arg(replaced);
+    if (protectedSkipped > 0)
+        detail += tr("\n\n其中 %1 个内置源 ID 已保留原配置，导入文件不能覆盖内置源。")
+                      .arg(protectedSkipped);
     if (externalDisabled > 0) {
         detail += tr("\n\n其中 %1 个外部解析器已默认停用；"
                      "在列表里勾选时才会再确认命令。")
@@ -980,6 +996,31 @@ void SourceManagerDialog::onImport()
 void SourceManagerDialog::onExport()
 {
     commitFormToDraft();
+    bool hasSecrets = false;
+    for (const SourceConfig &config : m_drafts) {
+        if (!config.cookie.isEmpty()) {
+            hasSecrets = true;
+            break;
+        }
+        for (auto it = config.headers.cbegin(); it != config.headers.cend(); ++it) {
+            if (HeaderPolicy::isSensitiveHeader(it.key())) {
+                hasSecrets = true;
+                break;
+            }
+        }
+        if (hasSecrets)
+            break;
+    }
+    if (hasSecrets) {
+        const QMessageBox::StandardButton choice = QMessageBox::warning(
+            this, tr("导出文件包含明文凭据"),
+            tr("为了让配置能在另一台机器导入，Cookie/Authorization 等敏感头会以明文写入。"
+               "\n\n请只保存到你信任的位置，并在用完后删除。是否继续？"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (choice != QMessageBox::Yes)
+            return;
+    }
+
     const QString path = QFileDialog::getSaveFileName(this, tr("导出搜索源"),
                                                      QStringLiteral("sources.json"),
                                                      tr("JSON (*.json)"));
@@ -1034,7 +1075,7 @@ bool SourceManagerDialog::writeSourcesToFile(const QVector<SourceConfig> &source
 {
     QJsonArray array;
     for (const SourceConfig &config : sources)
-        array.append(sourceConfigToJson(config));
+        array.append(sourceConfigToJson(config, true));
 
     const QByteArray payload = QJsonDocument(array).toJson(QJsonDocument::Indented);
     // 导出中途取消/断电不能留下半截 JSON，和项目其它持久化路径统一用原子写。

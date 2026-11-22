@@ -31,7 +31,8 @@ QHash<QString, QString> headersFromJson(const QJsonObject &object)
 /// 普通请求头明文写入，敏感头单独加密到 headersProtected。
 QJsonObject requestHeadersToJson(const QHash<QString, QString> &headers,
                                  const QString &sourceId,
-                                 QJsonObject *protectedHeaders)
+                                 QJsonObject *protectedHeaders,
+                                 bool exportPlainSecrets = false)
 {
     QJsonObject object;
     for (auto it = headers.cbegin(); it != headers.cend(); ++it) {
@@ -39,6 +40,12 @@ QJsonObject requestHeadersToJson(const QHash<QString, QString> &headers,
         if (key.isEmpty())
             continue;
         if (HeaderPolicy::isSensitiveHeader(key)) {
+            if (exportPlainSecrets) {
+                // 导出是用户显式搬配置的动作；DPAPI 密文跨机器无法解密，
+                // 这里写明文并在 UI 侧提示用户妥善保管。
+                object.insert(key, it.value());
+                continue;
+            }
             const QString cipher = SecretStore::protectForStorage(
                 it.value(), sourceId + QLatin1Char('/') + key);
             if (cipher.isEmpty())
@@ -149,7 +156,7 @@ QString SourceConfig::kindLabel() const
     return QObject::tr("配置");
 }
 
-QJsonObject sourceConfigToJson(const SourceConfig &config)
+QJsonObject sourceConfigToJson(const SourceConfig &config, bool exportPlainSecrets)
 {
     QJsonObject object;
     object.insert(QStringLiteral("id"), config.id);
@@ -177,16 +184,21 @@ QJsonObject sourceConfigToJson(const SourceConfig &config)
     }
     QJsonObject protectedHeaders;
     const QJsonObject plainHeaders = requestHeadersToJson(config.headers, config.id,
-                                                           &protectedHeaders);
+                                                           &protectedHeaders,
+                                                           exportPlainSecrets);
     if (!plainHeaders.isEmpty())
         object.insert(QStringLiteral("headers"), plainHeaders);
     if (!protectedHeaders.isEmpty())
         object.insert(QStringLiteral("headersProtected"), protectedHeaders);
     if (!config.cookie.isEmpty()) {
-        const QString cipher = SecretStore::protectForStorage(
-            config.cookie, config.id + QStringLiteral("/cookie"));
-        if (!cipher.isEmpty())
-            object.insert(QStringLiteral("cookie"), cipher);
+        if (exportPlainSecrets) {
+            object.insert(QStringLiteral("cookie"), config.cookie);
+        } else {
+            const QString cipher = SecretStore::protectForStorage(
+                config.cookie, config.id + QStringLiteral("/cookie"));
+            if (!cipher.isEmpty())
+                object.insert(QStringLiteral("cookie"), cipher);
+        }
     }
     object.insert(QStringLiteral("itemsPath"), config.itemsPath);
     object.insert(QStringLiteral("fields"), headersToJson(config.fields));

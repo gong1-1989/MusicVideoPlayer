@@ -112,7 +112,17 @@ int HlsPlaylist::segmentIndexAt(const Info &info, qint64 positionMs)
 
 bool HlsPlaylist::sameScope(const QUrl &a, const QUrl &b)
 {
+    if (a.scheme().compare(b.scheme(), Qt::CaseInsensitive) != 0)
+        return false;
     if (a.host().compare(b.host(), Qt::CaseInsensitive) != 0)
+        return false;
+    const int portA = a.port() >= 0 ? a.port()
+                                    : (a.scheme().compare(QLatin1String("https"),
+                                                         Qt::CaseInsensitive) == 0 ? 443 : 80);
+    const int portB = b.port() >= 0 ? b.port()
+                                    : (b.scheme().compare(QLatin1String("https"),
+                                                         Qt::CaseInsensitive) == 0 ? 443 : 80);
+    if (portA != portB)
         return false;
 
     const auto directory = [](const QUrl &url) {
@@ -122,7 +132,30 @@ bool HlsPlaylist::sameScope(const QUrl &a, const QUrl &b)
     };
     const QString left = directory(a);
     const QString right = directory(b);
-    return left.startsWith(right) || right.startsWith(left);
+    // 只认完全相同目录。主列表与媒体列表同目录时仍能回退预取；
+    // /videos/2024/ 与 /videos/2024/other/ 这种父子目录不能再共用，
+    // 否则会把另一部片的索引当成当前片的分片。
+    if (left == right)
+        return true;
+
+    const QString &shorter = left.size() < right.size() ? left : right;
+    const QString &longer = left.size() < right.size() ? right : left;
+    if (shorter == QLatin1String("/") || !longer.startsWith(shorter))
+        return false;
+
+    // 只允许“主列表在父目录、媒体列表在直接的码率/音轨子目录”。
+    // 子目录名必须是 hls 常见的变体名，避免把 /videos/2024/other/ 这种
+    // 任意内容目录也当成同一部片的清晰度目录。
+    const QString tail = longer.mid(shorter.size());
+    if (tail.isEmpty() || !tail.endsWith(QLatin1Char('/')))
+        return false;
+    const QString component = tail.left(tail.size() - 1);
+    if (component.isEmpty() || component.contains(QLatin1Char('/')))
+        return false;
+    static const QRegularExpression variantDir(
+        QStringLiteral("^(?:\\d{3,4}[pP]?|hd|sd|uhd|4k|8k|audio|video|hls|mp4|fmp4)$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return variantDir.match(component).hasMatch();
 }
 
 QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,

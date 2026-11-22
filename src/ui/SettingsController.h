@@ -48,6 +48,9 @@ private:
     SourceRegistry *m_registry = nullptr;
     HttpClient *m_http = nullptr;
     SettingsUi m_ui;
+    /// 上一次由设置页写入并应用到的默认音量。当前音量若已被用户手动调过，
+    /// 就不再被新的默认值覆盖。
+    int m_appliedDefaultVolume = -1;
 };
 
 #endif // SETTINGSCONTROLLER_H

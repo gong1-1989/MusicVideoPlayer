@@ -28,7 +28,8 @@ public:
 
     QString enqueue(const MediaItem &item, const QUrl &url,
                     const QHash<QString, QString> &headers,
-                    const QString &filePath, bool hls, qint64 maxBytes);
+                    const QString &filePath, bool hls, qint64 maxBytes,
+                    QString *queuedPath = nullptr, bool *alreadyQueued = nullptr);
     /// 在下载队列范围内分配不冲突的目标名；先由界面调用显示文件名，
     /// enqueue 内部还会再校验一次，避免调用方绕过队列。
     QString reserveFilePath(const QString &directory, const QString &fileName) const;

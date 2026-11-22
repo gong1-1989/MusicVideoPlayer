@@ -160,7 +160,7 @@ bool PlaylistController::save()
     qCWarning(lcPlaylist) << "播放列表保存失败";
     // 不丢用户刚做的修改：界面保留，页签标 *，右键菜单提供重试。
     setDirty(true);
-    emit statusMessage(tr("播放列表保存失败：主/备用存储都未能写入（可能是磁盘空间不足或目录不可写）；修改仍保留，可在列表右键“重试保存”"));
+    emit statusMessage(tr("播放列表保存失败：无法写入数据目录（可能是磁盘空间不足或目录不可写）；修改仍保留，可在列表右键“重试保存”"));
     return false;
 }
 
@@ -170,7 +170,7 @@ bool PlaylistController::retrySave()
         return true;
     if (!PlaylistStore::saveAll(m_musicModel->items(), m_videoModel->items())) {
         qCWarning(lcPlaylist) << "播放列表重试保存仍失败";
-        emit statusMessage(tr("播放列表仍未保存：主/备用存储都未能写入，修改继续保留"));
+        emit statusMessage(tr("播放列表仍未保存：数据目录写入失败，修改继续保留"));
         return false;
     }
     setDirty(false);
@@ -212,14 +212,13 @@ void PlaylistController::playItem(const MediaItem &item)
         return;
 
     PlaylistModel *model = modelFor(item.type);
-    const bool added = model->addItem(item); // 已存在时返回 false，不影响下面的定位
+    model->addItem(item); // 已存在时返回 false，不影响下面的定位
     const int row = model->indexOf(item);
     if (row < 0)
         return;
 
-    if (added)
-        save();
-
+    // 这里是“搜索结果试听”路径，临时加入模型即可；不能顺手 save()，
+    // 否则用户只是点开听一下，列表文件就被悄悄改写。
     m_player->setPlaylist(model);
     m_player->playRow(row);
     m_ui.tabs->setCurrentIndex(item.type == MediaType::Video ? 1 : 0);

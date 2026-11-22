@@ -348,5 +348,8 @@ void SearchCoordinator::cancel()
     m_buckets.clear();
     m_bucketFiltered.clear();
     m_errors.clear();
+    // 取消后必须发一个空的结果信号，让搜索面板把已经追加的条目清掉；
+    // 只发 searchFinished 会让部分结果留在 UI 上，看起来像搜索成功了一半。
+    emit searchSucceeded(QVector<MediaItem>(), 0, QStringList());
     emit searchFinished();
 }

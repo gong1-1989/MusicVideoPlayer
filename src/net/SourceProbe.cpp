@@ -4,6 +4,7 @@
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
 
+#include <QCryptographicHash>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -278,6 +279,11 @@ Prober::~Prober()
     m_finished = true;
     if (m_activeReply != nullptr)
         m_activeReply->abort();
+    if (m_validator != nullptr) {
+        m_validator->abort();
+        m_validator->deleteLater();
+        m_validator = nullptr;
+    }
 }
 
 void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extraPaths,
@@ -320,6 +326,14 @@ void Prober::cancel()
     m_finished = true;
     if (m_activeReply != nullptr)
         m_activeReply->abort();
+    // 候选校验用的 ConfigSearchProvider 是独立对象，cancel() 不能只停
+    // 当前探测请求；必须同时 abort 它，否则旧 validator 会继续跑到超时，
+    // 还可能在取消后回调到已经复用的 Prober。
+    if (m_validator != nullptr) {
+        m_validator->abort();
+        m_validator->deleteLater();
+        m_validator = nullptr;
+    }
 }
 
 bool Prober::budgetLeft() const
@@ -562,7 +576,15 @@ void Prober::probeNextCandidate()
         // 组装建议配置
         const MediaType detected = detectType(samples, stream, candidateType);
         SourceConfig config;
-        config.id = QStringLiteral("site_") + m_origin.host().replace(QLatin1Char('.'), QLatin1Char('_'));
+        // 同一个 host 上可能挂多个接口（例如 /api.php 与 /index.php），
+        // 只用 host 生成 id 会互相覆盖；把站点路径一起算进 8 位哈希。
+        const QByteArray identity =
+            (m_origin.toString() + m_site.path()).toUtf8();
+        const QString suffix = QString::fromLatin1(
+            QCryptographicHash::hash(identity, QCryptographicHash::Sha1).toHex().left(8));
+        config.id = QStringLiteral("site_")
+                    + m_origin.host().replace(QLatin1Char('.'), QLatin1Char('_'))
+                    + QLatin1Char('_') + suffix;
         config.name = m_siteName.isEmpty() ? m_origin.host() : m_siteName;
         config.enabled = true;
         config.kind = QStringLiteral("config");

@@ -57,7 +57,10 @@ QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
         return QUrl(QStringLiteral("http://127.0.0.1:%1/stream/%2/").arg(port).arg(existing));
     }
 
-    const QString token = QString::number(QRandomGenerator::global()->generate64(), 16);
+    // 128 位本地 token：即使攻击者能在本机其他进程里猜/扫，也远高于
+    // 64 位的可枚举面；token 仍然只在 127.0.0.1 监听。
+    const QString token = QString::number(QRandomGenerator::global()->generate64(), 16)
+                          + QString::number(QRandomGenerator::global()->generate64(), 16);
     Upstream entry;
     entry.url = upstream;
     // token 可能对应播放列表，也可能对应 CDN 分片。按目标 host 过滤敏感头：

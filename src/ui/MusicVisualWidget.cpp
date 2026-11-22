@@ -62,6 +62,8 @@ void MusicVisualWidget::setTrack(const MediaItem &item)
 {
     m_item = item;
     m_cover = QPixmap();
+    m_coverScaled = QPixmap();
+    m_coverScaledRadius = 0;
     if (!item.online && item.posterUrl.isLocalFile()) {
         QPixmap loaded(item.posterUrl.toLocalFile());
         if (!loaded.isNull())
@@ -75,6 +77,14 @@ void MusicVisualWidget::setPlaying(bool playing)
     if (m_playing == playing)
         return;
     m_playing = playing;
+    // 暂停后画面静止，不需要再用 33ms 定时器全窗口重绘；恢复播放时
+    // 只在可见状态下重新启动，隐藏窗口仍由 showEvent 负责。
+    if (m_timer != nullptr) {
+        if (m_playing && isVisible())
+            m_timer->start();
+        else
+            m_timer->stop();
+    }
     update();
 }
 
@@ -127,13 +137,16 @@ void MusicVisualWidget::paintEvent(QPaintEvent *event)
 void MusicVisualWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
+    m_coverScaled = QPixmap();
+    m_coverScaledRadius = 0;
     update();
 }
 
 void MusicVisualWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
-    if (m_timer != nullptr && !m_timer->isActive())
+    // 暂停状态下显示只画一次静态画面，不为动画空转。
+    if (m_timer != nullptr && m_playing && !m_timer->isActive())
         m_timer->start();
 }
 
@@ -243,9 +256,14 @@ void MusicVisualWidget::drawDisc(QPainter &painter, const QRectF &rect)
         QPainterPath clip;
         clip.addEllipse(center, radius, radius);
         painter.setClipPath(clip);
-        const QPixmap scaled = m_cover.scaled(int(radius * 2), int(radius * 2),
-                                              Qt::KeepAspectRatioByExpanding,
-                                              Qt::SmoothTransformation);
+        const int pixelRadius = qMax(1, qRound(radius));
+        if (m_coverScaled.isNull() || m_coverScaledRadius != pixelRadius) {
+            m_coverScaled = m_cover.scaled(pixelRadius * 2, pixelRadius * 2,
+                                           Qt::KeepAspectRatioByExpanding,
+                                           Qt::SmoothTransformation);
+            m_coverScaledRadius = pixelRadius;
+        }
+        const QPixmap &scaled = m_coverScaled;
         painter.drawPixmap(QRectF(center.x() - radius, center.y() - radius,
                                   radius * 2, radius * 2), scaled,
                           QRectF((scaled.width() - radius * 2) / 2.0,

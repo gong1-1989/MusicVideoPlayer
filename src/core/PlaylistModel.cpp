@@ -116,8 +116,15 @@ MediaItem PlaylistModel::itemAt(int row) const
 
 bool PlaylistModel::updateItem(int row, const MediaItem &item)
 {
-    if (row < 0 || row >= m_items.size())
+    if (row < 0 || row >= m_items.size() || !item.isValid())
         return false;
+    // 进度更新只是替换字段；如果新条目 identity 已存在于另一行，拒绝更新，
+    // 避免这个接口被用来把同一内容复制成两行。
+    const QString identity = mediaIdentity(item);
+    for (int i = 0; i < m_items.size(); ++i) {
+        if (i != row && mediaIdentity(m_items.at(i)) == identity)
+            return false;
+    }
     // 播放进度只改当前行数据，不重排、不重置模型，列表选中状态不受影响。
     m_items[row] = item;
     const QModelIndex changed = index(row, 0);
