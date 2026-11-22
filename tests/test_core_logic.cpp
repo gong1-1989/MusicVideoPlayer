@@ -1,5 +1,6 @@
 #include "lyrics/LrcParser.h"
 #include "core/PlaybackController.h"
+#include "core/PlaylistModel.h"
 #include "download/DownloadTask.h"
 #include "media/MediaItem.h"
 #include "net/ConfigMapper.h"
@@ -479,6 +480,7 @@ private slots:
     void mediaItemValidity();
     void mediaIdentityUsesStableWebUrl();
     void dedupeItemsKeepsFirstOccurrence();
+    void playlistModelRefreshesSignedUrlWithoutLosingProgress();
     void playbackModeTextMatchesCompactLabels();
     void sourceConfigJsonRoundTrip();
     void sourceConfigSecretsNotPlaintext();
@@ -705,6 +707,45 @@ void CoreLogicTest::dedupeItemsKeepsFirstOccurrence()
     QCOMPARE(unique.at(0).url, first.url);
     QCOMPARE(unique.at(1).title, QStringLiteral("第二集"));
     QCOMPARE(unique.at(2).url, localA.url);
+}
+
+void CoreLogicTest::playlistModelRefreshesSignedUrlWithoutLosingProgress()
+{
+    PlaylistModel model;
+    MediaItem stored;
+    stored.type = MediaType::Video;
+    stored.title = QStringLiteral("第一集");
+    stored.online = true;
+    stored.webUrl = QUrl(QStringLiteral("https://example.com/detail/1"));
+    stored.url = QUrl(QStringLiteral("https://cdn.example.com/a.mp4?token=old"));
+    stored.quality = QStringLiteral("720P");
+    stored.headers.insert(QStringLiteral("Referer"), QStringLiteral("https://example.com/old"));
+    stored.posterUrl = QUrl(QStringLiteral("https://example.com/old.jpg"));
+    stored.positionMs = 42 * 1000;
+    QVERIFY(model.addItem(stored));
+
+    MediaItem fresh = stored;
+    fresh.url = QUrl(QStringLiteral("https://cdn.example.com/a.mp4?token=new"));
+    fresh.quality = QStringLiteral("1080P");
+    fresh.headers.insert(QStringLiteral("Referer"), QStringLiteral("https://example.com/new"));
+    fresh.posterUrl = QUrl(QStringLiteral("https://example.com/new.jpg"));
+    fresh.positionMs = 0; // 搜索结果不会带用户进度
+    fresh.previewOnly = true;
+
+    QCOMPARE(model.indexOf(fresh), 0);
+    QVERIFY(model.refreshItem(0, fresh));
+    const MediaItem refreshed = model.itemAt(0);
+    QCOMPARE(refreshed.url, fresh.url);
+    QCOMPARE(refreshed.quality, QStringLiteral("1080P"));
+    QCOMPARE(refreshed.headers.value(QStringLiteral("Referer")),
+             QStringLiteral("https://example.com/new"));
+    QCOMPARE(refreshed.posterUrl, fresh.posterUrl);
+    // 永久条目即使被试听刷新，也不能退回临时状态；视频进度必须保留。
+    QVERIFY(!refreshed.previewOnly);
+    QCOMPARE(refreshed.positionMs, qint64(42 * 1000));
+
+    // 再次刷新相同内容不应产生无意义的数据变更。
+    QVERIFY(!model.refreshItem(0, fresh));
 }
 
 void CoreLogicTest::playbackModeTextMatchesCompactLabels()

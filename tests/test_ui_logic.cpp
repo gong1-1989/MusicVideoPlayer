@@ -248,7 +248,7 @@ void UiLogicTest::previewItemNeverPersistsUnlessPromoted()
     MediaItem preview;
     preview.type = MediaType::Music;
     preview.title = QStringLiteral("试听条目");
-    preview.url = QUrl(QStringLiteral("https://example.com/preview.mp3"));
+    preview.url = QUrl(QStringLiteral("https://example.com/preview.mp3?token=old"));
     preview.online = true;
     preview.previewOnly = true;
 
@@ -258,11 +258,24 @@ void UiLogicTest::previewItemNeverPersistsUnlessPromoted()
     QVERIFY(controller.save());
     QVERIFY(PlaylistStore::load(MediaType::Music).isEmpty());
 
-    // 用户把同一内容加入搜索列表：预览行提升为永久条目并立即保存。
-    controller.addSearchItem(preview, MediaType::Music);
+    // 用户把同一内容加入搜索列表：预览行提升为永久条目并立即保存，
+    // 同时把已经过期的签名直链刷新成新地址。
+    MediaItem fresh = preview;
+    fresh.url = QUrl(QStringLiteral("https://example.com/preview.mp3?token=new"));
+    fresh.previewOnly = false;
+    controller.addSearchItem(fresh, MediaType::Music);
     const QVector<MediaItem> saved = PlaylistStore::load(MediaType::Music);
     QCOMPARE(saved.size(), 1);
     QVERIFY(!saved.first().previewOnly);
+    QCOMPARE(saved.first().url, fresh.url);
+
+    // 已持久化的同 identity 条目再次加入时也必须刷新地址，而不是只报“已存在”。
+    MediaItem refreshed = fresh;
+    refreshed.url = QUrl(QStringLiteral("https://example.com/preview.mp3?token=latest"));
+    controller.addSearchItem(refreshed, MediaType::Music);
+    const QVector<MediaItem> latest = PlaylistStore::load(MediaType::Music);
+    QCOMPARE(latest.size(), 1);
+    QCOMPARE(latest.first().url, refreshed.url);
 
     if (oldDataDir.isEmpty())
         qunsetenv("MVP_DATA_DIR");

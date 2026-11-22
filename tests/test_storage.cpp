@@ -60,6 +60,7 @@ private slots:
     void downloadPathsAvoidOverwriteAndPickSuffix();
     void downloadPathsTreatPartialAsOccupied();
     void downloadManagerReservesActiveTarget();
+    void downloadManagerRejectsOversizedStateFile();
     void sourceRegistryRehydratesPlaylistCredentials();
 
 private:
@@ -463,6 +464,22 @@ void StorageTest::downloadManagerReservesActiveTarget()
     const QString reserved = manager.reserveFilePath(dir, QStringLiteral("同名.mp3"));
     QCOMPARE(reserved, QDir(dir).filePath(QStringLiteral("同名 (1).mp3")));
     manager.shutdownForExit();
+}
+
+void StorageTest::downloadManagerRejectsOversizedStateFile()
+{
+    const QString statePath = StoragePaths::dataFile(QStringLiteral("downloads.json"));
+    QFile file(statePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    // 超过 16 MB 的状态不能整体读进内存；加载前应先备份并放弃。
+    QVERIFY(file.write(QByteArray(16 * 1024 * 1024 + 1, ' ')) == 16 * 1024 * 1024 + 1);
+    file.close();
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QVERIFY(manager.isEmpty());
+    QVERIFY(!QFile::exists(statePath));
+    QVERIFY(QFile::exists(statePath + QStringLiteral(".corrupt")));
 }
 
 void StorageTest::sourceRegistryRehydratesPlaylistCredentials()

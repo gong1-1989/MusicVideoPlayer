@@ -25,6 +25,9 @@ Q_LOGGING_CATEGORY(lcDownloadManager, "mvp.download.manager")
 namespace {
 
 const int kMaxCompletedJobs = 100;
+/// 下载状态只是队列元数据，正常远小于播放列表；给手工编辑/异常膨胀设上限，
+/// 避免启动时 readAll() 把几十 MB 内容整体读进内存。
+constexpr qint64 kMaxStateFileBytes = 16LL * 1024 * 1024;
 /// 批量点下载时不要把所有任务同时拉起来：HLS 单任务还可能再开多路 Range，
 /// 2 路并发已经足够跑满普通带宽，也能避免大量连接和缓存同时上涨。
 constexpr int kMaxConcurrentDownloads = 2;
@@ -322,10 +325,26 @@ void DownloadManager::load()
             qCWarning(lcDownloadManager) << "下载状态文件打不开" << m_statePath;
         return;
     }
+    if (file.size() > kMaxStateFileBytes) {
+        qCWarning(lcDownloadManager) << "下载状态文件超过上限，拒绝读取" << m_statePath
+                                     << file.size() << kMaxStateFileBytes;
+        file.close();
+        backupCorruptState(m_statePath);
+        return;
+    }
+
+    const QByteArray payload = file.readAll();
+    if (file.error() != QFileDevice::NoError) {
+        qCWarning(lcDownloadManager) << "下载状态文件读取失败" << m_statePath
+                                     << file.errorString();
+        file.close();
+        backupCorruptState(m_statePath);
+        return;
+    }
+    file.close();
 
     QJsonParseError parseError{};
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
-    file.close();
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
         qCWarning(lcDownloadManager) << "下载状态文件损坏" << parseError.errorString();
         // 临时文件还在，但续传点/历史会丢；先保留原文件，允许用户手工恢复。
@@ -420,13 +439,26 @@ void DownloadManager::saveNow()
     QJsonObject root;
     root.insert(QStringLiteral("version"), 1);
     root.insert(QStringLiteral("jobs"), array);
+    const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (payload.size() > kMaxStateFileBytes) {
+        qCWarning(lcDownloadManager) << "下载状态超过上限，放弃本次保存" << payload.size()
+                                     << kMaxStateFileBytes;
+        return;
+    }
 
     QSaveFile file(m_statePath);
     if (!file.open(QIODevice::WriteOnly)) {
         qCWarning(lcDownloadManager) << "下载状态文件无法写入" << file.errorString();
         return;
     }
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    const qint64 written = file.write(payload);
+    if (written != payload.size()) {
+        // 磁盘满/配额不足时 QSaveFile 可能短写；绝不能把截断的 JSON 提交成新状态。
+        qCWarning(lcDownloadManager) << "下载状态文件写入不完整，已放弃提交"
+                                     << written << payload.size() << file.errorString();
+        file.cancelWriting();
+        return;
+    }
     if (!file.commit())
         qCWarning(lcDownloadManager) << "下载状态文件保存失败" << file.errorString();
 }

@@ -259,7 +259,16 @@ void PlaylistController::playItem(const MediaItem &item)
     // 列表文件就被悄悄改写。previewOnly 由所有保存入口统一过滤。
     MediaItem preview = item;
     preview.previewOnly = true;
-    model->addItem(preview); // 已存在时保留原条目（包括已永久加入的条目）
+    const int existing = model->indexOf(preview);
+    if (existing >= 0) {
+        const bool permanent = !model->itemAt(existing).previewOnly;
+        // 同一条目重搜后可能拿到新的签名直链。试听必须刷新模型里的可变字段，
+        // 否则 indexOf() 会定位到旧行并继续播放已经过期的地址。
+        if (model->refreshItem(existing, preview) && permanent)
+            save(); // 只刷新已持久化条目时写回列表；试听条目仍不落盘
+    } else {
+        model->addItem(preview);
+    }
     const int row = model->indexOf(item);
     if (row < 0)
         return;
@@ -276,14 +285,21 @@ void PlaylistController::addSearchItem(const MediaItem &item, MediaType type)
     copy.previewOnly = false;
     PlaylistModel *model = modelFor(type);
     if (!model->addItem(copy)) {
-        // 同一条内容可能先是试听条目；用户此时明确点“加入列表”，
-        // 必须把原来的 previewOnly 条目提升为永久条目，而不是报“已存在”。
         const int existing = model->indexOf(copy);
-        if (existing >= 0 && model->itemAt(existing).previewOnly) {
-            if (model->updateItem(existing, copy)) {
-                if (save())
-                    emit statusMessage(type == MediaType::Music ? tr("已加入音乐列表")
-                                                                : tr("已加入视频列表"));
+        if (existing >= 0) {
+            const bool wasPreview = model->itemAt(existing).previewOnly;
+            // 同一条内容可能先是试听条目，也可能已持久化但直链签名过期。
+            // 统一刷新可变字段：前者提升为永久条目，后者写回新地址。
+            if (model->refreshItem(existing, copy)) {
+                if (save()) {
+                    if (type == MediaType::Music) {
+                        emit statusMessage(wasPreview ? tr("已加入音乐列表")
+                                                      : tr("已更新音乐列表的播放地址"));
+                    } else {
+                        emit statusMessage(wasPreview ? tr("已加入视频列表")
+                                                      : tr("已更新视频列表的播放地址"));
+                    }
+                }
                 return;
             }
         }

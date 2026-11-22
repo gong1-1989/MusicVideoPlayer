@@ -79,6 +79,78 @@ bool PlaylistModel::addItem(const MediaItem &item)
     return true;
 }
 
+bool PlaylistModel::refreshItem(int row, const MediaItem &item)
+{
+    if (row < 0 || row >= m_items.size() || !item.isValid())
+        return false;
+    if (mediaIdentity(m_items.at(row)) != mediaIdentity(item))
+        return false;
+
+    MediaItem merged = m_items.at(row);
+    bool changed = false;
+    const auto takeString = [&](QString &target, const QString &value) {
+        if (!value.isEmpty() && target != value) {
+            target = value;
+            changed = true;
+        }
+    };
+    const auto takeUrl = [&](QUrl &target, const QUrl &value) {
+        if (!value.isEmpty() && value.isValid() && target != value) {
+            target = value;
+            changed = true;
+        }
+    };
+
+    // 标题、来源等展示字段有值就刷新；直链签名每次搜索都会变，必须替换。
+    takeString(merged.title, item.title);
+    takeString(merged.artist, item.artist);
+    if (merged.url != item.url) {
+        merged.url = item.url;
+        changed = true;
+    }
+    if (merged.alternateUrls != item.alternateUrls) {
+        merged.alternateUrls = item.alternateUrls;
+        changed = true;
+    }
+    if (!item.headers.isEmpty() && merged.headers != item.headers) {
+        merged.headers = item.headers;
+        changed = true;
+    }
+    takeUrl(merged.lyricUrl, item.lyricUrl);
+    takeUrl(merged.posterUrl, item.posterUrl);
+    takeUrl(merged.webUrl, item.webUrl);
+    takeUrl(merged.sourceOrigin, item.sourceOrigin);
+    takeString(merged.sourceId, item.sourceId);
+    takeString(merged.year, item.year);
+    takeString(merged.area, item.area);
+    takeString(merged.genre, item.genre);
+    takeString(merged.description, item.description);
+    takeString(merged.quality, item.quality);
+    if (merged.online != item.online) {
+        merged.online = item.online;
+        changed = true;
+    }
+    if (item.durationMs > 0 && merged.durationMs != item.durationMs) {
+        merged.durationMs = item.durationMs;
+        changed = true;
+    }
+
+    // positionMs 不从新搜索结果覆盖，用户看到一半的视频仍从原位置继续。
+    // 永久条目优先：试听刷新不能把已加入列表的条目重新变成临时条目。
+    const bool nextPreviewOnly = merged.previewOnly && item.previewOnly;
+    if (merged.previewOnly != nextPreviewOnly) {
+        merged.previewOnly = nextPreviewOnly;
+        changed = true;
+    }
+
+    if (!changed)
+        return false;
+    m_items[row] = merged;
+    const QModelIndex changedIndex = index(row, 0);
+    emit dataChanged(changedIndex, changedIndex);
+    return true;
+}
+
 bool PlaylistModel::removeRow(int row)
 {
     if (row < 0 || row >= m_items.size())

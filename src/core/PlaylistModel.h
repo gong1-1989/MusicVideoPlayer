@@ -39,6 +39,10 @@ public:
 
     /// 按 mediaIdentity 去重后追加；重复返回 false。
     bool addItem(const MediaItem &item);
+    /// 同 identity 条目的字段刷新：更新直链/请求头/清晰度等可变字段，
+    /// 保留用户视频进度；试听条目遇到永久条目时仍保持永久。
+    /// 返回是否真的发生了字段变化。
+    bool refreshItem(int row, const MediaItem &item);
     bool removeRow(int row);
     void clear();
 
