@@ -15,7 +15,6 @@ public:
     explicit VideoStage(QWidget *parent = nullptr);
 
     void setCornerRadius(qreal radius);
-    qreal cornerRadius() const { return m_radius; }
 
 protected:
     void resizeEvent(QResizeEvent *event) override;

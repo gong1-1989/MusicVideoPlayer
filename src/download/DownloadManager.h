@@ -36,7 +36,6 @@ public:
     const QVector<DownloadJob> &jobs() const { return m_jobs; }
 
     int activeCount() const;
-    bool hasActiveTasks() const;
     bool isEmpty() const { return m_jobs.isEmpty(); }
 
     void resumePending();
@@ -47,8 +46,6 @@ public:
     /// 仅对缺少 #EXT-X-ENDLIST 且未声明 VOD 的失败任务生效。
     bool retryJob(const QString &id, bool allowIncomplete = false);
     void clearCompleted();
-
-    QString stateFilePath() const { return m_statePath; }
 
 signals:
     void jobsChanged();

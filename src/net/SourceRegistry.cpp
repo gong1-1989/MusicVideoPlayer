@@ -148,19 +148,24 @@ const char *kSeedSources = R"JSON(
 ]
 )JSON";
 
-QVector<SourceConfig> seedSources()
+/// 预置源解析一次后复用：load() 会在逐条校验和补入缺失内置源时多次
+/// 访问同一份 JSON，避免重复构造 QJsonDocument 和解析 6 个配置对象。
+const QVector<SourceConfig> &seedSources()
 {
-    QVector<SourceConfig> configs;
-    QJsonParseError parseError{};
-    const QJsonDocument seed = QJsonDocument::fromJson(QByteArray(kSeedSources), &parseError);
-    if (parseError.error != QJsonParseError::NoError)
-        return configs;
-    for (const QJsonValue &entry : seed.array()) {
-        bool ok = false;
-        const SourceConfig config = sourceConfigFromJson(entry.toObject(), &ok);
-        if (ok)
-            configs.append(config);
-    }
+    static const QVector<SourceConfig> configs = [] {
+        QVector<SourceConfig> parsed;
+        QJsonParseError parseError{};
+        const QJsonDocument seed = QJsonDocument::fromJson(QByteArray(kSeedSources), &parseError);
+        if (parseError.error != QJsonParseError::NoError)
+            return parsed;
+        for (const QJsonValue &entry : seed.array()) {
+            bool ok = false;
+            const SourceConfig config = sourceConfigFromJson(entry.toObject(), &ok);
+            if (ok)
+                parsed.append(config);
+        }
+        return parsed;
+    }();
     return configs;
 }
 

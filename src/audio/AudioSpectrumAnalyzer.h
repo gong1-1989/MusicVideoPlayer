@@ -54,6 +54,8 @@ private:
     QElapsedTimer m_lastDataClock;
     QVector<float> m_mono;
     QVector<float> m_smoothed;
+    /// 播放器缓冲停顿时复用的全零频段，避免每 33ms 重新分配一个向量。
+    QVector<float> m_silenceLevels;
     QAudioFormat m_format;
     bool m_enabled = false;
 };

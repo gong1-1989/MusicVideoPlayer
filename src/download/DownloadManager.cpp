@@ -173,11 +173,6 @@ int DownloadManager::activeCount() const
     return count;
 }
 
-bool DownloadManager::hasActiveTasks() const
-{
-    return activeCount() > 0;
-}
-
 void DownloadManager::resumePending()
 {
     if (m_shuttingDown)

@@ -97,10 +97,8 @@ protected:
                 m_hoveredRow = -1;
                 m_timer.stop();
             } else if (event->type() == QEvent::Hide || event->type() == QEvent::HideToParent) {
-                // 切到另一个列表页后不再 40ms 空转，重新显示时再启动
+                // 切到另一个列表页后不再 40ms 空转；重新显示后等 MouseMove 再启动。
                 m_timer.stop();
-            } else if (event->type() == QEvent::Show || event->type() == QEvent::ShowToParent) {
-                // 显示本身不代表有标题在滚动，等 MouseMove 再启动。
             }
         }
         return QStyledItemDelegate::eventFilter(object, event);

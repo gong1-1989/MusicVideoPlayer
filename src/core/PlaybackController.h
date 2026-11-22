@@ -54,7 +54,6 @@ public:
 
     Mode mode() const { return m_mode; }
     void setMode(Mode mode);
-    QString modeText(bool compact = false) const;
     /// 纯函数版模式文案，供 UI/测试复用，不依赖播放器实例
     static QString modeDisplayText(Mode mode, bool compact);
 

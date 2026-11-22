@@ -45,7 +45,6 @@ private:
     void bindUi();
     void startProbe();
     void onProbeFinished(const SourceProbe::Result &result);
-    void updateSaveState();
     void reloadPathList();
     void addCustomPath();
     void removeCustomPath();

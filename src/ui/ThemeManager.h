@@ -29,7 +29,6 @@ public:
     static ThemeManager &instance();
 
     const QVector<ThemeInfo> &themes() const { return m_themes; }
-    QString currentId() const { return m_currentId; }
     ThemeInfo current() const;
 
     /// 加载并应用主题；失败时返回 false（保留当前样式）

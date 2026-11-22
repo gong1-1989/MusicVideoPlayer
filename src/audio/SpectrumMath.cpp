@@ -66,16 +66,24 @@ QVector<float> analyze(const QVector<float> &samples, int sampleRate, int bandCo
     if (sampleRate <= 0 || samples.size() < kFftSize)
         return levels;
 
+    // Hann 窗只与固定的 FFT 长度有关，初始化一次后反复复用；
+    // 频谱每 33ms 计算一次，没必要每次重新做 2048 次 cos()。
+    static const QVector<double> hann = [] {
+        QVector<double> values(kFftSize, 0.0);
+        for (int i = 0; i < kFftSize; ++i)
+            values[i] = 0.5 - 0.5 * std::cos(2.0 * kPi * i / (kFftSize - 1));
+        return values;
+    }();
+
     QVector<double> re(kFftSize, 0.0);
     QVector<double> im(kFftSize, 0.0);
     const int start = samples.size() - kFftSize;
     for (int i = 0; i < kFftSize; ++i) {
-        const double hann = 0.5 - 0.5 * std::cos(2.0 * kPi * i / (kFftSize - 1));
         double sample = double(samples.at(start + i));
         if (!std::isfinite(sample))
             sample = 0.0;
         sample = qBound(-1.0, sample, 1.0);
-        re[i] = sample * hann;
+        re[i] = sample * hann.at(i);
     }
 
     fft(re, im);

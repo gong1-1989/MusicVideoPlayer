@@ -354,11 +354,6 @@ void SourceProbeDialog::onProbeFinished(const SourceProbe::Result &result)
     m_btnSave->setEnabled(true);
 }
 
-void SourceProbeDialog::updateSaveState()
-{
-    m_btnSave->setEnabled(m_result.ok);
-}
-
 void SourceProbeDialog::closeEvent(QCloseEvent *event)
 {
     if (m_prober != nullptr)

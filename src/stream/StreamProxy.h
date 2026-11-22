@@ -40,7 +40,6 @@ public:
 
     bool start();
     bool isListening() const;
-    int port() const;
 
     /// 诊断用快照：缓存条目、计费字节（含尚未合并的 Range 分段）和预取占用。
     /// 回归测试用它确认缓存淘汰不会漏掉 rangeParts 或遗留预取槽位。
@@ -208,7 +207,6 @@ private:
     qint64 m_prefetchDisabledUntilMs = 0;
 
     std::atomic_bool m_listening{false};
-    std::atomic<int> m_port{0};
 };
 
 #endif // STREAMPROXY_H

@@ -45,8 +45,6 @@ public:
     /// 无 #EXT-X-ENDLIST 时是否允许按当前分片下载。默认只放行服务器显式声明
     /// PLAYLIST-TYPE:VOD 的列表；这里用于用户确认后的“强制下载当前分片”。
     void setAllowIncompletePlaylist(bool allow);
-    /// 本次实际是否按无结束标记的快照列表下载。
-    bool isSnapshot() const { return m_isSnapshot; }
     /// 是否因缺少 #EXT-X-ENDLIST 且未声明 VOD 而被拒绝；界面据此提供强制入口。
     bool needsSnapshotConsent() const { return m_needsSnapshotConsent; }
     /// 目标路径冲突时由下载管理器重新分配，绝不覆盖已有文件。
@@ -57,7 +55,6 @@ public:
     /// URL 是否看起来是 HLS 播放列表（用于选默认扩展名/提示）
     static bool looksLikeHls(const QUrl &url);
 
-    QString targetPath() const { return m_filePath; }
     QString partialPath() const;
     bool isHls() const { return m_isHls; }
 

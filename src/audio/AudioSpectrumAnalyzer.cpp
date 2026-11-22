@@ -25,6 +25,8 @@ AudioSpectrumAnalyzer::AudioSpectrumAnalyzer(QObject *parent)
 {
     setObjectName(QStringLiteral("AudioSpectrumAnalyzer"));
 
+    m_silenceLevels.fill(0.0f, SpectrumMath::kBandCount);
+
     m_idleTimer = new QTimer(this);
     m_idleTimer->setInterval(33);
     connect(m_idleTimer, &QTimer::timeout, this, &AudioSpectrumAnalyzer::emitIdleLevels);
@@ -158,7 +160,8 @@ void AudioSpectrumAnalyzer::emitIdleLevels()
     if (!m_enabled || m_lastDataClock.elapsed() < 150)
         return;
     // 播放器缓冲停顿时持续送 0，避免界面把上一帧能量冻结成“还在播放”。
-    emitLevels(QVector<float>(SpectrumMath::kBandCount, 0.0f));
+    // m_silenceLevels 在构造时固定为 46 个 0，这里只复用，不重复分配。
+    emitLevels(m_silenceLevels);
 }
 
 void AudioSpectrumAnalyzer::emitLevels(const QVector<float> &raw)

@@ -20,7 +20,6 @@ public:
 
     /// 保留接口给 VideoStage；QVideoWidget 是原生窗口，内层圆角由外层舞台边框负责
     void setCornerRadius(qreal radius);
-    qreal cornerRadius() const { return m_radius; }
 
     void clearFrame();
     /// 新视频真正开始播放后恢复收帧；首帧到达前视频窗口保持隐藏，避免旧帧残留

@@ -25,8 +25,6 @@ public:
                          qreal stageCornerRadius = 16.0, QObject *parent = nullptr);
     ~FullscreenController() override;
 
-    bool isFullScreen() const { return m_window != nullptr; }
-
 public slots:
     void toggle();
     void enterFullScreen();

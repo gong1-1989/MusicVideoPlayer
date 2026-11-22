@@ -29,7 +29,6 @@ public:
     void setTrack(const MediaItem &item);
     void setPlaying(bool playing);
     void setMediaPlayer(QMediaPlayer *player);
-    void setAccent(const QColor &color);
     void setLyrics(const QStringList &lines);
     void setLyricIndex(int index);
     void clearLyrics();
@@ -61,6 +60,7 @@ private:
     QVector<float> m_audioSpectrum;
     /// 以 33ms 定时器计数；约 300ms 没有新帧就认为播放器缓冲暂停，回退拟真动画。
     int m_audioSpectrumAge = 1000;
+    /// 歌词强调色；没有真实频谱时也用于唱片外圈光晕的默认冷色。
     QColor m_accent{96, 132, 255};
     QStringList m_lyrics;
     int m_lyricIndex = -1;

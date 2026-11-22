@@ -41,7 +41,7 @@ struct SearchPanelUi
     QListWidget *suggestList = nullptr;
     /// 筛选行的固定宿主容器：避免按布局索引插入，增删标题/品牌行时不会错位
     QWidget *filterHost = nullptr;
-    /// 左侧搜索栏容器（旧布局兼容）；优先使用 filterHost
+    /// 左侧搜索栏容器：用于联想列表定位与边缘面板显隐；筛选控件宿主请用 filterHost
     QWidget *sidebar = nullptr;
 };
 

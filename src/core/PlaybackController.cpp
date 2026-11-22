@@ -398,11 +398,6 @@ void PlaybackController::updateLoops()
     m_player->setLoops(m_mode == Mode::SingleLoop ? QMediaPlayer::Infinite : 1);
 }
 
-QString PlaybackController::modeText(bool compact) const
-{
-    return modeDisplayText(m_mode, compact);
-}
-
 QString PlaybackController::modeDisplayText(Mode mode, bool compact)
 {
     // 紧凑布局只缩短文案，模式含义必须由同一个 switch 决定，

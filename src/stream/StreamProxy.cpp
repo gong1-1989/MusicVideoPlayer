@@ -181,7 +181,6 @@ void StreamProxy::abortReplySilently(QNetworkReply *reply)
 void StreamProxy::shutdown()
 {
     m_listening.store(false);
-    m_port.store(0);
     m_server->close();
     cancelPrefetch();
 
@@ -206,17 +205,14 @@ bool StreamProxy::start()
 {
     if (m_server->isListening()) {
         m_listening.store(true);
-        m_port.store(m_server->serverPort());
         return true;
     }
 
     if (!m_server->listen(QHostAddress::LocalHost, 0)) {
         qCWarning(lcProxy) << "流转服务监听失败：" << m_server->errorString();
         m_listening.store(false);
-        m_port.store(0);
         return false;
     }
-    m_port.store(m_server->serverPort());
     m_listening.store(true);
     qCInfo(lcProxy) << "流转服务已启动，监听 127.0.0.1:" << m_server->serverPort();
     return true;
@@ -225,11 +221,6 @@ bool StreamProxy::start()
 bool StreamProxy::isListening() const
 {
     return m_listening.load();
-}
-
-int StreamProxy::port() const
-{
-    return m_port.load();
 }
 
 QUrl StreamProxy::proxyUrlFor(const QUrl &upstream, const QHash<QString, QString> &headers)

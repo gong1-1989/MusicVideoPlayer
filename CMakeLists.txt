@@ -7,20 +7,26 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS
+# 运行时代码直接使用 Qt 6.8 才提供的 QAudioBufferOutput，最低版本必须与
+# 实际依赖一致，否则 Qt 6.5~6.7 会在编译 AudioSpectrumAnalyzer 时失败。
+find_package(Qt6 6.8 REQUIRED COMPONENTS
     Core
     Gui
     Widgets
     Network
     Multimedia
     MultimediaWidgets
-    Test
 )
 
 qt_standard_project_setup()
 # BUILD_TESTING 是 CMake/CTest 标准开关：发布构建可以 -DBUILD_TESTING=OFF
 # 直接不生成 mvp_* 测试程序，不需要额外的打包脚本。
 include(CTest)
+# Qt Test 只在生成测试目标时才需要；发布构建关闭 BUILD_TESTING 后不再强制
+# 安装 Qt Test 组件，避免无谓的构建环境要求。
+if(BUILD_TESTING)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
+endif()
 
 function(mvp_enable_warnings target)
     if(MSVC)

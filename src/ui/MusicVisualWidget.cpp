@@ -151,13 +151,6 @@ void MusicVisualWidget::setMediaPlayer(QMediaPlayer *player)
     updateCaptureState();
 }
 
-void MusicVisualWidget::setAccent(const QColor &color)
-{
-    if (color.isValid())
-        m_accent = color;
-    update();
-}
-
 void MusicVisualWidget::setLyrics(const QStringList &lines)
 {
     m_lyrics = lines;
