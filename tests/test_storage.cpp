@@ -10,6 +10,8 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -61,6 +63,7 @@ private slots:
     void downloadPathsTreatPartialAsOccupied();
     void downloadManagerReservesActiveTarget();
     void downloadManagerRejectsOversizedStateFile();
+    void downloadManagerClearsStalePartialOnPathConflict();
     void sourceRegistryRehydratesPlaylistCredentials();
 
 private:
@@ -480,6 +483,48 @@ void StorageTest::downloadManagerRejectsOversizedStateFile()
     QVERIFY(manager.isEmpty());
     QVERIFY(!QFile::exists(statePath));
     QVERIFY(QFile::exists(statePath + QStringLiteral(".corrupt")));
+}
+
+void StorageTest::downloadManagerClearsStalePartialOnPathConflict()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("downloads-conflict"));
+    QVERIFY(QDir().mkpath(dir));
+    const QString target = QDir(dir).filePath(QStringLiteral("同名.mp3"));
+    const QString oldPartial = target + QStringLiteral(".mvpdownload");
+
+    DownloadJob first;
+    first.id = QStringLiteral("first");
+    first.item.type = MediaType::Music;
+    first.item.title = QStringLiteral("同名");
+    first.item.url = QUrl(QStringLiteral("http://127.0.0.1:1/a.mp3"));
+    first.item.online = true;
+    first.url = first.item.url;
+    first.filePath = target;
+    first.status = DownloadJob::Status::Paused;
+
+    DownloadJob second = first;
+    second.id = QStringLiteral("second");
+
+    QJsonArray jobs{first.toJson(), second.toJson()};
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("jobs"), jobs);
+    QFile state(StoragePaths::dataFile(QStringLiteral("downloads.json")));
+    QVERIFY(state.open(QIODevice::WriteOnly));
+    state.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    state.close();
+
+    QFile partial(oldPartial);
+    QVERIFY(partial.open(QIODevice::WriteOnly));
+    partial.write("partial");
+    partial.close();
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QCOMPARE(manager.jobs().size(), 2);
+    QVERIFY(manager.jobs().at(1).filePath != target);
+    // 冲突路径重新分配后，旧目标的续传点已经不属于任何任务，必须清掉。
+    QVERIFY(!QFile::exists(oldPartial));
 }
 
 void StorageTest::sourceRegistryRehydratesPlaylistCredentials()

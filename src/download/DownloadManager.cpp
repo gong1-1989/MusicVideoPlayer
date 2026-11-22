@@ -413,6 +413,12 @@ void DownloadManager::load()
             const QString reserved =
                 reserveFilePath(info.absolutePath(), info.fileName(), job.id);
             if (!reserved.isEmpty() && reserved != job.filePath) {
+                // 重新分配目标后，旧路径的续传点已无法对应新目标；
+                // 不清掉会在下载目录里长期留下一个无主 .mvpdownload。
+                const QString oldPartial = job.filePath + QStringLiteral(".mvpdownload");
+                if (QFileInfo::exists(oldPartial) && !QFile::remove(oldPartial)) {
+                    qCWarning(lcDownloadManager) << "旧续传点清理失败" << oldPartial;
+                }
                 job.filePath = reserved;
                 job.bytesReceived = 0;
                 job.segmentIndex = 0;
