@@ -148,6 +148,10 @@ private:
     void finishCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
                      QNetworkReply *reply);
     void pruneCache(const QString &keepKey = QString());
+    /// 缓存是否还能容纳新条目：先按空闲/失败条目淘汰，再同时检查条数和总字节。
+    /// 全部条目都在服务客户端时无法淘汰，此时返回 false，调用方应放弃缓存、直接透传，
+    /// 避免缓存总量突破 256 MB 上限。
+    bool cacheHasRoom(qint64 bytes, const QString &keepKey);
     void dropCacheEntry(const QString &key);
     /// 先断开 reply 到代理的所有信号再 abort：QNetworkReply::abort() 可能同步
     /// 发出 finished，回调会重入正在清理的 rangeReplies/m_cache 列表。

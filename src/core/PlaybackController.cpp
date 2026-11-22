@@ -154,6 +154,11 @@ PlaybackController::~PlaybackController()
     if (!proxyThread->wait(3000)) {
         qCWarning(lcPlayer) << "流转代理线程未在 3 秒内退出，放弃强制终止";
         proxyThread->setParent(nullptr);
+        // 线程析构会 delete 仍属于该线程的 StreamProxy；这里让线程在真正
+        // 退出后再自删，避免 PlaybackController 重建后遗留一个无人回收的
+        // QThread 和代理对象。finished 信号按队列回到 GUI 线程处理。
+        QObject::connect(proxyThread, &QThread::finished,
+                         proxyThread, &QObject::deleteLater);
         m_proxyThread = nullptr;
         m_proxy = nullptr;
         return;

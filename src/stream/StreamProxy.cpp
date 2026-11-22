@@ -486,6 +486,17 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                     reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
                 entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
                 entry->reply = reply;
+                if (!cacheHasRoom(total, cacheKey)) {
+                    qCInfo(lcProxy) << "流转缓存跳过：配额已满" << HttpClient::redactUrl(upstream)
+                                    << total << "字节";
+                    attachUpstream(client, reply, upstream);
+                    flushUpstream(client, reply, upstream);
+                    if (reply->isFinished()) {
+                        client->disconnectFromHost();
+                        reply->deleteLater();
+                    }
+                    return;
+                }
                 m_cache.insert(cacheKey, entry);
                 qCInfo(lcProxy) << "流转缓存建立" << HttpClient::redactUrl(upstream)
                                 << total << "字节";
@@ -572,6 +583,11 @@ bool StreamProxy::tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream
     entry->pending = true;
     entry->multiRange = true;
     entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+    if (!cacheHasRoom(kMaxCacheEntryBytes, cacheKey)) {
+        qCInfo(lcProxy) << "HLS 分片多连接 Range 跳过：缓存配额已满"
+                        << HttpClient::redactUrl(upstream);
+        return false;
+    }
     m_cache.insert(cacheKey, entry);
 
     qCInfo(lcProxy) << "HLS 分片多连接 Range 开始" << HttpClient::redactUrl(upstream)
@@ -1680,6 +1696,20 @@ void StreamProxy::finishCache(const QString &key, const QSharedPointer<CacheEntr
     reply->deleteLater();
     pumpCache(key, entry);
     pruneCache(key);
+}
+
+bool StreamProxy::cacheHasRoom(qint64 bytes, const QString &keepKey)
+{
+    // 先回收空闲/失败条目，再判断配额。全部条目都在服务客户端时 pruneCache
+    // 不会强删，此时只能拒绝新缓存，让请求走直连透传。
+    pruneCache(keepKey);
+    if (m_cache.size() >= kMaxCacheEntries)
+        return false;
+
+    qint64 totalBytes = 0;
+    for (const auto &entry : std::as_const(m_cache))
+        totalBytes += StreamCacheStore::bytes(*entry);
+    return totalBytes + qMax<qint64>(bytes, 0) <= kMaxCacheTotalBytes;
 }
 
 void StreamProxy::pruneCache(const QString &keepKey)
