@@ -8,11 +8,14 @@
 #include "storage/StoragePaths.h"
 #include "util/SecretStore.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QTemporaryDir>
+#include <QTcpServer>
 #include <QTest>
 
 namespace {
@@ -57,6 +60,7 @@ private slots:
     void sourceRegistrySeedsAndPersists();
     void sourceRegistryReloadUsesPrimary();
     void sourceRegistryCorruptFileBacksUp();
+    void sourceRegistryCorruptBackupNameCollision();
     void sourceRegistryUnwritableDataDirFails();
     void downloadJobRoundTripEncryptsSensitiveHeaders();
     void downloadPathsAvoidOverwriteAndPickSuffix();
@@ -64,6 +68,7 @@ private slots:
     void downloadManagerReservesActiveTarget();
     void downloadManagerRejectsOversizedStateFile();
     void downloadManagerClearsStalePartialOnPathConflict();
+    void downloadManagerDelayedRemoveSkipsReservedPath();
     void sourceRegistryRehydratesPlaylistCredentials();
 
 private:
@@ -304,6 +309,36 @@ void StorageTest::sourceRegistryCorruptFileBacksUp()
     QVERIFY(reloaded.lastError().isEmpty());
 }
 
+void StorageTest::sourceRegistryCorruptBackupNameCollision()
+{
+    const QString path = StoragePaths::dataFile(QStringLiteral("sources.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("{ broken collision");
+    file.close();
+
+    // 预先占住当前秒及后两秒的固定时间戳备份名，模拟同一秒内连续损坏。
+    const QDateTime now = QDateTime::currentDateTime();
+    QStringList occupied;
+    for (int i = 0; i < 3; ++i) {
+        const QString backup =
+            path + QStringLiteral(".corrupt-")
+            + now.addSecs(i).toString(QStringLiteral("yyyyMMddHHmmss"));
+        QVERIFY(QFile::copy(path, backup));
+        occupied.append(backup);
+    }
+
+    SourceRegistry registry;
+    QVERIFY(registry.load());
+    QVERIFY(registry.lastError().contains(QStringLiteral("已备份")));
+
+    const QStringList backups =
+        QDir(StoragePaths::dataDir())
+            .entryList({QStringLiteral("sources.json.corrupt-*")}, QDir::Files);
+    // 三个预占文件 + 本次带序号的新备份，不能因为撞名而放弃备份/启动失败。
+    QVERIFY(backups.size() >= occupied.size() + 1);
+}
+
 void StorageTest::sourceRegistryUnwritableDataDirFails()
 {
     QTemporaryDir blocked;
@@ -525,6 +560,68 @@ void StorageTest::downloadManagerClearsStalePartialOnPathConflict()
     QVERIFY(manager.jobs().at(1).filePath != target);
     // 冲突路径重新分配后，旧目标的续传点已经不属于任何任务，必须清掉。
     QVERIFY(!QFile::exists(oldPartial));
+}
+
+void StorageTest::downloadManagerDelayedRemoveSkipsReservedPath()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("downloads-delayed-remove"));
+    QVERIFY(QDir().mkpath(dir));
+    const QString target = QDir(dir).filePath(QStringLiteral("同路径.mp3"));
+    const QString partial = target + QStringLiteral(".mvpdownload");
+
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+
+    DownloadJob old;
+    old.id = QStringLiteral("old");
+    old.item.type = MediaType::Music;
+    old.item.title = QStringLiteral("同路径");
+    old.item.url = QUrl(QStringLiteral("http://127.0.0.1:1/a.mp3"));
+    old.item.online = true;
+    old.url = old.item.url;
+    old.filePath = target;
+    old.status = DownloadJob::Status::Paused;
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("jobs"), QJsonArray{old.toJson()});
+    QFile state(StoragePaths::dataFile(QStringLiteral("downloads.json")));
+    QVERIFY(state.open(QIODevice::WriteOnly));
+    state.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    state.close();
+
+    QFile locked(partial);
+    QVERIFY(locked.open(QIODevice::ReadWrite));
+    QVERIFY(locked.write("old partial") > 0);
+    QVERIFY(locked.flush());
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QCOMPARE(manager.jobs().size(), 1);
+
+    // 旧半成品仍被本测试句柄占着，首次同步删除会失败，进入延迟重试。
+    QVERIFY(manager.removeJob(QStringLiteral("old")));
+    locked.close();
+    QVERIFY(QFile::remove(partial));
+
+    // 延迟窗口内立刻发起同目标新任务；用挂起不响应的本地端口让任务保持 active。
+    const QUrl hanging(QStringLiteral("http://127.0.0.1:%1/a.mp3").arg(server.serverPort()));
+    QString newId;
+    newId = manager.enqueue(old.item, hanging, {}, target, false, 1024);
+    QVERIFY(!newId.isEmpty());
+
+    // 模拟新任务已经落在同一半成品路径。旧任务的 25/50/75ms 重试不能删它。
+    QFile fresh(partial);
+    QVERIFY(fresh.open(QIODevice::WriteOnly));
+    QVERIFY(fresh.write("new partial") > 0);
+    fresh.close();
+
+    QTest::ignoreMessage(QtInfoMsg, QRegularExpression(QStringLiteral("延迟删除跳过")));
+    QTest::qWait(140);
+    QVERIFY(QFile::exists(partial));
+
+    manager.shutdownForExit();
+    server.close();
 }
 
 void StorageTest::sourceRegistryRehydratesPlaylistCredentials()

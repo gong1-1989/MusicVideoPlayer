@@ -51,15 +51,23 @@ SettingsController::SettingsController(PlaybackController *player, SourceRegistr
     Q_ASSERT(m_http != nullptr);
     Q_ASSERT(m_ui.window != nullptr);
     Q_ASSERT(m_ui.volumeSlider != nullptr);
+    connect(m_player, &PlaybackController::volumePercentChanged, this, [this](int) {
+        if (!m_applyingVolume)
+            m_volumeTouchedByUser = true;
+    });
 }
 
 void SettingsController::restore()
 {
     // 音量、播放模式、窗口尺寸全部来自设置，不再有散落的默认值
     const int initialVolume = AppSettings::defaultVolume();
+    m_applyingVolume = true;
     m_player->setVolumePercent(initialVolume);
-    m_appliedDefaultVolume = initialVolume;
+    // 真实窗口里滑块 valueChanged 连着 PlaybackController::setVolumePercent，
+    // 同步滑块也必须处于抑制窗口内，否则恢复动作会被记成“用户手动调过”。
     m_ui.volumeSlider->setValue(m_player->volumePercent());
+    m_applyingVolume = false;
+    m_volumeTouchedByUser = false;
 
     const int modeValue = AppSettings::playbackMode();
     m_player->setMode(static_cast<PlaybackController::Mode>(qBound(0, modeValue, 2)));
@@ -127,12 +135,14 @@ void SettingsController::apply()
     ThemeManager::instance().apply(AppSettings::themeId());
     resizeToPreset();
 
-    // 设置页的“默认音量”只在当前音量仍是上一次默认值时即时生效。
-    // 用户在播放/设置页手动调过音量后，从设置页返回不应被默认值打回去。
+    // 设置页的“默认音量”只在用户本轮没有手动调过音量时即时生效。
+    // 不能再用“当前值是否等于旧默认值”判断：用户恰好调到旧默认值时会被误判。
     const int newDefault = AppSettings::defaultVolume();
-    if (m_appliedDefaultVolume < 0 || m_player->volumePercent() == m_appliedDefaultVolume)
+    if (!m_volumeTouchedByUser) {
+        m_applyingVolume = true;
         m_player->setVolumePercent(newDefault);
-    m_appliedDefaultVolume = newDefault;
+        m_applyingVolume = false;
+    }
     {
         QSignalBlocker blocker(m_ui.volumeSlider);
         m_ui.volumeSlider->setValue(m_player->volumePercent());

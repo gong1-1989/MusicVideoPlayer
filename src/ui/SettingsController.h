@@ -48,9 +48,11 @@ private:
     SourceRegistry *m_registry = nullptr;
     HttpClient *m_http = nullptr;
     SettingsUi m_ui;
-    /// 上一次由设置页写入并应用到的默认音量。当前音量若已被用户手动调过，
-    /// 就不再被新的默认值覆盖。
-    int m_appliedDefaultVolume = -1;
+    /// 用户是否在当前设置页会话中手动改过音量。不能只比较“当前值等于旧默认值”，
+    /// 否则用户恰好调到旧默认值时，再改默认值会被误判为未调整而覆盖。
+    bool m_volumeTouchedByUser = false;
+    /// 控制器自己写入音量时置位，避免把程序设置当成用户手动调整。
+    bool m_applyingVolume = false;
 };
 
 #endif // SETTINGSCONTROLLER_H

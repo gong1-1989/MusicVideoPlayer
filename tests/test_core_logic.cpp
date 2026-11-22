@@ -1545,12 +1545,17 @@ void CoreLogicTest::hlsPlaylistSameScopeRejectsSiblingDirectory()
     const QUrl sameDir(QStringLiteral("https://cdn.test/videos/2024/index.m3u8"));
     const QUrl sibling(QStringLiteral("https://cdn.test/videos/2024/other/index.m3u8"));
     const QUrl directChild(QStringLiteral("https://cdn.test/videos/2024/720p/index.m3u8"));
+    const QUrl chunklistChild(QStringLiteral("https://cdn.test/videos/2024/chunklist/index.m3u8"));
+    const QUrl numberedChild(QStringLiteral("https://cdn.test/videos/2024/v1/index.m3u8"));
     const QUrl otherOrigin(QStringLiteral("https://cdn.test:8443/videos/2024/index.m3u8"));
 
     QVERIFY(HlsPlaylist::sameScope(master, sameDir));
     // /videos/2024/ 与 /videos/2024/other/ 不能再共用预取列表。
     QVERIFY(!HlsPlaylist::sameScope(master, sibling));
     QVERIFY(HlsPlaylist::sameScope(master, directChild));
+    // 常见但不在原有限白名单里的真实变体目录也要能回退预取。
+    QVERIFY(HlsPlaylist::sameScope(master, chunklistChild));
+    QVERIFY(HlsPlaylist::sameScope(master, numberedChild));
     QVERIFY(!HlsPlaylist::sameScope(master, otherOrigin));
 }
 

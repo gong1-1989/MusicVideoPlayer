@@ -228,6 +228,7 @@ private slots:
     void maccmsAbortClosesInflightRequest();
     void externalAbortKillsProcessWithoutFinish();
     void externalProviderScopesCookieToConfiguredOrigin();
+    void externalProviderHonorsLimit();
     void searchJsonOverLimitFails();
     void responseLimitAbortsInflight();
     void responseLimitOnHttpErrorKeepsStatus();
@@ -1109,6 +1110,45 @@ void IntegrationTest::externalProviderScopesCookieToConfiguredOrigin()
     const QHash<QString, QString> safe = HeaderPolicy::sanitizedForTarget(
         QUrl(QStringLiteral("https://cdn.example/a.mp3")), item.headers, item.sourceOrigin);
     QVERIFY(!safe.contains(QStringLiteral("Cookie")));
+}
+
+void IntegrationTest::externalProviderHonorsLimit()
+{
+    const QString script = m_tempDir.filePath(QStringLiteral("external_limit.cmd"));
+    QFile file(script);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("@echo {\"items\":[{\"title\":\"one\",\"streamUrl\":\"https://cdn.example/1.mp3\"},"
+              "{\"title\":\"two\",\"streamUrl\":\"https://cdn.example/2.mp3\"},"
+              "{\"title\":\"three\",\"streamUrl\":\"https://cdn.example/3.mp3\"}]}\r\n");
+    file.close();
+
+    SourceConfig config;
+    config.id = QStringLiteral("external_limit");
+    config.name = QStringLiteral("外部解析器截断");
+    config.kind = QStringLiteral("external");
+    config.mediaType = MediaType::Music;
+    config.command = QStringLiteral("cmd.exe");
+    config.arguments = QStringLiteral("/c ") + QDir::toNativeSeparators(script);
+    config.urlTemplate = QStringLiteral("https://trusted.example/api?q={keyword}");
+    config.timeoutMs = 5000;
+
+    ExternalSearchProvider provider(config);
+    QVector<MediaItem> items;
+    QString error;
+    bool done = false;
+    connect(&provider, &SearchProviderBase::finished, this,
+            [&](const QString &, const QVector<MediaItem> &result, int, const QString &message) {
+                items = result;
+                error = message;
+                done = true;
+            });
+
+    // 解析器没使用参数里的 {limit}，一次吐出 3 条；调用方只要 1 条。
+    provider.search(QStringLiteral("测试"), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(done, 4000);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(items.size(), 1);
+    QCOMPARE(items.first().title, QStringLiteral("one"));
 }
 
 void IntegrationTest::searchJsonOverLimitFails()

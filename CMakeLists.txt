@@ -212,6 +212,15 @@ add_executable(mvp_ui_tests
     src/ui/PlaylistController.cpp
     src/ui/SeekSlider.cpp
     src/ui/ListMetrics.cpp
+    src/ui/SettingsController.cpp
+    # SettingsController::openDialog() 仍引用设置/源管理对话框；测试只验证音量逻辑，
+    # 但链接期必须提供这些实现，否则整个 SettingsController 对象无法落地。
+    src/ui/SettingsDialog.cpp
+    src/ui/SettingsDialog.ui
+    src/ui/SourceManagerDialog.cpp
+    src/ui/SourceManagerDialog.ui
+    src/ui/SourceProbeDialog.cpp
+    src/ui/SourceProbeDialog.ui
     src/ui/ThemeManager.cpp
     src/ui/WindowChrome.cpp
 )

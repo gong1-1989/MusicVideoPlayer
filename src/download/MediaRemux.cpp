@@ -41,20 +41,27 @@ QString MediaRemux::ffmpegExecutable()
 
 void MediaRemux::cancel()
 {
-    // Windows 上 FFmpeg 还持有输出文件时删除会失败；必须先终止并等它退出，
-    // 再删 `.mvpremux`，否则大临时文件会留在下载目录里。
+    // Windows 上 FFmpeg 还持有输出文件时删除会失败。过去这里 kill 后同步等 3 秒，
+    // 取消/删除下载时整条 UI 会卡住；现在改成等进程真正退出后异步删临时文件。
     if (m_process != nullptr) {
         QProcess *process = m_process;
         m_process = nullptr;
         process->disconnect(this);
+        const QString tempPath = m_tempPath;
+        connect(process, &QProcess::finished, process,
+                [process, tempPath](int, QProcess::ExitStatus) {
+                    if (!tempPath.isEmpty())
+                        QFile::remove(tempPath);
+                    process->deleteLater();
+                });
         if (process->state() != QProcess::NotRunning) {
             process->kill();
-            process->waitForFinished(3000);
+        } else {
+            if (!tempPath.isEmpty())
+                QFile::remove(tempPath);
+            process->deleteLater();
         }
-        process->deleteLater();
     }
-    if (!m_tempPath.isEmpty())
-        QFile::remove(m_tempPath);
     m_tempPath.clear();
 }
 

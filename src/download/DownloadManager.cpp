@@ -494,6 +494,12 @@ void DownloadManager::scheduleRemoveFile(const QString &path, int attempt)
     // Windows 上 QFile/QNetworkReply 刚 close 时句柄可能尚未释放。
     // 把重试放到事件循环，避免在 UI 线程里 msleep 造成可见卡顿。
     QTimer::singleShot(25 * (attempt + 1), this, [this, path, attempt] {
+        // 延迟窗口内用户可能移除旧任务后立刻重新下载同一目标；
+        // 新任务已经占用这个路径时不能再按旧任务的所有权删除文件。
+        if (isPathReserved(path, QString())) {
+            qCInfo(lcDownloadManager) << "延迟删除跳过：路径已被新任务占用" << path;
+            return;
+        }
         scheduleRemoveFile(path, attempt + 1);
     });
 }

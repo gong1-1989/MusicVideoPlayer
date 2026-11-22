@@ -174,11 +174,21 @@ QString backupCorruptFile(const QString &path)
 {
     if (!QFile::exists(path))
         return QString();
-    const QString backup =
+    const QString base =
         path + QStringLiteral(".corrupt-")
         + QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMddHHmmss"));
-    if (QFile::copy(path, backup))
-        return backup;
+    // 同一秒内连续损坏/重载时，固定时间戳会撞名导致 QFile::copy 失败。
+    // 追加序号直到找到未占用名字；非“已存在”的复制失败仍按真实 IO 失败处理。
+    for (int suffix = 0; suffix < 100; ++suffix) {
+        const QString candidate =
+            suffix == 0 ? base : base + QStringLiteral("-") + QString::number(suffix);
+        if (QFile::exists(candidate))
+            continue;
+        if (QFile::copy(path, candidate))
+            return candidate;
+        if (!QFile::exists(candidate))
+            return QString();
+    }
     return QString();
 }
 

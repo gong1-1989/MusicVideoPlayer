@@ -39,6 +39,7 @@ private:
     QTimer *m_timer = nullptr;
 
     int m_filtered = 0;
+    int m_limit = 0;
     qint64 m_stderrBytes = 0;
     QString m_stderrTail;
     bool m_done = false;

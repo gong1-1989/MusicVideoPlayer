@@ -59,6 +59,7 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
 {
     m_done = false;
     m_filtered = 0;
+    m_limit = qMax(0, limit);
     m_stderrBytes = 0;
     m_stderrTail.clear();
 
@@ -201,6 +202,10 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
 
     QVector<MediaItem> result;
     for (const QJsonValue &value : items) {
+        // 解析器可能忽略命令行里的 {limit}，一次吐出整个站点结果；
+        // 这里按调用方页大小硬截断，避免 2 MB 输出变成数万条占用界面/内存。
+        if (m_limit > 0 && result.size() >= m_limit)
+            break;
         if (!value.isObject())
             continue;
         const QJsonObject object = value.toObject();

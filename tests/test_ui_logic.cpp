@@ -2,14 +2,19 @@
 #include "core/PlaylistStore.h"
 #include "media/MediaItem.h"
 #include "net/HttpClient.h"
+#include "net/SourceRegistry.h"
+#include "settings/AppSettings.h"
 #include "ui/LyricsController.h"
 #include "ui/ListMetrics.h"
 #include "ui/PlaylistController.h"
 #include "ui/SeekSlider.h"
+#include "ui/SettingsController.h"
 #include "ui/ThemeManager.h"
 
 #include <QFile>
 #include <QListView>
+#include <QMainWindow>
+#include <QSlider>
 #include <QTemporaryDir>
 #include <QTabWidget>
 #include <QSignalSpy>
@@ -82,6 +87,7 @@ private slots:
     void playlistSaveFailureKeepsDirtyAndRetries();
     void previewItemNeverPersistsUnlessPromoted();
     void downloadedItemSwitchesPlaylistToLocalSource();
+    void settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault();
 };
 
 void UiLogicTest::lyricsClearCancelsPendingRequest()
@@ -335,6 +341,51 @@ void UiLogicTest::downloadedItemSwitchesPlaylistToLocalSource()
 
     // 文件不存在时不能把列表改成坏路径
     QVERIFY(!controller.updateDownloadedItem(downloaded, temp.filePath(QStringLiteral("不存在.mp4"))));
+
+    if (oldDataDir.isEmpty())
+        qunsetenv("MVP_DATA_DIR");
+    else
+        qputenv("MVP_DATA_DIR", oldDataDir);
+}
+
+void UiLogicTest::settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    qputenv("MVP_DATA_DIR", temp.path().toUtf8());
+
+    PlaybackController player;
+    HttpClient http;
+    SourceRegistry registry;
+    QMainWindow window;
+    QSlider slider;
+    // 复刻真实窗口里 PlaybackUiController 的滑块联动；restore() 同步滑块时
+    // 不能被误记成用户手动调整音量。
+    QObject::connect(&slider, &QSlider::valueChanged, &player,
+                     &PlaybackController::setVolumePercent);
+
+    // QSettings 默认构造依赖应用名；测试进程没有设置时 setDefaultVolume 写不进去，
+    // restore() 会读回内置默认 60。
+    QCoreApplication::setOrganizationName(QStringLiteral("MusicVideoPlayerTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("MusicVideoPlayerTestUi"));
+    AppSettings::setDefaultVolume(40);
+    SettingsController settings(&player, &registry, &http, SettingsUi{&window, &slider});
+    settings.restore();
+    QCOMPARE(player.volumePercent(), 40);
+
+    // 用户手动把音量调回旧默认值 40：旧实现会误判为“没调过”，
+    // 设置页改成 70 后被覆盖；这里必须保留用户当前音量。
+    player.setVolumePercent(40);
+    AppSettings::setDefaultVolume(70);
+    settings.apply();
+    QCOMPARE(player.volumePercent(), 40);
+
+    // 重新恢复后没有手动调整，默认值仍应正常即时生效。
+    settings.restore();
+    AppSettings::setDefaultVolume(85);
+    settings.apply();
+    QCOMPARE(player.volumePercent(), 85);
 
     if (oldDataDir.isEmpty())
         qunsetenv("MVP_DATA_DIR");

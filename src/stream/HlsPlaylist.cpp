@@ -153,7 +153,9 @@ bool HlsPlaylist::sameScope(const QUrl &a, const QUrl &b)
     if (component.isEmpty() || component.contains(QLatin1Char('/')))
         return false;
     static const QRegularExpression variantDir(
-        QStringLiteral("^(?:\\d{3,4}[pP]?|hd|sd|uhd|4k|8k|audio|video|hls|mp4|fmp4)$"),
+        QStringLiteral("^(?:\\d{3,4}[pP]?|\\d{3,4}[kK]|hd|sd|uhd|4k|8k|audio|video|hls|mp4|fmp4|"
+                       "chunklist|chunks?|segments?|index|playlist|streams?|level|bitrate|"
+                       "media|main|v\\d+)$"),
         QRegularExpression::CaseInsensitiveOption);
     return variantDir.match(component).hasMatch();
 }
