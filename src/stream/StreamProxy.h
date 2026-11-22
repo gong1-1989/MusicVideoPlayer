@@ -145,7 +145,12 @@ private:
     void readIntoCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
                        QNetworkReply *reply);
     void finishCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
-                     QNetworkReply *reply);
+                     QNetworkReply *reply, const QUrl &upstream = QUrl(),
+                     const QHash<QString, QString> &headers = QHash<QString, QString>());
+    /// 单路上游在总长度未收齐时断流（常见于 CDN 约 2 分钟重置连接），
+    /// 从缓存末尾续发 Range，避免播放器直接收到 Demuxing failed。
+    void resumeCacheUpstream(const QString &key, const QSharedPointer<CacheEntry> &entry,
+                             const QUrl &upstream, const QHash<QString, QString> &headers);
     void pruneCache(const QString &keepKey = QString());
     /// 缓存是否还能容纳新条目：先按空闲/失败条目淘汰，再同时检查条数和总字节。
     /// 全部条目都在服务客户端时无法淘汰，此时返回 false，调用方应放弃缓存、直接透传，

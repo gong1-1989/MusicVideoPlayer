@@ -32,6 +32,9 @@ struct StreamCacheEntry
     QByteArray contentType;
     qint64 lastUsedMs = 0;
     QNetworkReply *reply = nullptr;
+    /// 上游连接被 CDN/代理中途重置时，按已缓存长度重新发 Range。
+    /// 限制次数，避免源站持续拒绝时形成无限重试。
+    int resumeAttempts = 0;
     QList<QPointer<QTcpSocket>> clients;
     // 多连接 Range 下载：各分片先按起始偏移暂存，凑齐连续前缀后再并入
     // data 供播放器顺序读取。rangeReplies 用来在换片/淘汰时统一中止。

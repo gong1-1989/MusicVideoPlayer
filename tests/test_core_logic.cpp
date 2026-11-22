@@ -100,6 +100,98 @@ public:
     QByteArray contentType = QByteArrayLiteral("audio/mpeg");
 };
 
+/// 模拟整段 200 响应传到一半被 CDN 重置连接，但支持从断点发 Range 续传。
+/// 这是“播放约两分钟后 Demuxing failed”的回归源。
+class TruncatingRangeServer : public QTcpServer
+{
+public:
+    explicit TruncatingRangeServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("responded").toBool())
+                        return;
+
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+
+                    ++requestCount;
+                    qint64 start = 0;
+                    for (const QByteArray &line : pending.left(headEnd).split('\n')) {
+                        if (!line.toLower().startsWith("range:"))
+                            continue;
+                        const QByteArray spec = line.mid(6).trimmed();
+                        if (!spec.startsWith("bytes="))
+                            continue;
+                        const int dash = spec.indexOf('-', 6);
+                        if (dash > 6)
+                            start = spec.mid(6, dash - 6).toLongLong();
+                    }
+                    ranges.append(start);
+                    socket->setProperty("responded", true);
+
+                    QByteArray head;
+                    QByteArray part;
+                    if (requestCount == 1) {
+                        // 首次故意只发前 300 字节，然后 RST。
+                        if (partialInitial) {
+                            head = "HTTP/1.1 206 Partial Content\r\n"
+                                   "Content-Type: audio/mpeg\r\n"
+                                   "Content-Range: bytes 0-"
+                                   + QByteArray::number(body.size() - 1) + '/'
+                                   + QByteArray::number(body.size())
+                                   + "\r\nContent-Length: "
+                                   + QByteArray::number(body.size())
+                                   + "\r\nConnection: close\r\n\r\n";
+                        } else {
+                            head = "HTTP/1.1 200 OK\r\n"
+                                   "Content-Type: audio/mpeg\r\n"
+                                   "Content-Length: "
+                                   + QByteArray::number(body.size())
+                                   + "\r\nConnection: close\r\n\r\n";
+                        }
+                        part = body.left(300);
+                    } else {
+                        const QByteArray tail = body.mid(int(start));
+                        head = "HTTP/1.1 206 Partial Content\r\n"
+                               "Content-Type: audio/mpeg\r\n"
+                               "Content-Range: bytes "
+                               + QByteArray::number(start) + '-'
+                               + QByteArray::number(body.size() - 1) + '/'
+                               + QByteArray::number(body.size())
+                               + "\r\nContent-Length: "
+                               + QByteArray::number(tail.size())
+                               + "\r\nConnection: close\r\n\r\n";
+                        part = tail;
+                    }
+                    socket->write(head + part);
+                    socket->flush();
+                    const bool first = requestCount == 1;
+                    QTimer::singleShot(first ? 60 : 0, socket, [socket, first] {
+                        if (first)
+                            socket->abort();
+                        else
+                            socket->disconnectFromHost();
+                    });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QByteArray body;
+    int requestCount = 0;
+    bool partialInitial = false;
+    QList<qint64> ranges;
+};
+
 /// 模拟真正支持 206 的 HLS 分片源站。代理对 `bytes=0-` 的 .ts 请求会先
 /// 用 16KB 探测总长，再并发拉剩余分段；这里逐条记录 Range，供测试确认
 /// 多连接路径确实被走到、而不是退化在上游单路透传。
@@ -502,6 +594,8 @@ private slots:
     void configMapperBoolRulesDoNotMixWithNumbers();
     void configMapperSplitsEpisodesAndResolvesUrls();
     void streamProxySlicesRangeFromCache();
+    void streamProxyResumesTruncatedCache();
+    void streamProxyResumesTruncatedPartialCache();
     void streamProxyHandlesSuffixlessTextPlaylist();
     void streamProxyEvictsPrefetchWithoutLeakingSlots();
     void seekPrefetchWindowFollowsPlaylistIndex();
@@ -1314,6 +1408,74 @@ void CoreLogicTest::streamProxySlicesRangeFromCache()
     QVERIFY(head.contains("Content-Range: bytes */1000"));
     QCOMPARE(body.size(), 0);
     QCOMPARE(upstream.requestCount, 1);
+}
+
+void CoreLogicTest::streamProxyResumesTruncatedCache()
+{
+    TruncatingRangeServer upstream;
+    upstream.body = proxyTestBody(1000);
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QString upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/audio/truncated.mp3").arg(upstream.serverPort());
+    const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl));
+    QVERIFY(local.isValid());
+
+    QTcpSocket socket;
+    socket.connectToHost(local.host(), quint16(local.port()));
+    QVERIFY(socket.waitForConnected(3000));
+    socket.write("GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                 "Host: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    socket.flush();
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(readProxyResponse(&socket, &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 200"), head.constData());
+    QCOMPARE(body, upstream.body);
+
+    QTRY_COMPARE_WITH_TIMEOUT(upstream.requestCount, 2, 6000);
+    QVERIFY2(upstream.ranges.size() >= 2, qPrintable(QString::number(upstream.ranges.size())));
+    QVERIFY(upstream.ranges.at(1) > 0);
+    QVERIFY(upstream.ranges.at(1) <= upstream.body.size());
+}
+
+void CoreLogicTest::streamProxyResumesTruncatedPartialCache()
+{
+    TruncatingRangeServer upstream;
+    upstream.partialInitial = true;
+    upstream.body = proxyTestBody(1000);
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QString upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/audio/partial-truncated.mp3").arg(upstream.serverPort());
+    const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl));
+    QVERIFY(local.isValid());
+
+    QTcpSocket socket;
+    socket.connectToHost(local.host(), quint16(local.port()));
+    QVERIFY(socket.waitForConnected(3000));
+    // 播放器对音频常用 `Range: bytes=0-`，网易云等 CDN 会回 206。
+    // 这条必须和 200 全量路径一样进入缓存并在断流后续传。
+    socket.write("GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                 "Host: 127.0.0.1\r\nRange: bytes=0-\r\nConnection: close\r\n\r\n");
+    socket.flush();
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(readProxyResponse(&socket, &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QCOMPARE(body, upstream.body);
+
+    QTRY_COMPARE_WITH_TIMEOUT(upstream.requestCount, 2, 6000);
+    QVERIFY(upstream.ranges.size() >= 2);
+    QVERIFY(upstream.ranges.at(1) > 0);
 }
 
 void CoreLogicTest::streamProxyHandlesSuffixlessTextPlaylist()
