@@ -8,18 +8,27 @@
 #include <QSet>
 #include <QSharedPointer>
 #include <QString>
+#include <QUrl>
 
 class QNetworkReply;
+class QFile;
 class QTcpSocket;
 
 /// Range 默认连接数，和 StreamProxy 的分片策略保持一致。
 inline constexpr int kStreamCacheDefaultRangeConnections = 4;
 
-/// 一条上游 200 响应在本地内存里的副本。
-/// 上游忽略 Range 时，拖动请求由这里的缓冲区切片返回 206。
+/// 一条上游响应在本地保存的副本（内存或在媒体缓存目录里的单文件）。
+/// 上游忽略 Range 时，拖动请求由这里的缓冲区/文件切片返回 206。
 struct StreamCacheEntry
 {
     QByteArray data;
+    /// 整段落盘缓存时，data 不保存正文，实际字节在 file 指向的文件里。
+    /// dataSize 同时覆盖内存与文件两种模式，避免各处混用 data.size()。
+    bool diskBacked = false;
+    QString filePath;
+    QUrl upstream;
+    qint64 dataSize = 0;
+    QFile *file = nullptr;
     qint64 total = -1;
     /// 已登记但还没收到的字节数。pending 占位和单连接在途响应都按 total
     /// 预留配额，避免多个未完成条目绕过 kMaxCacheTotalBytes。

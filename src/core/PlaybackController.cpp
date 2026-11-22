@@ -1,5 +1,6 @@
 #include "core/PlaybackController.h"
 
+#include "cache/MediaCache.h"
 #include "net/HttpClient.h"
 #include "stream/StreamProxy.h"
 
@@ -276,16 +277,31 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
         qCInfo(lcPlayer) << "准备恢复视频进度" << item.displayName() << item.positionMs;
     }
 
-    // 在线流统一走本地回环代理，由代理补 Referer/Cookie 并透传 Range；
-    // 本地文件直接用 file:// 播放。视频优先 mp4/flv，HLS 只做回退。
+    // 加载优先级：本地文件 > 完整本地缓存 > 断点续传缓存 > 网络。
+    // 本地条目本来就在磁盘上，再缓存一份纯属浪费；只有在线直链（音乐/影视）
+    // 才建立与播放列表条目一一对应的整段缓存。HLS 仍是播放列表加分片，
+    // 由代理按分片在内存里缓存，不在这里拼成单文件。
     const QUrl playbackUrl = preferredPlaybackUrl(playbackItem);
     QUrl source = playbackUrl;
-    if (playbackItem.online && m_proxyReady && m_proxyThread->isRunning()) {
+    QString sourceKind = playbackItem.online ? QStringLiteral("在线代理")
+                                             : QStringLiteral("本地文件");
+    const bool cacheable = MediaCache::isCacheable(playbackItem);
+    const QString completeCache =
+        cacheable ? MediaCache::completeFileForItem(playbackItem) : QString();
+    if (!completeCache.isEmpty()) {
+        source = QUrl::fromLocalFile(completeCache);
+        sourceKind = QStringLiteral("本地缓存");
+    } else if (playbackItem.online && m_proxyReady && m_proxyThread->isRunning()) {
+        const QString cachePath =
+            cacheable ? MediaCache::filePathForItem(playbackItem) : QString();
+        if (cacheable && !MediaCache::partialFileForItem(playbackItem).isEmpty())
+            sourceKind = QStringLiteral("本地缓存续传");
         QUrl proxied;
         const bool invoked = QMetaObject::invokeMethod(
             m_proxy,
-            [proxy = m_proxy, url = playbackUrl, headers = playbackItem.headers, &proxied] {
-                proxied = proxy->proxyUrlFor(url, headers);
+            [proxy = m_proxy, url = playbackUrl, headers = playbackItem.headers,
+             cachePath, &proxied] {
+                proxied = proxy->proxyUrlFor(url, headers, cachePath);
             },
             Qt::BlockingQueuedConnection);
         if (invoked && proxied.isValid())
@@ -298,8 +314,8 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     m_mediaReady = false;
     m_deferredSeekMs = -1;
     m_player->play();
-    qCInfo(lcPlayer) << "开始播放" << row << item.displayName()
-                     << (item.online ? "在线代理" : "本地文件");
+    qCInfo(lcPlayer) << "开始播放" << row << item.displayName() << sourceKind
+                     << HttpClient::redactUrl(source);
     emit currentItemChanged(item, row);
 }
 

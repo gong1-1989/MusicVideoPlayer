@@ -1,5 +1,6 @@
 #include "lyrics/LrcParser.h"
 #include "audio/SpectrumMath.h"
+#include "cache/MediaCache.h"
 #include "core/PlaybackController.h"
 #include "core/PlaylistModel.h"
 #include "download/DownloadTask.h"
@@ -596,6 +597,8 @@ private slots:
     void streamProxySlicesRangeFromCache();
     void streamProxyResumesTruncatedCache();
     void streamProxyResumesTruncatedPartialCache();
+    void streamProxyWritesCompleteDiskCache();
+    void streamProxyResumesDiskCacheFromPartialFile();
     void streamProxyHandlesSuffixlessTextPlaylist();
     void streamProxyEvictsPrefetchWithoutLeakingSlots();
     void seekPrefetchWindowFollowsPlaylistIndex();
@@ -1476,6 +1479,171 @@ void CoreLogicTest::streamProxyResumesTruncatedPartialCache()
     QTRY_COMPARE_WITH_TIMEOUT(upstream.requestCount, 2, 6000);
     QVERIFY(upstream.ranges.size() >= 2);
     QVERIFY(upstream.ranges.at(1) > 0);
+}
+
+void CoreLogicTest::streamProxyWritesCompleteDiskCache()
+{
+    // 数据目录用临时路径，避免测试把缓存写进用户真实的 Data/media-cache。
+    QTemporaryDir dataDir;
+    QVERIFY(dataDir.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    const bool hadDataDir = qEnvironmentVariableIsSet("MVP_DATA_DIR");
+    struct EnvGuard
+    {
+        QByteArray oldValue;
+        bool had = false;
+        ~EnvGuard()
+        {
+            if (had)
+                qputenv("MVP_DATA_DIR", oldValue);
+            else
+                qunsetenv("MVP_DATA_DIR");
+        }
+    } guard{oldDataDir, hadDataDir};
+    qputenv("MVP_DATA_DIR", dataDir.path().toUtf8());
+
+    TruncatingRangeServer upstream;
+    upstream.partialInitial = true;
+    upstream.body = proxyTestBody(1000);
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    const QString upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/audio/disk-cache.mp3").arg(upstream.serverPort());
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("磁盘缓存测试");
+    item.url = upstreamUrl;
+    item.online = true;
+    QVERIFY(MediaCache::isCacheable(item));
+
+    const QString cachePath = MediaCache::filePathForItem(item);
+    QVERIFY(!cachePath.isEmpty());
+    QVERIFY(cachePath.contains(QStringLiteral("media-cache")));
+    QVERIFY2(cachePath.endsWith(QStringLiteral("media.mp3")), qPrintable(cachePath));
+
+    auto fetchAll = [](const QUrl &local, QByteArray *head, QByteArray *body) {
+        QTcpSocket socket;
+        socket.connectToHost(local.host(), quint16(local.port()));
+        if (!socket.waitForConnected(3000))
+            return false;
+        socket.write("GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                     "Host: 127.0.0.1\r\nConnection: close\r\n\r\n");
+        socket.flush();
+        return readProxyResponse(&socket, head, body);
+    };
+
+    {
+        StreamProxy proxy;
+        QVERIFY(proxy.start());
+        const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath);
+        QVERIFY(local.isValid());
+
+        QByteArray head;
+        QByteArray body;
+        QVERIFY(fetchAll(local, &head, &body));
+        QVERIFY2(head.startsWith("HTTP/1.1 200"), head.constData());
+        QCOMPARE(body, upstream.body);
+
+        // 上游先只给 300 字节再断流，代理应落盘并从 300 续传补齐。
+        QTRY_COMPARE_WITH_TIMEOUT(upstream.requestCount, 2, 6000);
+        QVERIFY(upstream.ranges.size() >= 2);
+        QCOMPARE(upstream.ranges.at(1), qint64(300));
+        QTRY_COMPARE_WITH_TIMEOUT(MediaCache::fileSize(cachePath), qint64(1000), 3000);
+
+        MediaCache::State state;
+        QVERIFY(MediaCache::readState(cachePath, &state));
+        QVERIFY(state.complete);
+        QCOMPARE(state.totalBytes, qint64(1000));
+        QCOMPARE(MediaCache::completeFileForItem(item), cachePath);
+    }
+
+    // 新进程/新代理再次请求同一 URL：完整磁盘缓存直接供流，不再打上游。
+    const int requestsAfterDownload = upstream.requestCount;
+    {
+        StreamProxy proxy;
+        QVERIFY(proxy.start());
+        const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath);
+        QVERIFY(local.isValid());
+
+        QByteArray head;
+        QByteArray body;
+        QVERIFY(fetchAll(local, &head, &body));
+        QVERIFY2(head.startsWith("HTTP/1.1 200"), head.constData());
+        QCOMPARE(body, upstream.body);
+        QCOMPARE(upstream.requestCount, requestsAfterDownload);
+    }
+}
+
+void CoreLogicTest::streamProxyResumesDiskCacheFromPartialFile()
+{
+    QTemporaryDir dataDir;
+    QVERIFY(dataDir.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    const bool hadDataDir = qEnvironmentVariableIsSet("MVP_DATA_DIR");
+    struct EnvGuard
+    {
+        QByteArray oldValue;
+        bool had = false;
+        ~EnvGuard()
+        {
+            if (had)
+                qputenv("MVP_DATA_DIR", oldValue);
+            else
+                qunsetenv("MVP_DATA_DIR");
+        }
+    } guard{oldDataDir, hadDataDir};
+    qputenv("MVP_DATA_DIR", dataDir.path().toUtf8());
+
+    RangeSupportingServer upstream;
+    upstream.body = proxyTestBody(1000);
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    const QString upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/video/resume-cache.mp4").arg(upstream.serverPort());
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("断点续传测试");
+    item.url = upstreamUrl;
+    item.online = true;
+    QVERIFY(MediaCache::isCacheable(item));
+
+    const QString cachePath = MediaCache::filePathForItem(item);
+    QVERIFY(QDir().mkpath(QFileInfo(cachePath).absolutePath()));
+    {
+        QFile file(cachePath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write(upstream.body.left(300)) == 300);
+    }
+    QVERIFY(MediaCache::writeState(cachePath, QUrl(upstreamUrl), "video/mp4", 1000, false));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+    const QUrl local = proxy.proxyUrlFor(QUrl(upstreamUrl), {}, cachePath);
+    QVERIFY(local.isValid());
+
+    QTcpSocket socket;
+    socket.connectToHost(local.host(), quint16(local.port()));
+    QVERIFY(socket.waitForConnected(3000));
+    socket.write("GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                 "Host: 127.0.0.1\r\nRange: bytes=0-\r\nConnection: close\r\n\r\n");
+    socket.flush();
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(readProxyResponse(&socket, &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QCOMPARE(body, upstream.body);
+
+    // 已有 300 字节时必须从 300 请求上游，绝不能重新从 0 下载覆盖前缀。
+    QCOMPARE(upstream.requestCount, 1);
+    QVERIFY(!upstream.ranges.isEmpty());
+    QCOMPARE(upstream.ranges.first().first, qint64(300));
+    QTRY_COMPARE_WITH_TIMEOUT(MediaCache::fileSize(cachePath), qint64(1000), 3000);
+
+    MediaCache::State state;
+    QVERIFY(MediaCache::readState(cachePath, &state));
+    QVERIFY(state.complete);
+    QCOMPARE(state.totalBytes, qint64(1000));
 }
 
 void CoreLogicTest::streamProxyHandlesSuffixlessTextPlaylist()

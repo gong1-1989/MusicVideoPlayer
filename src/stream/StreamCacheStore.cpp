@@ -2,7 +2,7 @@
 
 qint64 StreamCacheStore::bytes(const Entry &entry)
 {
-    qint64 stored = entry.data.size();
+    qint64 stored = entry.diskBacked ? entry.dataSize : entry.data.size();
     for (auto it = entry.rangeParts.cbegin(); it != entry.rangeParts.cend(); ++it)
         stored += it.value().size();
     // 配额按“已缓存 + 已登记未完成”算：pending 占位/在途响应即使还没收到数据，

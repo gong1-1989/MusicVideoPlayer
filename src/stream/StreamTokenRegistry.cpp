@@ -41,7 +41,8 @@ QString StreamTokenRegistry::cacheKeyFor(const QUrl &upstream,
 }
 
 QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
-                                      const QHash<QString, QString> &headers, int port)
+                                      const QHash<QString, QString> &headers, int port,
+                                      const QString &cachePath)
 {
     if (port <= 0 || !upstream.isValid() || upstream.isEmpty())
         return QUrl();
@@ -54,6 +55,10 @@ QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
     const QString existing = m_tokenByKey.value(key);
     if (!existing.isEmpty() && m_tokens.contains(existing)) {
         m_tokens[existing].lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+        // 同一直链可能先作为试听登记、后从播放列表重新播放；后者带着
+        // 条目缓存路径，不能因为 token 复用就丢掉落盘关联。
+        if (!cachePath.isEmpty())
+            m_tokens[existing].cachePath = cachePath;
         return QUrl(QStringLiteral("http://127.0.0.1:%1/stream/%2/").arg(port).arg(existing));
     }
 
@@ -68,6 +73,7 @@ QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
     entry.headers = HeaderPolicy::sanitizedForTarget(upstream, headers);
     entry.lastUsedMs = QDateTime::currentMSecsSinceEpoch();
     entry.cacheKey = key;
+    entry.cachePath = cachePath;
     m_tokens.insert(token, entry);
     m_tokenByKey.insert(key, token);
 

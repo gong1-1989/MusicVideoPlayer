@@ -91,6 +91,8 @@ qt_add_library(mvp_core STATIC
     src/download/DownloadManager.cpp
     src/download/MediaRemux.h
     src/download/MediaRemux.cpp
+    src/cache/MediaCache.h
+    src/cache/MediaCache.cpp
     src/stream/StreamProxy.h
     src/stream/StreamProxy.cpp
     src/stream/StreamCacheStore.h

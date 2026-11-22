@@ -18,6 +18,8 @@ public:
         QHash<QString, QString> headers;
         qint64 lastUsedMs = 0;
         QString cacheKey;
+        /// 该条目对应的整段磁盘缓存路径；HLS 播放列表/分片为空。
+        QString cachePath;
     };
 
     void clear();
@@ -27,8 +29,9 @@ public:
     static QString cacheKeyFor(const QUrl &upstream, const QHash<QString, QString> &headers);
 
     /// 登记上游地址并返回本地代理目录 URL；同一地址+同一组头会复用 token。
-    /// 监听端口无效时返回空 URL。
-    QUrl registerFor(const QUrl &upstream, const QHash<QString, QString> &headers, int port);
+    /// 监听端口无效时返回空 URL。cachePath 只对可直接整段落盘的直链生效。
+    QUrl registerFor(const QUrl &upstream, const QHash<QString, QString> &headers, int port,
+                     const QString &cachePath = QString());
 
     /// 按 token 取回上游并刷新空闲时间；未知 token 返回 false。
     bool lookup(const QString &token, Upstream *upstream);

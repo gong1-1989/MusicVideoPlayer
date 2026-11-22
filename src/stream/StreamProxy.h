@@ -58,8 +58,11 @@ public:
 
     /// 登记一个上游地址，返回给 QMediaPlayer 使用的本地 URL。
     /// headers 是该源必需的请求头（Referer、Cookie 等），代理在拉流时补上。
+    /// cachePath 非空且是可按字节定位的直链时，代理会把整段正文落到该文件，
+    /// 下次播放从已有字节继续请求；HLS 播放列表/分片忽略该参数。
     QUrl proxyUrlFor(const QUrl &upstream,
-                     const QHash<QString, QString> &headers = QHash<QString, QString>());
+                     const QHash<QString, QString> &headers = QHash<QString, QString>(),
+                     const QString &cachePath = QString());
 
     /// 深拖动前调用：按播放列表里记录的分片时长，把目标时间映射成分片序号，
     /// 在 FFmpeg 真正 seek 之前先把目标附近的分片排进预取队列。
@@ -107,7 +110,8 @@ private:
     void startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                               const QHash<QString, QString> &headers,
                               const Request &request, bool hasRange,
-                              const QString &cacheKey);
+                              const QString &cacheKey,
+                              const QString &cachePath = QString());
     /// HLS 分片请求命中时，用多路 Range 并发拉取并在缓存里按偏移拼接。
     /// 只对已知媒体分片、`bytes=0-` 且总长受限的请求启用。
     bool tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream,
@@ -142,20 +146,29 @@ private:
     bool serveFromCache(QTcpSocket *client, const QSharedPointer<CacheEntry> &entry,
                         const QString &cacheKey, const QString &rangeHeader, bool hasRange);
     void pumpCache(const QString &key, const QSharedPointer<CacheEntry> &entry);
-    void readIntoCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
-                       QNetworkReply *reply);
     void finishCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
                      QNetworkReply *reply, const QUrl &upstream = QUrl(),
                      const QHash<QString, QString> &headers = QHash<QString, QString>());
+    void readIntoCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
+                       QNetworkReply *reply);
+    /// 缓存正文可能是内存 QByteArray，也可能是整段落盘的文件。
+    /// 统一从这里读写，避免调用方混用 data.size()/data.constData()。
+    qint64 cacheDataSize(const CacheEntry &entry) const;
+    qint64 cacheSlice(CacheEntry &entry, qint64 offset, qint64 length,
+                      QByteArray *out) const;
+    bool appendCacheData(CacheEntry &entry, const QByteArray &chunk);
+    /// 打开（必要时从头截断）条目文件，返回实际可用的已有字节数；失败返回 -1。
+    qint64 openCacheFile(CacheEntry &entry, const QString &path, qint64 existingBytes);
+    void closeCacheFile(CacheEntry &entry);
+    void persistCacheState(CacheEntry &entry);
     /// 单路上游在总长度未收齐时断流（常见于 CDN 约 2 分钟重置连接），
     /// 从缓存末尾续发 Range，避免播放器直接收到 Demuxing failed。
     void resumeCacheUpstream(const QString &key, const QSharedPointer<CacheEntry> &entry,
                              const QUrl &upstream, const QHash<QString, QString> &headers);
     void pruneCache(const QString &keepKey = QString());
     /// 缓存是否还能容纳新条目：先按空闲/失败条目淘汰，再同时检查条数和总字节。
-    /// 全部条目都在服务客户端时无法淘汰，此时返回 false，调用方应放弃缓存、直接透传，
-    /// 避免缓存总量突破 256 MB 上限。
-    bool cacheHasRoom(qint64 bytes, const QString &keepKey);
+    /// 内存缓存和磁盘整段缓存分属两个配额池，磁盘条目不能把 256MB 内存上限吃掉。
+    bool cacheHasRoom(qint64 bytes, const QString &keepKey, bool diskBacked = false);
     void dropCacheEntry(const QString &key);
     /// 先断开 reply 到代理的所有信号再 abort：QNetworkReply::abort() 可能同步
     /// 发出 finished，回调会重入正在清理的 rangeReplies/m_cache 列表。
