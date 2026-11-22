@@ -169,6 +169,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_musicVisual->setGeometry(ui->videoStage->rect());
     m_musicVisual->raise();
     m_musicVisual->hide();
+    // 频谱直接取播放器解码后的 PCM，只分析本播放器自身音频。
+    m_musicVisual->setMediaPlayer(m_player->mediaPlayer());
     connect(m_player, &PlaybackController::currentItemChanged, this,
             [this](const MediaItem &item, int) {
                 const bool music = item.isValid() && item.type == MediaType::Music;

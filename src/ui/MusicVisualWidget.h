@@ -10,13 +10,14 @@
 #include <QWidget>
 
 class AudioSpectrumAnalyzer;
+class QMediaPlayer;
 class QTimer;
 
 /// 音乐播放时的中央视觉层。
 /// 音频没有视频帧，原来的 VideoSurface 会一直黑屏；这里用动态渐变、
 /// 频谱柱和曲目信息组成“唱片舞台”，有封面时叠加封面，无封面则保持梦幻风格。
-/// 频谱优先使用 WASAPI Loopback 采集当前系统音频并做 FFT；采集不可用时
-/// 退回低开销的拟真动画，不阻塞或干扰 QMediaPlayer 的播放链路。
+/// 频谱直接读取 QMediaPlayer 的 QAudioBufferOutput（仅播放器自身音频），
+/// 只做轻量 FFT；播放器缓冲不可用时退回低开销的拟真动画。
 class MusicVisualWidget : public QWidget
 {
     Q_OBJECT
@@ -27,11 +28,12 @@ public:
 
     void setTrack(const MediaItem &item);
     void setPlaying(bool playing);
+    void setMediaPlayer(QMediaPlayer *player);
     void setAccent(const QColor &color);
     void setLyrics(const QStringList &lines);
     void setLyricIndex(int index);
     void clearLyrics();
-    /// WASAPI Loopback 的真实频段能量；为空或过期时自动回退到拟真动画。
+    /// 播放器解码音频的真实频段能量；为空或过期时自动回退到拟真动画。
     void setAudioSpectrum(const QVector<float> &levels);
 
 protected:
@@ -43,6 +45,7 @@ protected:
 
 private:
     void updateCaptureState();
+    QColor spectrumColor(int bandIndex) const;
     void drawBackground(QPainter &painter, const QRectF &rect);
     void drawSpectrum(QPainter &painter, const QRectF &rect);
     void drawTrackInfo(QPainter &painter, const QRectF &rect);
@@ -56,7 +59,7 @@ private:
     QTimer *m_timer = nullptr;
     AudioSpectrumAnalyzer *m_spectrum = nullptr;
     QVector<float> m_audioSpectrum;
-    /// 以 33ms 定时器计数；约 330ms 没有新帧就认为采集已停，回退拟真动画。
+    /// 以 33ms 定时器计数；约 300ms 没有新帧就认为播放器缓冲暂停，回退拟真动画。
     int m_audioSpectrumAge = 1000;
     QColor m_accent{96, 132, 255};
     QStringList m_lyrics;

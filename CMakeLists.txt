@@ -110,9 +110,8 @@ target_link_libraries(mvp_core PUBLIC
     Qt6::Multimedia
 )
 if(WIN32)
-    # 源配置凭据使用 DPAPI 加密，避免 sources.json 出现明文 Cookie；
-    # 动感视图的 WASAPI Loopback 需要 COM 接口。
-    target_link_libraries(mvp_core PUBLIC crypt32 ole32)
+    # 源配置凭据使用 DPAPI 加密，避免 sources.json 出现明文 Cookie
+    target_link_libraries(mvp_core PUBLIC crypt32)
 endif()
 mvp_enable_warnings(mvp_core)
 

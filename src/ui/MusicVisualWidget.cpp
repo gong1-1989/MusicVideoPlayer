@@ -22,11 +22,34 @@ Q_LOGGING_CATEGORY(lcMusicVisual, "mvp.ui.musicvisual")
 
 namespace {
 
+constexpr int kBandCount = 46;
+
 QColor withAlpha(const QColor &color, int alpha)
 {
     QColor copy = color;
     copy.setAlpha(qBound(0, alpha, 255));
     return copy;
+}
+
+QColor mixColors(const QColor &from, const QColor &to, qreal progress)
+{
+    const qreal p = qBound(0.0, progress, 1.0);
+    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * p,
+                            from.greenF() + (to.greenF() - from.greenF()) * p,
+                            from.blueF() + (to.blueF() - from.blueF()) * p);
+}
+
+/// 低频暖粉 -> 橙 -> 紫 -> 蓝 -> 高频薄荷青；比单一主题色更能表现频段层次。
+QColor spectrumPaletteColor(qreal progress)
+{
+    static const QColor stops[] = {
+        QColor(255, 94, 158), QColor(255, 150, 92), QColor(173, 110, 255),
+        QColor(80, 170, 255), QColor(55, 235, 205)
+    };
+    const int segmentCount = 4; // stops 有 5 个颜色，形成 4 段插值
+    const qreal value = qBound(0.0, progress, 1.0) * segmentCount;
+    const int index = qMin(segmentCount - 1, int(value));
+    return mixColors(stops[index], stops[index + 1], value - index);
 }
 
 QString sourceLabel(const MediaItem &item)
@@ -64,7 +87,7 @@ MusicVisualWidget::MusicVisualWidget(QWidget *parent)
             this, &MusicVisualWidget::setAudioSpectrum);
     connect(m_spectrum, &AudioSpectrumAnalyzer::unavailable, this,
             [this](const QString &reason) {
-                // 采集不可用时清空真实频谱，绘制层会自动回到原来的正弦动画。
+                // 播放器音频缓冲不可用时清空真实频谱，绘制层回退到拟真动画。
                 m_audioSpectrum.clear();
                 m_audioSpectrumAge = 1000;
                 qCWarning(lcMusicVisual) << reason;
@@ -114,10 +137,18 @@ void MusicVisualWidget::setPlaying(bool playing)
     if (!m_playing) {
         // 暂停/停止时保留最后一帧真实频谱并定格；只有从未拿到真实数据时
         // 才让绘制层回退拟真动画，避免暂停后反而出现满屏假能量。
-        m_audioSpectrumAge = m_audioSpectrum.size() == 46 ? 0 : 1000;
+        m_audioSpectrumAge = m_audioSpectrum.size() == kBandCount ? 0 : 1000;
     }
     updateCaptureState();
     update();
+}
+
+void MusicVisualWidget::setMediaPlayer(QMediaPlayer *player)
+{
+    if (m_spectrum == nullptr)
+        return;
+    m_spectrum->attachPlayer(player);
+    updateCaptureState();
 }
 
 void MusicVisualWidget::setAccent(const QColor &color)
@@ -214,6 +245,13 @@ void MusicVisualWidget::setAudioSpectrum(const QVector<float> &levels)
     // 正常播放时 33ms 定时器已在重绘，这里不额外 update()，避免双倍刷新。
 }
 
+QColor MusicVisualWidget::spectrumColor(int bandIndex) const
+{
+    const qreal progress =
+        bandIndex <= 0 ? 0.0 : qBound(0.0, qreal(bandIndex) / (kBandCount - 1), 1.0);
+    return spectrumPaletteColor(progress);
+}
+
 bool MusicVisualWidget::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == parentWidget() && event->type() == QEvent::Resize) {
@@ -227,23 +265,27 @@ void MusicVisualWidget::drawBackground(QPainter &painter, const QRectF &rect)
 {
     painter.fillRect(rect, QColor(7, 9, 22));
 
-    // 两团缓慢漂移的光晕，形成“极光在流动”的观感；不依赖封面也能撑住画面。
+    // 两团缓慢漂移的光晕，形成“极光在流动”的观感；真实频谱可用时，
+    // 低频暖色和高频冷色会跟随音乐变化，避免整块背景只有一种蓝紫。
+    const bool live = m_audioSpectrum.size() == kBandCount && m_audioSpectrumAge <= 300;
+    const QColor warmColor = live ? spectrumColor(4).lighter(112) : QColor(255, 92, 168);
+    const QColor coolColor = live ? spectrumColor(38).lighter(112) : QColor(42, 210, 255);
     const qreal driftX = qSin(m_phase * 0.62) * rect.width() * 0.10;
     const qreal driftY = qCos(m_phase * 0.47) * rect.height() * 0.08;
 
     QRadialGradient warm(rect.center() + QPointF(-rect.width() * 0.22 + driftX,
                                                  -rect.height() * 0.16 + driftY),
                          qMax(rect.width(), rect.height()) * 0.62);
-    warm.setColorAt(0.0, withAlpha(QColor(255, 92, 168), 120));
-    warm.setColorAt(0.45, withAlpha(QColor(126, 78, 255), 58));
+    warm.setColorAt(0.0, withAlpha(warmColor, 128));
+    warm.setColorAt(0.45, withAlpha(warmColor.darker(150), 58));
     warm.setColorAt(1.0, QColor(0, 0, 0, 0));
     painter.fillRect(rect, warm);
 
     QRadialGradient cool(rect.center() + QPointF(rect.width() * 0.24 + driftY,
                                                  rect.height() * 0.10 + driftX),
                          qMax(rect.width(), rect.height()) * 0.66);
-    cool.setColorAt(0.0, withAlpha(QColor(42, 210, 255), 105));
-    cool.setColorAt(0.48, withAlpha(QColor(66, 108, 255), 52));
+    cool.setColorAt(0.0, withAlpha(coolColor, 112));
+    cool.setColorAt(0.48, withAlpha(coolColor.darker(160), 54));
     cool.setColorAt(1.0, QColor(0, 0, 0, 0));
     painter.fillRect(rect, cool);
 
@@ -260,7 +302,7 @@ void MusicVisualWidget::drawBackground(QPainter &painter, const QRectF &rect)
 
 void MusicVisualWidget::drawSpectrum(QPainter &painter, const QRectF &rect)
 {
-    const int count = 46;
+    const int count = kBandCount;
     const bool live = m_audioSpectrum.size() == count && m_audioSpectrumAge <= 300;
     const qreal gap = qMax(2.0, rect.width() / 620.0);
     const qreal totalWidth = rect.width() * 0.86;
@@ -272,12 +314,13 @@ void MusicVisualWidget::drawSpectrum(QPainter &painter, const QRectF &rect)
     for (int i = 0; i < count; ++i) {
         qreal level = 0.0;
         if (live) {
-            // 真实频谱：WASAPI 采到的当前系统音频，低频鼓点和高频乐器各自对应。
-            // dBFS 映射后再做一次 gamma，让系统音量偏低时也能看清细节。
+            // 真实频谱：QAudioBufferOutput 给出的播放器自身 PCM，低频鼓点
+            // 和高频乐器各自对应。dBFS 映射后再做一次 gamma，让系统音量
+            // 偏低时也能看清细节。
             level = qBound(0.0, qreal(m_audioSpectrum.at(i)), 1.0);
             level = qPow(level, 0.72);
         } else {
-            // 采集不可用/尚未出首帧时的兜底：保留原来的拟真动画，不留空舞台。
+            // 播放器缓冲不可用/尚未出首帧时的兜底：保留原来的拟真动画。
             const qreal a = qSin(m_phase * 2.1 + i * 0.52) * 0.5 + 0.5;
             const qreal b = qSin(m_phase * 3.7 + i * 1.17) * 0.5 + 0.5;
             const qreal c = qSin(m_phase * 0.9 + i * 0.21) * 0.5 + 0.5;
@@ -287,11 +330,41 @@ void MusicVisualWidget::drawSpectrum(QPainter &painter, const QRectF &rect)
         const QRectF bar(rect.left() + (rect.width() - totalWidth) / 2.0
                              + i * (barWidth + gap),
                          baseY - h, barWidth, h + (live ? 2.0 : 8.0));
+
+        // 每根柱子按频段取色：低频暖粉/橙，中频紫/蓝，高频薄荷青。
+        // 能量越高，颜色越亮，保留梦幻感但不让整排柱子同色。
+        const QColor color = spectrumColor(i).lighter(100 + qRound(level * 20));
+        if (h > 1.0) {
+            QColor halo = color;
+            halo.setAlpha(live ? 30 + qRound(level * 34) : 20);
+            const qreal haloPad = qMax(1.0, barWidth * 0.30);
+            painter.setBrush(halo);
+            painter.drawRoundedRect(bar.adjusted(-haloPad, -1.5, haloPad, 3.0),
+                                    (barWidth + haloPad * 2) / 2.0,
+                                    (barWidth + haloPad * 2) / 2.0);
+        }
+
         QLinearGradient barGrad(bar.topLeft(), bar.bottomLeft());
-        barGrad.setColorAt(0.0, withAlpha(m_accent.lighter(130), 210));
-        barGrad.setColorAt(1.0, withAlpha(QColor(255, 98, 190), 62));
+        QColor topColor = color.lighter(140);
+        topColor.setAlpha(live ? 238 : 198);
+        QColor midColor = color;
+        midColor.setAlpha(live ? 216 : 180);
+        QColor bottomColor = color.darker(155);
+        bottomColor.setAlpha(live ? 112 : 78);
+        barGrad.setColorAt(0.0, topColor);
+        barGrad.setColorAt(0.52, midColor);
+        barGrad.setColorAt(1.0, bottomColor);
         painter.setBrush(barGrad);
         painter.drawRoundedRect(bar, barWidth / 2.0, barWidth / 2.0);
+
+        if (h > 2.5) {
+            QColor cap(255, 255, 255, live ? 105 : 70);
+            const QRectF capRect(bar.left(), bar.top(), bar.width(),
+                                 qMin(qreal(2.2), h * 0.18));
+            painter.setBrush(cap);
+            painter.drawRoundedRect(capRect, capRect.height() / 2.0,
+                                    capRect.height() / 2.0);
+        }
     }
 }
 
@@ -304,10 +377,22 @@ void MusicVisualWidget::drawDisc(QPainter &painter, const QRectF &rect)
     const QPointF center(rect.left() + rect.width() * 0.75,
                          rect.top() + rect.height() * 0.42);
 
+    // 光晕跟随当前能量最高的频段取色：低频时偏暖，高频时偏冷，
+    // 让整块舞台和频谱一起变化，而不是固定在主题蓝紫色。
+    QColor tint = m_accent;
+    if (m_audioSpectrum.size() == kBandCount && m_audioSpectrumAge <= 300) {
+        int peakBand = 0;
+        for (int i = 1; i < m_audioSpectrum.size(); ++i) {
+            if (m_audioSpectrum.at(i) > m_audioSpectrum.at(peakBand))
+                peakBand = i;
+        }
+        tint = spectrumColor(peakBand);
+    }
+
     // 外圈呼吸光晕
     QRadialGradient glow(center, radius * 1.65);
-    glow.setColorAt(0.0, withAlpha(m_accent, 95));
-    glow.setColorAt(0.45, withAlpha(QColor(120, 90, 255), 30));
+    glow.setColorAt(0.0, withAlpha(tint, 105));
+    glow.setColorAt(0.45, withAlpha(tint.darker(155), 32));
     glow.setColorAt(1.0, QColor(0, 0, 0, 0));
     painter.setPen(Qt::NoPen);
     painter.setBrush(glow);
@@ -348,7 +433,7 @@ void MusicVisualWidget::drawDisc(QPainter &painter, const QRectF &rect)
     painter.setBrush(Qt::NoBrush);
     for (int i = 1; i <= 4; ++i) {
         const qreal r = radius * (0.22 + i * 0.19);
-        painter.setPen(QPen(withAlpha(QColor(150, 200, 255), 18 + i * 6), 1));
+        painter.setPen(QPen(withAlpha(tint.lighter(130), 18 + i * 6), 1));
         painter.drawEllipse(center, r, r);
     }
 
