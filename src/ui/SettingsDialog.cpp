@@ -298,7 +298,20 @@ void SettingsDialog::openSourceManager()
 
 void SettingsDialog::accept()
 {
-    // 先提交源草稿；写盘失败就留在设置页，不能把其余设置当作已保存
+    // 先校验唯一可能失败的外部副作用（下载目录），再提交源配置和设置。
+    // 旧实现先写源/音量再 mkpath，目录失败时已写内容无法回滚。
+    QString downloadDir = m_downloadDir->text().trimmed();
+    if (downloadDir.isEmpty())
+        downloadDir = AppSettings::downloadDir();
+    QDir dir(downloadDir);
+    if (!dir.exists() && !QDir().mkpath(dir.absolutePath())) {
+        QMessageBox::warning(
+            this, tr("下载目录不可用"),
+            tr("无法创建目录：\n%1\n\n请换一个可写目录。").arg(dir.absolutePath()));
+        return;
+    }
+
+    // 目录校验通过后再提交源草稿；写盘失败就留在设置页，不能把其余设置当作已保存。
     if (m_sourcesDirty) {
         if (m_registry == nullptr || !m_registry->replaceAll(m_stagedSources)) {
             QMessageBox::warning(
@@ -320,16 +333,6 @@ void SettingsDialog::accept()
     AppSettings::setSearchLimit(m_searchLimit->currentData().toInt());
     AppSettings::setDownloadLimitMb(m_downloadLimit->currentData().toInt());
 
-    QString downloadDir = m_downloadDir->text().trimmed();
-    if (downloadDir.isEmpty())
-        downloadDir = AppSettings::downloadDir();
-    QDir dir(downloadDir);
-    if (!dir.exists() && !QDir().mkpath(dir.absolutePath())) {
-        QMessageBox::warning(
-            this, tr("下载目录不可用"),
-            tr("无法创建目录：\n%1\n\n请换一个可写目录。").arg(dir.absolutePath()));
-        return;
-    }
     AppSettings::setDownloadDir(dir.absolutePath());
     AppSettings::setSidebarAutoHide(m_sidebarAutoHide->isChecked());
     AppSettings::setControlsAutoHide(m_controlsAutoHide->isChecked());

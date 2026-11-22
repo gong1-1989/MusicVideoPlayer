@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QList>
 #include <QSharedPointer>
+#include <QString>
 #include <QUrl>
 
 #include <functional>
@@ -39,8 +40,10 @@ public:
 
     /// 把相对/绝对分片、子播放列表、key、init 段改写成代理地址。
     /// proxyFor 负责把一个上游 URL 登记成 token 并返回本地目录 URL。
+    /// 任何非 HTTP(S) URI（file/UNC/smb/data 等）都会拒绝整份播放列表，
+    /// 不能让播放器绕过代理直接访问本机或局域网资源。
     static QByteArray rewrite(const QByteArray &body, const QUrl &playlistUrl,
-                              const ProxyResolver &proxyFor);
+                              const ProxyResolver &proxyFor, QString *error = nullptr);
 };
 
 #endif // HLSPLAYLIST_H

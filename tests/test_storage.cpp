@@ -323,6 +323,7 @@ void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
     job.segmentIndex = 2;
     job.segmentCount = 10;
     job.hls = true;
+    job.committed = true;
     job.status = DownloadJob::Status::Paused;
     job.message = QStringLiteral("等待续传");
     job.createdAt = QDateTime::currentDateTime();
@@ -336,6 +337,10 @@ void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
     QVERIFY(storedCookie.startsWith(QStringLiteral("mvp-dpapi:v1:")));
     QVERIFY(stored.value(QStringLiteral("headers")).toObject()
                 .contains(QStringLiteral("Referer")));
+    // 直链 URL 也可能带签名/API key：JSON 里不能同时存在明文 url。
+    QVERIFY(!stored.contains(QStringLiteral("url")));
+    QVERIFY(stored.contains(QStringLiteral("urlProtected")));
+    QVERIFY(!stored.value(QStringLiteral("item")).toObject().contains(QStringLiteral("url")));
 
     DownloadJob parsed;
     QString error;
@@ -350,6 +355,9 @@ void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
     QCOMPARE(parsed.segmentIndex, job.segmentIndex);
     QCOMPARE(parsed.segmentCount, job.segmentCount);
     QCOMPARE(parsed.hls, true);
+    QCOMPARE(parsed.committed, true);
+    QCOMPARE(parsed.url, job.url);
+    QCOMPARE(parsed.item.url, job.url);
     QCOMPARE(parsed.status, DownloadJob::Status::Paused);
     QCOMPARE(parsed.headers.value(QStringLiteral("Referer")),
              job.headers.value(QStringLiteral("Referer")));
@@ -467,9 +475,9 @@ void StorageTest::sourceRegistryRehydratesPlaylistCredentials()
     SourceRegistry reloaded;
     QVERIFY(reloaded.load());
     const MediaItem hydrated = reloaded.mediaItemWithCredentials(restored);
-    QCOMPARE(hydrated.sourceOrigin, QUrl(config.urlTemplate));
+    QCOMPARE(hydrated.sourceOrigin, QUrl(QStringLiteral("https://source.example")));
     QCOMPARE(QUrl(hydrated.headers.value(QStringLiteral("Referer"))),
-             QUrl(config.urlTemplate));
+             QUrl(QStringLiteral("https://source.example/api")));
     QVERIFY(hydrated.headers.contains(QStringLiteral("Origin")));
     if (SecretStore::isAvailable()) {
         QCOMPARE(hydrated.headers.value(QStringLiteral("Cookie")),

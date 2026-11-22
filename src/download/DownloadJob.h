@@ -31,6 +31,9 @@ struct DownloadJob
     int segmentIndex = 0;
     int segmentCount = 0;
     bool hls = false;
+    /// 最终文件是否由本任务成功提交。旧状态没有这个字段时按 false 处理，
+    /// 不能把用户后来放在目标路径的同名文件当成自己的下载结果。
+    bool committed = false;
     Status status = Status::Paused;
     QString message;
     QDateTime createdAt;

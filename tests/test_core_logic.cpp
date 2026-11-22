@@ -1109,6 +1109,12 @@ void CoreLogicTest::configMapperSplitsEpisodesAndResolvesUrls()
         QStringLiteral("000001.ts"), QUrl(QStringLiteral("https://x/a/index.m3u8")));
     QCOMPARE(relative.toString(), QStringLiteral("https://x/a/000001.ts"));
 
+    // 远程配置 JSON 不能把播放器指向本机文件、UNC 共享或其他协议。
+    QVERIFY(ConfigMapper::normalizeUrl(QStringLiteral("file:///C:/secret.mp4")).isEmpty());
+    QVERIFY(ConfigMapper::normalizeUrl(QStringLiteral("\\\\server\\share\\secret.mp4")).isEmpty());
+    QVERIFY(ConfigMapper::normalizeUrl(QStringLiteral("smb://server/share/a.ts")).isEmpty());
+    QVERIFY(ConfigMapper::normalizeUrl(QStringLiteral("data:text/plain,hello")).isEmpty());
+
     QCOMPARE(ConfigMapper::jsonEscape(QStringLiteral("a\"b\\c")),
              QStringLiteral("a\\\"b\\\\c"));
 }
@@ -1216,7 +1222,7 @@ void CoreLogicTest::streamProxyHandlesSuffixlessTextPlaylist()
     QByteArray body;
     QVERIFY(readProxyResponse(&socket, &head, &body));
     QVERIFY2(head.startsWith("HTTP/1.1 200"), head.constData());
-    QVERIFY(head.contains("Content-Type: text/plain"));
+    QVERIFY(head.contains("Content-Type: application/vnd.apple.mpegurl"));
     QVERIFY(body.contains("#EXTM3U"));
     QVERIFY(body.contains("/stream/"));
     QCOMPARE(upstream.requestCount, 1);
@@ -1438,9 +1444,52 @@ void CoreLogicTest::hlsPlaylistRewritesUris()
         });
 
     const QString text = QString::fromUtf8(rewritten);
-    QVERIFY(text.contains(QStringLiteral("URI=\"http://127.0.0.1:1234/stream/token/key.bin\"")));
-    QVERIFY(text.contains(QStringLiteral("http://127.0.0.1:1234/stream/token/seg1.ts")));
+    QVERIFY2(text.contains(QStringLiteral("URI=\"http://127.0.0.1:1234/stream/token/key.bin\"")),
+             qPrintable(text));
+    QVERIFY2(text.contains(QStringLiteral("http://127.0.0.1:1234/stream/token/seg1.ts")),
+             qPrintable(text));
     QVERIFY(!text.contains(QStringLiteral("seg1.ts\nseg1.ts")));
+
+    // 非 HTTP(S) 分片必须整份拒绝，不能把 file:// 原样交给播放器。
+    QString error;
+    const QByteArray localSegment =
+        "#EXTM3U\n#EXTINF:4,\nfile:///C:/secret.ts\n";
+    QVERIFY(HlsPlaylist::rewrite(localSegment, playlistUrl, [](const QUrl &) {
+        return QUrl(QStringLiteral("http://127.0.0.1:1234/stream/token/"));
+    }, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+
+    // 未加引号的 URI= 同样不能绕过检查。
+    error.clear();
+    const QByteArray unquotedLocalKey =
+        "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=file:///C:/secret.key\n#EXTINF:4,\nseg1.ts\n";
+    QVERIFY(HlsPlaylist::rewrite(unquotedLocalKey, playlistUrl, [](const QUrl &) {
+        return QUrl(QStringLiteral("http://127.0.0.1:1234/stream/token/"));
+    }, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+
+    // #EXT-X-BASE 指向本地目录时也必须拒绝，不能只更新内部 base。
+    error.clear();
+    const QByteArray localBase =
+        "#EXTM3U\n#EXT-X-BASE:file:///C:/media/\n#EXTINF:4,\nseg1.ts\n";
+    QVERIFY(HlsPlaylist::rewrite(localBase, playlistUrl, [](const QUrl &) {
+        return QUrl(QStringLiteral("http://127.0.0.1:1234/stream/token/"));
+    }, &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+
+    // 合法的未加引号 HTTP URI 仍要改写，且保留不加引号的形态。
+    error.clear();
+    const QByteArray unquotedKey =
+        "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=key.bin\n#EXTINF:4,\nseg1.ts\n";
+    const QByteArray unquotedRewritten = HlsPlaylist::rewrite(
+        unquotedKey, playlistUrl, [](const QUrl &) {
+            return QUrl(QStringLiteral("http://127.0.0.1:1234/stream/token/"));
+        }, &error);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QVERIFY(QString::fromUtf8(unquotedRewritten)
+                .contains(QStringLiteral("URI=http://127.0.0.1:1234/stream/token/key.bin")));
+    QVERIFY(!QString::fromUtf8(unquotedRewritten)
+                 .contains(QStringLiteral("URI=\"http://127.0.0.1:1234/stream/token/key.bin\"")));
 }
 
 void CoreLogicTest::hlsPlaylistRejectsTooManySegments()
@@ -1494,9 +1543,19 @@ void CoreLogicTest::streamTokensReuseByUrlAndHeaders()
     StreamTokenRegistry::Upstream restored;
     QVERIFY(tokens.lookup(token, &restored));
     QCOMPARE(restored.url, upstream);
+    // Referer 指向 source.test，分片在 cdn.test：跨站会话头必须被剥离。
+    QCOMPARE(restored.headers.value(QStringLiteral("X-Source-Session")), QString());
+    QVERIFY(!tokens.lookup(QStringLiteral("unknown"), &restored));
+
+    // 同 host 时保留源站会话头，否则需要 Cookie 鉴权的 HLS 分片会 401/403。
+    QHash<QString, QString> sameHost = headers;
+    sameHost.insert(QStringLiteral("Referer"), QStringLiteral("https://cdn.test/"));
+    const QUrl sameHostUrl = tokens.registerFor(upstream, sameHost, 4567);
+    const QString sameHostToken =
+        sameHostUrl.path().mid(prefix.size()).section(QLatin1Char('/'), 0, 0);
+    QVERIFY(tokens.lookup(sameHostToken, &restored));
     QCOMPARE(restored.headers.value(QStringLiteral("X-Source-Session")),
              QStringLiteral("sid=1"));
-    QVERIFY(!tokens.lookup(QStringLiteral("unknown"), &restored));
 
     tokens.clear();
     QCOMPARE(tokens.size(), 0);

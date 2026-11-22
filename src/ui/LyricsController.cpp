@@ -36,10 +36,14 @@ void LyricsController::setCurrentItem(const MediaItem &item)
     if (item.type != MediaType::Music || item.lyricUrl.isEmpty())
         return;
 
-    if (item.lyricUrl.isLocalFile())
+    if (item.lyricUrl.isLocalFile()) {
+        // 远程条目只能使用 http(s) 歌词；file/UNC 是远程源可控的本地读取入口。
+        if (item.online)
+            return;
         m_service->loadLocalFile(item.lyricUrl.toLocalFile());
-    else
+    } else {
         m_service->load(item.lyricUrl);
+    }
 }
 
 void LyricsController::updatePosition(qint64 positionMs)

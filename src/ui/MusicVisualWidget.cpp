@@ -62,7 +62,7 @@ void MusicVisualWidget::setTrack(const MediaItem &item)
 {
     m_item = item;
     m_cover = QPixmap();
-    if (item.posterUrl.isLocalFile()) {
+    if (!item.online && item.posterUrl.isLocalFile()) {
         QPixmap loaded(item.posterUrl.toLocalFile());
         if (!loaded.isNull())
             m_cover = loaded;

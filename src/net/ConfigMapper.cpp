@@ -178,6 +178,12 @@ QUrl normalizeUrl(const QString &raw, const QUrl &base)
                                                       : QUrl(text);
     if (url.isRelative() && !url.isEmpty() && base.isValid())
         url = base.resolved(url);
+    // 配置源返回的是远程数据，不能让远程 JSON 直接指定 file/UNC/smb 等本地资源。
+    // 允许的相对地址已经按 base 解析成 http(s)；这里再做一次白名单兜底。
+    if (!url.isValid()
+        || (url.scheme() != QLatin1String("http") && url.scheme() != QLatin1String("https"))) {
+        return QUrl();
+    }
     return url;
 }
 

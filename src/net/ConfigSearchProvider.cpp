@@ -243,13 +243,15 @@ void ConfigSearchProvider::onReplyFinished()
         base.webUrl = normalizeUrl(mapString(node, m_config.fields,
                                               QStringLiteral("webUrl"), vars), m_baseUrl);
         base.sourceId = m_config.id;
-        base.sourceOrigin = m_originUrl;
+        // 只保存源站 scheme+host+port；完整搜索 URL 的 query 可能含 API key，
+        // 不能进入 playlists.json，也不能被当作后续请求的 Referer。
+        base.sourceOrigin = HeaderPolicy::originOnly(m_originUrl);
         base.headers = m_config.headers;
         if (!m_config.cookie.isEmpty())
             base.headers.insert(QStringLiteral("Cookie"), m_config.cookie);
         // 只配置 Cookie 的源也要补上 Referer/Origin，否则跨域直链无法判断
         // 凭据属于谁，HeaderPolicy 会按 fail-closed 直接裁掉。
-        base.headers = HeaderPolicy::withSourceHeaders(base.headers, base.sourceOrigin);
+        base.headers = HeaderPolicy::withSourceHeaders(base.headers, m_originUrl);
         base.online = true;
         // 影片展示字段：没有对应配置就留空，列表会自动跳过
         base.posterUrl = normalizeUrl(mapString(node, m_config.fields,

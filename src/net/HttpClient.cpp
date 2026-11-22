@@ -81,11 +81,12 @@ bool isSafeHeader(const QString &name, const QByteArray &value)
 }
 
 QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &extra,
-                             const QUrl &sourceOrigin)
+                             const QUrl &sourceOrigin,
+                             QNetworkRequest::RedirectPolicy redirectPolicy =
+                                 QNetworkRequest::NoLessSafeRedirectPolicy)
 {
     QNetworkRequest request(url);
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, redirectPolicy);
     // 头名必须是 "User-Agent"，写成 User_Agent 会被服务端忽略
     request.setHeader(QNetworkRequest::UserAgentHeader,
                       QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -107,7 +108,21 @@ QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &ext
         HeaderPolicy::sanitizedForTarget(url, extra, sourceOrigin);
     for (auto it = safeHeaders.cbegin(); it != safeHeaders.cend(); ++it) {
         const QString key = it.key();
-        const QByteArray value = it.value().toUtf8();
+        QString text = it.value();
+        // 配置里手写的 Referer/Origin 也可能带 API key；统一压成
+        // scheme+host+port+path，避免合法头把搜索签名外发给第三方。
+        if (key.compare(QLatin1String("Referer"), Qt::CaseInsensitive) == 0) {
+            const QUrl referer(text.trimmed());
+            const QString safe = HeaderPolicy::refererHeaderValue(referer);
+            if (!safe.isEmpty())
+                text = safe;
+        } else if (key.compare(QLatin1String("Origin"), Qt::CaseInsensitive) == 0) {
+            const QUrl originValue(text.trimmed());
+            const QString safe = HeaderPolicy::originHeaderValue(originValue);
+            if (!safe.isEmpty())
+                text = safe;
+        }
+        const QByteArray value = text.toUtf8();
         if (!isSafeHeader(key, value)) {
             qCWarning(lcHttp) << "忽略非法请求头：" << key;
             continue;
@@ -138,7 +153,9 @@ QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
                                const QUrl &sourceOrigin)
 {
     qCDebug(lcHttp) << "GET" << redactUrl(url) << "分段" << range;
-    QNetworkRequest request = buildRequest(url, headers, sourceOrigin);
+    QNetworkRequest request =
+        buildRequest(url, headers, sourceOrigin,
+                     QNetworkRequest::SameOriginRedirectPolicy);
     if (!range.isEmpty())
         request.setRawHeader("Range", range);
     return trackReply(m_nam->get(request), maxBytes);
@@ -156,7 +173,9 @@ QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
                                     const QUrl &sourceOrigin)
 {
     qCDebug(lcHttp) << "POST" << redactUrl(url) << "请求体" << body.size() << "字节";
-    QNetworkRequest request = buildRequest(url, headers, sourceOrigin);
+    QNetworkRequest request =
+        buildRequest(url, headers, sourceOrigin,
+                     QNetworkRequest::SameOriginRedirectPolicy);
     const QByteArray contentType =
         headers.value(QStringLiteral("Content-Type"),
                       QStringLiteral("application/x-www-form-urlencoded")).toUtf8();
@@ -416,6 +435,9 @@ QString HttpClient::redactUrl(const QUrl &url)
                                || key.contains(QLatin1String("sha256"))
                                || key == QLatin1String("sig")
                                || key == QLatin1String("key")
+                               || key.endsWith(QLatin1String("key"))
+                               || key.contains(QLatin1String("api_key"))
+                               || key.contains(QLatin1String("access_key"))
                                || key == QLatin1String("timestamp");
         clean.addQueryItem(item.first, sensitive ? QStringLiteral("***") : item.second);
     }

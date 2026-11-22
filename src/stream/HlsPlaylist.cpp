@@ -3,6 +3,7 @@
 
 #include <QDateTime>
 #include <QHash>
+#include <QObject>
 #include <QRegularExpression>
 #include <QStringList>
 
@@ -125,8 +126,11 @@ bool HlsPlaylist::sameScope(const QUrl &a, const QUrl &b)
 }
 
 QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
-                                const ProxyResolver &proxyFor)
+                                const ProxyResolver &proxyFor, QString *error)
 {
+    if (error != nullptr)
+        error->clear();
+
     const QString source = QString::fromUtf8(body);
     const bool crlf = source.contains(QLatin1String("\r\n"));
     QStringList lines = source.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
@@ -137,8 +141,9 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
 
     QUrl base = playlistUrl;
     QHash<QString, QString> tokenCache;
+    QString failure;
 
-    auto proxyForSegment = [&base, &proxyFor, &tokenCache](const QString &raw) -> QString {
+    auto proxyForSegment = [&base, &proxyFor, &tokenCache, &failure](const QString &raw) -> QString {
         const QString uri = raw.trimmed();
         if (uri.isEmpty())
             return raw;
@@ -147,7 +152,8 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
         if (!absolute.isValid()
             || (absolute.scheme() != QLatin1String("http")
                 && absolute.scheme() != QLatin1String("https"))) {
-            return raw; // data:、skd: 等非 HTTP 资源原样保留
+            failure = QObject::tr("播放列表包含非 HTTP(S) 资源：%1").arg(uri.left(160));
+            return QString();
         }
 
         const QString key = absolute.toString(QUrl::FullyEncoded);
@@ -155,8 +161,10 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
             return tokenCache.value(key);
 
         const QUrl proxy = proxyFor(absolute);
-        if (!proxy.isValid())
-            return raw;
+        if (!proxy.isValid()) {
+            failure = QObject::tr("无法为播放列表资源建立本地代理：%1").arg(uri.left(160));
+            return QString();
+        }
 
         // proxyUrlFor 返回的是“目录”形式（/stream/<token>/）。如果把整个分片地址
         // 直接换成这个目录，FFmpeg 会把同一个目录当成所有分片反复请求，最终报
@@ -173,7 +181,10 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
         return value;
     };
 
-    static const QRegularExpression uriAttribute(QStringLiteral("URI=\"([^\"]*)\""));
+    // HLS 属性的 URI 可以是带引号的，也可以是不带引号的。旧实现只匹配
+    // URI="..."，恶意播放列表只要写 URI=file:///... 就能绕过代理。
+    static const QRegularExpression uriAttribute(
+        QStringLiteral("URI=(?:\"([^\"]*)\"|([^,\\s]*))"));
     for (QString &line : lines) {
         const QString trimmed = line.trimmed();
         if (trimmed.isEmpty())
@@ -181,6 +192,8 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
 
         if (!trimmed.startsWith(QLatin1Char('#'))) {
             line = proxyForSegment(trimmed);
+            if (!failure.isEmpty())
+                break;
             continue;
         }
 
@@ -188,8 +201,13 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
             const QString value =
                 trimmed.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
             const QUrl next = base.resolved(QUrl(value));
-            if (next.isValid())
-                base = next;
+            if (!next.isValid()
+                || (next.scheme() != QLatin1String("http")
+                    && next.scheme() != QLatin1String("https"))) {
+                failure = QObject::tr("播放列表的 BASE 不是 HTTP(S)：%1").arg(value.left(160));
+                break;
+            }
+            base = next;
             line = trimmed;
             continue;
         }
@@ -204,13 +222,34 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
         QRegularExpressionMatchIterator it = uriAttribute.globalMatch(line);
         while (it.hasNext()) {
             const QRegularExpressionMatch match = it.next();
-            rewritten += line.mid(last, match.capturedStart(1) - last);
-            rewritten += proxyForSegment(match.captured(1));
-            last = match.capturedEnd(1);
+            const bool quoted = match.capturedStart(1) >= 0;
+            const int valueStart = quoted ? match.capturedStart(1) : match.capturedStart(2);
+            const int valueEnd = quoted ? match.capturedEnd(1) : match.capturedEnd(2);
+            const QString rawValue = quoted ? match.captured(1) : match.captured(2);
+            // capturedStart 指向引号内的内容；替换时必须连原引号一起吃掉，
+            // 否则会拼出 URI=""http://..."" 这种双引号。
+            const int replaceStart = quoted ? valueStart - 1 : valueStart;
+            const int replaceEnd = quoted ? valueEnd + 1 : valueEnd;
+            rewritten += line.mid(last, replaceStart - last);
+            const QString newValue = proxyForSegment(rawValue);
+            if (!failure.isEmpty())
+                break;
+            if (quoted)
+                rewritten += QLatin1Char('"') + newValue + QLatin1Char('"');
+            else
+                rewritten += newValue;
+            last = replaceEnd;
         }
+        if (!failure.isEmpty())
+            break;
         rewritten += line.mid(last);
         line = rewritten;
     }
 
+    if (!failure.isEmpty()) {
+        if (error != nullptr)
+            *error = failure;
+        return {};
+    }
     return lines.join(crlf ? QStringLiteral("\r\n") : QStringLiteral("\n")).toUtf8();
 }

@@ -391,7 +391,7 @@ MediaItem SourceRegistry::mediaItemWithCredentials(const MediaItem &item) const
     }
 
     if (origin.isValid() && !origin.host().isEmpty()) {
-        result.sourceOrigin = origin;
+        result.sourceOrigin = HeaderPolicy::originOnly(origin);
         // 源配置更新后旧条目的 Referer 可能过期，按当前源站重建；
         // 配置里的显式 Referer/Origin 仍会在下面覆盖回来。
         result.headers.remove(QStringLiteral("Referer"));

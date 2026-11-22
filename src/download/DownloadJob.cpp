@@ -72,8 +72,19 @@ QJsonObject DownloadJob::toJson() const
 {
     QJsonObject object;
     object.insert(QStringLiteral("id"), id);
-    object.insert(QStringLiteral("item"), mediaItemToJson(item));
+    QJsonObject itemObject = mediaItemToJson(item);
+    // item.url 和 job.url 是同一个直链；只保留 job.url 的加密形式，
+    // 避免 DPAPI 只保护一份、另一份仍以明文留在 JSON 里。
+    itemObject.remove(QStringLiteral("url"));
+    object.insert(QStringLiteral("item"), itemObject);
     object.insert(QStringLiteral("url"), url.toString());
+    // 直链 query 常带签名/API key，不能像标题一样明文落盘；能加密就只存密文。
+    const QString protectedUrl =
+        SecretStore::protectForStorage(url.toString(), QStringLiteral("download/%1/url").arg(id));
+    if (!protectedUrl.isEmpty()) {
+        object.insert(QStringLiteral("urlProtected"), protectedUrl);
+        object.remove(QStringLiteral("url"));
+    }
     object.insert(QStringLiteral("filePath"), filePath);
     object.insert(QStringLiteral("bytesReceived"), double(bytesReceived));
     object.insert(QStringLiteral("bytesTotal"), double(bytesTotal));
@@ -81,6 +92,7 @@ QJsonObject DownloadJob::toJson() const
     object.insert(QStringLiteral("segmentIndex"), segmentIndex);
     object.insert(QStringLiteral("segmentCount"), segmentCount);
     object.insert(QStringLiteral("hls"), hls);
+    object.insert(QStringLiteral("committed"), committed);
     object.insert(QStringLiteral("status"), statusKey(status));
     object.insert(QStringLiteral("message"), message);
     object.insert(QStringLiteral("createdAt"), createdAt.toString(Qt::ISODate));
@@ -115,7 +127,15 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     DownloadJob parsed;
     parsed.id = object.value(QStringLiteral("id")).toString();
     parsed.item = mediaItemFromJson(object.value(QStringLiteral("item")).toObject());
-    parsed.url = QUrl(object.value(QStringLiteral("url")).toString());
+    const QString protectedUrl = object.value(QStringLiteral("urlProtected")).toString();
+    const QString plainUrl = protectedUrl.isEmpty()
+                                 ? object.value(QStringLiteral("url")).toString()
+                                 : SecretStore::revealStored(
+                                       protectedUrl,
+                                       QStringLiteral("download/%1/url").arg(parsed.id));
+    parsed.url = QUrl(plainUrl);
+    if (parsed.item.url.isEmpty())
+        parsed.item.url = parsed.url;
     parsed.filePath = object.value(QStringLiteral("filePath")).toString();
     parsed.bytesReceived =
         qint64(object.value(QStringLiteral("bytesReceived")).toDouble());
@@ -126,6 +146,7 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     parsed.segmentIndex = object.value(QStringLiteral("segmentIndex")).toInt();
     parsed.segmentCount = object.value(QStringLiteral("segmentCount")).toInt();
     parsed.hls = object.value(QStringLiteral("hls")).toBool();
+    parsed.committed = object.value(QStringLiteral("committed")).toBool(false);
     parsed.status = statusFromKey(object.value(QStringLiteral("status")).toString());
     parsed.message = object.value(QStringLiteral("message")).toString();
     parsed.createdAt =

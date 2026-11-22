@@ -207,6 +207,8 @@ private slots:
     void cleanupTestCase();
 
     void redirectStripsSecretsAcrossHost();
+    void getRedirectStripsSecretsAcrossHost();
+    void explicitRefererQueryIsStripped();
     void redirectKeepsAuthorizationOnSameHost();
     void downloadReportsHttp404WithoutFile();
     void downloadRejectsHtmlMasqueradingAsMedia();
@@ -295,7 +297,68 @@ void IntegrationTest::redirectStripsSecretsAcrossHost()
     const auto &request = second.requests.first();
     QVERIFY(!request.headers.contains("cookie"));
     QVERIFY(!request.headers.contains("authorization"));
-    QCOMPARE(request.headers.value("x-source-session"), QByteArray("session-keep"));
+    QVERIFY(!request.headers.contains("x-source-session"));
+}
+
+void IntegrationTest::getRedirectStripsSecretsAcrossHost()
+{
+    LocalHttpServer first;
+    LocalHttpServer second;
+    QVERIFY(first.start());
+    QVERIFY(second.start());
+
+    const QString target = second.urlAt(QStringLiteral("127.0.0.2"),
+                                        QStringLiteral("/final")).toString();
+    first.handler = [target](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 302, {}, "text/plain", 0,
+                                 "Location: " + target.toUtf8() + "\r\n");
+    };
+    second.handler = [](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 200, "ok", "text/plain");
+    };
+
+    HttpClient http;
+    QHash<QString, QString> headers;
+    headers.insert(QStringLiteral("Referer"), first.url(QStringLiteral("/")).toString());
+    headers.insert(QStringLiteral("Cookie"), QStringLiteral("sid=secret-cookie"));
+    headers.insert(QStringLiteral("Authorization"), QStringLiteral("Bearer secret-token"));
+    headers.insert(QStringLiteral("X-Api-Key"), QStringLiteral("sk-secret"));
+
+    QNetworkReply *reply = http.get(first.url(QStringLiteral("/start")), {}, headers);
+    QVERIFY(reply != nullptr);
+    QSignalSpy finished(reply, &QNetworkReply::finished);
+    QVERIFY(finished.wait(5000));
+    QCOMPARE(reply->error(), QNetworkReply::InsecureRedirectError);
+    reply->deleteLater();
+
+    // get() 使用 SameOriginRedirectPolicy：跨 host 302 直接拒绝，
+    // 不把 Cookie/Authorization 交给第三方；同 host 跳转仍可跟随。
+    QCOMPARE(second.requests.size(), 0);
+}
+
+void IntegrationTest::explicitRefererQueryIsStripped()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 200, "ok", "text/plain");
+    };
+
+    HttpClient http;
+    QHash<QString, QString> headers;
+    headers.insert(QStringLiteral("Referer"),
+                   server.url(QStringLiteral("/search?api_key=secret&q=1")).toString());
+    QNetworkReply *reply = http.get(server.url(QStringLiteral("/media")), {}, headers);
+    QSignalSpy finished(reply, &QNetworkReply::finished);
+    QVERIFY(finished.wait(5000));
+    QCOMPARE(reply->error(), QNetworkReply::NoError);
+    reply->deleteLater();
+
+    QCOMPARE(server.requests.size(), 1);
+    const QByteArray referer = server.requests.first().headers.value("referer");
+    QVERIFY(!referer.contains("api_key"));
+    QVERIFY(!referer.contains("secret"));
+    QVERIFY(referer.contains("/search"));
 }
 
 void IntegrationTest::redirectKeepsAuthorizationOnSameHost()

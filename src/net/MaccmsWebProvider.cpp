@@ -2,6 +2,7 @@
 
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
+#include "util/HeaderPolicy.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -959,7 +960,7 @@ void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
         item.title = job->candidate.title;
         item.url = media;
         item.webUrl = job->candidate.detailUrl;
-        item.sourceOrigin = QUrl(self->m_root);
+        item.sourceOrigin = HeaderPolicy::originOnly(QUrl(self->m_root));
         item.sourceId = self->m_config.id;
         item.online = true;
         item.headers = self->mediaHeaders();

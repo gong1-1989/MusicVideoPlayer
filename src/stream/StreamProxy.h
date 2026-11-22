@@ -177,7 +177,7 @@ private:
     /// 把 m3u8 里的相对/绝对分片、子播放列表、key、init 段改写成代理地址，
     /// 否则绝对地址会绕过代理，丢掉 Referer/Cookie，相对地址则会丢 token。
     QByteArray rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
-                               const QHash<QString, QString> &headers);
+                               const QHash<QString, QString> &headers, QString *error = nullptr);
 
     QByteArray buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const;
     static Request parseRequest(const QByteArray &payload);

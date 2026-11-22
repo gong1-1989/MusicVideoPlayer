@@ -1359,14 +1359,20 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
             reply->deleteLater();
             return;
         }
-        QByteArray rewritten = rewritePlaylist(body, finalUrl, headers);
+        QString rewriteError;
+        QByteArray rewritten = rewritePlaylist(body, finalUrl, headers, &rewriteError);
+        if (!rewriteError.isEmpty()) {
+            qCWarning(lcProxy) << "播放列表 URI 被拒绝：" << rewriteError;
+            replyError(socket, 502, QStringLiteral("unsupported playlist uri"));
+            reply->deleteLater();
+            return;
+        }
         // 相对分片必须按 302 之后的最终地址解析，不能拿原始请求地址当基准。
         rememberPlaylist(body, finalUrl, headers);
 
-        QByteArray contentType =
-            reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
-        if (contentType.isEmpty())
-            contentType = QByteArrayLiteral("application/vnd.apple.mpegurl");
+        // 本地代理 URL 没有 .m3u8 后缀，改写后的正文已经是播放列表；
+        // 透传上游 text/plain / octet-stream 会让 FFmpeg 猜不到 HLS demuxer。
+        const QByteArray contentType = QByteArrayLiteral("application/vnd.apple.mpegurl");
 
         QByteArray head = QByteArrayLiteral("HTTP/1.1 200 OK\r\n");
         head += QByteArrayLiteral("Content-Type: ");
@@ -1391,11 +1397,12 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
 }
 
 QByteArray StreamProxy::rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
-                                        const QHash<QString, QString> &headers)
+                                        const QHash<QString, QString> &headers, QString *error)
 {
     return HlsPlaylist::rewrite(
         body, playlistUrl,
-        [this, &headers](const QUrl &absolute) { return proxyUrlFor(absolute, headers); });
+        [this, &headers](const QUrl &absolute) { return proxyUrlFor(absolute, headers); },
+        error);
 }
 
 void StreamProxy::attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream)

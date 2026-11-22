@@ -439,8 +439,9 @@ void DownloadManager::startJob(const QString &id)
         }
     }
 
-    // 上次可能已经把最终文件写完，只是状态没来得及落盘。
-    if (QFileInfo::exists(job.filePath) && QFileInfo(job.filePath).size() > 0) {
+    // 上次可能已经把最终文件写完，只是状态没来得及落盘。只有本任务确实
+    // 成功提交过（committed）才认这个文件；否则可能是用户后来自建的同名文件。
+    if (job.committed && QFileInfo::exists(job.filePath) && QFileInfo(job.filePath).size() > 0) {
         job.bytesReceived = QFileInfo(job.filePath).size();
         if (job.hls && !job.filePath.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive)) {
             job.status = DownloadJob::Status::Downloading;
@@ -628,6 +629,8 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
         job.bytesTotal = job.bytesReceived;
     job.status = success ? DownloadJob::Status::Completed
                          : DownloadJob::Status::Failed;
+    if (success)
+        job.committed = true;
     job.message = message;
     job.completedAt = QDateTime::currentDateTime();
     scheduleSave();

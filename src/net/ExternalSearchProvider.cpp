@@ -225,14 +225,15 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
                                  item.webUrl);
         item.durationMs = static_cast<qint64>(object.value(QStringLiteral("durationMs")).toDouble(0));
         item.sourceId = m_config.id;
-        item.sourceOrigin = item.webUrl.isValid() && !item.webUrl.host().isEmpty()
+        const QUrl source = item.webUrl.isValid() && !item.webUrl.host().isEmpty()
                                 ? item.webUrl
                                 : QUrl(m_config.urlTemplate);
+        item.sourceOrigin = HeaderPolicy::originOnly(source);
         item.online = true;
         item.headers = m_config.headers;
         if (!m_config.cookie.isEmpty())
             item.headers.insert(QStringLiteral("Cookie"), m_config.cookie);
-        item.headers = HeaderPolicy::withSourceHeaders(item.headers, item.sourceOrigin);
+        item.headers = HeaderPolicy::withSourceHeaders(item.headers, source);
 
         if (item.title.isEmpty() || item.url.isEmpty() || item.url.isRelative()
             || !item.url.isValid()) {

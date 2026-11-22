@@ -74,6 +74,7 @@ class UiLogicTest : public QObject
 
 private slots:
     void lyricsClearCancelsPendingRequest();
+    void remoteItemRejectsLocalLyricFile();
     void progressSliderClickJumpsToAbsolutePosition();
     void listPageSizeFollowsViewport();
     void themeFontScaleChangesFixedPixelSizes();
@@ -104,6 +105,38 @@ void UiLogicTest::lyricsClearCancelsPendingRequest()
     controller.clear();
     QTest::qWait(900);
     QCOMPARE(loaded.count(), 0);
+}
+
+void UiLogicTest::remoteItemRejectsLocalLyricFile()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("secret.lrc"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(QByteArrayLiteral("[00:01]不应被远程条目读取"));
+    file.close();
+
+    HttpClient http;
+    LyricsController controller(&http);
+    QSignalSpy loaded(&controller, &LyricsController::linesLoaded);
+
+    MediaItem remote;
+    remote.type = MediaType::Music;
+    remote.title = QStringLiteral("远程歌曲");
+    remote.url = QUrl(QStringLiteral("https://example.com/song.mp3"));
+    remote.lyricUrl = QUrl::fromLocalFile(path);
+    remote.online = true;
+
+    controller.setCurrentItem(remote);
+    QTest::qWait(300);
+    QCOMPARE(loaded.count(), 0);
+
+    // 同一路径对本地条目仍然可用，避免把正常的本地歌词一起禁掉。
+    MediaItem local = remote;
+    local.online = false;
+    controller.setCurrentItem(local);
+    QTRY_COMPARE_WITH_TIMEOUT(loaded.count(), 1, 3000);
 }
 
 void UiLogicTest::progressSliderClickJumpsToAbsolutePosition()

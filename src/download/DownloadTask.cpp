@@ -428,6 +428,9 @@ void DownloadTask::startPlaylistFetch(const QUrl &url, int hop)
             return;
         }
         self->m_reply = reply;
+        // 播放列表不是媒体字节，必须在接收过程中就设上限；否则异常大的
+        // m3u8 会先被 QNetworkReply 完整缓冲，finished 后的 4 MB 检查太晚。
+        HttpClient::limitReplySize(reply, NetLimits::kPlaylistBytes);
         self->connect(reply, &QNetworkReply::finished, self.data(), [self, reply] {
             if (!self.isNull())
                 self->onPlaylistFinished(reply);
@@ -812,8 +815,9 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
         fail(tr("文件超过 %1 MB 上限，已停止下载").arg(m_maxBytes / (1024 * 1024)));
         return;
     }
-    if (!m_file->write(chunk)) {
-        fail(tr("写入文件失败：%1").arg(m_file->errorString()));
+    const qint64 written = m_file->write(chunk);
+    if (written != chunk.size()) {
+        fail(tr("写入文件不完整：%1").arg(m_file->errorString()));
         return;
     }
     m_bytesWritten += chunk.size();
@@ -873,9 +877,13 @@ void DownloadTask::commitFile()
         return;
     }
 
-    m_file->flush();
+    if (!m_file->flush()) {
+        fail(tr("刷新文件失败：%1").arg(m_file->errorString()));
+        return;
+    }
     m_file->close();
     const QString temp = partialPath();
+    const QString originalPath = m_filePath;
     m_file->deleteLater();
     m_file = nullptr;
 
@@ -890,7 +898,10 @@ void DownloadTask::commitFile()
     m_filePath = finalPath;
 
     if (!QFile::rename(temp, finalPath)) {
-        fail(tr("保存文件失败：无法把临时文件改名到 %1").arg(m_filePath));
+        // 失败时恢复到原目标路径：manager 里的 job.filePath 仍是原路径，
+        // 临时文件也是按原路径命名的；否则重试会拿错 .mvpdownload 路径。
+        m_filePath = originalPath;
+        fail(tr("保存文件失败：无法把临时文件改名到 %1").arg(finalPath));
         return;
     }
 
