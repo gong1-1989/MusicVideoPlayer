@@ -3224,6 +3224,22 @@ void CoreLogicTest::hlsPlaylistRewritesUris()
              qPrintable(text));
     QVERIFY(!text.contains(QStringLiteral("seg1.ts\nseg1.ts")));
 
+    // UTF-8 BOM 不能把首行 #EXTM3U 变成“分片 URI”，否则整份播放列表
+    // 会被判成非法并返回空结果。
+    QString bomError;
+    const QByteArray bomPlaylist =
+        "\xEF\xBB\xBF#EXTM3U\n#EXTINF:4,\nseg1.ts\n";
+    const QByteArray bomRewritten = HlsPlaylist::rewrite(
+        bomPlaylist, playlistUrl, [](const QUrl &) {
+            return QUrl(QStringLiteral("http://127.0.0.1:1234/stream/token/"));
+        }, &bomError);
+    QVERIFY2(bomError.isEmpty(), qPrintable(bomError));
+    QVERIFY(!bomRewritten.isEmpty());
+    const QString bomText = QString::fromUtf8(bomRewritten);
+    QVERIFY2(bomText.startsWith(QStringLiteral("#EXTM3U")), qPrintable(bomText));
+    QVERIFY2(bomText.contains(QStringLiteral("http://127.0.0.1:1234/stream/token/seg1.ts")),
+             qPrintable(bomText));
+
     // 非 HTTP(S) 分片必须整份拒绝，不能把 file:// 原样交给播放器。
     QString error;
     const QByteArray localSegment =

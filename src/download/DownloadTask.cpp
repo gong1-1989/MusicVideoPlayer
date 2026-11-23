@@ -1,6 +1,7 @@
 #include "download/DownloadTask.h"
 
 #include "core/FileNameUtils.h"
+#include "media/MediaItem.h"
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
@@ -859,16 +860,14 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
 QString DownloadTask::computePlaylistFingerprint() const
 {
     QCryptographicHash hash(QCryptographicHash::Sha1);
-    // 只取路径，不取会随 CDN 签名轮换的 query：同一份切片重新签名不应触发重下；
-    // 分片路径/字节范围变化才代表容器结构变了。
+    // 只剔除 token/sign/expire 这类会轮换的查询参数，保留 id/seq 等能区分
+    // 分片的稳定参数；把整个 query 都丢掉会让 `segment.ts?seq=1` 和
+    // `segment.ts?seq=2` 指纹相同，续传时把两份不同分片拼进一个文件。
     hash.addData(m_fragmentedMp4 ? "fmp4|" : "ts|");
     hash.addData(QByteArray::number(m_segments.size()));
     hash.addData("|");
     for (const Segment &segment : m_segments) {
-        QUrl stable = segment.url;
-        stable.setQuery(QString());
-        stable.setFragment(QString());
-        hash.addData(stable.toString(QUrl::FullyEncoded).toUtf8());
+        hash.addData(identityUrlWithoutVolatileQuery(segment.url).toUtf8());
         hash.addData("|");
         hash.addData(segment.range);
         hash.addData("|");

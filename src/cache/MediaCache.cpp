@@ -94,16 +94,10 @@ QString legacyIdentityDigest(const MediaItem &item, int length)
         .left(length);
 }
 
-QUrl comparableUrl(QUrl url)
-{
-    url.setQuery(QString());
-    url.setFragment(QString());
-    return url;
-}
-
-/// 第一轮缓存是 `<SHA-256 前 32 位>/media.<ext> + meta.json`。
-/// 新布局第一次播放同一 URL 时把数据搬到用户可读的新位置，避免升级后
-/// 已经下好的歌曲/影视全部变成看不见的孤儿。
+/// 旧目录按“去掉整个查询串”的身份做哈希，`outer/url?id=1` 和
+/// `outer/url?id=2` 会共用同一个旧目录。旧 `meta.json` 可能只存了不带
+/// 查询串的地址，无法区分曲目；此时按稳定查询参数比较并拒绝收养，
+/// 宁可少迁移一首，也不能把 A 歌的缓存搬给 B 歌。
 bool adoptLegacyCache(const MediaItem &item)
 {
     if (!MediaCache::isCacheable(item))
@@ -132,8 +126,10 @@ bool adoptLegacyCache(const MediaItem &item)
     if (object.value(QStringLiteral("version")).toInt() != 1)
         return false;
 
-    const QUrl oldUrl = comparableUrl(QUrl(object.value(QStringLiteral("url")).toString()));
-    if (!oldUrl.isValid() || oldUrl != comparableUrl(preferredPlaybackUrl(item)))
+    const QUrl oldUrl(QUrl(object.value(QStringLiteral("url")).toString()));
+    const QUrl preferred = preferredPlaybackUrl(item);
+    if (!oldUrl.isValid()
+        || identityUrlWithoutVolatileQuery(oldUrl) != identityUrlWithoutVolatileQuery(preferred))
         return false;
     const qint64 total =
         static_cast<qint64>(object.value(QStringLiteral("total")).toDouble(-1));

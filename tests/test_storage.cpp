@@ -71,11 +71,11 @@ private slots:
     void downloadManagerReservesActiveTarget();
     void downloadManagerRejectsOversizedStateFile();
     void downloadManagerRejectsStateWithoutJobsArray();
-    void downloadManagerClearsStalePartialOnPathConflict();
+    void downloadManagerKeepsPartialOwnedByActiveTarget();
     void downloadManagerDelayedRemoveSkipsReservedPath();
     void downloadManagerDoesNotResumeSnapshot();
     void sourceRegistryRehydratesPlaylistCredentials();
-    void mediaCacheAdoptsLegacyQueryCache();
+    void mediaCacheRefusesAmbiguousLegacyQueryCache();
 
 private:
     QTemporaryDir m_tempDir;
@@ -576,7 +576,7 @@ void StorageTest::downloadManagerRejectsOversizedStateFile()
     QVERIFY(QFile::exists(statePath + QStringLiteral(".corrupt")));
 }
 
-void StorageTest::downloadManagerClearsStalePartialOnPathConflict()
+void StorageTest::downloadManagerKeepsPartialOwnedByActiveTarget()
 {
     const QString dir = m_tempDir.filePath(QStringLiteral("downloads-conflict"));
     QVERIFY(QDir().mkpath(dir));
@@ -614,8 +614,9 @@ void StorageTest::downloadManagerClearsStalePartialOnPathConflict()
     DownloadManager manager(&http);
     QCOMPARE(manager.jobs().size(), 2);
     QVERIFY(manager.jobs().at(1).filePath != target);
-    // 冲突路径重新分配后，旧目标的续传点已经不属于任何任务，必须清掉。
-    QVERIFY(!QFile::exists(oldPartial));
+    // 旧路径仍由第一条 Paused 任务持有，第二条改到新路径后不能删除这条
+    // 共享续传点，否则第一条任务恢复时会从 0 重下。
+    QVERIFY(QFile::exists(oldPartial));
 }
 
 void StorageTest::downloadManagerDelayedRemoveSkipsReservedPath()
@@ -767,7 +768,7 @@ void StorageTest::sourceRegistryRehydratesPlaylistCredentials()
     }
 }
 
-void StorageTest::mediaCacheAdoptsLegacyQueryCache()
+void StorageTest::mediaCacheRefusesAmbiguousLegacyQueryCache()
 {
     MediaItem item;
     item.type = MediaType::Music;
@@ -776,7 +777,8 @@ void StorageTest::mediaCacheAdoptsLegacyQueryCache()
     item.online = true;
 
     // 旧版 identity 会丢掉整个查询串；新版保留 id、剔除 token。
-    // 旧布局目录必须仍能被升级后的程序认出来。
+    // 旧 meta 只存了不带 query 的地址，无法判断 `id=1` 与 `id=2` 哪个
+    // 才是这份缓存的主人，宁可拒绝迁移，也不能把别的歌搬过来。
     const QString oldIdentity = QStringLiteral("url:https://example.com/song");
     const QString oldDigest =
         QCryptographicHash::hash(oldIdentity.toUtf8(), QCryptographicHash::Sha256)
@@ -802,9 +804,8 @@ void StorageTest::mediaCacheAdoptsLegacyQueryCache()
     metaFile.close();
 
     const QString migrated = MediaCache::completeFileForItem(item);
-    QVERIFY(!migrated.isEmpty());
-    QCOMPARE(QFileInfo(migrated).size(), 1234);
-    QVERIFY(!QDir(oldDir).exists());
+    QVERIFY(migrated.isEmpty());
+    QVERIFY(QDir(oldDir).exists());
 }
 
 QTEST_GUILESS_MAIN(StorageTest)

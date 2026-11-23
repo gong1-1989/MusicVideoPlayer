@@ -596,12 +596,9 @@ void DownloadManager::load()
             const QString reserved =
                 reserveFilePath(info.absolutePath(), info.fileName(), job.id);
             if (!reserved.isEmpty() && reserved != job.filePath) {
-                // 重新分配目标后，旧路径的续传点已无法对应新目标；
-                // 不清掉会在下载目录里长期留下一个无主 .mvpdownload。
-                const QString oldPartial = job.filePath + QStringLiteral(".mvpdownload");
-                if (QFileInfo::exists(oldPartial) && !QFile::remove(oldPartial)) {
-                    qCWarning(lcDownloadManager) << "旧续传点清理失败" << oldPartial;
-                }
+                // 旧路径仍属于前面那个活动任务（本循环只和前序未完成任务比较），
+                // 它的 .mvpdownload 不能删；当前任务改到新路径后从 0 开始，
+                // 旧续传点留给原任务继续使用，删掉会让原任务丢失进度。
                 job.filePath = reserved;
                 job.bytesReceived = 0;
                 job.segmentIndex = 0;
@@ -609,6 +606,9 @@ void DownloadManager::load()
                 // 把新路径当成自己产出过文件。
                 job.committed = false;
                 job.message = tr("状态文件路径冲突，已重新分配目标文件");
+                // 冲突修正必须落盘，否则每次启动都会重新分配一次，任务永远
+                // 停在新名字上并反复丢失续传点。
+                changedInLoad = true;
             }
             break;
         }

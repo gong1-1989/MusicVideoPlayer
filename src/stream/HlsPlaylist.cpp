@@ -7,10 +7,23 @@
 #include <QRegularExpression>
 #include <QStringList>
 
+namespace {
+// UTF-8 BOM 解码后会变成 U+FEFF，`trimmed()` 不会删它。带 BOM 时首行
+// 变成 `\uFEFF#EXTM3U`，既不是注释也不是合法相对 URI，重写会把整份
+// 播放列表判成非法分片并返回 502，所以在解析和重写入口统一剥掉。
+QString decodePlaylist(const QByteArray &body)
+{
+    QString source = QString::fromUtf8(body);
+    if (source.startsWith(QChar(0xFEFF)))
+        source.remove(0, 1);
+    return source;
+}
+} // namespace
+
 QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
                                                     const QUrl &playlistUrl)
 {
-    const QString source = QString::fromUtf8(body);
+    const QString source = decodePlaylist(body);
     QStringList lines = source.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
     for (QString &line : lines) {
         if (line.endsWith(QLatin1Char('\r')))
@@ -166,7 +179,7 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
     if (error != nullptr)
         error->clear();
 
-    const QString source = QString::fromUtf8(body);
+    const QString source = decodePlaylist(body);
     const bool crlf = source.contains(QLatin1String("\r\n"));
     QStringList lines = source.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
     for (QString &line : lines) {
