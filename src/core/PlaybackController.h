@@ -135,6 +135,9 @@ private:
     /// 媒体是否已经加载到可定位状态。未就绪时只记最后一次目标，
     /// 避免源站还在拉首片时连续 setPosition 打断预取连接。
     bool m_mediaReady = false;
+    /// setSource() 可能同步触发 Loaded/Buffered；此时还没调用 play()，
+    /// 提前 seek 会被随后的 play() 重置回 0，必须等播放请求真正发出。
+    bool m_sourcePlayRequested = false;
     qint64 m_deferredSeekMs = -1;
 };
 

@@ -1863,6 +1863,12 @@ void IntegrationTest::videoPositionRestoredAfterSwitch()
     first.online = false;
     MediaItem second = first;
     second.title = QStringLiteral("resume-b");
+    // 两条必须是不同文件路径：同一 URL 时播放器可能复用旧位置，
+    // 掩盖“新 source 从 0 开始却把旧位置当成恢复成功”的回归。
+    const QString secondPath = m_tempDir.filePath(QStringLiteral("resume-source-b.mp4"));
+    QFile::remove(secondPath);
+    QVERIFY(QFile::copy(mediaPath, secondPath));
+    second.url = QUrl::fromLocalFile(secondPath);
     playlist.addItem(first);
     playlist.addItem(second);
 
@@ -1890,6 +1896,19 @@ void IntegrationTest::videoPositionRestoredAfterSwitch()
     QVERIFY2(player.position() + 1500 >= savedPosition,
              qPrintable(QStringLiteral("切回后位置 %1，保存位置 %2")
                             .arg(player.position())
+                            .arg(savedPosition)));
+
+    // 再模拟一次“恢复还没落地就切走”：切到第二条后立刻切回第一条，
+    // 再在 seek 完成前切走；第一条的进度不能被片头 0 覆盖。
+    player.playRow(1);
+    QTest::qWait(800);
+    player.playRow(0);
+    QTest::qWait(200);
+    player.playRow(1);
+    QTest::qWait(300);
+    QVERIFY2(playlist.itemAt(0).positionMs + 1500 >= savedPosition,
+             qPrintable(QStringLiteral("快速切走后进度被覆盖成 %1，原位置 %2")
+                            .arg(playlist.itemAt(0).positionMs)
                             .arg(savedPosition)));
     player.stop();
 }
