@@ -165,8 +165,11 @@ void MediaRemux::remuxToMp4(const QString &videoPath, const QString &audioPath,
                     error = tr("FFmpeg 异常退出，代码 %1").arg(exitCode);
                 else if (!outputOk)
                     error = tr("FFmpeg 没有生成有效的 MP4 文件");
-                else if (!log.isEmpty())
-                    error = log.right(2000);
+                // 成功路径也可能有 stderr（例如无害的流映射警告）。日志只在
+                // 失败时作为错误摘要，不能把成功任务标成错误。
+                if (!success && !log.isEmpty())
+                    error = error.isEmpty() ? log.right(2000)
+                                            : error + QLatin1Char('\n') + log.right(2000);
 
                 if (success && QFileInfo::exists(outputPath)) {
                     success = false;

@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "util/HeaderPolicy.h"
+#include "util/NetworkAddressPolicy.h"
 
 Q_LOGGING_CATEGORY(lcHttp, "mvp.net")
 
@@ -177,6 +178,11 @@ QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
                                const QUrl &sourceOrigin)
 {
     qCDebug(lcHttp) << "GET" << redactUrl(url) << "分段" << range;
+    if (!NetworkAddressPolicy::allowsMediaTarget(url, sourceOrigin)) {
+        qCWarning(lcHttp) << "拒绝本机/内网 GET（源站"
+                          << redactUrl(sourceOrigin) << "）：" << redactUrl(url);
+        return nullptr;
+    }
     QNetworkRequest request =
         buildRequest(url, headers, sourceOrigin,
                      QNetworkRequest::SameOriginRedirectPolicy);
@@ -199,6 +205,11 @@ QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
                                     const QUrl &sourceOrigin)
 {
     qCDebug(lcHttp) << "POST" << redactUrl(url) << "请求体" << body.size() << "字节";
+    if (!NetworkAddressPolicy::allowsMediaTarget(url, sourceOrigin)) {
+        qCWarning(lcHttp) << "拒绝本机/内网 POST（源站"
+                          << redactUrl(sourceOrigin) << "）：" << redactUrl(url);
+        return nullptr;
+    }
     QNetworkRequest request =
         buildRequest(url, headers, sourceOrigin,
                      QNetworkRequest::SameOriginRedirectPolicy);
@@ -310,6 +321,16 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
 {
     if (hop > kMaxRedirects || !isAllowedScheme(url)) {
         qCWarning(lcHttp) << "重定向链被拒绝：" << redactUrl(url) << "第" << hop << "跳";
+        onReady(nullptr);
+        return;
+    }
+
+    // 每一跳都按可信源站重新判断：公网源 302/播放列表不能把请求带到
+    // 127.0.0.1、192.168.x.x 等本机/内网地址。sourceOrigin 为空的旧调用
+    // 保持兼容，由调用方在拿不到源站信息时自行 fail closed。
+    if (!NetworkAddressPolicy::allowsMediaTarget(url, sourceOrigin)) {
+        qCWarning(lcHttp) << "拒绝本机/内网目标（源站"
+                          << redactUrl(sourceOrigin) << "）：" << redactUrl(url);
         onReady(nullptr);
         return;
     }

@@ -22,6 +22,8 @@ public:
         QString cachePath;
         /// 条目身份，写入缓存旁车 JSON，用于重启后确认文件归属。
         QString cacheIdentity;
+        /// 登记该地址时可信源站；代理每次回源前据此拒绝公网源指向内网的地址。
+        QUrl sourceOrigin;
     };
 
     void clear();
@@ -34,7 +36,8 @@ public:
     /// 监听端口无效时返回空 URL。cachePath 只对可直接整段落盘的直链生效。
     QUrl registerFor(const QUrl &upstream, const QHash<QString, QString> &headers, int port,
                      const QString &cachePath = QString(),
-                     const QString &cacheIdentity = QString());
+                     const QString &cacheIdentity = QString(),
+                     const QUrl &sourceOrigin = QUrl());
 
     /// 按 token 取回上游并刷新空闲时间；未知 token 返回 false。
     bool lookup(const QString &token, Upstream *upstream);

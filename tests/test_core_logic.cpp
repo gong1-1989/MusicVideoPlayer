@@ -25,6 +25,7 @@
 #include "net/NetLimits.h"
 #include "stream/StreamTokenRegistry.h"
 #include "util/HeaderPolicy.h"
+#include "util/NetworkAddressPolicy.h"
 #include "util/PlaylistSniffer.h"
 #include "util/SecretStore.h"
 #include "util/TimeFormat.h"
@@ -707,8 +708,9 @@ public:
                         m_handler(target, body, contentType, status);
                     QByteArray response = "HTTP/1.1 " + QByteArray::number(status) + " "
                                           + (status >= 200 && status < 300 ? "OK" : "Not Found")
-                                          + "\r\nContent-Type: " + contentType
-                                          + "\r\nContent-Length: " + QByteArray::number(body.size())
+                                          + "\r\nContent-Type: " + contentType + "\r\n"
+                                          + m_extraHeaders
+                                          + "Content-Length: " + QByteArray::number(body.size())
                                           + "\r\nConnection: close\r\n\r\n" + body;
                     QTimer::singleShot(m_delayMs, socket, [socket, response] {
                         if (socket->state() != QAbstractSocket::ConnectedState)
@@ -736,6 +738,10 @@ public:
 private:
     Handler m_handler;
     int m_delayMs = 0;
+
+public:
+    /// 由测试追加的响应头（如 Content-Range），必须自带 CRLF。
+    QByteArray m_extraHeaders;
 };
 
 } // namespace
@@ -784,7 +790,11 @@ private slots:
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
     void headerPolicyFailsClosedWithoutOrigin();
+    void headerPolicyMatchesCompactedNames();
+    void networkAddressPolicyBlocksPrivateMediaTargets();
     void playlistSnifferRecognizesBody();
+    void downloadRejectsHtmlDisguisedAsOctetStream();
+    void downloadUsesContentRangeEndWhenTotalUnknown();
     void downloadHlsVerifiesSegmentsAndMapRange();
     void configMapperReadsNestedPaths();
     void configMapperBoolRulesDoNotMixWithNumbers();
@@ -812,6 +822,7 @@ private slots:
     void hlsPlaylistRejectsTooManySegments();
     void streamTokensReuseByUrlAndHeaders();
     void streamTokensExpireByIdleClock();
+    void streamProxyRejectsPrivateTargetFromPublicOrigin();
     void streamTokensKeepFreshTokensBeyondCapacity();
     void streamCacheStoreCountsRangeParts();
     void streamRangeParsesHeadersAndSplitsParts();
@@ -2117,6 +2128,71 @@ void CoreLogicTest::headerPolicyFailsClosedWithoutOrigin()
              QStringLiteral("https://source.example"));
 }
 
+void CoreLogicTest::headerPolicyMatchesCompactedNames()
+{
+    // 实际源配置里出现过分隔符不同的大小写变体；它们本质仍是凭据头，
+    // 跨 host 时必须被裁剪，不能因为写法不同而漏发。
+    QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("X-APIKEY")));
+    QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("apiKey")));
+    QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("X_API_KEY")));
+    QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("access-key")));
+    QVERIFY(!HeaderPolicy::isSensitiveHeader(QStringLiteral("User-Agent")));
+    QVERIFY(!HeaderPolicy::isSensitiveHeader(QStringLiteral("Accept")));
+
+    QHash<QString, QString> headers;
+    headers.insert(QStringLiteral("X-APIKEY"), QStringLiteral("secret-1"));
+    headers.insert(QStringLiteral("apiKey"), QStringLiteral("secret-2"));
+    headers.insert(QStringLiteral("X_API_KEY"), QStringLiteral("secret-3"));
+    headers.insert(QStringLiteral("User-Agent"), QStringLiteral("MVP"));
+    const QHash<QString, QString> safe =
+        HeaderPolicy::withoutSensitiveHeaders(headers);
+    QVERIFY(!safe.contains(QStringLiteral("X-APIKEY")));
+    QVERIFY(!safe.contains(QStringLiteral("apiKey")));
+    QVERIFY(!safe.contains(QStringLiteral("X_API_KEY")));
+    QCOMPARE(safe.value(QStringLiteral("User-Agent")), QStringLiteral("MVP"));
+}
+
+void CoreLogicTest::networkAddressPolicyBlocksPrivateMediaTargets()
+{
+    // 字面地址识别不能依赖 DNS，否则公网页面返回的内网地址会先被请求。
+    QVERIFY(NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://127.0.0.1:8080/a.mp4"))));
+    QVERIFY(NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://10.1.2.3/a.mp4"))));
+    QVERIFY(NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://172.20.0.1/a.mp4"))));
+    QVERIFY(NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://192.168.1.10/a.mp4"))));
+    QVERIFY(NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://169.254.169.254/latest/meta-data"))));
+    QVERIFY(NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://[::1]/a.mp4"))));
+    QVERIFY(NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://localhost:9000/a.mp4"))));
+    QVERIFY(NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://metadata.google.internal/computeMetadata"))));
+    QVERIFY(!NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("https://example.com/a.mp4"))));
+    QVERIFY(!NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://8.8.8.8/a.mp4"))));
+    // 后缀匹配必须精确，`localhost.evil.example` 不能被当成本机。
+    QVERIFY(!NetworkAddressPolicy::isLocalOrPrivateHost(
+        QUrl(QStringLiteral("http://localhost.evil.example/a.mp4"))));
+
+    const QUrl publicSource(QStringLiteral("https://example.com/"));
+    const QUrl localSource(QStringLiteral("http://127.0.0.1:8080/"));
+    QVERIFY(!NetworkAddressPolicy::allowsMediaTarget(
+        QUrl(QStringLiteral("http://127.0.0.1/a.mp4")), publicSource));
+    QVERIFY(NetworkAddressPolicy::allowsMediaTarget(
+        QUrl(QStringLiteral("http://127.0.0.1/a.mp4")), localSource));
+    QVERIFY(NetworkAddressPolicy::allowsMediaTarget(
+        QUrl(QStringLiteral("https://cdn.example/a.mp4")), publicSource));
+    QVERIFY(!NetworkAddressPolicy::allowsMediaTarget(
+        QUrl(QStringLiteral("ftp://example.com/a.mp4")), publicSource));
+    QVERIFY(!NetworkAddressPolicy::allowsMediaTarget(
+        QUrl(QStringLiteral("file:///C:/a.mp4")), publicSource));
+}
+
 void CoreLogicTest::downloadHlsVerifiesSegmentsAndMapRange()
 {
     HlsDownloadServer server;
@@ -2152,6 +2228,65 @@ void CoreLogicTest::downloadHlsVerifiesSegmentsAndMapRange()
     QVERIFY(server.initRangeReceived);
     QCOMPARE(server.initRangeStart, qint64(0));
     QCOMPARE(server.initRangeEnd, qint64(9));
+}
+
+void CoreLogicTest::downloadRejectsHtmlDisguisedAsOctetStream()
+{
+    // 不少站点把登录页/错误页包成 application/octet-stream；只按 MIME 放行
+    // 会把网页存成 .mp3。这里验证首块魔数校验仍会拒绝。
+    ProbeSiteServer server([](const QString &, QByteArray &body, QByteArray &contentType,
+                              int &status) {
+        status = 200;
+        contentType = QByteArrayLiteral("application/octet-stream");
+        body = QByteArrayLiteral("<!DOCTYPE html><html><body>请登录</body></html>");
+    });
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString target = dir.filePath(QStringLiteral("song.mp3"));
+    HttpClient http;
+    const QUrl url(QStringLiteral("http://127.0.0.1:%1/song.mp3")
+                       .arg(server.serverPort()));
+    DownloadTask *task = DownloadTask::start(&http, url, target);
+    QVERIFY(task != nullptr);
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 8000);
+    QCOMPARE(succeeded.count(), 0);
+    QCOMPARE(failed.count(), 1);
+    QVERIFY(!QFile::exists(target));
+}
+
+void CoreLogicTest::downloadUsesContentRangeEndWhenTotalUnknown()
+{
+    // 206 的 Content-Range 只给 `0-9/*`、总长未知时，end+1 就是最终长度；
+    // 实际只返回 5 字节必须判失败，不能仅因为 Content-Length 是 5 就提交半截文件。
+    ProbeSiteServer server([](const QString &, QByteArray &body, QByteArray &contentType,
+                              int &status) {
+        status = 206;
+        contentType = QByteArrayLiteral("application/octet-stream");
+        body = QByteArray("ID3\x04\x00", 5);
+    });
+    server.m_extraHeaders = QByteArrayLiteral("Content-Range: bytes 0-9/*\r\n");
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString target = dir.filePath(QStringLiteral("clip.mp3"));
+    HttpClient http;
+    const QUrl url(QStringLiteral("http://127.0.0.1:%1/clip.mp3")
+                       .arg(server.serverPort()));
+    DownloadTask *task = DownloadTask::start(&http, url, target);
+    QVERIFY(task != nullptr);
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 8000);
+    QCOMPARE(succeeded.count(), 0);
+    QCOMPARE(failed.count(), 1);
+    QVERIFY(!QFile::exists(target));
 }
 
 void CoreLogicTest::configMapperReadsNestedPaths()
@@ -3457,6 +3592,31 @@ void CoreLogicTest::streamTokensReuseByUrlAndHeaders()
 
     tokens.clear();
     QCOMPARE(tokens.size(), 0);
+}
+
+void CoreLogicTest::streamProxyRejectsPrivateTargetFromPublicOrigin()
+{
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    // 模拟公网播放列表返回绝对的本机分片地址。令牌登记时保留可信源站，
+    // 代理真正回源前必须拒绝，不能等播放器先发起请求。
+    const QUrl local = proxy.proxyUrlFor(
+        QUrl(QStringLiteral("http://127.0.0.1:9/seg.ts")), {},
+        QString(), QString(), QUrl(QStringLiteral("https://source.example/")));
+    QVERIFY(local.isValid());
+
+    QTcpSocket socket;
+    socket.connectToHost(local.host(), quint16(local.port()));
+    QVERIFY(socket.waitForConnected(3000));
+    const QByteArray request = "GET " + local.path().toUtf8() + "seg.ts HTTP/1.1\r\n"
+                               "Host: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    socket.write(request);
+    socket.flush();
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(readProxyResponse(&socket, &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 403"), head.constData());
 }
 
 void CoreLogicTest::streamTokensExpireByIdleClock()

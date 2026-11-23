@@ -12,7 +12,6 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QSaveFile>
-#include <QThread>
 #include <utility>
 
 Q_LOGGING_CATEGORY(lcStore, "mvp.store")
@@ -44,6 +43,9 @@ QString snapshotPath()
 
 /// @brief 写文件：QSaveFile 原子替换，Windows 占用时最多重试 3 次。
 /// @return 写入并 commit 成功返回 true；失败返回 false 并记录日志。
+/// @note 重试不 sleep：这个函数由 GUI 线程的自动保存/退出保存调用，
+///       原先两次 80ms 的等待会把界面卡住最多 160ms；QSaveFile 失败通常
+///       是瞬时占用，立即重试仍有意义，但不能把等待成本转嫁给 UI。
 bool writeFile(const QString &path, const QByteArray &payload)
 {
     if (path.isEmpty())
@@ -71,8 +73,6 @@ bool writeFile(const QString &path, const QByteArray &payload)
                 lastError = file.errorString();
             }
         }
-        if (attempt < 2)
-            QThread::msleep(80);
     }
 
     qCWarning(lcStore) << "播放列表写入失败：" << path << "：" << lastError;

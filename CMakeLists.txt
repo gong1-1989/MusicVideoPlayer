@@ -51,6 +51,8 @@ qt_add_library(mvp_core STATIC
     src/audio/AudioSpectrumAnalyzer.h
     src/audio/AudioSpectrumAnalyzer.cpp
     src/util/HeaderPolicy.h
+    src/util/NetworkAddressPolicy.h
+    src/util/NetworkAddressPolicy.cpp
     src/util/PlaylistSniffer.h
     src/util/PlaylistSniffer.cpp
     src/util/SecretStore.h

@@ -6,6 +6,7 @@
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
+#include "util/NetworkAddressPolicy.h"
 #include "util/PlaylistSniffer.h"
 
 #include <QDateTime>
@@ -387,12 +388,13 @@ bool StreamProxy::isListening() const
 /// @param cacheIdentity 缓存身份，用于区分同名不同源的内容。
 /// @return 本地代理地址；服务启动失败时返回空 QUrl。
 QUrl StreamProxy::proxyUrlFor(const QUrl &upstream, const QHash<QString, QString> &headers,
-                              const QString &cachePath, const QString &cacheIdentity)
+                              const QString &cachePath, const QString &cacheIdentity,
+                              const QUrl &sourceOrigin)
 {
     if (!isListening() && !start())
         return QUrl();
     return m_tokens.registerFor(upstream, headers, m_server->serverPort(), cachePath,
-                                cacheIdentity);
+                                cacheIdentity, sourceOrigin);
 }
 
 /// @brief 接收新连接：按请求头累积到 `\r\n\r\n` 后交给 handleClient。
@@ -522,6 +524,15 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
         replyError(client, 400, QStringLiteral("Bad stream path"));
         return;
     }
+    // 令牌里记录了登记时的可信源站。公网源站登记的分片即使后来解析成
+    // 127.0.0.1/内网地址，也不能由本机代理代发请求；本地源站仍允许本地媒体。
+    if (!NetworkAddressPolicy::allowsMediaTarget(upstream, entry.sourceOrigin)) {
+        qCWarning(lcProxy) << "流转请求指向本机或内网，已拒绝"
+                           << HttpClient::redactUrl(upstream)
+                           << "源站" << HttpClient::redactUrl(entry.sourceOrigin);
+        replyError(client, 403, QStringLiteral("Forbidden stream target"));
+        return;
+    }
 
     client->setProperty(kMethod, request.method);
     QByteArray range = request.range.toUtf8();
@@ -568,7 +579,7 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     }
 
     startUpstreamRequest(client, upstream, headers, request, hasRange, cacheKey, cachePath,
-                         cacheIdentity);
+                         cacheIdentity, entry.sourceOrigin);
 }
 
 /// @brief 回源单路请求：按需建缓存、复用磁盘完整文件，并把响应透传给客户端。
@@ -582,7 +593,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                                        const QHash<QString, QString> &headers,
                                        const Request &request, bool hasRange,
                                        const QString &cacheKey, const QString &cachePath,
-                                       const QString &cacheIdentity)
+                                       const QString &cacheIdentity, const QUrl &sourceOrigin)
 {
     const bool isHead = request.method == QLatin1String("HEAD");
     QByteArray range = request.range.toUtf8();
@@ -688,7 +699,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
     QPointer<QTcpSocket> guard(client);
     m_http->stream(upstream, range, headers,
                    [this, guard, upstream, headers, isHead, hasRange, cacheKey, request,
-                    cachePath, cacheIdentity, diskRequested, resumeOffset,
+                    cachePath, cacheIdentity, sourceOrigin, diskRequested, resumeOffset,
                     singleFileHlsSegment, boundedRangeRequest](QNetworkReply *reply) {
         if (guard.isNull()) {
             if (reply != nullptr) {
@@ -766,7 +777,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                 Request fresh = request;
                 fresh.range.clear();
                 startUpstreamRequest(client, upstream, headers, fresh, false, cacheKey,
-                                     cachePath, cacheIdentity);
+                                     cachePath, cacheIdentity, sourceOrigin);
                 return;
             }
         }
@@ -776,7 +787,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         // FFmpeg 的 `bytes=0-` 等价于要全文，可以安全改写；明确区间则拒绝。
         if (!isHead && isPlaylistResponse(reply)) {
             if (!hasRange || isOpenEndedRange(request.range)) {
-                attachPlaylist(client, reply, headers);
+                attachPlaylist(client, reply, headers, sourceOrigin);
             } else {
                 qCWarning(lcProxy) << "播放列表不支持指定区间" << request.range
                                    << HttpClient::redactUrl(upstream);
@@ -1404,6 +1415,13 @@ void StreamProxy::enqueuePrefetch(const QUrl &playlistUrl,
             break;
 
         const QUrl segment = info->segments.at(index);
+        // 预取同样属于回源请求：公网播放列表里的绝对分片不能指向本机/内网，
+        // 否则后台预取会绕过播放器的首次地址校验。
+        if (!NetworkAddressPolicy::allowsMediaTarget(segment, playlistUrl)) {
+            qCWarning(lcProxy) << "预取分片指向本机或内网，已跳过"
+                               << HttpClient::redactUrl(segment);
+            continue;
+        }
         const QString key = cacheKeyFor(segment, headers);
         const QSharedPointer<CacheEntry> cached = m_cache.value(key);
         if (!cached.isNull() && (cached->pending || cached->reply != nullptr
@@ -1747,12 +1765,13 @@ void StreamProxy::cancelPrefetch()
 }
 
 void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
-                                 const QHash<QString, QString> &headers)
+                                 const QHash<QString, QString> &headers,
+                                 const QUrl &sourceOrigin)
 {
     QPointer<QTcpSocket> guard(client);
     auto finished = std::make_shared<bool>(false);
 
-    auto finish = [this, guard, reply, headers, finished] {
+    auto finish = [this, guard, reply, headers, finished, sourceOrigin] {
         if (*finished)
             return;
         *finished = true;
@@ -1792,7 +1811,8 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
             return;
         }
         QString rewriteError;
-        QByteArray rewritten = rewritePlaylist(body, finalUrl, headers, &rewriteError);
+        QByteArray rewritten = rewritePlaylist(body, finalUrl, headers, &rewriteError,
+                                              sourceOrigin);
         if (!rewriteError.isEmpty()) {
             qCWarning(lcProxy) << "播放列表 URI 被拒绝：" << rewriteError;
             replyError(socket, 502, QStringLiteral("unsupported playlist uri"));
@@ -1830,11 +1850,20 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
 
 /// @brief 改写播放列表，把分片地址换成同一令牌下的相对路径。
 QByteArray StreamProxy::rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
-                                        const QHash<QString, QString> &headers, QString *error)
+                                        const QHash<QString, QString> &headers, QString *error,
+                                        const QUrl &sourceOrigin)
 {
     return HlsPlaylist::rewrite(
         body, playlistUrl,
-        [this, &headers](const QUrl &absolute) { return proxyUrlFor(absolute, headers); },
+        [this, &headers, &sourceOrigin, error](const QUrl &absolute) {
+            if (!NetworkAddressPolicy::allowsMediaTarget(absolute, sourceOrigin)) {
+                if (error != nullptr)
+                    *error = QStringLiteral("播放列表包含本机/内网地址：")
+                        + HttpClient::redactUrl(absolute);
+                return QUrl();
+            }
+            return proxyUrlFor(absolute, headers, QString(), QString(), sourceOrigin);
+        },
         error);
 }
 

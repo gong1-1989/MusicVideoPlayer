@@ -213,6 +213,43 @@ QString primaryDir()
     return StoragePaths::dataDir();
 }
 
+/// 最近一次成功写盘的主文件快照。主文件损坏时优先恢复它，避免只回到预置源。
+QString backupPath()
+{
+    return QDir(primaryDir()).filePath(QStringLiteral("sources.json.bak"));
+}
+
+/// @brief 读取一个源配置数组文件。
+/// @return 文件存在、可读、未超限且根节点是数组时返回 true。
+bool readSourceArray(const QString &path, QJsonArray *array, QString *reason)
+{
+    if (array == nullptr)
+        return false;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (reason != nullptr)
+            *reason = file.errorString();
+        return false;
+    }
+    if (file.size() > kMaxSourceFileBytes) {
+        if (reason != nullptr)
+            *reason = QStringLiteral("文件超过大小上限");
+        return false;
+    }
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+        if (reason != nullptr) {
+            *reason = parseError.error != QJsonParseError::NoError
+                ? parseError.errorString()
+                : QStringLiteral("根节点不是数组");
+        }
+        return false;
+    }
+    *array = document.array();
+    return true;
+}
+
 /// @brief 恢复内置源被外部配置改写过的字段。
 /// @param input 待校验配置。
 /// @param changed 输出是否发生了修正，可为空。
@@ -352,38 +389,60 @@ bool SourceRegistry::load()
         return false;
     }
 
+    bool restoredFromBackup = false;
     if (selectedPath.isEmpty()) {
-        if (!parseErrorReason.isEmpty()) {
-            const QString backup = backupCorruptFile(primary);
-            if (backup.isEmpty()) {
-                m_lastError = tr("源配置已损坏（%1），且无法备份原文件；未覆盖原文件。")
-                                  .arg(parseErrorReason);
+        QJsonArray backupArray;
+        QString backupReason;
+        if (readSourceArray(backupPath(), &backupArray, &backupReason)) {
+            if (!parseErrorReason.isEmpty() && info.exists()) {
+                const QString corruptBackup = backupCorruptFile(primary);
+                if (corruptBackup.isEmpty()) {
+                    m_lastError = tr("源配置已损坏（%1），且无法备份原文件；未覆盖原文件。")
+                                      .arg(parseErrorReason);
+                    qCWarning(lcRegistry) << m_lastError;
+                    return false;
+                }
+                m_lastError = tr("源配置已损坏（%1），原文件已备份为 %2。")
+                                  .arg(parseErrorReason, QFileInfo(corruptBackup).fileName());
                 qCWarning(lcRegistry) << m_lastError;
+            }
+            selectedPath = primary;
+            selectedArray = backupArray;
+            restoredFromBackup = true;
+            m_lastError = tr("已从最近一次成功保存的备份恢复源配置。");
+            qCInfo(lcRegistry) << m_lastError;
+        } else {
+            if (!parseErrorReason.isEmpty()) {
+                const QString corruptBackup = backupCorruptFile(primary);
+                if (corruptBackup.isEmpty()) {
+                    m_lastError = tr("源配置已损坏（%1），且无法备份原文件；未覆盖原文件。")
+                                      .arg(parseErrorReason);
+                    qCWarning(lcRegistry) << m_lastError;
+                    return false;
+                }
+                m_lastError = tr("源配置已损坏（%1），原文件已备份为 %2。")
+                                  .arg(parseErrorReason, QFileInfo(corruptBackup).fileName());
+                qCWarning(lcRegistry) << m_lastError;
+            }
+
+            m_sources = seedSources();
+            qCInfo(lcRegistry) << "已写入预置源：" << m_sources.size() << "个";
+            const QString corruptMessage = m_lastError;
+            if (!save()) {
+                if (!corruptMessage.isEmpty())
+                    m_lastError = corruptMessage + tr(" 预置源写入失败：%1").arg(m_lastError);
                 return false;
             }
-            m_lastError = tr("源配置已损坏（%1），原文件已备份为 %2。")
-                              .arg(parseErrorReason)
-                              .arg(QFileInfo(backup).fileName());
-            qCWarning(lcRegistry) << m_lastError;
-        }
-
-        m_sources = seedSources();
-        qCInfo(lcRegistry) << "已写入预置源：" << m_sources.size() << "个";
-        const QString corruptMessage = m_lastError;
-        if (!save()) {
+            // 只有真的写盘成功后才能说“已恢复预置源”，否则用户会以为损坏文件已被修好。
             if (!corruptMessage.isEmpty())
-                m_lastError = corruptMessage + tr(" 预置源写入失败：%1").arg(m_lastError);
-            return false;
+                m_lastError = corruptMessage + tr(" 已恢复预置源。");
+            return true;
         }
-        // 只有真的写盘成功后才能说“已恢复预置源”，否则用户会以为损坏文件已被修好。
-        if (!corruptMessage.isEmpty())
-            m_lastError = corruptMessage + tr(" 已恢复预置源。");
-        return true;
     }
 
     m_storagePath = selectedPath;
     const QJsonArray array = selectedArray;
-    bool dirty = false;
+    bool dirty = restoredFromBackup;
     QSet<QString> seenIds;
     for (const QJsonValue &entry : array) {
         if (!entry.isObject())
@@ -443,8 +502,17 @@ bool SourceRegistry::load()
             qCInfo(lcRegistry) << "补入缺失的内置源：" << seed.id;
         }
     }
-    if (dirty && !save())
-        return false;
+    if (dirty) {
+        // save() 会先清空 m_lastError；恢复快照/剔除坏源后要回写给用户看的
+        // 提示不能被写盘成功顺手抹掉，否则界面会以为什么都没发生。
+        const QString loadMessage = m_lastError;
+        if (!save()) {
+            if (!loadMessage.isEmpty())
+                m_lastError = loadMessage + tr(" 恢复回写失败：%1").arg(m_lastError);
+            return false;
+        }
+        m_lastError = loadMessage;
+    }
 
     qCInfo(lcRegistry) << "已加载" << m_sources.size() << "个搜索源，来自" << storagePath();
     return true;
@@ -491,6 +559,10 @@ bool SourceRegistry::save()
 
     if (primaryOk) {
         m_storagePath = primary;
+        // 主文件提交成功后再刷新快照；备份失败不影响本次保存结果，
+        // 但下次主文件损坏时就少了一层恢复手段，因此必须留日志。
+        if (!writeTarget(backupPath()))
+            qCWarning(lcRegistry) << "源配置快照写入失败：" << backupPath();
         return true;
     }
 

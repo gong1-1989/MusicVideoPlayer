@@ -3,6 +3,7 @@
 #include "cache/MediaCache.h"
 #include "net/HttpClient.h"
 #include "stream/StreamProxy.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QAudioOutput>
 #include <QLoggingCategory>
@@ -325,6 +326,22 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     // 才建立与播放列表条目一一对应的整段缓存。HLS 完整分片由 HlsCacheBuilder
     // 合并转成无后缀 MP4 后，也在这个分支优先按本地文件播放。
     const QUrl playbackUrl = preferredPlaybackUrl(playbackItem);
+    // 公网源返回的播放地址可能指向 127.0.0.1/192.168.x.x；缓存和流转代理
+    // 都会真实回源，必须在进入代理前拒绝，避免本机成为 SSRF 跳板。
+    // 用户自己配置的本地源（sourceOrigin 也是本地）仍允许本地媒体地址。
+    if (playbackItem.online
+        && !NetworkAddressPolicy::allowsMediaTarget(playbackUrl, playbackItem.sourceOrigin)) {
+        const QString reason = tr("媒体地址指向本机或内网，已拒绝播放");
+        qCWarning(lcPlayer) << reason << HttpClient::redactUrl(playbackUrl)
+                            << "源站" << playbackItem.sourceOrigin.toString();
+        emit errorOccurred(reason);
+        m_player->setSource(QUrl());
+        if (++m_consecutiveErrors < rowCount())
+            QTimer::singleShot(0, this, &PlaybackController::next);
+        else
+            m_player->stop();
+        return;
+    }
     QUrl source = playbackUrl;
     QString sourceKind = playbackItem.online ? QStringLiteral("在线代理")
                                              : QStringLiteral("本地文件");
@@ -343,8 +360,9 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
         const bool invoked = QMetaObject::invokeMethod(
             m_proxy,
             [proxy = m_proxy, url = playbackUrl, headers = playbackItem.headers,
-             cachePath, identity = MediaCache::cacheIdentity(playbackItem), &proxied] {
-                proxied = proxy->proxyUrlFor(url, headers, cachePath, identity);
+             cachePath, identity = MediaCache::cacheIdentity(playbackItem),
+             origin = playbackItem.sourceOrigin, &proxied] {
+                proxied = proxy->proxyUrlFor(url, headers, cachePath, identity, origin);
             },
             Qt::BlockingQueuedConnection);
         if (invoked && proxied.isValid())

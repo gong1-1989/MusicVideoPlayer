@@ -66,6 +66,7 @@ private slots:
     void sourceRegistrySeedsAndPersists();
     void sourceRegistryReloadUsesPrimary();
     void sourceRegistryCorruptFileBacksUp();
+    void sourceRegistryRestoresSnapshot();
     void sourceRegistryCorruptBackupNameCollision();
     void sourceRegistryUnwritableDataDirFails();
     void sourceRegistryDirectoryPathFailsWithoutOverwrite();
@@ -319,6 +320,37 @@ void StorageTest::sourceRegistryCorruptFileBacksUp()
     SourceRegistry reloaded;
     QVERIFY(reloaded.load());
     QVERIFY(reloaded.lastError().isEmpty());
+}
+
+void StorageTest::sourceRegistryRestoresSnapshot()
+{
+    const QString primary = StoragePaths::dataFile(QStringLiteral("sources.json"));
+    const QString snapshot = StoragePaths::dataFile(QStringLiteral("sources.json.bak"));
+
+    SourceRegistry registry;
+    QVERIFY(registry.load());
+    QVERIFY(registry.save());
+    QVERIFY(QFile::exists(primary));
+    QVERIFY(QFile::exists(snapshot));
+    const int expectedEnabled = registry.enabledCount();
+
+    // 主文件损坏但快照仍有效：应优先从最近一次成功保存恢复，而不是退回预置源。
+    QFile file(primary);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("{ broken primary");
+    file.close();
+
+    SourceRegistry reloaded;
+    QVERIFY(reloaded.load());
+    QVERIFY(reloaded.lastError().contains(QStringLiteral("备份恢复")));
+    QCOMPARE(reloaded.enabledCount(), expectedEnabled);
+    QVERIFY(!reloaded.lastError().isEmpty());
+
+    // 恢复后必须把快照内容回写主文件，下一次启动不再依赖备份。
+    SourceRegistry again;
+    QVERIFY(again.load());
+    QVERIFY(again.lastError().isEmpty());
+    QCOMPARE(again.enabledCount(), expectedEnabled);
 }
 
 void StorageTest::sourceRegistryCorruptBackupNameCollision()

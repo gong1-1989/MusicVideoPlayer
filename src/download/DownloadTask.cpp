@@ -7,6 +7,7 @@
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
+#include "util/NetworkAddressPolicy.h"
 #include "util/PlaylistSniffer.h"
 
 #include <QCryptographicHash>
@@ -260,6 +261,13 @@ void DownloadTask::startRequest()
         return;
     }
 
+    // 搜索/网页源返回的地址不可信：公网源不能把下载引到本机或内网。
+    // 没有 sourceOrigin 的历史/手工条目保持兼容；有源站信息时再严格判断。
+    if (!NetworkAddressPolicy::allowsMediaTarget(m_url, m_originUrl)) {
+        fail(tr("下载地址指向本机或内网，已拒绝"), true);
+        return;
+    }
+
     if (!openTargetFile())
         return;
 
@@ -433,9 +441,12 @@ void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
     const int status =
         reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
-    // 空 Content-Type 或 text/plain 不能无条件放行；首块写入前用文件头魔数确认。
+    // 空 Content-Type、text/plain 或 application/octet-stream 都不能无条件
+    // 放行：不少站点把 HTML 错误页/JSON 错误包成 octet-stream，首块写入前
+    // 仍用文件头魔数确认，避免把网页错误页存成媒体文件。
     m_verifyMediaMagic = contentType.isEmpty()
-        || contentType.startsWith(QLatin1String("text/plain"));
+        || contentType.startsWith(QLatin1String("text/plain"))
+        || contentType.startsWith(QLatin1String("application/octet-stream"));
 
     if (m_bytesWritten > 0) {
         if (status == 206) {
@@ -448,7 +459,9 @@ void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
                          .arg(QString::fromLatin1(contentRange)));
                 return;
             }
-            m_expectedBytes = total;
+            m_expectedBytes = total >= 0
+                ? total
+                : (end >= 0 ? end + 1 : -1);
             qCInfo(lcDownload) << "从已有临时文件续传，偏移" << m_bytesWritten;
         } else {
             // 服务器忽略 Range，只能从头写；清空临时文件避免前半段重复。
@@ -465,7 +478,10 @@ void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
         qint64 end = -1;
         qint64 total = -1;
         if (parseContentRange(contentRange, &start, &end, &total) && start >= 0) {
-            m_expectedBytes = total;
+            // 总长缺失时 Content-Range 的 end 是该区间的最后一个字节；开区间
+            // 请求（bytes=start-）的 end 就是文件末尾，因此最终长度是 end+1。
+            // 有了这个下界，后续完成校验不再只能依赖 Content-Length。
+            m_expectedBytes = total >= 0 ? total : (end >= 0 ? end + 1 : -1);
         } else {
             m_expectedBytes = (length.isValid() && identityEncoding)
                                   ? length.toLongLong()
@@ -947,6 +963,12 @@ void DownloadTask::startNextSegment()
     }
 
     const Segment segment = m_segments.at(m_segmentIndex);
+    // 播放列表本身可以来自公网，但其中的绝对分片地址仍可能是内网地址；
+    // 每个分片发请求前都按同一个可信源站再校验一次。
+    if (!NetworkAddressPolicy::allowsMediaTarget(segment.url, m_originUrl)) {
+        fail(tr("分片地址指向本机或内网，已拒绝下载"), true);
+        return;
+    }
     m_segmentBytes = 0;
     m_segmentExpected = expectedRangeBytes(segment.range);
     QPointer<DownloadTask> self(this);
@@ -1079,6 +1101,12 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
 
     if (m_done)
         return;
+
+    // 没有总长时至少要有实际内容；空响应不能当成“未知长度的完整文件”提交。
+    if (m_bytesWritten <= 0) {
+        fail(tr("下载响应为空"), true);
+        return;
+    }
 
     if (m_verifyMediaMagic) {
         fail(tr("下载响应没有可识别的音视频数据"), true);

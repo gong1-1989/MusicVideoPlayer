@@ -2,6 +2,7 @@
 /// @brief 外部命令解析器搜索源的进程管理与输出解析实现。
 #include "net/ExternalSearchProvider.h"
 #include "net/NetLimits.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -265,7 +266,8 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
         item.headers = HeaderPolicy::withSourceHeaders(item.headers, trustedOrigin);
 
         if (item.title.isEmpty() || item.url.isEmpty() || item.url.isRelative()
-            || !item.url.isValid()) {
+            || !item.url.isValid()
+            || !NetworkAddressPolicy::allowsMediaTarget(item.url, item.sourceOrigin)) {
             ++m_filtered;
             continue;
         }

@@ -14,6 +14,11 @@ namespace HeaderPolicy {
 inline bool isSensitiveHeader(const QString &name)
 {
     const QString lower = name.toLower();
+    // HTTP 头名允许 `-` 和 `_` 混用；实际源配置里出现过 X-APIKEY、apiKey、
+    // X_API_KEY 等写法。先压掉分隔符再比较，避免这些变体绕过跨域裁剪。
+    QString compact = lower;
+    compact.remove(QLatin1Char('-'));
+    compact.remove(QLatin1Char('_'));
     return lower == QLatin1String("cookie")
         || lower == QLatin1String("cookie2")
         || lower == QLatin1String("authorization")
@@ -22,6 +27,9 @@ inline bool isSensitiveHeader(const QString &name)
         || lower == QLatin1String("x-api-key")
         || lower == QLatin1String("api-key")
         || lower == QLatin1String("access-key")
+        || compact == QLatin1String("xapikey")
+        || compact == QLatin1String("apikey")
+        || compact == QLatin1String("accesskey")
         || lower.contains(QLatin1String("token"))
         || lower.contains(QLatin1String("secret"))
         || lower.contains(QLatin1String("session"))

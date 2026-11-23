@@ -76,7 +76,8 @@ public:
     QUrl proxyUrlFor(const QUrl &upstream,
                      const QHash<QString, QString> &headers = QHash<QString, QString>(),
                      const QString &cachePath = QString(),
-                     const QString &cacheIdentity = QString());
+                     const QString &cacheIdentity = QString(),
+                     const QUrl &sourceOrigin = QUrl());
 
     /// 深拖动前调用：按播放列表里记录的分片时长，把目标时间映射成分片序号，
     /// 在 FFmpeg 真正 seek 之前先把目标附近的分片排进预取队列。
@@ -126,7 +127,8 @@ private:
                               const Request &request, bool hasRange,
                               const QString &cacheKey,
                               const QString &cachePath = QString(),
-                              const QString &cacheIdentity = QString());
+                              const QString &cacheIdentity = QString(),
+                              const QUrl &sourceOrigin = QUrl());
     /// HLS 分片请求命中时，用多路 Range 并发拉取并在缓存里按偏移拼接。
     /// 只对已知媒体分片、`bytes=0-` 且总长受限的请求启用。
     bool tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream,
@@ -154,7 +156,8 @@ private:
                         const QString &reason);
     void attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
     void attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
-                        const QHash<QString, QString> &headers);
+                        const QHash<QString, QString> &headers,
+                        const QUrl &sourceOrigin);
     void flushUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
 
     /// 命中缓存时接管该客户端并返回 true；条目本身无效时返回 false，
@@ -215,7 +218,8 @@ private:
     /// 把 m3u8 里的相对/绝对分片、子播放列表、key、init 段改写成代理地址，
     /// 否则绝对地址会绕过代理，丢掉 Referer/Cookie，相对地址则会丢 token。
     QByteArray rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
-                               const QHash<QString, QString> &headers, QString *error = nullptr);
+                               const QHash<QString, QString> &headers, QString *error = nullptr,
+                               const QUrl &sourceOrigin = QUrl());
 
     QByteArray buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const;
     static Request parseRequest(const QByteArray &payload);

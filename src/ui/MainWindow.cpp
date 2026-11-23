@@ -182,6 +182,17 @@ MainWindow::MainWindow(QWidget *parent)
                     m_pendingSearchPlayIdentity.clear();
                 }
             });
+    connect(m_player, &PlaybackController::positionChanged, this, [this](qint64 position) {
+        // “搜索条目无法播放”只应描述播放从未出声的启动失败。只要当前条目
+        // 已经产生非零播放位置，就说明内容确实播起来了，后续网络/解码中断
+        // 不能再弹“没有返回可播放内容”的误导提示。
+        if (position <= 0 || m_pendingSearchPlayIdentity.isEmpty()
+            || !m_player->hasCurrentItem()) {
+            return;
+        }
+        if (mediaIdentity(m_player->currentItem()) == m_pendingSearchPlayIdentity)
+            m_pendingSearchPlayIdentity.clear();
+    });
     connect(m_player, &PlaybackController::errorOccurred, this,
             [this](const QString &message) {
                 if (m_pendingSearchPlayIdentity.isEmpty() || !m_player->hasCurrentItem())

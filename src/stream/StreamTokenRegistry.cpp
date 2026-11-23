@@ -43,7 +43,8 @@ QString StreamTokenRegistry::cacheKeyFor(const QUrl &upstream,
 QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
                                       const QHash<QString, QString> &headers, int port,
                                       const QString &cachePath,
-                                      const QString &cacheIdentity)
+                                      const QString &cacheIdentity,
+                                      const QUrl &sourceOrigin)
 {
     if (port <= 0 || !upstream.isValid() || upstream.isEmpty())
         return QUrl();
@@ -52,7 +53,11 @@ QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
 
     // 同一个分片在顺序播放/预取/拖动时会反复登记；按地址+鉴权头复用，
     // 避免每个请求都复制一份 Cookie 并留下大量只读 token。
-    const QString key = cacheKeyFor(upstream, headers);
+    // 复用键另外带上可信源站：同一地址在不同源站上下文下不能共用 token，
+    // 否则后一次登记会被前一次的公网源站校验结果污染。
+    const QString cacheKey = cacheKeyFor(upstream, headers);
+    const QString key = cacheKey + QLatin1Char('\x1f') + QStringLiteral("sourceOrigin")
+        + QLatin1Char('\x1e') + sourceOrigin.toString(QUrl::FullyEncoded);
     const QString existing = m_tokenByKey.value(key);
     if (!existing.isEmpty() && m_tokens.contains(existing)) {
         m_tokens[existing].lastUsedMs = QDateTime::currentMSecsSinceEpoch();
@@ -75,9 +80,10 @@ QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
     // 播放列表在源站时保留 Cookie，分片换到 CDN 时自动剥掉。
     entry.headers = HeaderPolicy::sanitizedForTarget(upstream, headers);
     entry.lastUsedMs = QDateTime::currentMSecsSinceEpoch();
-    entry.cacheKey = key;
+    entry.cacheKey = cacheKey;
     entry.cachePath = cachePath;
     entry.cacheIdentity = cacheIdentity;
+    entry.sourceOrigin = sourceOrigin;
     m_tokens.insert(token, entry);
     m_tokenByKey.insert(key, token);
 

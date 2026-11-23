@@ -16,6 +16,7 @@
 #include <QUrl>
 
 #include "util/HeaderPolicy.h"
+#include "util/NetworkAddressPolicy.h"
 
 Q_LOGGING_CATEGORY(lcProvider, "mvp.net.provider")
 
@@ -39,6 +40,19 @@ QStringList collectNormalizedUrls(const QString &primary, const QStringList &alt
             result.append(text);
     }
     return result;
+}
+
+/// @brief 过滤掉公网源返回的本机/内网媒体地址。
+/// @param sourceOrigin 用户配置的源站，本地源仍允许本地媒体地址。
+QStringList filterMediaTargets(const QStringList &candidates, const QUrl &sourceOrigin)
+{
+    QStringList safe;
+    for (const QString &candidate : candidates) {
+        const QUrl url(candidate);
+        if (NetworkAddressPolicy::allowsMediaTarget(url, sourceOrigin))
+            safe.append(candidate);
+    }
+    return safe;
 }
 
 /// @brief 选择同一集的首选播放地址。
@@ -356,7 +370,9 @@ QVector<MediaItem> ConfigSearchProvider::buildItems(const MediaItem &base, const
         }
         for (const EpisodePart &part : parts) {
             MediaItem item = base;
-            const QStringList candidates = collectNormalizedUrls(part.url, part.altUrls, m_baseUrl);
+            const QStringList candidates = filterMediaTargets(
+                collectNormalizedUrls(part.url, part.altUrls, m_baseUrl),
+                base.sourceOrigin);
             QStringList remaining;
             item.url = choosePlaybackUrl(candidates, &remaining);
             item.alternateUrls = remaining;
@@ -380,7 +396,8 @@ QVector<MediaItem> ConfigSearchProvider::buildItems(const MediaItem &base, const
         rawSources.append(stream);
     const QString primary = rawSources.takeFirst().trimmed();
     QStringList remaining;
-    const QStringList candidates = collectNormalizedUrls(primary, rawSources, m_baseUrl);
+    const QStringList candidates = filterMediaTargets(
+        collectNormalizedUrls(primary, rawSources, m_baseUrl), base.sourceOrigin);
     item.url = choosePlaybackUrl(candidates, &remaining);
     item.alternateUrls = remaining;
     if (item.title.isEmpty())

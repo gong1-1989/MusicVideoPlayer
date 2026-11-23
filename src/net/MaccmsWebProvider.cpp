@@ -5,6 +5,7 @@
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -142,7 +143,9 @@ QString unescapeJsUrl(const QString &raw)
 }
 
 /// 交给 QUrl 做百分号编码，中文路径必须编码后才能被 CDN 认出来
-QUrl encodeMediaUrl(const QString &decoded)
+/// @param trustedOrigin 当前网页源的 scheme+host；用于拒绝公网页面返回的
+///        本机/内网媒体地址，避免客户端被当成 SSRF 跳板。
+QUrl encodeMediaUrl(const QString &decoded, const QUrl &trustedOrigin)
 {
     QUrl url(decoded);
     if (!url.isValid())
@@ -151,10 +154,10 @@ QUrl encodeMediaUrl(const QString &decoded)
         return QUrl();
     // 远程 HTML 里的播放参数可以伪造 file:///UNC/smb://；这里只接受 http(s)，
     // 防止后续代理/回退逻辑把本地文件路径当媒体地址。
-    if (url.scheme().compare(QLatin1String("http"), Qt::CaseInsensitive) != 0
-        && url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) != 0) {
+    if (!NetworkAddressPolicy::isHttpMediaUrl(url))
         return QUrl();
-    }
+    if (!NetworkAddressPolicy::allowsMediaTarget(url, trustedOrigin))
+        return QUrl();
     return QUrl(url.toString(QUrl::FullyEncoded));
 }
 
@@ -1108,7 +1111,7 @@ void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
             return;
         }
 
-        const QUrl media = encodeMediaUrl(decoded);
+        const QUrl media = encodeMediaUrl(decoded, HeaderPolicy::originOnly(QUrl(self->m_root)));
         if (media.isEmpty() || !media.isValid()) {
             retryOrFail(tr("播放地址无法解析"));
             return;
