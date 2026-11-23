@@ -1,3 +1,5 @@
+/// @file DownloadTask.cpp
+/// @brief 单文件下载任务实现：直链续传、HLS 分片合并、长度校验与临时文件提交。
 #include "download/DownloadTask.h"
 
 #include "core/FileNameUtils.h"
@@ -61,6 +63,9 @@ QUrl resolveUrl(const QUrl &base, const QString &raw)
 
 } // namespace
 
+/// @brief 构造任务，记录地址、目标路径与请求头。
+/// @note 源站由请求头里的 Referer/Origin 推导，不能默认成下载地址——CDN 直链
+///       会把本应属于源站的 Cookie 错发给 CDN。
 DownloadTask::DownloadTask(HttpClient *http,
                            const QUrl &url,
                            const QString &filePath,
@@ -76,6 +81,9 @@ DownloadTask::DownloadTask(HttpClient *http,
 {
 }
 
+/// @brief 无自定义头的便捷启动入口。
+/// @return 新建的任务对象，信号连接完成后自行开始工作。
+/// @note 启动被延迟到事件循环，调用方在返回后立刻 connect 也不会漏掉同步 failed。
 DownloadTask *DownloadTask::start(HttpClient *http,
                                   const QUrl &url,
                                   const QString &filePath,
@@ -84,6 +92,13 @@ DownloadTask *DownloadTask::start(HttpClient *http,
     return start(http, url, filePath, QHash<QString, QString>(), parent);
 }
 
+/// @brief 创建并启动下载任务。
+/// @param http HTTP 客户端，任务生命周期内必须有效。
+/// @param url 下载地址（http/https）。
+/// @param filePath 最终目标文件路径；临时文件为同路径加 `.mvpdownload`。
+/// @param headers 源站请求头。
+/// @param parent 父对象。
+/// @return 新任务对象。
 DownloadTask *DownloadTask::start(HttpClient *http,
                                   const QUrl &url,
                                   const QString &filePath,
@@ -97,6 +112,7 @@ DownloadTask *DownloadTask::start(HttpClient *http,
     return task;
 }
 
+/// @brief 生成安全的文件名，保证带后缀后总长不超过 120 字符。
 QString DownloadTask::sanitizeFileName(const QString &name, const QString &suffix)
 {
     const QString tail = QStringLiteral(".") + suffix;
@@ -109,11 +125,16 @@ QString DownloadTask::sanitizeFileName(const QString &name, const QString &suffi
     return base;
 }
 
+/// @brief 仅按 URL 判断是否像 HLS 播放列表。
 bool DownloadTask::looksLikeHls(const QUrl &url)
 {
     return PlaylistSniffer::metadataIndicatesPlaylist(url, QString());
 }
 
+/// @brief 打开（必要时创建）临时文件并定位到续传点。
+/// @return 成功返回 true；失败时已发出 failed。
+/// @note 临时文件比状态记录长时截断到续传点，比记录短时从头开始：
+///       否则新响应更短会让尾部旧数据残留，长度校验反而“通过”。
 bool DownloadTask::openTargetFile()
 {
     if (m_file != nullptr)
@@ -165,6 +186,8 @@ bool DownloadTask::openTargetFile()
     return true;
 }
 
+/// @brief 清空临时文件与续传计数，改为从头下载。
+/// @note 文件尚未打开时也必须清零，避免后续请求使用旧偏移。
 void DownloadTask::resetTargetFile()
 {
     // 即使文件尚未打开，也必须清空续传计数；否则后续 startRequest 会拿旧偏移。
@@ -182,6 +205,10 @@ void DownloadTask::resetTargetFile()
     m_resumeSegmentIndex = 0;
 }
 
+/// @brief 设置续传状态。
+/// @param bytesWritten 已写入字节数。
+/// @param segmentIndex 已完成的完整分片数（仅 HLS）。
+/// @param hls 标记任务为 HLS 合并下载。
 void DownloadTask::setResumeState(qint64 bytesWritten, int segmentIndex, bool hls)
 {
     m_resumeBytes = qMax<qint64>(0, bytesWritten);
@@ -190,32 +217,38 @@ void DownloadTask::setResumeState(qint64 bytesWritten, int segmentIndex, bool hl
         m_isHls = true;
 }
 
+/// @brief 记录上次的分片结构指纹，用于判断续传是否仍属同一播放列表。
 void DownloadTask::setResumeFingerprint(const QString &fingerprint)
 {
     m_resumeFingerprint = fingerprint;
 }
 
+/// @brief 覆盖可信源站；无效地址忽略。
 void DownloadTask::setOriginUrl(const QUrl &origin)
 {
     if (origin.isValid() && !origin.host().isEmpty())
         m_originUrl = origin;
 }
 
+/// @brief 允许用户确认后按当前分片下载无 ENDLIST 的列表。
 void DownloadTask::setAllowIncompletePlaylist(bool allow)
 {
     m_allowIncomplete = allow;
 }
 
+/// @brief 设置路径冲突解析器：目标被占用时返回新路径，避免覆盖已有文件。
 void DownloadTask::setPathResolver(std::function<QString(const QString &)> resolver)
 {
     m_pathResolver = std::move(resolver);
 }
 
+/// @brief 临时文件路径：目标路径加 `.mvpdownload`。
 QString DownloadTask::partialPath() const
 {
     return m_filePath + QStringLiteral(".mvpdownload");
 }
 
+/// @brief 校验地址、打开临时文件，并按已知类型进入 HLS/直链流程。
 void DownloadTask::startRequest()
 {
     if (m_done)
@@ -238,6 +271,7 @@ void DownloadTask::startRequest()
     startDirectRequest();
 }
 
+/// @brief 发起直链请求；有续传点时带 `bytes=N-`。
 void DownloadTask::startDirectRequest()
 {
     if (m_done)
@@ -262,6 +296,9 @@ void DownloadTask::startDirectRequest()
     }, m_originUrl);
 }
 
+/// @brief 响应头到达后的分流：播放列表、模糊文本、媒体直链或明确失败。
+/// @param reply 已收到响应头的请求；nullptr 表示重定向/协议被拒。
+/// @note 续传点恰好等于总长时服务器会回 416，此时临时文件已完整，直接提交。
 void DownloadTask::onHeaders(QNetworkReply *reply)
 {
     if (m_done) {
@@ -337,6 +374,7 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
     beginDirectMediaReply(reply, normalized);
 }
 
+/// @brief 把响应按播放列表处理：限制 4 MB 并在接收期就设上限。
 void DownloadTask::beginPlaylistReply(QNetworkReply *reply)
 {
     m_isHls = true;
@@ -351,6 +389,9 @@ void DownloadTask::beginPlaylistReply(QNetworkReply *reply)
         onPlaylistFinished(reply);
 }
 
+/// @brief 判定 text/plain 响应的真实类型。
+/// @note 只 peek 不消费正文；确认不是播放列表后原字节仍交给 writeReplyData。
+///       前缀不足 64 字节且未结束时先等待，避免把短前缀误判成文本。
 void DownloadTask::resolveAmbiguousTextReply(QNetworkReply *reply,
                                              const QString &contentType)
 {
@@ -379,6 +420,8 @@ void DownloadTask::resolveAmbiguousTextReply(QNetworkReply *reply,
     beginDirectMediaReply(reply, contentType);
 }
 
+/// @brief 进入媒体直链下载：解析续传/长度信息并挂接写入回调。
+/// @note Content-Type 为空或 text/plain 时，首块落盘前用文件头魔数再确认一次。
 void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
                                          const QString &contentType)
 {
@@ -448,6 +491,7 @@ void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
         onDirectFinished(reply);
 }
 
+/// @brief 播放列表下载结束：解析、主列表下钻、续传校验并启动首个分片。
 void DownloadTask::onPlaylistFinished(QNetworkReply *reply)
 {
     if (m_done || reply == nullptr)
@@ -541,6 +585,9 @@ void DownloadTask::onPlaylistFinished(QNetworkReply *reply)
     startNextSegment();
 }
 
+/// @brief 拉取指定播放列表（主列表下钻时 hop 递增）。
+/// @param url 播放列表地址。
+/// @param hop 嵌套层级，超过 3 层直接失败。
 void DownloadTask::startPlaylistFetch(const QUrl &url, int hop)
 {
     if (m_done)
@@ -583,6 +630,15 @@ void DownloadTask::startPlaylistFetch(const QUrl &url, int hop)
     }, m_originUrl);
 }
 
+/// @brief 解析 m3u8。
+/// @param body 播放列表正文。
+/// @param baseUrl 相对 URI 的基准地址。
+/// @param variantUrl 输出选中的子播放列表地址（主列表时）。
+/// @param isMaster 输出是否为主列表。
+/// @param error 输出失败原因。
+/// @return 解析成功且已填充分片/子列表时返回 true。
+/// @note 主列表按 BANDWIDTH 选最高码率；媒体列表拒绝加密 KEY，支持 BYTERANGE、
+///       EXT-X-MAP 与 EXT-X-BASE，并限制分片总数。无 ENDLIST 时需用户确认快照下载。
 bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QUrl *variantUrl,
                                 bool *isMaster, QString *error)
 {
@@ -857,6 +913,9 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     return true;
 }
 
+/// @brief 计算分片结构指纹，用于判断续传是否属于同一份播放列表。
+/// @note 只剔除 token/sign/expire 等易变参数，保留 seq/id 等稳定参数，
+///       否则不同分片会得到相同指纹。
 QString DownloadTask::computePlaylistFingerprint() const
 {
     QCryptographicHash hash(QCryptographicHash::Sha1);
@@ -875,6 +934,9 @@ QString DownloadTask::computePlaylistFingerprint() const
     return QString::fromLatin1(hash.result().toHex());
 }
 
+/// @brief 请求下一个分片；全部分片完成则提交文件。
+/// @note 带 BYTERANGE 的分片必须收到 206 且 Content-Range 与请求完全一致，
+///       否则取消，避免把错位数据拼进文件。
 void DownloadTask::startNextSegment()
 {
     if (m_done)
@@ -965,6 +1027,7 @@ void DownloadTask::startNextSegment()
     }, m_originUrl);
 }
 
+/// @brief 单个分片完成：校验长度、推进序号并记录分片边界检查点。
 void DownloadTask::onSegmentFinished(QNetworkReply *reply)
 {
     if (m_done || reply == nullptr)
@@ -999,6 +1062,7 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
     startNextSegment();
 }
 
+/// @brief 直链下载完成：校验魔数与总长度，补精确检查点后提交。
 void DownloadTask::onDirectFinished(QNetworkReply *reply)
 {
     if (m_done || reply == nullptr)
@@ -1033,6 +1097,9 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
     commitFile();
 }
 
+/// @brief 把当前可读字节写入临时文件并上报进度。
+/// @note 超过上限时只写入剩余额度再失败，使临时文件停在真实上限而非丢掉整块；
+///       HLS 只在完整分片边界发 checkpoint，普通下载的检查点最多每秒一次。
 void DownloadTask::writeReplyData(QNetworkReply *reply)
 {
     if (reply == nullptr || m_file == nullptr)
@@ -1087,6 +1154,10 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
     }
 }
 
+/// @brief 确认 HLS 后把目标后缀改为对应容器（fMP4→mp4，TS→ts）。
+/// @return 切换并成功打开新临时文件返回 true。
+/// @note 已有字节时连同临时文件一起改名，保留续传序号；0 字节才丢弃旧空文件。
+///       后缀本来就匹配时也要发 targetPathChanged，让管理器知道这是 HLS 任务。
 bool DownloadTask::switchToHlsFile()
 {
     // fMP4（EXT-X-MAP/m4s）合并出来是 MP4，不是 MPEG-TS；扩展名必须跟随容器。
@@ -1143,6 +1214,9 @@ bool DownloadTask::switchToHlsFile()
     return true;
 }
 
+/// @brief 提交下载：刷新关闭临时文件，处理重名后用 rename 原子落盘。
+/// @note 冲突时不删除已有文件，改由 pathResolver 换新名字；rename 失败要恢复
+///       原目标路径，否则重试会拿错 `.mvpdownload` 路径。
 void DownloadTask::commitFile()
 {
     if (m_file == nullptr) {
@@ -1184,6 +1258,10 @@ void DownloadTask::commitFile()
     finish();
 }
 
+/// @brief 判定任务失败：清理在途请求，按需保留或删除临时文件，发出 failed。
+/// @param message 面向用户的失败原因。
+/// @param removePartial 是否删除临时文件；默认保留供重试续传。
+/// @note 必须先置 m_done 再 abort，abort 会同步发 finished，否则会被再报一次失败。
 void DownloadTask::fail(const QString &message, bool removePartial)
 {
     if (m_done)
@@ -1218,6 +1296,7 @@ void DownloadTask::fail(const QString &message, bool removePartial)
     deleteLater();
 }
 
+/// @brief 应用退出时停止任务：补精确检查点并保留现场，不发 failed。
 void DownloadTask::stopForExit()
 {
     if (m_done)
@@ -1245,6 +1324,8 @@ void DownloadTask::stopForExit()
     deleteLater();
 }
 
+/// @brief 用户取消：删除本任务的半成品并广播“下载已取消”。
+/// @note 只删自己的临时文件，不动可能已属于其他任务或用户的最终文件。
 void DownloadTask::cancel()
 {
     if (m_done)
@@ -1274,12 +1355,14 @@ void DownloadTask::cancel()
     deleteLater();
 }
 
+/// @brief 设置单文件字节上限。
 void DownloadTask::setMaxBytes(qint64 bytes)
 {
     if (bytes > 0)
         m_maxBytes = bytes;
 }
 
+/// @brief 正常收尾：置完成标记、发 finished 并延迟删除自身。
 void DownloadTask::finish()
 {
     if (m_done)
@@ -1289,6 +1372,8 @@ void DownloadTask::finish()
     deleteLater();
 }
 
+/// @brief 按 URL/Content-Type 判断响应是否播放列表。
+/// @note text/plain 不在此判定，交由 resolveAmbiguousTextReply 读正文确认。
 bool DownloadTask::isPlaylistReply(QNetworkReply *reply)
 {
     if (reply == nullptr)
@@ -1299,6 +1384,9 @@ bool DownloadTask::isPlaylistReply(QNetworkReply *reply)
     return PlaylistSniffer::metadataIndicatesPlaylist(reply->url(), type);
 }
 
+/// @brief 判断 MIME 是否是音视频容器。
+/// @note 只看分号前的 MIME，允许 `; codecs=...` 等参数；空类型暂按可接受处理，
+///       由魔数校验兜底；网页/JSON/图片/PDF 一律拒绝。
 bool DownloadTask::isMediaContentType(const QString &contentType)
 {
     const QString type = contentType.toLower().trimmed();
@@ -1324,6 +1412,7 @@ bool DownloadTask::isMediaContentType(const QString &contentType)
     return false;
 }
 
+/// @brief 按 URL 后缀判断是否常见媒体/播放列表。
 bool DownloadTask::isMediaExtension(const QUrl &url)
 {
     static const QStringList suffixes = {
@@ -1339,6 +1428,9 @@ bool DownloadTask::isMediaExtension(const QUrl &url)
     return suffixes.contains(suffix);
 }
 
+/// @brief 用首块字节判断内容是否音视频。
+/// @return 识别到已知文件头，或 URL 有明确媒体后缀时返回 true。
+/// @note 以 `#EXTM3U`/`<`/`{`/`[` 开头直接判为非媒体，避免 HTML/JSON 错误页落盘。
 bool DownloadTask::looksLikeMediaPayload(const QByteArray &data, const QUrl &url)
 {
     if (data.isEmpty())
@@ -1363,6 +1455,10 @@ bool DownloadTask::looksLikeMediaPayload(const QByteArray &data, const QUrl &url
     return isMediaExtension(url);
 }
 
+/// @brief 解析 416 响应的 `Content-Range: bytes * /total`。
+/// @param value 头值。
+/// @param total 输出文件总长度。
+/// @return 格式正确且 total>0 时返回 true。
 bool DownloadTask::parseUnsatisfiedRangeTotal(const QByteArray &value, qint64 *total)
 {
     if (total == nullptr)
@@ -1380,6 +1476,11 @@ bool DownloadTask::parseUnsatisfiedRangeTotal(const QByteArray &value, qint64 *t
     *total = parsed;
     return true;
 }
+/// @brief 解析 `Content-Range: bytes a-b/total`。
+/// @param start 输出段起点。
+/// @param end 输出段终点。
+/// @param total 可空；`*` 或非法值输出 -1。
+/// @return 起止有效且 end>=start 时返回 true。
 bool DownloadTask::parseContentRange(const QByteArray &value, qint64 *start, qint64 *end,
                                      qint64 *total)
 {
@@ -1404,6 +1505,8 @@ bool DownloadTask::parseContentRange(const QByteArray &value, qint64 *start, qin
     return true;
 }
 
+/// @brief 根据请求 Range 计算期望字节数。
+/// @return 空 Range 返回 0；格式非法返回 -1。
 qint64 DownloadTask::expectedRangeBytes(const QByteArray &range)
 {
     if (range.isEmpty())
