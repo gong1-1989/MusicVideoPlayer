@@ -365,6 +365,37 @@ bool removeForItem(const MediaItem &item)
     return ok;
 }
 
+bool removeCachePath(const QString &cachePath)
+{
+    if (cachePath.isEmpty())
+        return false;
+
+    const QString cacheRoot = QDir::cleanPath(rootDir());
+    const QString path = QDir::cleanPath(cachePath);
+    if (path == cacheRoot || !path.startsWith(cacheRoot + QLatin1Char('/')))
+        return false;
+
+    const QString meta = QDir::cleanPath(metaPathForFile(path));
+    bool ok = true;
+
+    if (QFileInfo::exists(path))
+        ok = QFile::remove(path) && ok;
+    // 正文仍被播放器占用时不能先删元数据；否则下一次重试只剩一个
+    // 找不到归属的正文，用户也无法从界面判断它属于哪一条。
+    if (QFileInfo::exists(path))
+        return false;
+    if (QFileInfo::exists(meta))
+        ok = QFile::remove(meta) && ok;
+
+    // 影视正文在 media-cache/<条目名>/media，正文和 JSON 都删完后
+    // 顺手回收空目录；音乐正文直接在根目录，父目录等于 root，不处理。
+    const QString parent = QFileInfo(path).absolutePath();
+    if (parent != cacheRoot && parent.startsWith(cacheRoot + QLatin1Char('/')))
+        QDir().rmdir(parent);
+
+    return ok;
+}
+
 bool isCacheable(const MediaItem &item)
 {
     if (!item.online)

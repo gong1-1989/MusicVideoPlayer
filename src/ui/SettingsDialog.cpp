@@ -125,6 +125,7 @@ void SettingsDialog::bindUi()
     m_downloadLimit = ui->combo_downloadLimit;
     m_downloadDir = ui->edit_downloadDir;
     m_browseDownloadDir = ui->btn_browseDownloadDir;
+    m_removePlaybackCache = ui->checkbox_removePlaybackCache;
     m_sidebarAutoHide = ui->checkbox_sidebar;
     m_controlsAutoHide = ui->checkbox_controls;
     m_sourcesLabel = ui->label_sources;
@@ -259,6 +260,11 @@ void SettingsDialog::loadValues()
         tr("当前目录：%1\n下载任务直接保存到这个目录，不再弹路径选择；同名文件会自动加序号。")
             .arg(AppSettings::downloadDir()));
 
+    m_removePlaybackCache->setChecked(AppSettings::removePlaybackCacheAfterDownload());
+    m_removePlaybackCache->setToolTip(
+        tr("默认开启。只删除 Data/media-cache 中命中缓存的这一条播放副本，"
+           "下载文件本身和 Data/lyrics-cache 里的歌词都不受影响。"));
+
     m_sidebarAutoHide->setChecked(AppSettings::sidebarAutoHide());
     m_controlsAutoHide->setChecked(AppSettings::controlsAutoHide());
 
@@ -354,6 +360,7 @@ void SettingsDialog::accept()
     AppSettings::setDownloadLimitMb(m_downloadLimit->currentData().toInt());
 
     AppSettings::setDownloadDir(dir.absolutePath());
+    AppSettings::setRemovePlaybackCacheAfterDownload(m_removePlaybackCache->isChecked());
     AppSettings::setSidebarAutoHide(m_sidebarAutoHide->isChecked());
     AppSettings::setControlsAutoHide(m_controlsAutoHide->isChecked());
     if (m_shortcutsDirty) {
@@ -365,6 +372,7 @@ void SettingsDialog::accept()
                        << "字号" << m_fontSize->currentData().toInt() << "px"
                        << "窗口" << m_windowSize->currentData().toString() << "音量"
                        << m_volume->value() << "单源条数" << m_searchLimit->currentData().toInt()
-                       << "下载上限" << m_downloadLimit->currentData().toInt() << "MB";
+                       << "下载上限" << m_downloadLimit->currentData().toInt() << "MB"
+                       << "下载后清缓存" << m_removePlaybackCache->isChecked();
     QDialog::accept();
 }

@@ -101,6 +101,8 @@ QJsonObject DownloadJob::toJson() const
     }
     object.insert(QStringLiteral("filePath"), filePath);
     object.insert(QStringLiteral("cacheCopySourcePath"), cacheCopySourcePath);
+    if (!cleanupCachePath.isEmpty())
+        object.insert(QStringLiteral("cleanupCachePath"), cleanupCachePath);
     object.insert(QStringLiteral("bytesReceived"), double(bytesReceived));
     object.insert(QStringLiteral("bytesTotal"), double(bytesTotal));
     object.insert(QStringLiteral("maxBytes"), double(maxBytes));
@@ -164,6 +166,8 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     parsed.filePath = object.value(QStringLiteral("filePath")).toString();
     parsed.cacheCopySourcePath =
         object.value(QStringLiteral("cacheCopySourcePath")).toString();
+    parsed.cleanupCachePath =
+        object.value(QStringLiteral("cleanupCachePath")).toString();
     parsed.bytesReceived =
         qint64(object.value(QStringLiteral("bytesReceived")).toDouble());
     if (!object.contains(QStringLiteral("bytesReceived")))

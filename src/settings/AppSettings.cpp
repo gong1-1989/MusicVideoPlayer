@@ -18,6 +18,7 @@ const char kSearchLimit[] = "search/limit";
 const char kSearchHistory[] = "search/history";
 const char kDownloadLimitMb[] = "download/limitMb";
 const char kDownloadDir[] = "download/dir";
+const char kRemovePlaybackCacheAfterDownload[] = "download/removePlaybackCache";
 const char kProbePathsVideo[] = "search/probePaths/video";
 const char kProbePathsMusic[] = "search/probePaths/music";
 const char kLastDir[] = "paths/lastDir";
@@ -242,6 +243,18 @@ void setDownloadDir(const QString &dir)
         settings().remove(QLatin1String(kDownloadDir));
     else
         settings().setValue(QLatin1String(kDownloadDir), cleaned);
+}
+
+bool removePlaybackCacheAfterDownload()
+{
+    return settings()
+        .value(QLatin1String(kRemovePlaybackCacheAfterDownload), true)
+        .toBool();
+}
+
+void setRemovePlaybackCacheAfterDownload(bool enabled)
+{
+    settings().setValue(QLatin1String(kRemovePlaybackCacheAfterDownload), enabled);
 }
 
 QStringList probePaths(MediaType type)

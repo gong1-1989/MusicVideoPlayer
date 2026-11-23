@@ -70,6 +70,9 @@ private:
     void scheduleSave();
     void scheduleNotify();
     void scheduleRemoveFile(const QString &path, int attempt = 0);
+    /// 清理下载完成后标记了 cleanupCachePath 的播放缓存；被播放器占用时
+    /// 定时重试，程序重启后也会继续。只删 media-cache，不碰歌词缓存。
+    void cleanupPendingCaches();
     void pumpQueue();
     void startJob(const QString &id);
     bool startCacheCopy(const QString &id, const QString &sourcePath);
@@ -89,6 +92,7 @@ private:
     QTimer *m_saveTimer = nullptr;
     QTimer *m_notifyTimer = nullptr;
     QTimer *m_cacheCopyTimer = nullptr;
+    QTimer *m_cacheCleanupTimer = nullptr;
     QString m_statePath;
     bool m_shuttingDown = false;
 };

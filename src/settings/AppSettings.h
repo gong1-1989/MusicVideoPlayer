@@ -65,6 +65,11 @@ void setDownloadLimitMb(int limitMb);
 QString downloadDir();
 void setDownloadDir(const QString &dir);
 
+/// 下载完成后是否删除该条目的播放缓存。默认开启，仅影响 media-cache，
+/// lyrics-cache 里的歌词始终保留；命中缓存复制的下载在完成后才清理。
+bool removePlaybackCacheAfterDownload();
+void setRemovePlaybackCacheAfterDownload(bool enabled);
+
 // ---------------------------------------------------------------- 快捷键
 /// 快捷键按动作 id 保存。动作清单与默认值由 AppShortcuts 统一维护，
 /// AppSettings 只负责键值落盘，避免界面层直接接触 QSettings。

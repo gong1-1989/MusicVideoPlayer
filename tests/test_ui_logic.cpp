@@ -9,8 +9,10 @@
 #include "ui/PlaylistController.h"
 #include "ui/SeekSlider.h"
 #include "ui/SettingsController.h"
+#include "ui/SettingsDialog.h"
 #include "ui/ThemeManager.h"
 
+#include <QCheckBox>
 #include <QFile>
 #include <QListView>
 #include <QMainWindow>
@@ -88,6 +90,7 @@ private slots:
     void previewItemNeverPersistsUnlessPromoted();
     void downloadedItemSwitchesPlaylistToLocalSource();
     void settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault();
+    void settingsRemoveCacheCheckboxReflectsSetting();
 };
 
 void UiLogicTest::lyricsClearCancelsPendingRequest()
@@ -391,6 +394,34 @@ void UiLogicTest::settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault()
         qunsetenv("MVP_DATA_DIR");
     else
         qputenv("MVP_DATA_DIR", oldDataDir);
+}
+
+void UiLogicTest::settingsRemoveCacheCheckboxReflectsSetting()
+{
+    QCoreApplication::setOrganizationName(QStringLiteral("MusicVideoPlayerTest"));
+    QCoreApplication::setApplicationName(QStringLiteral("MusicVideoPlayerTestUi"));
+
+    const bool original = AppSettings::removePlaybackCacheAfterDownload();
+    AppSettings::setRemovePlaybackCacheAfterDownload(true);
+    {
+        SettingsDialog dialog;
+        QCheckBox *box = dialog.findChild<QCheckBox *>(
+            QStringLiteral("checkbox_removePlaybackCache"));
+        QVERIFY(box != nullptr);
+        QVERIFY(box->isChecked());
+        QVERIFY(box->text().contains(QStringLiteral("歌词缓存保留")));
+    }
+
+    AppSettings::setRemovePlaybackCacheAfterDownload(false);
+    {
+        SettingsDialog dialog;
+        QCheckBox *box = dialog.findChild<QCheckBox *>(
+            QStringLiteral("checkbox_removePlaybackCache"));
+        QVERIFY(box != nullptr);
+        QVERIFY(!box->isChecked());
+    }
+
+    AppSettings::setRemovePlaybackCacheAfterDownload(original);
 }
 
 QTEST_MAIN(UiLogicTest)

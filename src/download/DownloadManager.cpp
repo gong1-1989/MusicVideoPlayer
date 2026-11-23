@@ -1,9 +1,11 @@
 #include "download/DownloadManager.h"
 
+#include "cache/MediaCache.h"
 #include "download/DownloadPaths.h"
 #include "download/DownloadTask.h"
 #include "download/MediaRemux.h"
 #include "net/HttpClient.h"
+#include "settings/AppSettings.h"
 #include "storage/StoragePaths.h"
 #include "util/HeaderPolicy.h"
 
@@ -74,7 +76,14 @@ DownloadManager::DownloadManager(HttpClient *http, QObject *parent)
     m_cacheCopyTimer->setInterval(0);
     connect(m_cacheCopyTimer, &QTimer::timeout, this, &DownloadManager::copyCacheChunks);
 
+    m_cacheCleanupTimer = new QTimer(this);
+    m_cacheCleanupTimer->setInterval(10000);
+    connect(m_cacheCleanupTimer, &QTimer::timeout,
+            this, &DownloadManager::cleanupPendingCaches);
+
     load();
+    // 上次退出时播放器仍占用缓存，删除会失败；这次启动先补清理。
+    QTimer::singleShot(0, this, &DownloadManager::cleanupPendingCaches);
     QTimer::singleShot(0, this, &DownloadManager::resumePending);
 }
 
@@ -95,6 +104,8 @@ DownloadManager::~DownloadManager()
     m_remuxOutputs.clear();
     if (m_cacheCopyTimer != nullptr)
         m_cacheCopyTimer->stop();
+    if (m_cacheCleanupTimer != nullptr)
+        m_cacheCleanupTimer->stop();
     const QStringList copyIds = m_cacheCopySources.keys();
     for (const QString &id : copyIds)
         cancelCacheCopy(id, true);
@@ -690,6 +701,48 @@ void DownloadManager::saveNow()
         emit jobsChanged();
 }
 
+void DownloadManager::cleanupPendingCaches()
+{
+    bool changed = false;
+    bool pending = false;
+
+    for (DownloadJob &job : m_jobs) {
+        if (job.cleanupCachePath.isEmpty())
+            continue;
+
+        const QString path = job.cleanupCachePath;
+        if (!QFileInfo::exists(path)) {
+            // 可能已被用户手动清理，或上一次删除成功但状态没来得及落盘。
+            job.cleanupCachePath.clear();
+            changed = true;
+            continue;
+        }
+
+        if (MediaCache::removeCachePath(path)) {
+            job.cleanupCachePath.clear();
+            changed = true;
+            qCInfo(lcDownloadManager) << "已删除下载对应的播放缓存" << path;
+        } else {
+            // Windows 上播放器持有正文句柄时删除会失败；保留记录后定时重试，
+            // 不能用 removeForItem 重新扫描，否则可能删到另一条同名缓存。
+            pending = true;
+        }
+    }
+
+    if (changed) {
+        scheduleSave();
+        if (!m_shuttingDown)
+            emit jobsChanged();
+    }
+
+    if (pending && !m_shuttingDown) {
+        if (!m_cacheCleanupTimer->isActive())
+            m_cacheCleanupTimer->start();
+    } else {
+        m_cacheCleanupTimer->stop();
+    }
+}
+
 void DownloadManager::scheduleSave()
 {
     if (!m_shuttingDown)
@@ -1263,9 +1316,16 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
     }
     job.status = success ? DownloadJob::Status::Completed
                          : DownloadJob::Status::Failed;
+    // 先记下缓存源路径：成功分支会清掉 cacheCopySourcePath，但若开启了
+    // “下载完成后删除播放缓存”，还需要这个精确路径做清理。
+    const QString copiedCachePath = job.cacheCopySourcePath;
     if (success) {
         job.committed = true;
         job.cacheCopySourcePath.clear();
+        if (!copiedCachePath.isEmpty()
+            && AppSettings::removePlaybackCacheAfterDownload()) {
+            job.cleanupCachePath = copiedCachePath;
+        }
     }
     QString finalMessage = message;
     if (success && job.snapshot && !finalMessage.contains(QStringLiteral("快照"))) {
@@ -1280,6 +1340,11 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
     scheduleNotify();
 
     if (success) {
+        // 命中缓存复制时，下载文件已经完整落盘；此时删除播放缓存不会影响
+        // 下载结果。若播放器仍占用缓存，cleanupPendingCaches 会失败并定时
+        // 重试，剩余路径写进 downloads.json，下次启动继续清理。
+        if (!copiedCachePath.isEmpty())
+            cleanupPendingCaches();
         emit statusMessage(finalMessage);
         emit jobCompleted(completedItem, path);
     }

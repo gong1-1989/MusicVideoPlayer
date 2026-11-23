@@ -27,6 +27,9 @@ struct DownloadJob
     QString filePath;
     /// 缓存复制任务的源文件；持久化后重启可继续复制，而不是退回网络下载。
     QString cacheCopySourcePath;
+    /// 已完成下载、但对应播放缓存尚未删除的路径。播放器占用文件时
+    /// 删除会失败，记录到任务里，重启或空闲时继续尝试。
+    QString cleanupCachePath;
     qint64 bytesReceived = 0;
     qint64 bytesTotal = -1;
     qint64 maxBytes = 0;

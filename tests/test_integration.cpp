@@ -746,23 +746,37 @@ void IntegrationTest::downloadManagerImportsCompleteCache()
     const QString dir = m_tempDir.filePath(QStringLiteral("dl-cache-import"));
     QVERIFY(QDir(dir).removeRecursively() || !QFileInfo::exists(dir));
     QVERIFY(QDir().mkpath(dir));
-    const QString cacheBody = QDir(dir).filePath(QStringLiteral("缓存正文"));
+
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("缓存导入");
+    item.url = QStringLiteral("https://example.com/import.mp3");
+    item.lyricUrl = QStringLiteral("https://example.com/import.lrc");
+    item.online = true;
+
+    // 用真实缓存布局，确保“下载完成后删除该条播放缓存”走的是精确路径删除。
+    const QString cacheBody = MediaCache::filePathForItem(item);
+    QVERIFY(!cacheBody.isEmpty());
+    QVERIFY(QDir().mkpath(QFileInfo(cacheBody).absolutePath()));
     const QByteArray expected("cached-media-body");
     {
         QFile file(cacheBody);
         QVERIFY(file.open(QIODevice::WriteOnly));
         QCOMPARE(file.write(expected), qint64(expected.size()));
     }
+    QVERIFY(MediaCache::writeState(cacheBody, MediaCache::cacheIdentity(item), item.url,
+                                   "audio/mpeg", expected.size(), true, ".mp3"));
+
+    const QByteArray lyricPayload("lyrics-cache-must-survive");
+    QVERIFY(LyricsCache::store(item, lyricPayload));
+
     // 下载目标必须有用户能识别的后缀；缓存正文本身可以无后缀。
     const QString target = QDir(dir).filePath(QStringLiteral("缓存导入.mp3"));
 
+    AppSettings::setRemovePlaybackCacheAfterDownload(true);
+
     HttpClient http;
     DownloadManager manager(&http);
-    MediaItem item;
-    item.type = MediaType::Music;
-    item.title = QStringLiteral("缓存导入");
-    item.url = QStringLiteral("https://example.com/import.mp3");
-    item.online = true;
 
     QStringList completed;
     connect(&manager, &DownloadManager::jobCompleted,
@@ -776,9 +790,19 @@ void IntegrationTest::downloadManagerImportsCompleteCache()
     QFile saved(target);
     QVERIFY(saved.open(QIODevice::ReadOnly));
     QCOMPARE(saved.readAll(), expected);
+
+    // 默认设置下，缓存正文和旁车 JSON 必须删掉；歌词缓存不能被连带删除。
+    QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(cacheBody), 3000);
+    QVERIFY(!QFileInfo::exists(cacheBody + QStringLiteral(".json")));
+    QByteArray cachedLyrics;
+    QVERIFY(LyricsCache::load(item, &cachedLyrics));
+    QCOMPARE(cachedLyrics, lyricPayload);
+
     for (const DownloadJob &job : manager.jobs()) {
-        if (job.id == id)
+        if (job.id == id) {
             QCOMPARE(job.status, DownloadJob::Status::Completed);
+            QVERIFY(job.cleanupCachePath.isEmpty());
+        }
     }
     manager.shutdownForExit();
 }

@@ -479,14 +479,24 @@
               </layout>
              </widget>
             </item>
-            <item row="4" column="0">
+            <item row="4" column="0" colspan="2">
+             <widget class="QCheckBox" name="checkbox_removePlaybackCache">
+              <property name="text">
+               <string>下载完成后删除该条播放缓存（歌词缓存保留）</string>
+              </property>
+              <property name="toolTip">
+               <string>默认开启。只删除 Data/media-cache 中命中缓存的这一条播放副本，下载文件本身和 Data/lyrics-cache 里的歌词都不受影响。</string>
+              </property>
+             </widget>
+            </item>
+            <item row="5" column="0">
              <widget class="QLabel" name="label_shortcutCaption">
               <property name="text">
                <string>快捷键</string>
               </property>
              </widget>
             </item>
-            <item row="4" column="1">
+            <item row="5" column="1">
              <widget class="QPushButton" name="btn_shortcuts">
               <property name="text">
                <string>设置快捷键…</string>
@@ -496,7 +506,7 @@
               </property>
              </widget>
             </item>
-            <item row="5" column="0" colspan="2">
+            <item row="6" column="0" colspan="2">
              <widget class="QLabel" name="label_shortcutHint">
               <property name="objectName">
                <string>label_hint</string>

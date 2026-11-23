@@ -67,6 +67,7 @@ private:
     QComboBox *m_downloadLimit = nullptr;
     QLineEdit *m_downloadDir = nullptr;
     QPushButton *m_browseDownloadDir = nullptr;
+    QCheckBox *m_removePlaybackCache = nullptr;
     QCheckBox *m_sidebarAutoHide = nullptr;
     QCheckBox *m_controlsAutoHide = nullptr;
     QLabel *m_sourcesLabel = nullptr;
