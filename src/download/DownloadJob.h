@@ -25,6 +25,8 @@ struct DownloadJob
     QUrl url;
     QHash<QString, QString> headers;
     QString filePath;
+    /// 缓存复制任务的源文件；持久化后重启可继续复制，而不是退回网络下载。
+    QString cacheCopySourcePath;
     qint64 bytesReceived = 0;
     qint64 bytesTotal = -1;
     qint64 maxBytes = 0;
@@ -32,6 +34,8 @@ struct DownloadJob
     int segmentCount = 0;
     bool hls = false;
     /// 列表没有 #EXT-X-ENDLIST 时按当前分片下载，结果只是快照。
+    /// 上次成功解析出的 HLS 分片结构指纹；续传必须匹配，否则从头下载。
+    QString hlsFingerprint;
     bool snapshot = false;
     /// 用户已明确授权无 ENDLIST 也下载（例如下载管理器里的“强制下载当前分片”）。
     bool allowIncomplete = false;

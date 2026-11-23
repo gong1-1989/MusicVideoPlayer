@@ -1903,8 +1903,9 @@ void CoreLogicTest::downloadHlsVerifiesSegmentsAndMapRange()
     QCOMPARE(failed.count(), 0);
     QVERIFY(succeeded.count() == 1);
 
-    // 目标原本是 .mp4，识别为播放列表后必须实际落到 .ts。
-    const QString output = dir.filePath(QStringLiteral("movie.ts"));
+    // 目标原本是 .mp4，识别为 fMP4（EXT-X-MAP）后仍应保持 .mp4，
+    // 不能把 init+m4s 的容器错误命名成 .ts。
+    const QString output = dir.filePath(QStringLiteral("movie.mp4"));
     QVERIFY2(QFile::exists(output), qPrintable(output));
     QFile file(output);
     QVERIFY(file.open(QIODevice::ReadOnly));

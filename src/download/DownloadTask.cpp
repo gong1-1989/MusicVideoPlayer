@@ -5,6 +5,7 @@
 #include "util/HeaderPolicy.h"
 #include "util/PlaylistSniffer.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
@@ -99,13 +100,38 @@ QString DownloadTask::sanitizeFileName(const QString &name, const QString &suffi
     QString base = name;
     base.replace(QRegularExpression(QStringLiteral(R"([\\/:*?"<>|\x00-\x1F])")),
                  QStringLiteral("_"));
-    base = base.trimmed();
+    base = base.simplified();
+    while (!base.isEmpty()
+           && (base.endsWith(QLatin1Char('.')) || base.endsWith(QLatin1Char(' ')))) {
+        base.chop(1);
+    }
     if (base.isEmpty())
         base = QStringLiteral("download");
-    if (base.size() > 120)
-        base.truncate(120);
+
+    static const QStringList reserved = {
+        QStringLiteral("CON"),  QStringLiteral("PRN"), QStringLiteral("AUX"),
+        QStringLiteral("NUL"),  QStringLiteral("COM1"), QStringLiteral("COM2"),
+        QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"),
+        QStringLiteral("COM6"), QStringLiteral("COM7"), QStringLiteral("COM8"),
+        QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
+        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),
+        QStringLiteral("LPT6"), QStringLiteral("LPT7"), QStringLiteral("LPT8"),
+        QStringLiteral("LPT9"),
+    };
+    if (reserved.contains(base, Qt::CaseInsensitive))
+        base.prepend(QLatin1Char('_'));
 
     const QString tail = QStringLiteral(".") + suffix;
+    // 长度限制必须把扩展名算进去，否则 120 字符的主名再加后缀仍会超限。
+    const int maxBase = qMax(1, 120 - tail.size());
+    if (base.size() > maxBase)
+        base.truncate(maxBase);
+    while (!base.isEmpty()
+           && (base.endsWith(QLatin1Char('.')) || base.endsWith(QLatin1Char(' ')))) {
+        base.chop(1);
+    }
+    if (base.isEmpty())
+        base = QStringLiteral("download");
     if (!base.endsWith(tail, Qt::CaseInsensitive))
         base += tail;
     return base;
@@ -137,11 +163,17 @@ bool DownloadTask::openTargetFile()
 
     const qint64 actual = m_file->size();
     if (actual < m_bytesWritten) {
-        // 状态文件和实际临时文件不一致时不能盲目续传，从头开始最安全。
+        // 状态文件和实际临时文件不一致时不能盲目续传；必须真正截断，
+        // 否则新响应比旧文件短时尾部会残留，最终长度校验还会通过。
         qCWarning(lcDownload) << "临时文件比续传点短，改为从头下载 actual=" << actual
                               << "resume=" << m_bytesWritten;
+        if (!m_file->resize(0)) {
+            fail(tr("无法清空临时文件：%1").arg(m_file->errorString()), true);
+            return false;
+        }
         m_bytesWritten = 0;
         m_resumeSegmentIndex = 0;
+        m_file->seek(0);
     } else if (actual > m_bytesWritten) {
         // 上次进程在写盘过程中退出，截掉没有记录进状态文件的尾部。
         if (!m_file->resize(m_bytesWritten)) {
@@ -163,11 +195,19 @@ bool DownloadTask::openTargetFile()
 
 void DownloadTask::resetTargetFile()
 {
-    if (m_file == nullptr)
+    // 即使文件尚未打开，也必须清空续传计数；否则后续 startRequest 会拿旧偏移。
+    if (m_file == nullptr) {
+        m_bytesWritten = 0;
+        m_resumeSegmentIndex = 0;
         return;
-    m_file->resize(0);
+    }
+    if (!m_file->resize(0)) {
+        fail(tr("无法清空临时文件：%1").arg(m_file->errorString()));
+        return;
+    }
     m_file->seek(0);
     m_bytesWritten = 0;
+    m_resumeSegmentIndex = 0;
 }
 
 void DownloadTask::setResumeState(qint64 bytesWritten, int segmentIndex, bool hls)
@@ -176,6 +216,11 @@ void DownloadTask::setResumeState(qint64 bytesWritten, int segmentIndex, bool hl
     m_resumeSegmentIndex = qMax(0, segmentIndex);
     if (hls)
         m_isHls = true;
+}
+
+void DownloadTask::setResumeFingerprint(const QString &fingerprint)
+{
+    m_resumeFingerprint = fingerprint;
 }
 
 void DownloadTask::setOriginUrl(const QUrl &origin)
@@ -260,45 +305,121 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
     }
 
     m_reply = reply;
+    const int status =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
     if (!HttpClient::isHttpSuccess(reply)) {
+        // 续传点恰好等于总长时服务器只能回 416。此时临时文件已经是完整文件，
+        // 直接提交即可，不能把“只差改名”的任务永久判失败。
+        if (status == 416 && m_bytesWritten > 0) {
+            qint64 total = -1;
+            if (parseUnsatisfiedRangeTotal(
+                    reply->rawHeader(QByteArrayLiteral("Content-Range")), &total)
+                && total == m_bytesWritten) {
+                m_reply = nullptr;
+                reply->deleteLater();
+                m_expectedBytes = total;
+                qCInfo(lcDownload) << "续传点已到文件末尾，直接提交临时文件" << total;
+                commitFile();
+                return;
+            }
+        }
         fail(HttpClient::describeError(reply));
-        return;
-    }
-
-    if (isPlaylistReply(reply)) {
-        m_isHls = true;
-        // 响应体是播放列表，不是媒体字节；之前按 URL 猜的 .mp4/.mp3
-        // 扩展名要改成 .ts，否则合并出来的是 TS 容器却挂着 MP4 后缀。
-        if (!switchToHlsFile())
-            return;
-        m_expectedBytes = -1;
-        connect(reply, &QNetworkReply::finished, this, [this, reply] {
-            onPlaylistFinished(reply);
-        });
-        // 播放列表不是媒体字节，必须在接收过程中就设上限；
-        // 否则异常大的 m3u8 仍会先被 QNetworkReply 缓冲。
-        HttpClient::limitReplySize(reply, NetLimits::kPlaylistBytes);
-        if (reply->isFinished())
-            onPlaylistFinished(reply);
         return;
     }
 
     const QString contentType =
         reply->header(QNetworkRequest::ContentTypeHeader).toString();
-    if (!isMediaContentType(contentType)) {
+    if (isPlaylistReply(reply)) {
+        beginPlaylistReply(reply);
+        return;
+    }
+
+    const QString normalized = contentType.toLower().trimmed();
+    if (normalized.startsWith(QLatin1String("text/plain"))) {
+        // text/plain 既可能是无后缀签名的 m3u8，也可能是 MP3/字幕/错误页。
+        // 先 peek 正文再决定，绝不能先改扩展名或直接当媒体写盘。
+        QPointer<DownloadTask> self(this);
+        connect(reply, &QNetworkReply::readyRead, this, [self, reply, normalized] {
+            if (!self.isNull() && !self->m_done)
+                self->resolveAmbiguousTextReply(reply, normalized);
+        });
+        connect(reply, &QNetworkReply::finished, this, [self, reply, normalized] {
+            if (self.isNull() || self->m_done)
+                return;
+            self->resolveAmbiguousTextReply(reply, normalized);
+        });
+        QTimer::singleShot(0, this, [self, reply, normalized] {
+            if (!self.isNull() && !self->m_done)
+                self->resolveAmbiguousTextReply(reply, normalized);
+        });
+        resolveAmbiguousTextReply(reply, normalized);
+        return;
+    }
+
+    if (!isMediaContentType(normalized)) {
         fail(tr("下载链接返回的是网页/接口数据（%1），不是音视频").arg(contentType),
              true);
         return;
     }
+    beginDirectMediaReply(reply, normalized);
+}
 
-    const int status =
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+void DownloadTask::beginPlaylistReply(QNetworkReply *reply)
+{
+    m_isHls = true;
+    m_expectedBytes = -1;
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        onPlaylistFinished(reply);
+    });
+    // 播放列表不是媒体字节，必须在接收过程中就设上限；
+    // 否则异常大的 m3u8 仍会先被 QNetworkReply 缓冲。
+    HttpClient::limitReplySize(reply, NetLimits::kPlaylistBytes);
+    if (reply->isFinished())
+        onPlaylistFinished(reply);
+}
+
+void DownloadTask::resolveAmbiguousTextReply(QNetworkReply *reply,
+                                             const QString &contentType)
+{
+    if (m_ambiguousTextResolved)
+        return;
+
+    // peek 不消费正文；确认不是播放列表后，原字节仍会交给 writeReplyData。
+    const QByteArray prefix = reply->peek(512);
+    const QString head = QString::fromUtf8(prefix).trimmed();
+    if (head.startsWith(QLatin1String("#EXTM3U"))) {
+        m_ambiguousTextResolved = true;
+        beginPlaylistReply(reply);
+        return;
+    }
+
+    // 正文还没到齐时继续等；至少拿到足够字节再判断，避免把短前缀误判成文本。
+    if (prefix.size() < 64 && !reply->isFinished())
+        return;
+
+    m_ambiguousTextResolved = true;
+    if (!looksLikeMediaPayload(prefix, reply->url())) {
+        fail(tr("下载链接返回的是纯文本/网页数据，不是音视频"), true);
+        return;
+    }
+    beginDirectMediaReply(reply, contentType);
+}
+
+void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
+                                         const QString &contentType)
+{
     const QVariant length = reply->header(QNetworkRequest::ContentLengthHeader);
     const QByteArray contentRange = reply->rawHeader(QByteArrayLiteral("Content-Range"));
     const QByteArray encoding = reply->rawHeader(QByteArrayLiteral("Content-Encoding"));
     const bool identityEncoding =
         encoding.isEmpty() || encoding.compare("identity", Qt::CaseInsensitive) == 0;
+    const int status =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+
+    // 空 Content-Type 或 text/plain 不能无条件放行；首块写入前用文件头魔数确认。
+    m_verifyMediaMagic = contentType.isEmpty()
+        || contentType.startsWith(QLatin1String("text/plain"));
 
     if (m_bytesWritten > 0) {
         if (status == 206) {
@@ -316,6 +437,8 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
         } else {
             // 服务器忽略 Range，只能从头写；清空临时文件避免前半段重复。
             resetTargetFile();
+            if (m_done)
+                return;
             qCWarning(lcDownload) << "服务器不支持 Range，已从头重新下载";
             m_expectedBytes = (length.isValid() && identityEncoding)
                                   ? length.toLongLong()
@@ -402,14 +525,38 @@ void DownloadTask::onPlaylistFinished(QNetworkReply *reply)
 
     qCInfo(lcDownload) << "HLS 播放列表解析完成，分片数：" << m_segments.size();
 
+    const QString fingerprint = computePlaylistFingerprint();
+    emit playlistFingerprint(fingerprint);
+
     int resumeIndex = m_isHls ? m_resumeSegmentIndex : 0;
-    if (resumeIndex > m_segments.size()) {
+    // 续传必须属于同一份分片结构。旧状态没有指纹时不能冒险拼接；
+    // CDN 重新切片/换码率后，即使分片数没变，旧前缀和新分片也可能不是同一时间线。
+    if (resumeIndex > 0 && m_resumeFingerprint != fingerprint) {
+        qCWarning(lcDownload) << "HLS 分片结构已变化，改为从头下载 resume=" << resumeIndex
+                              << "fingerprintChanged=" << !m_resumeFingerprint.isEmpty();
+        resetTargetFile();
+        if (m_done)
+            return;
+        resumeIndex = 0;
+        m_resumeSegmentIndex = 0;
+    } else if (resumeIndex > m_segments.size()) {
         qCWarning(lcDownload) << "播放列表分片数少于续传序号，改为从头下载 resume="
                               << resumeIndex << "count=" << m_segments.size();
         resetTargetFile();
-        m_segmentIndex = 0;
-    } else {
-        m_segmentIndex = resumeIndex;
+        if (m_done)
+            return;
+        resumeIndex = 0;
+        m_resumeSegmentIndex = 0;
+    }
+    m_segmentIndex = resumeIndex;
+    m_resumeFingerprint = fingerprint;
+
+    // 只有正文确认是播放列表后才改扩展名，避免 text/plain 的普通文本/MP3
+    // 先把目标路径改成 .ts 后又失败，留下错误状态。
+    if (!m_playlistFileReady) {
+        m_playlistFileReady = true;
+        if (!switchToHlsFile())
+            return;
     }
 
     emit progress(m_segmentIndex, m_segments.size());
@@ -538,6 +685,7 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
 
     m_segments.clear();
     m_nextRangeOffset = 0;
+    m_fragmentedMp4 = false;
 
     QUrl mediaBase = baseUrl;
     bool hasEndList = false;
@@ -670,6 +818,13 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
                                    .arg(offset + length - 1)
                                    .toUtf8();
                 }
+                if (m_segments.size() >= NetLimits::kPlaylistSegments) {
+                    if (error != nullptr)
+                        *error = tr("分片数量超过 %1 上限").arg(NetLimits::kPlaylistSegments);
+                    return false;
+                }
+                // EXT-X-MAP 也是独立请求，不能绕过总分片上限。
+                m_fragmentedMp4 = true;
                 m_segments.append({mapUrl, mapRange});
             }
             continue;
@@ -689,6 +844,10 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         segment.url = segmentUrl;
         segment.range = pendingRange;
         pendingRange.clear();
+        if (segmentUrl.path().endsWith(QLatin1String(".m4s"), Qt::CaseInsensitive)
+            || segmentUrl.path().endsWith(QLatin1String(".m4f"), Qt::CaseInsensitive)) {
+            m_fragmentedMp4 = true;
+        }
         if (m_segments.size() >= NetLimits::kPlaylistSegments) {
             if (error != nullptr)
                 *error = tr("分片数量超过 %1 上限").arg(NetLimits::kPlaylistSegments);
@@ -713,7 +872,6 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
             return false;
         }
 
-        m_isSnapshot = true;
         m_needsSnapshotConsent = false;
         const QString reason =
             declaredVod
@@ -724,6 +882,26 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         emit snapshotAccepted(reason);
     }
     return true;
+}
+
+QString DownloadTask::computePlaylistFingerprint() const
+{
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+    // 只取路径，不取会随 CDN 签名轮换的 query：同一份切片重新签名不应触发重下；
+    // 分片路径/字节范围变化才代表容器结构变了。
+    hash.addData(m_fragmentedMp4 ? "fmp4|" : "ts|");
+    hash.addData(QByteArray::number(m_segments.size()));
+    hash.addData("|");
+    for (const Segment &segment : m_segments) {
+        QUrl stable = segment.url;
+        stable.setQuery(QString());
+        stable.setFragment(QString());
+        hash.addData(stable.toString(QUrl::FullyEncoded).toUtf8());
+        hash.addData("|");
+        hash.addData(segment.range);
+        hash.addData("|");
+    }
+    return QString::fromLatin1(hash.result().toHex());
 }
 
 void DownloadTask::startNextSegment()
@@ -867,6 +1045,11 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
     if (m_done)
         return;
 
+    if (m_verifyMediaMagic) {
+        fail(tr("下载响应没有可识别的音视频数据"), true);
+        return;
+    }
+
     if (m_expectedBytes >= 0 && m_bytesWritten != m_expectedBytes) {
         fail(tr("下载长度不完整：期望 %1 字节，实际 %2 字节")
                  .arg(m_expectedBytes)
@@ -874,6 +1057,8 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
         return;
     }
 
+    // 普通下载此前按秒节流 checkpoint；提交前补最后一段精确进度。
+    emit checkpoint(m_bytesWritten, 0, -1);
     commitFile();
 }
 
@@ -886,30 +1071,57 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
     if (chunk.isEmpty())
         return;
 
-    if (m_bytesWritten + chunk.size() > m_maxBytes) {
+    if (m_verifyMediaMagic) {
+        // Content-Type 为空/纯文本时，必须在落盘前用文件头确认，
+        // 避免把无类型的 HTML 错误页保存成音视频。
+        if (!looksLikeMediaPayload(chunk, reply->url())) {
+            fail(tr("下载链接返回的内容无法识别为音视频（可能缺少 Content-Type）"), true);
+            return;
+        }
+        m_verifyMediaMagic = false;
+    }
+
+    const qint64 remaining = m_maxBytes - m_bytesWritten;
+    if (remaining <= 0) {
         fail(tr("文件超过 %1 MB 上限，已停止下载").arg(m_maxBytes / (1024 * 1024)));
         return;
     }
-    const qint64 written = m_file->write(chunk);
-    if (written != chunk.size()) {
+    // 超过上限时写入剩余额度再失败：临时文件至少停在真实上限，而不是
+    // 把当前整块 readAll 丢掉、让进度停在上一次检查点。
+    const QByteArray payload = chunk.size() > remaining ? chunk.left(int(remaining)) : chunk;
+    const qint64 written = m_file->write(payload);
+    if (written != payload.size()) {
         fail(tr("写入文件不完整：%1").arg(m_file->errorString()));
         return;
     }
-    m_bytesWritten += chunk.size();
-    m_segmentBytes += chunk.size();
+    m_bytesWritten += payload.size();
+    m_segmentBytes += payload.size();
 
     if (m_isHls) {
         // HLS 的续传点按分片边界记录，避免把半截分片写进状态。
         emit progress(m_segmentIndex, m_segments.size());
     } else {
         emit progress(m_bytesWritten, m_expectedBytes);
-        emit checkpoint(m_bytesWritten, 0, -1);
+        // 普通下载每个 readyRead 都写状态会放大磁盘写；最多每秒一次，
+        // 退出/完成时再补一次精确检查点。
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (m_lastCheckpointMs == 0 || now - m_lastCheckpointMs >= 1000) {
+            emit checkpoint(m_bytesWritten, 0, -1);
+            m_lastCheckpointMs = now;
+        }
+    }
+
+    if (chunk.size() > remaining) {
+        fail(tr("文件超过 %1 MB 上限，已停止下载").arg(m_maxBytes / (1024 * 1024)));
     }
 }
 
 bool DownloadTask::switchToHlsFile()
 {
-    if (m_filePath.endsWith(QLatin1String(".ts"), Qt::CaseInsensitive)) {
+    // fMP4（EXT-X-MAP/m4s）合并出来是 MP4，不是 MPEG-TS；扩展名必须跟随容器。
+    const QString desiredSuffix = m_fragmentedMp4 ? QStringLiteral("mp4")
+                                                  : QStringLiteral("ts");
+    if (m_filePath.endsWith(QLatin1Char('.') + desiredSuffix, Qt::CaseInsensitive)) {
         m_isHls = true;
         return true;
     }
@@ -919,25 +1131,36 @@ bool DownloadTask::switchToHlsFile()
     QString base = m_filePath;
     if (dot > slash && dot >= 0)
         base = m_filePath.left(dot);
-    QString newPath = base + QStringLiteral(".ts");
+    QString newPath = base + QLatin1Char('.') + desiredSuffix;
     if (m_pathResolver) {
         const QString resolved = m_pathResolver(newPath);
         if (!resolved.isEmpty())
             newPath = resolved;
     }
 
+    const QString oldPartial = partialPath();
+    const QString newPartial = newPath + QStringLiteral(".mvpdownload");
+    const bool hadBytes = m_bytesWritten > 0;
+
     if (m_file != nullptr) {
-        const QString oldPartial = partialPath();
         m_file->close();
         m_file->deleteLater();
         m_file = nullptr;
-        // 此刻还没有任何媒体字节；清掉按错误扩展名建的空临时文件。
+    }
+
+    if (hadBytes) {
+        // 已经下载了分片时不能直接删半成品；把临时文件连同字节数一起改名，
+        // 续传序号仍然有效。只有初始探测阶段（0 字节）才允许直接丢弃旧空文件。
+        if (!QFile::rename(oldPartial, newPartial)) {
+            fail(tr("无法把 HLS 临时文件改名到 %1").arg(newPartial));
+            return false;
+        }
+        m_resumeBytes = m_bytesWritten;
+    } else {
         QFile::remove(oldPartial);
     }
 
     m_filePath = newPath;
-    m_bytesWritten = 0;
-    m_resumeSegmentIndex = 0;
     m_isHls = true;
     if (!openTargetFile())
         return false;
@@ -1033,6 +1256,9 @@ void DownloadTask::stopForExit()
         reply->deleteLater();
     }
     if (m_file != nullptr) {
+        // 退出前补一次精确检查点；普通下载的 readyRead 检查点有 1 秒节流。
+        emit checkpoint(m_bytesWritten, m_segmentIndex,
+                        m_isHls ? m_segments.size() : -1);
         m_file->flush();
         m_file->close();
         m_file->deleteLater();
@@ -1094,28 +1320,88 @@ bool DownloadTask::isPlaylistReply(QNetworkReply *reply)
         return false;
     const QString type =
         reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
-    if (PlaylistSniffer::metadataIndicatesPlaylist(reply->url(), type))
-        return true;
-    // 部分源把 m3u8 以 text/plain 返回，且签名地址没有 .m3u8 后缀。
-    // 这类响应先按播放列表处理；解析正文时再用 #EXTM3U 确认，
-    // 不会把 m3u8 文本当成媒体字节写进目标文件。
-    return type.startsWith(QLatin1String("text/plain"));
+    // text/plain 不再直接当播放列表；由 resolveAmbiguousTextReply 读正文确认。
+    return PlaylistSniffer::metadataIndicatesPlaylist(reply->url(), type);
 }
 
 bool DownloadTask::isMediaContentType(const QString &contentType)
 {
     const QString type = contentType.toLower().trimmed();
     if (type.isEmpty())
-        return true;
+        return true; // 空类型由 writeReplyData 用文件头魔数二次确认
     if (type.startsWith(QLatin1String("audio/"))
         || type.startsWith(QLatin1String("video/"))
         || type.contains(QLatin1String("octet-stream"))
-        || type.contains(QLatin1String("mpegurl")))
+        || type.contains(QLatin1String("mpegurl"))
+        || type.contains(QLatin1String("ogg"))
+        || type.contains(QLatin1String("matroska"))
+        || type.contains(QLatin1String("x-flv"))
+        || type.contains(QLatin1String("quicktime"))
+        || type == QLatin1String("application/mp4")
+        || type == QLatin1String("application/x-m4a")
+        || type == QLatin1String("application/x-m4v")
+        || type == QLatin1String("application/vnd.rn-realmedia"))
         return true;
     // 网页、接口 JSON/XML、图片、PDF 都不是音视频，不能落成媒体文件。
     return false;
 }
 
+bool DownloadTask::isMediaExtension(const QUrl &url)
+{
+    static const QStringList suffixes = {
+        QStringLiteral("mp3"),  QStringLiteral("mp4"),  QStringLiteral("m4a"),
+        QStringLiteral("m4v"),  QStringLiteral("mov"),  QStringLiteral("flv"),
+        QStringLiteral("ts"),   QStringLiteral("m4s"),  QStringLiteral("aac"),
+        QStringLiteral("ogg"),  QStringLiteral("oga"),  QStringLiteral("opus"),
+        QStringLiteral("wav"),  QStringLiteral("flac"), QStringLiteral("webm"),
+        QStringLiteral("mkv"),  QStringLiteral("avi"),  QStringLiteral("wmv"),
+        QStringLiteral("mpg"),  QStringLiteral("mpeg"), QStringLiteral("m3u8"),
+    };
+    const QString suffix = QFileInfo(url.path()).suffix().toLower();
+    return suffixes.contains(suffix);
+}
+
+bool DownloadTask::looksLikeMediaPayload(const QByteArray &data, const QUrl &url)
+{
+    if (data.isEmpty())
+        return false;
+    const QByteArray trimmed = data.trimmed();
+    if (trimmed.startsWith("#EXTM3U") || trimmed.startsWith("<")
+        || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        return false;
+    }
+    if (data.startsWith("ID3") || data.startsWith("OggS") || data.startsWith("fLaC")
+        || data.startsWith("RIFF") || data.startsWith("FLV")
+        || data.startsWith("\x1A\x45\xDF\xA3")
+        || data.startsWith("\x00\x00\x01\xBA")
+        || (data.size() >= 5 && data.mid(4, 4) == "ftyp")
+        || (data.size() >= 2 && uchar(data.at(0)) == 0xFF
+            && (uchar(data.at(1)) & 0xF0) == 0xF0)
+        || data.at(0) == char(0x47)) {
+        return true;
+    }
+    // 有明确媒体后缀时允许未知魔数（部分 MPEG-PS/私有封装没有稳定文件头）；
+    // 但没有后缀又无法识别魔数的一律拒绝，避免 HTML 错误页落盘。
+    return isMediaExtension(url);
+}
+
+bool DownloadTask::parseUnsatisfiedRangeTotal(const QByteArray &value, qint64 *total)
+{
+    if (total == nullptr)
+        return false;
+    const QRegularExpressionMatch match =
+        QRegularExpression(QStringLiteral("^bytes\\s+\\*/(\\d+)$"),
+                           QRegularExpression::CaseInsensitiveOption)
+            .match(QString::fromLatin1(value).trimmed());
+    if (!match.hasMatch())
+        return false;
+    bool ok = false;
+    const qint64 parsed = match.captured(1).toLongLong(&ok);
+    if (!ok || parsed <= 0)
+        return false;
+    *total = parsed;
+    return true;
+}
 bool DownloadTask::parseContentRange(const QByteArray &value, qint64 *start, qint64 *end,
                                      qint64 *total)
 {

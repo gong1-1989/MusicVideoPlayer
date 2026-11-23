@@ -569,6 +569,8 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
     // HLS 主地址是播放列表，必须留给 attachPlaylist 改写，不能写入媒体文件。
     const bool diskRequested = !cachePath.isEmpty() && !isHlsUrl(upstream);
     qint64 resumeOffset = 0;
+    qint64 partialTotal = -1;
+    QString partialContentType;
     if (diskRequested && !isHead) {
         MediaCache::State state;
         const bool hasState = MediaCache::readState(cachePath, &state);
@@ -597,6 +599,9 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
             closeCacheFile(*cachedEntry);
         } else if (size > 0 && (!hasState || state.totalBytes <= 0 || size < state.totalBytes)) {
             resumeOffset = size;
+            if (state.totalBytes > 0)
+                partialTotal = state.totalBytes;
+            partialContentType = state.contentType;
             // 播放器通常先发 `bytes=0-`；已有半截文件时要让上游从断点续，
             // 已经下载的前缀继续由本地缓存供播放器顺序读取。
             if (!hasRange || isOpenEndedRange(range)) {
@@ -607,13 +612,49 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         }
     }
 
+    const bool boundedRangeRequest = hasRange && !isOpenEndedRange(request.range);
+
+    // 显式有界 Range 的起点落在已下载前缀内时，先从本地切片，避免为了
+    // 一个播放器探测请求把有效的半截缓存删掉重建。
+    if (diskRequested && boundedRangeRequest && resumeOffset > 0 && partialTotal > 0) {
+        qint64 reqStart = -1;
+        qint64 reqEnd = -1;
+        if (StreamRange::parseRange(request.range, partialTotal, &reqStart, &reqEnd)
+            && reqStart >= 0 && reqStart < resumeOffset && reqEnd >= reqStart) {
+            reqEnd = qMin(reqEnd, resumeOffset - 1);
+            auto entry = QSharedPointer<CacheEntry>::create();
+            entry->total = partialTotal;
+            entry->contentType = partialContentType.toLatin1();
+            entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+            entry->upstream = upstream;
+            entry->diskBacked = true;
+            entry->filePath = cachePath;
+            entry->cacheIdentity = cacheIdentity;
+            const qint64 opened = openCacheFile(*entry, cachePath, resumeOffset);
+            if (opened >= 0) {
+                entry->complete = cacheDataSize(*entry) >= entry->total;
+                m_cache.insert(cacheKey, entry);
+                const QString localRange = QStringLiteral("bytes=%1-%2")
+                                               .arg(reqStart)
+                                               .arg(reqEnd);
+                if (serveFromCache(client, entry, cacheKey, localRange, true)) {
+                    qCInfo(lcProxy) << "流转缓存用本地半截文件响应有界 Range"
+                                    << reqStart << reqEnd << HttpClient::redactUrl(upstream);
+                    return;
+                }
+                m_cache.remove(cacheKey);
+                closeCacheFile(*entry);
+            }
+        }
+    }
+
     // 由 HttpClient 手动跟随 302（含 https→http 降级），拿到可读的上游 reply。
     // 用 stream() 而不是 fetch()：响应头一到就能开始转发，不会先缓冲整段音视频。
     QPointer<QTcpSocket> guard(client);
     m_http->stream(upstream, range, headers,
                    [this, guard, upstream, headers, isHead, hasRange, cacheKey, request,
                     cachePath, cacheIdentity, diskRequested, resumeOffset,
-                    singleFileHlsSegment](QNetworkReply *reply) {
+                    singleFileHlsSegment, boundedRangeRequest](QNetworkReply *reply) {
         if (guard.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -676,10 +717,10 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                 && rangeTotal > 0) {
                 cacheTotal = rangeTotal;
                 initialBytes = rangeStart;
-            } else if (diskRequested && resumeOffset > 0 && parsed
+            } else if (diskRequested && resumeOffset > 0 && !boundedRangeRequest && parsed
                        && rangeStart != resumeOffset) {
-                // 已有半截缓存但源站返回了别的起点，先清掉这条条目的文件，
-                // 再用无 Range 请求完整重建，避免把不同偏移的数据拼在一起。
+                // 只有续传式（open-ended）请求起点不符时才认为缓存不可续；
+                // 有界 Range 本来就可能从任意偏移开始，不能因此删掉有效前缀。
                 qCWarning(lcProxy) << "流转缓存续传起点不一致" << rangeStart
                                    << "期望" << resumeOffset
                                    << HttpClient::redactUrl(upstream);
@@ -712,8 +753,11 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         }
         const qint64 cacheLimit =
             diskRequested ? std::numeric_limits<qint64>::max() : kMaxCacheEntryBytes;
-        if (!isHead && !singleFileHlsSegment && cacheTotal > 0
-            && cacheTotal <= cacheLimit) {
+        // 上游明确回了 206 区间（如拖动后的 bytes=500000-500100）时只透传，
+        // 不再为一个局部请求建立整段缓存；若上游忽略 Range 回了 200 全量，
+        // 仍可按完整文件缓存并由代理切出 206。
+        if (!isHead && !singleFileHlsSegment && (!boundedRangeRequest || status == 200)
+            && cacheTotal > 0 && cacheTotal <= cacheLimit) {
             // 200 全量和“从 0/断点开始、未指定结束”的 206 都能缓存整段。
             // 上游已经回明确区间（例如拖动后的 bytes=500000-500100）时保持原样
             // 透传，不额外占缓存，也不能冒充完整文件。
@@ -2108,6 +2152,55 @@ void StreamProxy::resumeCacheUpstream(const QString &key,
 
             const int status =
                 reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (status == 200) {
+                // 源站在续传时忽略 Range，返回了完整文件。不能把 200 的正文
+                // 追加到半截缓存；清空后按完整文件重建，当前播放不中断。
+                qCInfo(lcProxy) << "流转缓存续传被源站忽略，清空后从头重建"
+                                << HttpClient::redactUrl(upstream);
+                if (entry->diskBacked) {
+                    if (entry->file == nullptr
+                        || !entry->file->seek(0) || !entry->file->resize(0)) {
+                        reply->abort();
+                        reply->deleteLater();
+                        entry->pending = false;
+                        entry->failed = true;
+                        pumpCache(key, entry);
+                        return;
+                    }
+                    entry->file->flush();
+                } else {
+                    entry->data.clear();
+                }
+                entry->dataSize = 0;
+                entry->complete = false;
+                const QVariant length = reply->header(QNetworkRequest::ContentLengthHeader);
+                const qint64 total = length.isValid() ? length.toLongLong() : entry->total;
+                if (total <= 0) {
+                    reply->abort();
+                    reply->deleteLater();
+                    entry->pending = false;
+                    entry->failed = true;
+                    pumpCache(key, entry);
+                    return;
+                }
+                entry->total = total;
+                entry->reply = reply;
+                entry->pending = false;
+                entry->failed = false;
+                persistCacheState(*entry);
+                connect(reply, &QNetworkReply::readyRead, this,
+                        [this, key, entry, reply] { readIntoCache(key, entry, reply); });
+                connect(reply, &QNetworkReply::finished, this,
+                        [this, key, entry, reply, upstream, headers] {
+                            finishCache(key, entry, reply, upstream, headers);
+                        });
+                readIntoCache(key, entry, reply);
+                if (reply->isFinished())
+                    finishCache(key, entry, reply, upstream, headers);
+                pruneCache(key);
+                return;
+            }
+
             qint64 start = -1;
             qint64 end = -1;
             qint64 total = -1;

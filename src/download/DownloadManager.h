@@ -34,7 +34,8 @@ public:
     /// 命中完整播放缓存时，从无后缀缓存异步复制出带正确后缀的下载文件。
     /// 不占用下载并发槽位，但同样走 `.mvpdownload` 临时文件与完成信号。
     QString importFromCache(const MediaItem &item, const QString &cachePath,
-                            const QString &filePath, QString *queuedPath = nullptr,
+                            const QString &filePath, qint64 maxBytes = 0,
+                            QString *queuedPath = nullptr,
                             bool *alreadyQueued = nullptr);
     /// 在下载队列范围内分配不冲突的目标名；先由界面调用显示文件名，
     /// enqueue 内部还会再校验一次，避免调用方绕过队列。
@@ -63,6 +64,7 @@ private:
     QString reserveFilePath(const QString &directory, const QString &fileName,
                             const QString &ignoreId) const;
     bool isPathReserved(const QString &path, const QString &ignoreId) const;
+    bool isPathOwnedByAnyJob(const QString &path) const;
     void load();
     void saveNow();
     void scheduleSave();
@@ -70,6 +72,7 @@ private:
     void scheduleRemoveFile(const QString &path, int attempt = 0);
     void pumpQueue();
     void startJob(const QString &id);
+    bool startCacheCopy(const QString &id, const QString &sourcePath);
     void startRemux(const QString &id);
     void copyCacheChunks();
     void cancelCacheCopy(const QString &id, bool removePartial);
@@ -80,6 +83,7 @@ private:
     QVector<DownloadJob> m_jobs;
     QHash<QString, QPointer<DownloadTask>> m_tasks;
     QHash<QString, MediaRemux *> m_remuxes;
+    QHash<QString, QString> m_remuxOutputs;
     QHash<QString, QFile *> m_cacheCopySources;
     QHash<QString, QFile *> m_cacheCopyTargets;
     QTimer *m_saveTimer = nullptr;

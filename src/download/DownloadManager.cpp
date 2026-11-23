@@ -80,20 +80,26 @@ DownloadManager::DownloadManager(HttpClient *http, QObject *parent)
 
 DownloadManager::~DownloadManager()
 {
-    for (auto it = m_tasks.begin(); it != m_tasks.end(); ++it) {
-        if (!it.value().isNull())
-            it.value()->stopForExit();
+    // 先置退出标记，避免 stopForExit 同步发出的 finished 回调继续排队/保存。
+    m_shuttingDown = true;
+    // 不能边遍历 m_tasks 边让 finished 回调 remove 同一容器；先整体摘出。
+    const QHash<QString, QPointer<DownloadTask>> tasks = m_tasks;
+    m_tasks.clear();
+    for (const QPointer<DownloadTask> &task : tasks) {
+        if (!task.isNull())
+            task->stopForExit();
     }
     for (auto *remux : m_remuxes)
         remux->cancel();
+    m_remuxes.clear();
+    m_remuxOutputs.clear();
     if (m_cacheCopyTimer != nullptr)
         m_cacheCopyTimer->stop();
     const QStringList copyIds = m_cacheCopySources.keys();
     for (const QString &id : copyIds)
         cancelCacheCopy(id, true);
     // 最近完成/暂停的状态可能还在 900 ms 合并窗口里；析构时兜底落盘。
-    if (!m_shuttingDown)
-        saveNow();
+    saveNow();
 }
 
 QString DownloadManager::reserveFilePath(const QString &directory,
@@ -119,6 +125,14 @@ bool DownloadManager::isPathReserved(const QString &path, const QString &ignoreI
 {
     if (path.isEmpty())
         return false;
+    // 正在转码的输出路径还没有写进 job.filePath，也必须占位，
+    // 否则另一个下载可能选中同名 .mp4，转码完成时发生冲突。
+    for (auto it = m_remuxOutputs.cbegin(); it != m_remuxOutputs.cend(); ++it) {
+        if (!ignoreId.isEmpty() && it.key() == ignoreId)
+            continue;
+        if (DownloadPaths::pathsReferToSameFile(path, it.value()))
+            return true;
+    }
     for (const DownloadJob &job : m_jobs) {
         if (!ignoreId.isEmpty() && job.id == ignoreId)
             continue;
@@ -132,6 +146,25 @@ bool DownloadManager::isPathReserved(const QString &path, const QString &ignoreI
             || DownloadPaths::pathsReferToSameFile(path, job.partialPath())) {
             return true;
         }
+    }
+    return false;
+}
+
+bool DownloadManager::isPathOwnedByAnyJob(const QString &path) const
+{
+    if (path.isEmpty())
+        return false;
+    // 延迟删除专用：Completed/Failed 也算占用，否则旧任务的 25ms 定时器
+    // 可能把新任务刚完成的最终文件删掉。
+    for (const DownloadJob &job : m_jobs) {
+        if (DownloadPaths::pathsReferToSameFile(path, job.filePath)
+            || DownloadPaths::pathsReferToSameFile(path, job.partialPath())) {
+            return true;
+        }
+    }
+    for (const QString &output : m_remuxOutputs) {
+        if (DownloadPaths::pathsReferToSameFile(path, output))
+            return true;
     }
     return false;
 }
@@ -181,8 +214,8 @@ QString DownloadManager::enqueue(const MediaItem &item, const QUrl &url,
 }
 
 QString DownloadManager::importFromCache(const MediaItem &item, const QString &cachePath,
-                                         const QString &filePath, QString *queuedPath,
-                                         bool *alreadyQueued)
+                                         const QString &filePath, qint64 maxBytes,
+                                         QString *queuedPath, bool *alreadyQueued)
 {
     if (alreadyQueued != nullptr)
         *alreadyQueued = false;
@@ -202,6 +235,18 @@ QString DownloadManager::importFromCache(const MediaItem &item, const QString &c
         || QFileInfo(cachePath).size() <= 0) {
         return QString();
     }
+    const qint64 sourceSize = QFileInfo(cachePath).size();
+    const qint64 limit = maxBytes > 0 ? maxBytes : NetLimits::kDownloadBytes;
+    if (sourceSize > limit) {
+        emit statusMessage(tr("播放缓存超过单文件下载上限，改为网络下载"));
+        return QString();
+    }
+    // 缓存复制不经过 pumpQueue，必须在入口自己检查并发，否则批量下载
+    // 会同时打开任意数量的缓存文件和目标文件。
+    if (activeCount() >= kMaxConcurrentDownloads) {
+        emit statusMessage(tr("下载任务已满，请稍后再试"));
+        return QString();
+    }
 
     DownloadJob job;
     job.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -210,34 +255,25 @@ QString DownloadManager::importFromCache(const MediaItem &item, const QString &c
     job.headers = item.headers;
     const QFileInfo targetInfo(filePath);
     job.filePath = reserveFilePath(targetInfo.absolutePath(), targetInfo.fileName());
-    job.bytesTotal = QFileInfo(cachePath).size();
+    job.cacheCopySourcePath = cachePath;
+    job.bytesTotal = sourceSize;
     job.bytesReceived = 0;
+    job.maxBytes = limit;
     job.status = DownloadJob::Status::Downloading;
     job.message = tr("正在从播放缓存生成下载文件");
     job.createdAt = QDateTime::currentDateTime();
 
-    QFile *source = new QFile(cachePath, this);
-    if (!source->open(QIODevice::ReadOnly)) {
-        source->deleteLater();
-        emit statusMessage(tr("无法读取播放缓存：%1").arg(source->errorString()));
-        return QString();
-    }
-    QFile *target = new QFile(job.partialPath(), this);
-    if (!target->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        const QString error = target->errorString();
-        source->close();
-        source->deleteLater();
-        target->deleteLater();
-        emit statusMessage(tr("无法写入下载文件：%1").arg(error));
-        return QString();
-    }
-
     m_jobs.append(job);
-    m_cacheCopySources.insert(job.id, source);
-    m_cacheCopyTargets.insert(job.id, target);
+    if (!startCacheCopy(job.id, cachePath)) {
+        const int index = indexOf(job.id);
+        if (index >= 0) {
+            const QString targetPath = m_jobs.at(index).filePath;
+            finishJob(job.id, targetPath, false, tr("无法从播放缓存生成下载文件"));
+        }
+        return QString();
+    }
     if (queuedPath != nullptr)
         *queuedPath = job.filePath;
-    m_cacheCopyTimer->start();
     scheduleSave();
     scheduleNotify();
     return job.id;
@@ -293,7 +329,9 @@ void DownloadManager::shutdownForExit()
             continue;
 
         job.status = DownloadJob::Status::Paused;
-        job.message = tr("程序退出，已暂停；下次启动会自动续传");
+        job.message = job.cacheCopySourcePath.isEmpty()
+            ? tr("程序退出，已暂停；下次启动会自动续传")
+            : tr("程序退出，已暂停；下次启动继续从播放缓存生成");
 
         auto taskIt = m_tasks.find(job.id);
         if (taskIt != m_tasks.end() && !taskIt.value().isNull()) {
@@ -306,6 +344,7 @@ void DownloadManager::shutdownForExit()
         if (remuxIt != m_remuxes.end()) {
             MediaRemux *remux = remuxIt.value();
             m_remuxes.erase(remuxIt);
+            m_remuxOutputs.remove(job.id);
             remux->cancel();
             remux->deleteLater();
             job.message = tr("程序退出，下次启动继续转成 MP4");
@@ -341,6 +380,7 @@ bool DownloadManager::removeJob(const QString &id)
     if (remuxIt != m_remuxes.end()) {
         MediaRemux *remux = remuxIt.value();
         m_remuxes.erase(remuxIt);
+        m_remuxOutputs.remove(id);
         remuxTempPath = remux->tempFilePath();
         remux->disconnect(this);
         remux->cancel();
@@ -555,17 +595,46 @@ void DownloadManager::saveNow()
 
     QDir().mkpath(QFileInfo(m_statePath).absolutePath());
 
-    QJsonArray array;
-    for (const DownloadJob &job : m_jobs)
-        array.append(job.toJson());
+    auto buildPayload = [this]() {
+        QJsonArray array;
+        for (const DownloadJob &job : m_jobs)
+            array.append(job.toJson());
+        QJsonObject root;
+        root.insert(QStringLiteral("version"), 1);
+        root.insert(QStringLiteral("jobs"), array);
+        return QJsonDocument(root).toJson(QJsonDocument::Indented);
+    };
 
-    QJsonObject root;
-    root.insert(QStringLiteral("version"), 1);
-    root.insert(QStringLiteral("jobs"), array);
-    const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    QByteArray payload = buildPayload();
+    bool trimmed = false;
+    // 状态文件异常膨胀时先裁掉最老的 Failed/Paused 历史，而不是整份放弃保存；
+    // 否则新任务状态永远写不进去，旧记录还会一直留在磁盘上。
+    while (payload.size() > kMaxStateFileBytes) {
+        int victim = -1;
+        for (int i = 0; i < m_jobs.size(); ++i) {
+            if (m_jobs.at(i).status == DownloadJob::Status::Failed) {
+                victim = i;
+                break;
+            }
+        }
+        if (victim < 0) {
+            for (int i = 0; i < m_jobs.size(); ++i) {
+                if (m_jobs.at(i).status == DownloadJob::Status::Paused) {
+                    victim = i;
+                    break;
+                }
+            }
+        }
+        if (victim < 0)
+            break;
+        m_jobs.removeAt(victim);
+        trimmed = true;
+        payload = buildPayload();
+    }
+
     if (payload.size() > kMaxStateFileBytes) {
-        qCWarning(lcDownloadManager) << "下载状态超过上限，放弃本次保存" << payload.size()
-                                     << kMaxStateFileBytes;
+        qCWarning(lcDownloadManager) << "下载状态超过上限，且没有可裁剪的历史"
+                                     << payload.size() << kMaxStateFileBytes;
         return;
     }
 
@@ -582,8 +651,12 @@ void DownloadManager::saveNow()
         file.cancelWriting();
         return;
     }
-    if (!file.commit())
+    if (!file.commit()) {
         qCWarning(lcDownloadManager) << "下载状态文件保存失败" << file.errorString();
+        return;
+    }
+    if (trimmed && !m_shuttingDown)
+        emit jobsChanged();
 }
 
 void DownloadManager::scheduleSave()
@@ -612,9 +685,9 @@ void DownloadManager::scheduleRemoveFile(const QString &path, int attempt)
     // 把重试放到事件循环，避免在 UI 线程里 msleep 造成可见卡顿。
     QTimer::singleShot(25 * (attempt + 1), this, [this, path, attempt] {
         // 延迟窗口内用户可能移除旧任务后立刻重新下载同一目标；
-        // 新任务已经占用这个路径时不能再按旧任务的所有权删除文件。
-        if (isPathReserved(path, QString())) {
-            qCInfo(lcDownloadManager) << "延迟删除跳过：路径已被新任务占用" << path;
+        // 新任务已经占用或已经完成这个路径时都不能再按旧任务的所有权删除。
+        if (isPathOwnedByAnyJob(path)) {
+            qCInfo(lcDownloadManager) << "延迟删除跳过：路径已属于现有任务" << path;
             return;
         }
         scheduleRemoveFile(path, attempt + 1);
@@ -702,6 +775,23 @@ void DownloadManager::startJob(const QString &id)
         job.segmentIndex = 0;
     }
 
+    // 缓存复制任务没有 HTTP 下载语义；重启后必须继续复制缓存源，
+    // 否则原 URL 需要播放缓存/签名时会失败，或重复下载整段。
+    if (!job.cacheCopySourcePath.isEmpty()) {
+        job.status = DownloadJob::Status::Downloading;
+        job.message = tr("正在从播放缓存生成下载文件");
+        if (startCacheCopy(id, job.cacheCopySourcePath)) {
+            scheduleSave();
+            scheduleNotify();
+            return;
+        }
+        job.status = DownloadJob::Status::Failed;
+        job.message = tr("播放缓存已不存在，无法继续生成下载文件");
+        scheduleSave();
+        scheduleNotify();
+        return;
+    }
+
     job.status = DownloadJob::Status::Downloading;
     job.message = job.hls ? tr("正在解析播放列表") : tr("正在下载");
 
@@ -716,6 +806,8 @@ void DownloadManager::startJob(const QString &id)
     task->setAllowIncompletePlaylist(job.allowIncomplete);
     task->setResumeState(job.snapshot ? 0 : job.bytesReceived,
                          job.snapshot ? 0 : job.segmentIndex, job.hls);
+    if (job.hls)
+        task->setResumeFingerprint(job.hlsFingerprint);
 
     // 源站地址由 Provider 写入条目；旧记录没有该字段时退回 Referer/Origin。
     const QUrl origin = job.item.sourceOrigin.isValid() && !job.item.sourceOrigin.host().isEmpty()
@@ -768,6 +860,15 @@ void DownloadManager::startJob(const QString &id)
                 scheduleNotify();
             });
 
+    connect(task, &DownloadTask::playlistFingerprint, this,
+            [this, id](const QString &fingerprint) {
+                const int i = indexOf(id);
+                if (i < 0)
+                    return;
+                m_jobs[i].hlsFingerprint = fingerprint;
+                scheduleSave();
+            });
+
     connect(task, &DownloadTask::progress, this,
             [this, id](qint64 received, qint64 total) {
                 const int i = indexOf(id);
@@ -812,11 +913,21 @@ void DownloadManager::startJob(const QString &id)
                 DownloadJob &j = m_jobs[i];
                 j.filePath = path;
                 j.bytesReceived = QFileInfo(path).size();
+                j.bytesTotal = j.bytesReceived;
                 if (j.hls) {
+                    if (path.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive)) {
+                        // fMP4 HLS 合并结果已经是 MP4，再转一次只会多一次无意义拷贝。
+                        finishJob(id, path, true, tr("下载完成（MP4）"));
+                        return;
+                    }
+                    // 进入 remux 前先把自己产出的 TS 记成 committed；
+                    // 否则转码期间退出，重启会误判为“还没下载”，重新拉整段 HLS。
+                    j.committed = true;
                     j.status = DownloadJob::Status::Downloading;
                     j.message = j.snapshot
                         ? tr("正在无损转成 MP4（当前分片快照）")
                         : tr("正在无损转成 MP4");
+                    scheduleSave();
                     startRemux(id);
                 } else {
                     finishJob(id, path, true, tr("下载完成"));
@@ -866,12 +977,18 @@ void DownloadManager::startRemux(const QString &id)
     const QString output =
         reserveFilePath(tsInfo.absolutePath(),
                         tsInfo.completeBaseName() + QStringLiteral(".mp4"), job.id);
+    if (output.isEmpty()) {
+        finishJob(id, job.filePath, true, tr("下载完成（TS）：无法分配 MP4 输出文件名"));
+        return;
+    }
+    m_remuxOutputs.insert(id, output);
     auto *remux = new MediaRemux(this);
     m_remuxes.insert(id, remux);
     connect(remux, &MediaRemux::finished, this,
             [this, id, remux, output](bool success, const QString &actual,
                                       const QString &error) {
                 m_remuxes.remove(id);
+                m_remuxOutputs.remove(id);
                 remux->deleteLater();
                 const int i = indexOf(id);
                 if (i < 0 || m_shuttingDown)
@@ -891,6 +1008,65 @@ void DownloadManager::startRemux(const QString &id)
                 }
             });
     remux->remuxToMp4(job.filePath, output);
+}
+
+bool DownloadManager::startCacheCopy(const QString &id, const QString &sourcePath)
+{
+    const int index = indexOf(id);
+    if (index < 0)
+        return false;
+    DownloadJob &job = m_jobs[index];
+
+    QFileInfo sourceInfo(sourcePath);
+    if (!sourceInfo.isFile() || sourceInfo.size() <= 0) {
+        emit statusMessage(tr("播放缓存已不存在：%1").arg(sourcePath));
+        return false;
+    }
+    const qint64 limit = job.maxBytes > 0 ? job.maxBytes : NetLimits::kDownloadBytes;
+    if (sourceInfo.size() > limit) {
+        emit statusMessage(tr("播放缓存超过单文件下载上限"));
+        return false;
+    }
+
+    const QString partial = job.partialPath();
+    qint64 offset = QFileInfo(partial).size();
+    if (offset > sourceInfo.size()) {
+        // 状态文件里的续传字节不可信时从头复制。
+        QFile::remove(partial);
+        offset = 0;
+    }
+
+    QFile *source = new QFile(sourcePath, this);
+    if (!source->open(QIODevice::ReadOnly) || !source->seek(offset)) {
+        const QString error = source->errorString();
+        source->close();
+        source->deleteLater();
+        emit statusMessage(tr("无法读取播放缓存：%1").arg(error));
+        return false;
+    }
+
+    QFile *target = new QFile(partial, this);
+    const QIODevice::OpenMode mode = offset > 0
+        ? (QIODevice::ReadWrite)
+        : (QIODevice::WriteOnly | QIODevice::Truncate);
+    if (!target->open(mode) || !target->resize(offset) || !target->seek(offset)) {
+        const QString error = target->errorString();
+        target->close();
+        target->deleteLater();
+        source->close();
+        source->deleteLater();
+        emit statusMessage(tr("无法续写下载文件：%1").arg(error));
+        return false;
+    }
+
+    job.bytesReceived = offset;
+    job.bytesTotal = sourceInfo.size();
+    job.status = DownloadJob::Status::Downloading;
+    job.message = tr("正在从播放缓存生成下载文件");
+    m_cacheCopySources.insert(id, source);
+    m_cacheCopyTargets.insert(id, target);
+    m_cacheCopyTimer->start();
+    return true;
 }
 
 void DownloadManager::copyCacheChunks()
@@ -924,16 +1100,45 @@ void DownloadManager::copyCacheChunks()
                 continue;
             }
             const QString partial = target->fileName();
-            const QString finalPath = m_jobs.at(index).filePath;
-            target->flush();
+            DownloadJob &job = m_jobs[index];
+            QString finalPath = job.filePath;
+            // 复制期间用户或其他任务可能占用了目标名；先重新分配唯一名，
+            // 不能因为一次 rename 冲突就把已经复制好的数据删除。
+            if (QFileInfo::exists(finalPath) || isPathReserved(finalPath, job.id)) {
+                const QFileInfo info(finalPath);
+                const QString reserved =
+                    reserveFilePath(info.absolutePath(), info.fileName(), job.id);
+                if (!reserved.isEmpty())
+                    finalPath = reserved;
+                job.filePath = finalPath;
+            }
+            if (!target->flush()) {
+                const QString error = target->errorString();
+                target->close();
+                source->close();
+                cancelCacheCopy(id, true);
+                finishJob(id, finalPath, false, tr("刷新下载文件失败：%1").arg(error));
+                continue;
+            }
             target->close();
             source->close();
             cancelCacheCopy(id, false);
             if (!QFile::rename(partial, finalPath)) {
-                QFile::remove(partial);
-                finishJob(id, finalPath, false, tr("缓存复制完成，但无法写入目标文件"));
-                continue;
+                // 可能是路径竞争或权限/磁盘错误。再尝试一次唯一名；仍失败才清理。
+                const QFileInfo info(finalPath);
+                const QString retryPath =
+                    reserveFilePath(info.absolutePath(), info.fileName(), job.id);
+                if (!retryPath.isEmpty() && retryPath != finalPath
+                    && QFile::rename(partial, retryPath)) {
+                    finalPath = retryPath;
+                    m_jobs[index].filePath = finalPath;
+                } else {
+                    QFile::remove(partial);
+                    finishJob(id, finalPath, false, tr("缓存复制完成，但无法写入目标文件"));
+                    continue;
+                }
             }
+            m_jobs[index].filePath = finalPath;
             finishJob(id, finalPath, true, tr("下载完成（来自播放缓存）"));
             changed = true;
             continue;
@@ -987,8 +1192,10 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
         job.bytesTotal = job.bytesReceived;
     job.status = success ? DownloadJob::Status::Completed
                          : DownloadJob::Status::Failed;
-    if (success)
+    if (success) {
         job.committed = true;
+        job.cacheCopySourcePath.clear();
+    }
     QString finalMessage = message;
     if (success && job.snapshot && !finalMessage.contains(QStringLiteral("快照"))) {
         // 不把无 ENDLIST 的结果伪装成“完整下载”；下载管理器与状态栏都显示快照提示。
@@ -996,12 +1203,16 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
     }
     job.message = finalMessage;
     job.completedAt = QDateTime::currentDateTime();
+    // 先复制信号参数，不能在 emit 后再访问 job：槽函数可能同步 removeJob()。
+    const MediaItem completedItem = job.item;
     scheduleSave();
     scheduleNotify();
 
     if (success) {
         emit statusMessage(finalMessage);
-        emit jobCompleted(job.item, path);
+        emit jobCompleted(completedItem, path);
     }
-    pumpQueue();
+    // finishJob 可能在 startRemux/pumpQueue 栈内被调用；同步 pump 会让
+    // 大量 Paused HLS 任务递归 startJob -> finishJob，改为事件循环排队。
+    QTimer::singleShot(0, this, &DownloadManager::pumpQueue);
 }

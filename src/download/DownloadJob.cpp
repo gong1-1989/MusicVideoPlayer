@@ -86,12 +86,14 @@ QJsonObject DownloadJob::toJson() const
         object.remove(QStringLiteral("url"));
     }
     object.insert(QStringLiteral("filePath"), filePath);
+    object.insert(QStringLiteral("cacheCopySourcePath"), cacheCopySourcePath);
     object.insert(QStringLiteral("bytesReceived"), double(bytesReceived));
     object.insert(QStringLiteral("bytesTotal"), double(bytesTotal));
     object.insert(QStringLiteral("maxBytes"), double(maxBytes));
     object.insert(QStringLiteral("segmentIndex"), segmentIndex);
     object.insert(QStringLiteral("segmentCount"), segmentCount);
     object.insert(QStringLiteral("hls"), hls);
+    object.insert(QStringLiteral("hlsFingerprint"), hlsFingerprint);
     object.insert(QStringLiteral("snapshot"), snapshot);
     object.insert(QStringLiteral("allowIncomplete"), allowIncomplete);
     object.insert(QStringLiteral("needsSnapshotConsent"), needsSnapshotConsent);
@@ -140,6 +142,8 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     if (parsed.item.url.isEmpty())
         parsed.item.url = parsed.url;
     parsed.filePath = object.value(QStringLiteral("filePath")).toString();
+    parsed.cacheCopySourcePath =
+        object.value(QStringLiteral("cacheCopySourcePath")).toString();
     parsed.bytesReceived =
         qint64(object.value(QStringLiteral("bytesReceived")).toDouble());
     if (!object.contains(QStringLiteral("bytesReceived")))
@@ -149,6 +153,7 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     parsed.segmentIndex = object.value(QStringLiteral("segmentIndex")).toInt();
     parsed.segmentCount = object.value(QStringLiteral("segmentCount")).toInt();
     parsed.hls = object.value(QStringLiteral("hls")).toBool();
+    parsed.hlsFingerprint = object.value(QStringLiteral("hlsFingerprint")).toString();
     parsed.snapshot = object.value(QStringLiteral("snapshot")).toBool(false);
     parsed.allowIncomplete = object.value(QStringLiteral("allowIncomplete")).toBool(false);
     parsed.needsSnapshotConsent =
