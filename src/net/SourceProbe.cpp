@@ -23,9 +23,10 @@ Q_LOGGING_CATEGORY(lcProbe, "mvp.net.probe")
 namespace {
 
 constexpr int kBudgetMs = 24000;        // 整轮探测的总时限
-constexpr int kBudgetMsAuto = 32000;    // 自动识别（两种类型都试）的时限
+constexpr int kBudgetMsMusic = 32000;   // 音乐接口更多，且多数快速 404
+constexpr int kBudgetMsAuto = 40000;    // 自动识别（两种类型都试）的时限
 constexpr int kRequestTimeoutMs = 6000; // 单次请求超时
-// 内置路径已有 10 条，首页还可能抓到 /from/xxx/ 等非标准接口。
+// 内置路径影视 10 条、音乐 16 条，首页还可能抓到 /from/xxx/ 等非标准接口。
 // 上限必须给首页线索留出余量，否则后面的内置路径根本没机会被尝试。
 constexpr int kMaxAttempts = 16;
 
@@ -39,8 +40,8 @@ QString renderUrl(const QString &tpl, const QString &keyword, int limit)
 }
 
 /// 把首页里抓到的接口地址补成“能带关键词搜索”的模板。
-/// 已经含 {keyword} 的原样返回；已有 ac= 参数时只补 wd，避免重复 ac。
-QString appendProbeQuery(QString location)
+/// 影视沿用 ac/wd；音乐按接口族补 query/q/search/name/searchTerm 等参数。
+QString appendProbeQuery(QString location, MediaType type)
 {
     location = location.trimmed();
     if (location.isEmpty())
@@ -49,36 +50,203 @@ QString appendProbeQuery(QString location)
     const int fragment = location.indexOf(QLatin1Char('#'));
     if (fragment >= 0)
         location.truncate(fragment);
-    if (location.contains(QLatin1String("{keyword}")))
-        return location;
 
-    QString separator;
-    if (location.endsWith(QLatin1Char('?')) || location.endsWith(QLatin1Char('&')))
-        separator.clear();
-    else if (location.contains(QLatin1Char('?')))
-        separator = QStringLiteral("&");
-    else
-        separator = QStringLiteral("?");
+    const bool music = (type == MediaType::Music);
+    const QString lower = location.toLower();
+    auto add = [&location](const QString &pair) {
+        if (location.endsWith(QLatin1Char('?')) || location.endsWith(QLatin1Char('&')))
+            location += pair;
+        else if (location.contains(QLatin1Char('?')))
+            location += QLatin1Char('&') + pair;
+        else
+            location += QLatin1Char('?') + pair;
+    };
+    auto has = [&location](const QString &key) {
+        return location.contains(key + QLatin1Char('='), Qt::CaseInsensitive);
+    };
 
-    if (location.contains(QLatin1String("wd="), Qt::CaseInsensitive)) {
-        // 用户可能直接粘贴了一条带示例关键词的搜索地址（?ac=detail&wd=电影）。
-        // 把固定值换成占位符，比直接丢掉这条地址更有用；否则试搜永远无法验证搜索词。
-        QRegularExpression wdRe(QStringLiteral("([?&])wd=[^&]*"),
-                                QRegularExpression::CaseInsensitiveOption);
-        location.replace(wdRe, QStringLiteral("\\1wd={keyword}"));
+    if (location.contains(QLatin1String("{keyword}"))) {
+        if (!music)
+            return location;
+    } else {
+        // 用户可能直接粘贴了一条带示例关键词的搜索地址。把固定值换成占位符，
+        // 比丢掉这条地址更有用；音乐接口的关键词参数名很多，不能只认 wd。
+        const QStringList names = {
+            QStringLiteral("wd"), QStringLiteral("q"), QStringLiteral("query"),
+            QStringLiteral("searchTerm"), QStringLiteral("search"),
+            QStringLiteral("term"), QStringLiteral("name"), QStringLiteral("filter"),
+            QStringLiteral("keyword"), QStringLiteral("w"), QStringLiteral("s")
+        };
+        QRegularExpression re(
+            QStringLiteral("([?&])(") + names.join(QLatin1Char('|')) + QStringLiteral(")=[^&]*"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (re.match(location).hasMatch())
+            location.replace(re, QStringLiteral("\\1\\2={keyword}"));
+
+        // Radio Browser 的 byname/bytag 把关键词放在路径里，不替换就只能丢掉。
+        if (music) {
+            QRegularExpression pathRe(
+                QStringLiteral("(/json/stations/(?:byname|bytag)/)([^/?#]+)"),
+                QRegularExpression::CaseInsensitiveOption);
+            location.replace(pathRe, QStringLiteral("\\1{keyword}"));
+        }
+    }
+
+    if (!music) {
+        if (location.contains(QLatin1String("{keyword}")))
+            return location;
+        if (location.contains(QLatin1String("wd="), Qt::CaseInsensitive)) {
+            QRegularExpression wdRe(QStringLiteral("([?&])wd=[^&]*"),
+                                    QRegularExpression::CaseInsensitiveOption);
+            location.replace(wdRe, QStringLiteral("\\1wd={keyword}"));
+            return location;
+        }
+        if (location.contains(QLatin1String("/index.php/ajax/data"))) {
+            if (!has(QStringLiteral("mid")))
+                add(QStringLiteral("mid=1"));
+            if (!has(QStringLiteral("limit")))
+                add(QStringLiteral("limit={limit}"));
+            add(QStringLiteral("wd={keyword}"));
+            return location;
+        }
+        if (location.contains(QLatin1String("ac="), Qt::CaseInsensitive)) {
+            add(QStringLiteral("wd={keyword}"));
+            return location;
+        }
+        add(QStringLiteral("ac=detail&wd={keyword}"));
         return location;
     }
 
-    if (location.contains(QLatin1String("/index.php/ajax/data"))) {
-        if (!location.contains(QLatin1String("mid=")))
-            location += separator + QStringLiteral("mid=1");
-        if (!location.contains(QLatin1String("limit=")))
-            location += QStringLiteral("&limit={limit}");
-        return location + QStringLiteral("&wd={keyword}");
+    // 音乐：先按接口族补齐各自的关键词/分页参数；已经带 {keyword} 的路径也要补，
+    // 否则 Subsonic 的 /rest/search3 会缺 f=json，只能返回 XML。
+    if (lower.contains(QLatin1String("/rest/search"))) {
+        if (!has(QStringLiteral("query")))
+            add(QStringLiteral("query={keyword}"));
+        if (!has(QStringLiteral("songCount")))
+            add(QStringLiteral("songCount={limit}"));
+        QRegularExpression fRe(QStringLiteral("([?&])f=[^&]*"),
+                               QRegularExpression::CaseInsensitiveOption);
+        if (fRe.match(location).hasMatch())
+            location.replace(fRe, QStringLiteral("\\1f=json"));
+        else
+            add(QStringLiteral("f=json"));
+        return location;
     }
-    if (location.contains(QLatin1String("ac="), Qt::CaseInsensitive))
-        return location + separator + QStringLiteral("wd={keyword}");
-    return location + separator + QStringLiteral("ac=detail&wd={keyword}");
+    if (lower.contains(QLatin1String("/json/stations/search"))) {
+        if (!has(QStringLiteral("name")))
+            add(QStringLiteral("name={keyword}"));
+        if (!has(QStringLiteral("limit")))
+            add(QStringLiteral("limit={limit}"));
+        if (!has(QStringLiteral("hidebroken")))
+            add(QStringLiteral("hidebroken=true"));
+        return location;
+    }
+    if (lower.contains(QLatin1String("/json/stations/byname/"))) {
+        if (!has(QStringLiteral("limit")))
+            add(QStringLiteral("limit={limit}"));
+        return location;
+    }
+    if (lower.contains(QLatin1String("/api/query"))) {
+        if (!has(QStringLiteral("f")))
+            add(QStringLiteral("f=json"));
+        if (!has(QStringLiteral("search")))
+            add(QStringLiteral("search={keyword}"));
+        if (!has(QStringLiteral("limit")))
+            add(QStringLiteral("limit={limit}"));
+        return location;
+    }
+    if (lower.contains(QLatin1String("/api/v1/tracks"))
+        || lower.contains(QLatin1String("/api/v1/albums"))
+        || lower.contains(QLatin1String("/api/v1/artists"))) {
+        if (!has(QStringLiteral("q")))
+            add(QStringLiteral("q={keyword}"));
+        if (!has(QStringLiteral("page_size")))
+            add(QStringLiteral("page_size={limit}"));
+        return location;
+    }
+    if (lower.contains(QLatin1String("/api/v2/albums"))) {
+        if (!has(QStringLiteral("q")))
+            add(QStringLiteral("q={keyword}"));
+        return location;
+    }
+    if (lower.contains(QLatin1String("/items"))) {
+        if (!has(QStringLiteral("searchTerm")))
+            add(QStringLiteral("searchTerm={keyword}"));
+        if (!has(QStringLiteral("IncludeItemTypes")))
+            add(QStringLiteral("IncludeItemTypes=Audio"));
+        if (!has(QStringLiteral("Limit")))
+            add(QStringLiteral("Limit={limit}"));
+        return location;
+    }
+    if (lower.contains(QLatin1String("/wp-json/wp/v2/search"))) {
+        if (!has(QStringLiteral("search")))
+            add(QStringLiteral("search={keyword}"));
+        if (!has(QStringLiteral("per_page")))
+            add(QStringLiteral("per_page={limit}"));
+        return location;
+    }
+    if (lower.contains(QLatin1String("/ajax/search"))) {
+        if (!has(QStringLiteral("keyword")))
+            add(QStringLiteral("keyword={keyword}"));
+        if (!has(QStringLiteral("limit")))
+            add(QStringLiteral("limit={limit}"));
+        return location;
+    }
+    // 通用 /search 与 /api/search：优先 q；如果已经有 term/search/query/keyword
+    // 就不要再塞 q，避免 iTunes 这类接口同时收到 term 和 q。
+    if (lower.contains(QLatin1String("/search"))) {
+        const bool hasKeyword = has(QStringLiteral("q")) || has(QStringLiteral("query"))
+                                || has(QStringLiteral("searchTerm")) || has(QStringLiteral("search"))
+                                || has(QStringLiteral("term")) || has(QStringLiteral("name"))
+                                || has(QStringLiteral("keyword")) || has(QStringLiteral("w"))
+                                || has(QStringLiteral("s"));
+        if (!hasKeyword)
+            add(QStringLiteral("q={keyword}"));
+        if (!has(QStringLiteral("limit")))
+            add(QStringLiteral("limit={limit}"));
+        return location;
+    }
+
+    add(QStringLiteral("q={keyword}&limit={limit}"));
+    return location;
+}
+
+/// Subsonic/Navidrome 的搜索结果通常只有歌曲 id，没有直链。
+/// 把 /rest/search3?u=...&p=... 改写成 /rest/stream?id={id}&u=...，
+/// 交给 ConfigMapper 的 @ 模板在运行时替换 {id}。
+QString restStreamTemplate(const QString &searchUrl)
+{
+    const QUrl url(searchUrl);
+    if (!url.isValid())
+        return {};
+    QString path = url.path();
+    while (path.endsWith(QLatin1Char('/')))
+        path.chop(1);
+    if (!path.contains(QLatin1String("/rest/search"), Qt::CaseInsensitive))
+        return {};
+    const QString originalPath = path;
+    path.replace(QRegularExpression(QStringLiteral("/rest/search(?:2|3)?$"),
+                                    QRegularExpression::CaseInsensitiveOption),
+                 QStringLiteral("/rest/stream"));
+    if (path == originalPath)
+        return {};
+
+    QString origin = url.scheme() + QStringLiteral("://") + url.host();
+    if (url.port() > 0)
+        origin += QLatin1Char(':') + QString::number(url.port());
+
+    QStringList params;
+    params << QStringLiteral("id={id}");
+    const QUrlQuery query(url);
+    for (const QString &key : {QStringLiteral("u"), QStringLiteral("p"),
+                               QStringLiteral("t"), QStringLiteral("s"),
+                               QStringLiteral("v"), QStringLiteral("c")}) {
+        if (query.hasQueryItem(key)) {
+            params << key + QLatin1Char('=')
+                          + QString::fromUtf8(QUrl::toPercentEncoding(query.queryItemValue(key)));
+        }
+    }
+    return origin + path + QLatin1Char('?') + params.join(QLatin1Char('&'));
 }
 
 bool looksLikeApiPath(const QString &path)
@@ -87,7 +255,17 @@ bool looksLikeApiPath(const QString &path)
     return lower.contains(QLatin1String("provide/vod"))
            || lower.contains(QLatin1String("/inc/api"))
            || lower.contains(QLatin1String("ajax/data"))
-           || lower.contains(QLatin1String("api.php"));
+           || lower.contains(QLatin1String("api.php"))
+           || lower.contains(QLatin1String("/rest/"))
+           || lower.contains(QLatin1String("/wp-json/"))
+           || lower.contains(QLatin1String("/json/stations/"))
+           || lower.contains(QLatin1String("/api/v1/"))
+           || lower.contains(QLatin1String("/api/v2/"))
+           || lower.contains(QLatin1String("/api/query"))
+           || lower.contains(QLatin1String("/api/search"))
+           || lower.contains(QLatin1String("/items"))
+           || lower.contains(QLatin1String("/search/hints"))
+           || lower.contains(QLatin1String("/search"));
 }
 
 /// 首页 HTML/JS 里经常直接写着采集接口，先把它抓出来，
@@ -100,7 +278,14 @@ QStringList extractHomeApiHints(const QString &html)
         QStringLiteral("(/api\\.php/provide/vod(?:/from/[A-Za-z0-9_]+)?"
                        "(?:/at/(?:json|xml))?/?"
                        "|/inc/api(?:_mac10|_mac_m3u8)?\\.php"
-                       "|/index\\.php/ajax/data)"),
+                       "|/index\\.php/ajax/data"
+                       "|/rest/search(?:2|3)?"
+                       "|/api/v(?:1|2)/(?:tracks|albums|artists)"
+                       "|/json/stations/search"
+                       "|/wp-json/wp/v2/search"
+                       "|/api/query"
+                       "|/api/search"
+                       "|/Items)"),
         QRegularExpression::CaseInsensitiveOption);
     QStringList hints;
     QRegularExpressionMatchIterator it = re.globalMatch(normalized);
@@ -144,7 +329,57 @@ struct FieldSample
     QStringList values;
 };
 
+void addFieldSample(QVector<FieldSample> *samples, QHash<QString, int> *index,
+                    const QString &key, const QJsonValue &value)
+{
+    if (samples->size() >= 80)
+        return;
+    int slot = index->value(key, -1);
+    if (slot < 0) {
+        FieldSample sample;
+        sample.key = key;
+        samples->append(sample);
+        slot = samples->size() - 1;
+        index->insert(key, slot);
+    }
+    if (value.isString()) {
+        const QString text = value.toString();
+        if (!text.isEmpty())
+            samples->operator[](slot).values.append(text);
+    } else if (value.isDouble()) {
+        samples->operator[](slot).values.append(QString::number(value.toDouble()));
+    }
+}
+
+void collectObjectSamples(const QJsonObject &object, const QString &prefix, int depth,
+                          QVector<FieldSample> *samples, QHash<QString, int> *index)
+{
+    if (depth > 3 || samples->size() >= 80)
+        return;
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
+        const QString key = prefix.isEmpty() ? it.key() : prefix + QLatin1Char('.') + it.key();
+        const QJsonValue value = it.value();
+        if (value.isString() || value.isDouble()) {
+            addFieldSample(samples, index, key, value);
+        } else if (value.isObject()) {
+            collectObjectSamples(value.toObject(), key, depth + 1, samples, index);
+        } else if (value.isArray()) {
+            const QJsonArray array = value.toArray();
+            for (int i = 0; i < qMin(array.size(), 2); ++i) {
+                const QJsonValue child = array.at(i);
+                const QString childKey = key + QLatin1Char('[') + QString::number(i) + QLatin1Char(']');
+                if (child.isObject())
+                    collectObjectSamples(child.toObject(), childKey, depth + 1, samples, index);
+                else if (child.isString() && !child.toString().isEmpty())
+                    addFieldSample(samples, index, childKey, child);
+            }
+        }
+    }
+}
+
 /// 取前几条对象的字段样本，用来猜哪个字段是标题、播放地址……
+/// 音乐接口的标题/直链经常在嵌套对象里（stream.url、files[0].download_url、
+/// album.name、artists[0].name），只收顶层字段会漏掉，因此这里按路径展开。
 QVector<FieldSample> collectSamples(const QJsonArray &items)
 {
     QVector<FieldSample> samples;
@@ -153,22 +388,7 @@ QVector<FieldSample> collectSamples(const QJsonArray &items)
     for (int i = 0; i < take; ++i) {
         if (!items.at(i).isObject())
             continue;
-        const QJsonObject object = items.at(i).toObject();
-        for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
-            int slot = index.value(it.key(), -1);
-            if (slot < 0) {
-                FieldSample sample;
-                sample.key = it.key();
-                samples.append(sample);
-                slot = samples.size() - 1;
-                index.insert(it.key(), slot);
-            }
-            const QJsonValue value = it.value();
-            if (value.isString())
-                samples[slot].values.append(value.toString());
-            else if (value.isDouble())
-                samples[slot].values.append(QString::number(value.toDouble()));
-        }
+        collectObjectSamples(items.at(i).toObject(), QString(), 0, &samples, &index);
     }
     return samples;
 }
@@ -228,7 +448,38 @@ bool looksPlayable(const QString &value)
     return lower.contains(QLatin1String(".m3u8")) || lower.contains(QLatin1String(".mp4"))
            || lower.contains(QLatin1String(".mp3")) || lower.contains(QLatin1String(".m4a"))
            || lower.contains(QLatin1String(".flac")) || lower.contains(QLatin1String(".aac"))
-           || lower.contains(QLatin1String(".ogg"));
+           || lower.contains(QLatin1String(".ogg")) || lower.contains(QLatin1String(".opus"))
+           || lower.contains(QLatin1String(".wma")) || lower.contains(QLatin1String(".aiff"));
+}
+
+/// 音乐接口的直链字段经常没有 .mp3 后缀（电台 url_resolved、Audius stream.url、
+/// Subsonic 的 stream 端点），所以还要按字段名判断；但绝不能把文件名当直链。
+bool looksPlayableMusic(const QString &value, const QString &fieldKey)
+{
+    const QString text = value.trimmed();
+    const QString lower = text.toLower();
+    if (!lower.startsWith(QLatin1String("http")) && !lower.startsWith(QLatin1String("//")))
+        return false;
+
+    const QString key = fieldKey.toLower();
+    if (key.contains(QLatin1String("filename")) || key.contains(QLatin1String("file_name"))
+        || key.contains(QLatin1String("upload_name")) || key.contains(QLatin1String("page_url"))
+        || key.contains(QLatin1String("weburl")) || key.contains(QLatin1String("permalink")))
+        return false;
+
+    if (looksPlayable(text))
+        return true;
+    return key.contains(QLatin1String("url_resolved"))
+           || key.contains(QLatin1String("stream.url"))
+           || key.contains(QLatin1String("stream_url"))
+           || key.contains(QLatin1String("previewurl"))
+           || key.contains(QLatin1String("preview_url"))
+           || key.contains(QLatin1String("download_url"))
+           || key.contains(QLatin1String("listen_url"))
+           || key.contains(QLatin1String("playurl"))
+           || key.contains(QLatin1String("play_url"))
+           || lower.contains(QLatin1String("/listen/"))
+           || lower.contains(QLatin1String("/stream/"));
 }
 
 struct StreamPick
@@ -238,12 +489,19 @@ struct StreamPick
 };
 
 /// 播放地址字段：优先认带 ".m3u8/.mp3/..." 或 "名称$地址#..." 形态的字段，
-/// 这样不会把详情页链接误当成播放地址。
-StreamPick pickStream(const QVector<FieldSample> &samples)
+/// 音乐还要认 url_resolved、stream.url、download_url 这类没有后缀的直链字段，
+/// 这样不会把详情页链接或 orig_filename 误当成播放地址。
+StreamPick pickStream(const QVector<FieldSample> &samples, MediaType type)
 {
     StreamPick best;
     int bestScore = 0;
     for (const FieldSample &sample : samples) {
+        const QString keyLower = sample.key.toLower();
+        if (keyLower.contains(QLatin1String("filename"))
+            || keyLower.contains(QLatin1String("file_name"))
+            || keyLower.contains(QLatin1String("upload_name"))
+            || keyLower.contains(QLatin1String("page_url")))
+            continue;
         int score = 0;
         QString kind;
         QStringList sampleValues = sample.values.mid(0, 3);
@@ -254,6 +512,27 @@ StreamPick pickStream(const QVector<FieldSample> &samples)
                 || text.contains(QLatin1String("$http"))) {
                 score = qMax(score, 3);
                 kind = QStringLiteral("episodes");
+            } else if (type == MediaType::Music) {
+                // 音乐不能回退到“只要值里含 .mp3 就算直链”：Subsonic 的 path
+                // 是本地文件路径（Artist/Album/01.mp3），不是可请求的播放地址。
+                if (looksPlayableMusic(text, sample.key)) {
+                    score = qMax(score, 2);
+                    // 同一站点同时有 url 和 url_resolved 时优先取 resolved 版本；
+                    // 电台的 url 可能是 http 跳转地址，url_resolved 才是最终流。
+                    if (keyLower.contains(QLatin1String("url_resolved"))
+                        || keyLower.contains(QLatin1String("stream.url"))
+                        || keyLower.contains(QLatin1String("stream_url"))
+                        || keyLower.contains(QLatin1String("previewurl"))
+                        || keyLower.contains(QLatin1String("preview_url"))
+                        || keyLower.contains(QLatin1String("download_url"))
+                        || keyLower.contains(QLatin1String("listen_url"))
+                        || keyLower.contains(QLatin1String("playurl"))
+                        || keyLower.contains(QLatin1String("play_url"))) {
+                        score = qMax(score, 3);
+                    }
+                    if (kind.isEmpty())
+                        kind = QStringLiteral("direct");
+                }
             } else if (looksPlayable(text)) {
                 score = qMax(score, 2);
                 if (kind.isEmpty())
@@ -263,7 +542,7 @@ StreamPick pickStream(const QVector<FieldSample> &samples)
         // 同分时优先字段名里带 play 的，避免抓到 "picUrl" 之类
         if (score > bestScore
             || (score == bestScore && score > 0
-                && sample.key.toLower().contains(QLatin1String("play")))) {
+                && keyLower.contains(QLatin1String("play")))) {
             bestScore = score;
             best.key = sample.key;
             best.kind = kind;
@@ -292,20 +571,27 @@ MediaType detectType(const QVector<FieldSample> &samples, const StreamPick &stre
         }
         if (key.contains(QLatin1String("artist")) || key.contains(QLatin1String("track"))
             || key.contains(QLatin1String("album")) || key.contains(QLatin1String("song"))
-            || key.contains(QLatin1String("previewurl"))) {
+            || key.contains(QLatin1String("previewurl")) || key.contains(QLatin1String("url_resolved"))
+            || key.contains(QLatin1String("listen_url")) || key.contains(QLatin1String("stream.url"))
+            || key.contains(QLatin1String("upload_name"))) {
             musicScore += 2;
         }
 
         const QStringList values = sample.values.mid(0, 3);
         for (const QString &value : values) {
             const QString text = value.toLower();
-            if (text.contains(QLatin1String(".m3u8")) || text.contains(QLatin1String(".mp4"))
-                || text.contains(QLatin1String(".flv")) || text.contains(QLatin1String(".mkv"))) {
+            // .m3u8 既可能是视频切片，也可能是电台/音乐的 HLS 流。
+            // 用户已经明确选音乐时，不能仅凭 .m3u8 把电台源改判成影视。
+            const bool hlsOnly = text.contains(QLatin1String(".m3u8"));
+            if (text.contains(QLatin1String(".mp4")) || text.contains(QLatin1String(".flv"))
+                || text.contains(QLatin1String(".mkv"))
+                || (hlsOnly && fallback != MediaType::Music)) {
                 videoScore += 3;
             }
             if (text.contains(QLatin1String(".mp3")) || text.contains(QLatin1String(".m4a"))
                 || text.contains(QLatin1String(".flac")) || text.contains(QLatin1String(".aac"))
-                || text.contains(QLatin1String(".ogg")) || text.contains(QLatin1String(".wav"))) {
+                || text.contains(QLatin1String(".ogg")) || text.contains(QLatin1String(".wav"))
+                || text.contains(QLatin1String(".opus"))) {
                 musicScore += 3;
             }
         }
@@ -341,6 +627,20 @@ void scanArrays(const QJsonValue &node, const QString &path, int depth, QJsonArr
     }
 }
 
+/// Subsonic/Navidrome 认证失败时 HTTP 仍是 200，只在正文里给
+/// {"subsonic-response":{"status":"failed","error":{"code":40}}}。
+/// 不单独识别就会误报成“JSON 没有结果数组”。
+bool subsonicAuthFailure(const QJsonValue &root)
+{
+    if (!root.isObject())
+        return false;
+    const QJsonValue sub = root.toObject().value(QStringLiteral("subsonic-response"));
+    if (!sub.isObject())
+        return false;
+    return sub.toObject().value(QStringLiteral("status")).toString()
+               .compare(QLatin1String("failed"), Qt::CaseInsensitive) == 0;
+}
+
 } // namespace
 
 namespace SourceProbe {
@@ -362,11 +662,27 @@ QStringList defaultPaths(MediaType mediaType)
                 QStringLiteral("/api.php/provide/vod?ac=detail&wd={keyword}"),
                 QStringLiteral("/api.php/provide/vod/?wd={keyword}")};
     }
-    return {QStringLiteral("/wp-json/wp/v2/search?search={keyword}&per_page={limit}"),
-            QStringLiteral("/wp-json/wp/v2/posts?search={keyword}&per_page={limit}"),
-            QStringLiteral("/api/search?keyword={keyword}&limit={limit}"),
-            QStringLiteral("/ajax/search?keyword={keyword}&limit={limit}"),
-            QStringLiteral("/api.php/provide/vod/?ac=detail&wd={keyword}")};
+    // 音乐：基于 150 个真实节点/10 轮验证，真正可搜索且有直链的只有
+    // iTunes、Audius、ccMixter、Radio Browser 这几族；Subsonic/Navidrome
+    // 能搜索但只返回 id，需要额外生成 /rest/stream 模板；Funkwhale、
+    // Jellyfin、Ampache 匿名接口普遍 401/404，仍保留路径供带凭据的用户使用。
+    // 每条都必须带 {keyword}，否则“能列目录”会被误判成“能搜索”。
+    return {QStringLiteral("/search?term={keyword}&media=music&limit={limit}"),
+            QStringLiteral("/rest/search3?query={keyword}&songCount={limit}&f=json"),
+            QStringLiteral("/rest/search2?query={keyword}&songCount={limit}&f=json"),
+            QStringLiteral("/rest/search?query={keyword}&songCount={limit}&f=json"),
+            QStringLiteral("/api/v1/tracks/?q={keyword}&page_size={limit}"),
+            QStringLiteral("/api/v1/albums/?q={keyword}&page_size={limit}"),
+            QStringLiteral("/api/v1/artists/?q={keyword}&page_size={limit}"),
+            QStringLiteral("/api/v2/albums?q={keyword}"),
+            QStringLiteral("/json/stations/search?name={keyword}&limit={limit}"),
+            QStringLiteral("/json/stations/byname/{keyword}?limit={limit}"),
+            QStringLiteral("/api/query?f=json&search={keyword}&limit={limit}"),
+            QStringLiteral("/Items?searchTerm={keyword}&IncludeItemTypes=Audio&Limit={limit}"),
+            QStringLiteral("/wp-json/wp/v2/search?search={keyword}&per_page={limit}"),
+            QStringLiteral("/api/search?q={keyword}&limit={limit}"),
+            QStringLiteral("/search?q={keyword}&limit={limit}"),
+            QStringLiteral("/ajax/search?keyword={keyword}&limit={limit}")};
 }
 
 Prober::Prober(HttpClient *http, QObject *parent)
@@ -409,6 +725,7 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     m_connFail = 0;
     m_denied = 0;
     m_unauthorized = 0;
+    m_authRequired = 0;
     m_notFound = 0;
     m_notJson = 0;
     m_xml = 0;
@@ -447,8 +764,9 @@ void Prober::cancel()
 
 bool Prober::budgetLeft() const
 {
-    // 自动识别要试两种类型的候选，给的时间略多
-    return m_clock.elapsed() < (m_auto ? kBudgetMsAuto : kBudgetMs);
+    // 自动识别要试两种类型的候选，音乐接口也比影视多，给的时间略多
+    const int budget = m_auto ? kBudgetMsAuto : (m_type == MediaType::Music ? kBudgetMsMusic : kBudgetMs);
+    return m_clock.elapsed() < budget;
 }
 
 void Prober::recordAttempt(const QString &url, int status, const QString &note)
@@ -529,7 +847,7 @@ void Prober::fetchHome()
         QVector<MediaType> pathTypes;
         QSet<QString> seenPaths;
         auto addPath = [&](QString path, MediaType type) {
-            path = appendProbeQuery(path);
+            path = appendProbeQuery(path, type);
             if (path.isEmpty() || !path.contains(QLatin1String("{keyword}")))
                 return; // 没有关键词占位符的地址不能当搜索源
             if (seenPaths.contains(path))
@@ -623,7 +941,10 @@ void Prober::probeNextCandidate()
     const int candidateIndex = m_candidateIndex++;
     const QString tpl = m_candidates.at(candidateIndex);
     const MediaType candidateType = m_candidateTypes.value(candidateIndex, m_type);
-    const QString keyword = candidateType == MediaType::Video ? tr("电影") : tr("音乐");
+    // 音乐真实验证用的是 love/jazz，而不是中文“音乐/歌曲”：
+    // 国际音乐 API（iTunes/Audius/ccMixter/Radio Browser）对英文基准词更稳定，
+    // 中文曲库（网易云/QQ/酷狗）也普遍能返回 love 的结果。
+    const QString keyword = candidateType == MediaType::Video ? tr("电影") : QStringLiteral("love");
     const QString probeUrl = renderUrl(tpl, keyword, 10);
 
     QHash<QString, QString> headers;
@@ -717,6 +1038,13 @@ void Prober::probeNextCandidate()
         const QJsonValue root =
             document.isArray() ? QJsonValue(document.array()) : QJsonValue(document.object());
 
+        if (subsonicAuthFailure(root)) {
+            ++m_authRequired;
+            recordAttempt(probeUrl, status, tr("Subsonic/Navidrome 返回认证失败"));
+            probeNextCandidate();
+            return;
+        }
+
         QJsonArray items;
         QString itemsPath;
         scanArrays(root, QString(), 0, &items, &itemsPath);
@@ -730,10 +1058,29 @@ void Prober::probeNextCandidate()
         const QVector<FieldSample> samples = collectSamples(items);
         const QString titleKey =
             pickKey(samples, {QStringLiteral("vod_name"), QStringLiteral("trackname"),
-                              QStringLiteral("songname"), QStringLiteral("song"),
-                              QStringLiteral("title"), QStringLiteral("name")}, {}, true);
-        const StreamPick stream = pickStream(samples);
-        if (titleKey.isEmpty() || stream.key.isEmpty()) {
+                              QStringLiteral("track_name"), QStringLiteral("upload_name"),
+                              QStringLiteral("songname"), QStringLiteral("song_name"),
+                              QStringLiteral("song"), QStringLiteral("title"),
+                              QStringLiteral("name")}, {}, true);
+        const StreamPick stream = pickStream(samples, candidateType);
+
+        // Subsonic/Navidrome 搜索结果只有歌曲 id，没有直链；
+        // 这里生成 @https://host/rest/stream?id={id}&u=... 模板，
+        // 由 ConfigMapper 在运行时把 {id} 换成实际歌曲 id。
+        // 必须只对 searchResult*.song 生效：searchResult*.album 的 id 是专辑 id，
+        // 拿来拼 /rest/stream 会得到一个不能播放的地址。
+        QString subsonicIdKey;
+        QString subsonicStreamSpec;
+        if (stream.key.isEmpty() && candidateType == MediaType::Music
+            && itemsPath.contains(QLatin1String("searchResult"), Qt::CaseInsensitive)
+            && itemsPath.contains(QLatin1String("song"), Qt::CaseInsensitive)) {
+            subsonicIdKey = pickKey(samples, {QStringLiteral("id"), QStringLiteral("songid")});
+            const QString streamTemplate = restStreamTemplate(tpl);
+            if (!subsonicIdKey.isEmpty() && !streamTemplate.isEmpty())
+                subsonicStreamSpec = QStringLiteral("@") + streamTemplate;
+        }
+
+        if (titleKey.isEmpty() || (stream.key.isEmpty() && subsonicStreamSpec.isEmpty())) {
             ++m_jsonNoFields;
             recordAttempt(probeUrl, status,
                           titleKey.isEmpty() ? tr("没有标题字段") : tr("没有播放地址字段"));
@@ -760,15 +1107,22 @@ void Prober::probeNextCandidate()
         config.mediaType = detected;
         config.urlTemplate = tpl;
         config.itemsPath = itemsPath;
-        config.streamKind = stream.kind;
+        config.streamKind = stream.kind.isEmpty() ? QStringLiteral("direct") : stream.kind;
         config.headers.insert(QStringLiteral("Referer"),
                               m_origin.toString() + QLatin1Char('/'));
         config.fields.insert(QStringLiteral("title"), titleKey);
-        config.fields.insert(QStringLiteral("streamUrl"), stream.key);
+        config.fields.insert(QStringLiteral("streamUrl"),
+                             subsonicStreamSpec.isEmpty() ? stream.key : subsonicStreamSpec);
 
-        QSet<QString> used{titleKey, stream.key};
+        QSet<QString> used{titleKey};
+        if (!stream.key.isEmpty())
+            used.insert(stream.key);
+        else if (!subsonicIdKey.isEmpty())
+            used.insert(subsonicIdKey);
+
         const QString artistKey =
             pickKey(samples, {QStringLiteral("artistname"), QStringLiteral("artist"),
+                              QStringLiteral("artist.name"), QStringLiteral("uploader"),
                               QStringLiteral("singer"), QStringLiteral("author"),
                               QStringLiteral("vod_actor"), QStringLiteral("performer")}, used, true);
         if (!artistKey.isEmpty()) {
@@ -778,8 +1132,11 @@ void Prober::probeNextCandidate()
 
         const QString posterKey =
             pickKey(samples, {QStringLiteral("vod_pic"), QStringLiteral("pic"),
-                              QStringLiteral("cover"), QStringLiteral("poster"),
-                              QStringLiteral("thumb"), QStringLiteral("image")}, used);
+                              QStringLiteral("cover"), QStringLiteral("cover_xl"),
+                              QStringLiteral("album.cover"), QStringLiteral("artworkurl100"),
+                              QStringLiteral("artwork_url"), QStringLiteral("image_url"),
+                              QStringLiteral("poster"), QStringLiteral("thumb"),
+                              QStringLiteral("thumbnail"), QStringLiteral("image")}, used);
         if (!posterKey.isEmpty()) {
             config.fields.insert(QStringLiteral("posterUrl"), posterKey);
             used.insert(posterKey);
@@ -818,11 +1175,16 @@ void Prober::probeNextCandidate()
 
         const QString webKey =
             pickKey(samples, {QStringLiteral("detail"), QStringLiteral("weburl"),
-                              QStringLiteral("web_url"), QStringLiteral("link")}, used);
+                              QStringLiteral("web_url"), QStringLiteral("pageurl"),
+                              QStringLiteral("page_url"), QStringLiteral("permalink"),
+                              QStringLiteral("file_page_url"), QStringLiteral("link")}, used);
         if (!webKey.isEmpty())
             config.fields.insert(QStringLiteral("webUrl"), webKey);
 
-        recordAttempt(probeUrl, status, tr("接口可用，正在试搜校验"));
+        recordAttempt(probeUrl, status,
+                      subsonicStreamSpec.isEmpty()
+                          ? tr("接口可用，正在试搜校验")
+                          : tr("接口可用，已把歌曲 id 映射为 /rest/stream，正在试搜校验"));
         validate(config, keyword);
     });
 }
@@ -872,7 +1234,7 @@ void Prober::startValidation(const SourceConfig &config, const QString &keyword,
                     // 试搜会把这种“只能列目录”的接口误存成可搜索源。
                     m_validationFirstItems = items;
                     const QString secondKeyword =
-                        config.mediaType == MediaType::Video ? tr("电视剧") : tr("歌曲");
+                        config.mediaType == MediaType::Video ? tr("电视剧") : QStringLiteral("jazz");
                     startValidation(config, secondKeyword, 2);
                     return;
                 }
@@ -918,31 +1280,58 @@ void Prober::acceptConfig(const SourceConfig &config, const QVector<MediaItem> &
 
 QString Prober::diagnoseFailure() const
 {
+    const bool music = (m_type == MediaType::Music);
     if (m_denied > 0)
-        return tr("站点拒绝程序访问（HTTP 401/403，命中 %1 次）：拦的是访问方式，不是接口路径，换地址也没用，只能用浏览器打开")
-            .arg(m_denied);
+        return music
+            ? tr("站点拒绝程序访问（HTTP 401/403，命中 %1 次）：音乐服务多为 Subsonic/Navidrome/Funkwhale/Jellyfin，需要用户名密码或 API key，不是路径问题")
+                  .arg(m_denied)
+            : tr("站点拒绝程序访问（HTTP 401/403，命中 %1 次）：拦的是访问方式，不是接口路径，换地址也没用，只能用浏览器打开")
+                  .arg(m_denied);
+    if (m_authRequired > 0)
+        return tr("音乐接口返回认证失败（%1 次）：Subsonic/Navidrome 需要 u/p 或 token，Jellyfin/Ampache 需要 API key；公开 demo 凭据不会写进内置配置，请填带凭据的接口地址")
+            .arg(m_authRequired);
     if (m_unauthorized > 0)
-        return tr("接口返回“IP 未授权/已到期”（%1 次）：这不是路径问题，需要在资源站后台授权当前 IP 或更换有授权的域名")
-            .arg(m_unauthorized);
+        return music
+            ? tr("音乐接口提示未授权/已到期（%1 次）：需要有效的 API key 或账号，换公开 demo 地址通常无效")
+                  .arg(m_unauthorized)
+            : tr("接口返回“IP 未授权/已到期”（%1 次）：这不是路径问题，需要在资源站后台授权当前 IP 或更换有授权的域名")
+                  .arg(m_unauthorized);
     if (m_xml > 0)
-        return tr("接口返回 XML（%1 次）：当前探查器只解析 JSON；如果站点同时提供 /at/json/，请改用 JSON 路径，否则需要手动配置外部解析器")
-            .arg(m_xml);
+        return music
+            ? tr("音乐接口返回 XML（%1 次）：Subsonic 默认 XML，请在地址后加 f=json；当前探查器只解析 JSON，XML 需要外部解析器")
+                  .arg(m_xml)
+            : tr("接口返回 XML（%1 次）：当前探查器只解析 JSON；如果站点同时提供 /at/json/，请改用 JSON 路径，否则需要手动配置外部解析器")
+                  .arg(m_xml);
     if (m_connFail > 0 && !m_homeOk)
-        return tr("站点连不上（%1 次连接失败）：本机网络到该域名不通，或域名已失效")
+        return tr("站点连不上（%1 次连接失败）：本机网络到该域名不通，或域名已失效；Deezer/Openverse/Mixcloud 等境外 API 可能被网络拦截")
             .arg(m_connFail);
     if (m_jsonNoItems > 0 && m_notFound == 0 && m_notJson == 0)
-        return tr("接口返回 JSON 但没有结果数组（%1 次）：可能只支持分类/列表参数，或关键词参数名不是 wd")
-            .arg(m_jsonNoItems);
+        return music
+            ? tr("音乐接口返回 JSON 但没有结果数组（%1 次）：Subsonic 可能是认证失败（status=failed），或关键词参数不是 query/q/name/searchTerm")
+                  .arg(m_jsonNoItems)
+            : tr("接口返回 JSON 但没有结果数组（%1 次）：可能只支持分类/列表参数，或关键词参数名不是 wd")
+                  .arg(m_jsonNoItems);
     if (m_jsonNoFields > 0 && m_notFound == 0)
-        return tr("接口有结果数组但猜不出标题/播放地址字段（%1 次）：该站点字段命名不标准，需要手动配置字段映射")
-            .arg(m_jsonNoFields);
+        return music
+            ? tr("音乐接口有结果数组但猜不出可播放字段（%1 次）：如果只有 id（Subsonic/Navidrome），应生成 /rest/stream?id={id} 模板；Jellyfin 用 /Audio/{id}/stream；只有网页链接的不算音频源")
+                  .arg(m_jsonNoFields)
+            : tr("接口有结果数组但猜不出标题/播放地址字段（%1 次）：该站点字段命名不标准，需要手动配置字段映射")
+                  .arg(m_jsonNoFields);
     if (m_notJson > 0 && m_notFound == 0)
-        return tr("地址能访问但返回的是网页（%1 次），不是 JSON 接口：请直接填接口地址，例如 https://域名/api.php/provide/vod/")
-            .arg(m_notJson);
+        return music
+            ? tr("地址能访问但返回网页/播放器（%1 次），不是音乐 JSON 接口：请直接填 API 地址，例如 /rest/search3?f=json、/api/v1/tracks/?q=、/json/stations/search?name=")
+                  .arg(m_notJson)
+            : tr("地址能访问但返回的是网页（%1 次），不是 JSON 接口：请直接填接口地址，例如 https://域名/api.php/provide/vod/")
+                  .arg(m_notJson);
     if (m_homeOk)
-        return tr("首页能打开，但 %1 条候选路径全部 404：这个站很可能只有网页、没有采集接口，需要它的接口地址（形如 https://域名/api.php/provide/vod/）")
-            .arg(m_notFound);
-    return tr("没有找到可用的接口地址，这个网站可能不是标准 JSON 接口，需要手动配置");
+        return music
+            ? tr("首页能打开，但 %1 条候选路径全部 404：这个站可能只有网页/播放器，没有公开音乐 API，需要它的接口地址（如 /rest/search3、/api/v1/tracks）")
+                  .arg(m_notFound)
+            : tr("首页能打开，但 %1 条候选路径全部 404：这个站很可能只有网页、没有采集接口，需要它的接口地址（形如 https://域名/api.php/provide/vod/）")
+                  .arg(m_notFound);
+    return music
+        ? tr("没有找到可用的音乐接口地址：这个网站可能不是标准 JSON API，需要手动配置，或先填带认证的 Subsonic/Jellyfin 地址")
+        : tr("没有找到可用的接口地址，这个网站可能不是标准 JSON 接口，需要手动配置");
 }
 
 void Prober::fail(const QString &error)

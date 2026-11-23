@@ -689,7 +689,11 @@ private slots:
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
     void sourceProbeVideoPathsAreSearchable();
+    void sourceProbeMusicPathsAreSearchable();
     void sourceProbeLiveVideoSearch();
+    void sourceProbeLiveMusicSearch();
+    void sourceProbeLiveSubsonicStreamTemplate();
+    void sourceProbeLiveRadioBrowserSearch();
     void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
@@ -1261,6 +1265,126 @@ void CoreLogicTest::sourceProbeVideoPathsAreSearchable()
     QVERIFY(paths.contains(QStringLiteral("/index.php/ajax/data?mid=1&wd={keyword}&limit={limit}")));
     // 不能把不带关键词的列表页当成搜索源，否则试搜会“有结果”但搜索词完全无效。
     QVERIFY(!paths.contains(QStringLiteral("/api.php/provide/vod/?ac=list")));
+}
+
+void CoreLogicTest::sourceProbeMusicPathsAreSearchable()
+{
+    const QStringList paths = SourceProbe::defaultPaths(MediaType::Music);
+    // 真实音乐节点验证表明：iTunes、Audius、ccMixter、Radio Browser 可匿名搜索；
+    // Subsonic/Navidrome 能搜索但只返回 id；Funkwhale/Jellyfin/Ampache 需要凭据。
+    QVERIFY(paths.size() >= 16);
+    for (const QString &path : paths) {
+        QVERIFY2(path.contains(QStringLiteral("{keyword}")),
+                 qPrintable(QStringLiteral("音乐探测路径必须带关键词占位符：") + path));
+    }
+    QVERIFY(paths.contains(QStringLiteral("/rest/search3?query={keyword}&songCount={limit}&f=json")));
+    QVERIFY(paths.contains(QStringLiteral("/api/v1/tracks/?q={keyword}&page_size={limit}")));
+    QVERIFY(paths.contains(QStringLiteral("/json/stations/search?name={keyword}&limit={limit}")));
+    QVERIFY(paths.contains(QStringLiteral("/json/stations/byname/{keyword}?limit={limit}")));
+    QVERIFY(paths.contains(QStringLiteral("/api/query?f=json&search={keyword}&limit={limit}")));
+    QVERIFY(paths.contains(QStringLiteral("/Items?searchTerm={keyword}&IncludeItemTypes=Audio&Limit={limit}")));
+    QVERIFY(paths.contains(QStringLiteral("/wp-json/wp/v2/search?search={keyword}&per_page={limit}")));
+    QVERIFY(paths.contains(QStringLiteral("/search?term={keyword}&media=music&limit={limit}")));
+    // 不能把影视的 wd 参数混进音乐默认路径，否则音乐试搜会永远拿不到结果。
+    for (const QString &path : paths)
+        QVERIFY2(!path.contains(QStringLiteral("wd=")),
+                 qPrintable(QStringLiteral("音乐路径不应使用影视 wd 参数：") + path));
+}
+
+void CoreLogicTest::sourceProbeLiveMusicSearch()
+{
+    // 真实网络验证默认跳过；用
+    // MVP_LIVE_PROBE=1 mvp_tests sourceProbeLiveMusicSearch 手动执行。
+    if (!qEnvironmentVariableIsSet("MVP_LIVE_PROBE"))
+        QSKIP("设置 MVP_LIVE_PROBE=1 才会访问真实音乐站点");
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+
+    prober.start(QUrl(QStringLiteral("https://itunes.apple.com")), MediaType::Music, {}, false);
+    QVERIFY2(finished.wait(40000), "iTunes 音乐探测在 40 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("音乐探测失败：") + result.error));
+    QVERIFY(result.mediaType == MediaType::Music);
+    QVERIFY2(result.config.urlTemplate.contains(QStringLiteral("term=")),
+             qPrintable(QStringLiteral("保存的地址没有 term 关键词参数：") + result.config.urlTemplate));
+    QVERIFY(result.sampleCount > 0);
+    QVERIFY(!result.sampleTitles.isEmpty());
+    QCOMPARE(result.config.fields.value(QStringLiteral("title")), QStringLiteral("trackName"));
+    QCOMPARE(result.config.fields.value(QStringLiteral("streamUrl")), QStringLiteral("previewUrl"));
+}
+
+void CoreLogicTest::sourceProbeLiveSubsonicStreamTemplate()
+{
+    // 真实网络验证默认跳过；用
+    // MVP_LIVE_PROBE=1 mvp_tests sourceProbeLiveSubsonicStreamTemplate 手动执行。
+    // 这个测试用的是 Navidrome 公开 demo 凭据，只放在测试里，
+    // 不会写进 SourceProbe 的内置默认配置。
+    if (!qEnvironmentVariableIsSet("MVP_LIVE_PROBE"))
+        QSKIP("设置 MVP_LIVE_PROBE=1 才会访问真实 Subsonic/Navidrome demo");
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+
+    const QString endpoint = QStringLiteral(
+        "https://demo.navidrome.org/rest/search3?u=demo&p=demo&v=1.16.1&c=MVP&f=json"
+        "&query={keyword}&songCount={limit}");
+    prober.start(QUrl(QStringLiteral("https://demo.navidrome.org")), MediaType::Music,
+                 {endpoint}, false);
+    QVERIFY2(finished.wait(40000), "Navidrome 探测在 40 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("Navidrome 探测失败：") + result.error));
+    QVERIFY(result.mediaType == MediaType::Music);
+    QCOMPARE(result.config.fields.value(QStringLiteral("title")), QStringLiteral("title"));
+    const QString stream = result.config.fields.value(QStringLiteral("streamUrl"));
+    QVERIFY2(stream.startsWith(QLatin1Char('@')),
+             qPrintable(QStringLiteral("Subsonic 没有生成 @ 模板：") + stream));
+    QVERIFY2(stream.contains(QStringLiteral("/rest/stream?id={id}")),
+             qPrintable(QStringLiteral("Subsonic 模板不是 /rest/stream：") + stream));
+    QVERIFY2(stream.contains(QStringLiteral("u=demo")) && stream.contains(QStringLiteral("p=demo")),
+             qPrintable(QStringLiteral("Subsonic 模板没有带上认证参数：") + stream));
+    QVERIFY(result.sampleCount > 0);
+}
+
+void CoreLogicTest::sourceProbeLiveRadioBrowserSearch()
+{
+    // 真实网络验证默认跳过；用
+    // MVP_LIVE_PROBE=1 mvp_tests sourceProbeLiveRadioBrowserSearch 手动执行。
+    // 这个测试专门覆盖“根数组 + 无 .mp3 后缀的 url_resolved”这条真实分支。
+    if (!qEnvironmentVariableIsSet("MVP_LIVE_PROBE"))
+        QSKIP("设置 MVP_LIVE_PROBE=1 才会访问真实 Radio Browser");
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+
+    prober.start(QUrl(QStringLiteral("https://de1.api.radio-browser.info")),
+                 MediaType::Music, {}, false);
+    QVERIFY2(finished.wait(40000), "Radio Browser 探测在 40 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("Radio Browser 探测失败：") + result.error));
+    QVERIFY(result.mediaType == MediaType::Music);
+    QVERIFY2(result.config.urlTemplate.contains(QStringLiteral("/json/stations/search")),
+             qPrintable(QStringLiteral("保存的地址不是 Radio Browser 搜索：")
+                        + result.config.urlTemplate));
+    QCOMPARE(result.config.fields.value(QStringLiteral("title")), QStringLiteral("name"));
+    QCOMPARE(result.config.fields.value(QStringLiteral("streamUrl")),
+             QStringLiteral("url_resolved"));
+    QVERIFY(result.sampleCount > 0);
 }
 
 void CoreLogicTest::sourceTimeoutUsesConfiguredValue()

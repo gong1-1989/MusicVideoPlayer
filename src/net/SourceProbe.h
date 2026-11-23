@@ -99,6 +99,7 @@ private:
     int m_connFail = 0;         ///< 连不上（DNS/超时/被断连）
     int m_denied = 0;           ///< 403/401：拒绝程序访问
     int m_unauthorized = 0;     ///< 200 但正文提示 IP 未授权/已到期
+    int m_authRequired = 0;     ///< 200 但 JSON 明确说认证失败（Subsonic status=failed）
     int m_notFound = 0;         ///< 404：路径不存在
     int m_notJson = 0;          ///< 200 但返回网页而非 JSON
     int m_xml = 0;              ///< 200 但返回 XML 接口（当前只支持 JSON）
