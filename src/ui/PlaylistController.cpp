@@ -482,9 +482,13 @@ bool PlaylistController::promotePreviewRow(MediaType type, int row)
 void PlaylistController::chooseLocalFiles(MediaType type)
 {
     QWidget *parent = m_ui.tabs != nullptr ? m_ui.tabs->window() : nullptr;
-    const QString filter = type == MediaType::Music
-                               ? tr("音乐文件 (*.mp3 *.flac *.wav *.m4a *.aac *.ogg);;所有文件 (*)")
-                               : tr("视频文件 (*.mp4 *.mkv *.avi *.mov *.flv *.wmv);;所有文件 (*)");
+    const QString filter =
+        type == MediaType::Music
+            ? tr("音乐文件 (*.mp3 *.flac *.wav *.m4a *.m4b *.aac *.ogg *.opus *.wma *.ape "
+                 "*.aiff *.aif *.amr *.ac3 *.mka *.caf *.wv);;所有文件 (*)")
+            : tr("视频文件 (*.mp4 *.m4v *.mkv *.avi *.mov *.flv *.wmv *.webm *.ts *.m2ts "
+                 "*.mts *.mpg *.mpeg *.3gp *.3g2 *.ogv *.rmvb *.rm *.vob *.asf *.divx "
+                 "*.f4v *.m2v);;所有文件 (*)");
     const QStringList files = QFileDialog::getOpenFileNames(
         parent, type == MediaType::Music ? tr("选择音乐文件") : tr("选择视频文件"),
         AppSettings::lastDir(), filter);
