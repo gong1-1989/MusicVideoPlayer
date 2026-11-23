@@ -1,3 +1,5 @@
+/// @file DownloadManager.cpp
+/// @brief 下载队列管理：任务持久化、并发调度、路径预留、缓存导入与失败恢复。
 #include "download/DownloadManager.h"
 
 #include "cache/MediaCache.h"
@@ -132,6 +134,7 @@ QString DownloadManager::reserveFilePath(const QString &directory,
         });
 }
 
+/// @brief 判断路径是否已被未完成任务预留（可忽略指定任务）。
 bool DownloadManager::isPathReserved(const QString &path, const QString &ignoreId) const
 {
     if (path.isEmpty())
@@ -161,6 +164,7 @@ bool DownloadManager::isPathReserved(const QString &path, const QString &ignoreI
     return false;
 }
 
+/// @brief 判断路径是否被任意任务（含已完成）占用。
 bool DownloadManager::isPathOwnedByAnyJob(const QString &path) const
 {
     if (path.isEmpty())
@@ -180,6 +184,11 @@ bool DownloadManager::isPathOwnedByAnyJob(const QString &path) const
     return false;
 }
 
+/// @brief 新建下载任务并入队。
+/// @param item 媒体条目。
+/// @param url 下载地址。
+/// @param kind 下载类型（直链/HLS 等）。
+/// @return 新任务 id；重复任务或路径冲突时返回空。
 QString DownloadManager::enqueue(const MediaItem &item, const QUrl &url,
                                  const QHash<QString, QString> &headers,
                                  const QString &filePath, bool hls, qint64 maxBytes,
@@ -228,6 +237,8 @@ QString DownloadManager::enqueue(const MediaItem &item, const QUrl &url,
     return job.id;
 }
 
+/// @brief 把已完整落盘的播放缓存直接登记为下载完成，避免重复下载。
+/// @return 导入任务的 id；缓存不可用或不归本条目时返回空。
 QString DownloadManager::importFromCache(const MediaItem &item, const QString &cachePath,
                                          const QString &filePath, qint64 maxBytes,
                                          QString *queuedPath, bool *alreadyQueued)
@@ -298,6 +309,7 @@ QString DownloadManager::importFromCache(const MediaItem &item, const QString &c
     return job.id;
 }
 
+/// @brief 返回当前在途（排队/下载/转码）任务数。
 int DownloadManager::activeCount() const
 {
     int count = 0;
@@ -308,6 +320,7 @@ int DownloadManager::activeCount() const
     return count;
 }
 
+/// @brief 启动时恢复上次未完成任务，并重新填充下载队列。
 void DownloadManager::resumePending()
 {
     if (m_shuttingDown)
@@ -336,6 +349,7 @@ void DownloadManager::resumePending()
     }
 }
 
+/// @brief 退出前停止全部任务，保留可续传状态并同步落盘。
 void DownloadManager::shutdownForExit()
 {
     m_shuttingDown = true;
@@ -375,6 +389,9 @@ void DownloadManager::shutdownForExit()
     saveNow();
 }
 
+/// @brief 删除任务及其半成品文件。
+/// @return 删除成功或任务不存在返回 true。
+/// @note 正在下载的任务先取消，避免文件句柄仍被占用。
 bool DownloadManager::removeJob(const QString &id)
 {
     const int index = indexOf(id);
@@ -433,6 +450,8 @@ bool DownloadManager::removeJob(const QString &id)
     return true;
 }
 
+/// @brief 重试失败任务；HLS 无 ENDLIST 时可用 allowIncomplete 快照下载。
+/// @return 已重新入队返回 true。
 bool DownloadManager::retryJob(const QString &id, bool allowIncomplete)
 {
     const int index = indexOf(id);
@@ -467,6 +486,7 @@ bool DownloadManager::retryJob(const QString &id, bool allowIncomplete)
     return true;
 }
 
+/// @brief 清除已完成/已取消任务记录（不删用户文件）。
 void DownloadManager::clearCompleted()
 {
     for (int i = m_jobs.size() - 1; i >= 0; --i) {
@@ -477,6 +497,7 @@ void DownloadManager::clearCompleted()
     emit jobsChanged();
 }
 
+/// @brief 按 id 查任务下标，不存在返回 -1。
 int DownloadManager::indexOf(const QString &id) const
 {
     for (int i = 0; i < m_jobs.size(); ++i) {
@@ -486,6 +507,7 @@ int DownloadManager::indexOf(const QString &id) const
     return -1;
 }
 
+/// @brief 从磁盘加载任务列表并校正失效状态（文件丢失/路径变化）。
 void DownloadManager::load()
 {
     QFile file(m_statePath);
@@ -630,6 +652,7 @@ void DownloadManager::load()
     qCInfo(lcDownloadManager) << "已载入" << m_jobs.size() << "条下载记录";
 }
 
+/// @brief 立即同步保存任务列表（原子替换，失败保留旧文件）。
 void DownloadManager::saveNow()
 {
     if (m_shuttingDown)
@@ -701,6 +724,7 @@ void DownloadManager::saveNow()
         emit jobsChanged();
 }
 
+/// @brief 清理已完成任务遗留的播放缓存，避免缓存与下载各存一份。
 void DownloadManager::cleanupPendingCaches()
 {
     bool changed = false;
@@ -743,18 +767,21 @@ void DownloadManager::cleanupPendingCaches()
     }
 }
 
+/// @brief 合并短时间内的多次变更，延迟一次落盘。
 void DownloadManager::scheduleSave()
 {
     if (!m_shuttingDown)
         m_saveTimer->start();
 }
 
+/// @brief 合并短时间内的状态变化，延迟一次界面通知。
 void DownloadManager::scheduleNotify()
 {
     if (!m_notifyTimer->isActive())
         m_notifyTimer->start();
 }
 
+/// @brief 延迟删除文件（Windows 上句柄释放可能滞后，按次数重试）。
 void DownloadManager::scheduleRemoveFile(const QString &path, int attempt)
 {
     if (path.isEmpty() || !QFileInfo::exists(path))
@@ -778,6 +805,7 @@ void DownloadManager::scheduleRemoveFile(const QString &path, int attempt)
     });
 }
 
+/// @brief 在并发上限内启动排队任务。
 void DownloadManager::pumpQueue()
 {
     if (m_shuttingDown)
@@ -801,6 +829,8 @@ void DownloadManager::pumpQueue()
     }
 }
 
+/// @brief 启动单个任务：建 DownloadTask、接进度/检查点/结果信号。
+/// @note 启动失败必须落盘 Failed 并通知界面，不能只改内存状态。
 void DownloadManager::startJob(const QString &id)
 {
     const int index = indexOf(id);
@@ -1055,6 +1085,7 @@ void DownloadManager::startJob(const QString &id)
     scheduleNotify();
 }
 
+/// @brief HLS 合并完成后启动 TS→MP4 转封装。
 void DownloadManager::startRemux(const QString &id)
 {
     const int index = indexOf(id);
@@ -1121,6 +1152,8 @@ void DownloadManager::startRemux(const QString &id)
     remux->remuxToMp4(job.filePath, output);
 }
 
+/// @brief 把播放缓存拷贝到下载目录，作为已完成文件入库。
+/// @return 已开始拷贝返回 true。
 bool DownloadManager::startCacheCopy(const QString &id, const QString &sourcePath)
 {
     const int index = indexOf(id);
@@ -1180,6 +1213,7 @@ bool DownloadManager::startCacheCopy(const QString &id, const QString &sourcePat
     return true;
 }
 
+/// @brief 分块拷贝缓存文件，避免一次性读入大文件阻塞界面。
 void DownloadManager::copyCacheChunks()
 {
     if (m_cacheCopySources.isEmpty()) {
@@ -1273,6 +1307,7 @@ void DownloadManager::copyCacheChunks()
         m_cacheCopyTimer->stop();
 }
 
+/// @brief 取消缓存拷贝任务，可一并删除已写入的部分文件。
 void DownloadManager::cancelCacheCopy(const QString &id, bool removePartial)
 {
     QFile *source = m_cacheCopySources.take(id);
@@ -1290,6 +1325,8 @@ void DownloadManager::cancelCacheCopy(const QString &id, bool removePartial)
         QFile::remove(partial);
 }
 
+/// @brief 任务收尾：更新状态/路径、落盘并通知界面，随后继续排队。
+/// @param success 是否成功；失败时保留半成品供重试。
 void DownloadManager::finishJob(const QString &id, const QString &path, bool success,
                                 const QString &message)
 {
