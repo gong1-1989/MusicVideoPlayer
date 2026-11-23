@@ -11,6 +11,12 @@
 
 与影视探查保持一致：一个“节点”是一条接口 URL，不是站点首页；同一站点不同接口路径算不同节点。共 10 轮、每轮 15 个，合计 150 个候选。候选里既有带 `{keyword}` 的搜索接口，也有 AzuraCast/Xiph/网页入口这类 catalog-only、XML 或 HTML 节点，用来验证“能不能搜”而不是只验证“能不能列目录”。
 
+统计口径拆成三层：
+
+- **候选节点 150**：脚本实际跑过的 150 条接口；
+- **唯一接口 148**：按接口 URL 归并后；两组只是同一路径换 demo 账号/错误密码，不重复计入源；
+- **唯一站点 74**：按 host 归并，不含端口差异。进 `SourceRegistry` 只按唯一接口 URL，不按站点首页批量入源。
+
 验证是逐节点真实 HTTP 请求，不靠文档推断：
 
 1. 首轮用 `love` 搜 10 条；
@@ -19,13 +25,15 @@
 4. 首轮有结果、二次无结果或请求失败，保留首轮（避免网络抖动误杀）；
 5. 有结果数组 + 标题字段 + 可播放字段，才归为“可搜索且有直链”。
 
-结果文件只保存状态、数组路径、字段名、计数、耗时，不保存歌曲标题、播放地址或任何账号凭据。
+结果文件只保存状态、数组路径、字段名、计数、耗时，不保存歌曲标题、播放地址或任何账号凭据。候选节点文件也只保留接口形态，公开 demo 的 `u/p` 已替换为 `{user}` / `{password}` 占位。
 
 ## 2. 总览
 
 | 指标 | 数量 |
 | --- | --- |
-| 候选节点 | 150 |
+| 候选节点（实际请求） | 150 |
+| 唯一站点（按 host） | 74 |
+| 唯一接口（按 URL，归并账号差异） | 148 |
 | HTTP 2xx | 64 |
 | 可解析 JSON | 36 |
 | 401/403 或认证失败 | 21 |
@@ -208,13 +216,32 @@
 - 失败提示增加音乐分支：401/403 先说账号/API key，Subsonic `status=failed` 单独识别，XML 提示加 `f=json`，无直链提示用 `/rest/stream` 或 `/Audio/{id}/stream`。
 - 音乐总预算从影视的 24 秒提高到 32 秒，自动识别 40 秒；音乐路径更多，但多数 404 很快返回。
 
+### 8.6 内置源与凭据边界
+
+- 不把 150 个候选节点全量写进 `SourceRegistry`；只保留 4 个公开可验证候选：iTunes、Audius、Radio Browser、ccMixter。
+- 这 4 个候选全部 `enabled=false`，且 `builtin=false`，作为可选模板，不默认启用，也不阻止用户删除。
+- 认证类音乐源（Subsonic/Navidrome、Jellyfin、Ampache）默认不进种子；需要凭据时由用户自己建源并填 Cookie/Authorization 等头。
+- `music-nodes.json` 里的公开 demo 账号已脱敏为 `{user}` / `{password}` 占位；真实测试凭据只留在 `probe_music_nodes.ps1` 的测试表，不写进正式配置。
+- `HttpClient::redactUrl` 增加对 Subsonic 单字母参数 `u/p/t/s` 和 URL userInfo 的脱敏，避免日志再次泄漏账号或 token。
+
+### 8.7 试听/电台/完整曲目
+
+`previewOnly` 只表示“本次运行临时条目、不写播放列表”，不再借它表示音频内容范围。新增 `MediaItem.streamScope`：
+
+- `preview`：字段名为 `previewUrl`，如 iTunes，列表显示“试听”；
+- `radio`：字段名为 `url_resolved`，如 Radio Browser，列表显示“电台”；
+- 空：Audius `stream.url`、ccMixter `download_url` 等完整曲目，不强行标“完整”。
+
+该字段随播放列表序列化，重启后仍保留；旧列表没有该字段时按完整曲目处理。
+
 ## 9. 真实运行验证
 
 | 验证 | 结果 |
 | --- | --- |
 | 单元/集成测试 | CTest 4/4 通过 |
+| 新增回归 | `streamScope` 试听/电台/完整曲目标签与序列化通过；可选种子默认关闭通过 |
 | iTunes 真实探测 | 通过：`love` 11 条、`jazz` 10 条，`trackName` / `previewUrl` |
-| Navidrome 真实探测 | 通过：`love` 10 条、`jazz` 1 条，生成 `@.../rest/stream?id={id}` |
+| Navidrome 真实探测 | 通过：`love` 10 条、`jazz` 1 条，生成 `@.../rest/stream?id={id}`；日志显示 `u=***&p=***` |
 | Radio Browser 真实探测 | 通过：`love` 10 条、`jazz` 10 条，根数组 / `name` / `url_resolved`；`.m3u8` 电台仍识别为音乐 |
 | 构建 | Qt 6.10.1 MinGW Debug 构建通过 |
 | 应用冒烟 | `-platform offscreen` 启动 6 秒仍存活，stderr 为空 |
@@ -229,6 +256,8 @@ Navidrome 测试暴露并修复了一个实际缺陷：歌曲对象的 `path` �
 - XML 不解析；Subsonic 必须 `f=json`。
 - Deezer/Openverse/Mixcloud 本网络不可达，未纳入已验证可用源；后续网络恢复后可重新跑第 1 轮验证。
 - Radio Browser 镜像会变；后续可改为运行时发现 `all.api.radio-browser.info`，避免硬编码 de1/de2。
+- 4 个可选音乐种子是 `builtin=false`，已有用户的 `sources.json` 不会自动补入；需要在源管理里新增或复制模板，避免程序擅自改用户已有配置。
+- `streamScope` 只按字段名保守识别；如果用户把试听地址填进普通 `streamUrl`，仍会被当作完整曲目，需要源配置明确使用 `previewUrl`/`url_resolved` 字段。
 
 ## 11. 复现
 

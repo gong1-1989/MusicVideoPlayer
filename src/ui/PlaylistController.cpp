@@ -587,7 +587,7 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     if (index.isValid()) {
         selectedItem = model->itemAt(index.row());
         if (selectedItem.previewOnly) {
-            savePreviewAction = menu.addAction(tr("保存到播放列表（试听条目）"));
+            savePreviewAction = menu.addAction(tr("保存到播放列表（临时条目）"));
             menu.addSeparator();
         }
         // 下载入口只对“还没有本地副本”的条目出现：网络直链和试听条目。

@@ -59,7 +59,7 @@ const char *kSeedSources = R"JSON(
   },
   {
     "id": "itunes",
-    "name": "iTunes 试听（示例）",
+    "name": "iTunes 音乐（试听片段，可选）",
     "enabled": false,
     "builtin": false,
     "mediaType": "music",
@@ -79,8 +79,8 @@ const char *kSeedSources = R"JSON(
   },
   {
     "id": "audius",
-    "name": "Audius 音乐（二次解析示例）",
-    "enabled": true,
+    "name": "Audius 音乐（完整曲目，可选）",
+    "enabled": false,
     "builtin": false,
     "mediaType": "music",
     "method": "GET",
@@ -98,6 +98,41 @@ const char *kSeedSources = R"JSON(
     "detailUrl": "https://api.audius.co/v1/tracks/{id}?app_name=MVP",
     "detailItemsPath": "data",
     "detailFields": { "streamUrl": "stream.url" }
+  },
+  {
+    "id": "radio_browser",
+    "name": "Radio Browser 电台（可选）",
+    "enabled": false,
+    "builtin": false,
+    "mediaType": "music",
+    "method": "GET",
+    "url": "https://de1.api.radio-browser.info/json/stations/search?name={keyword}&limit={limit}",
+    "headers": { "User-Agent": "Mozilla/5.0" },
+    "itemsPath": "",
+    "fields": {
+      "id": "stationuuid",
+      "title": "name",
+      "artist": "country",
+      "streamUrl": "url_resolved",
+      "webUrl": "homepage"
+    },
+    "skipIf": { "any": [ { "path": "url_resolved", "op": "empty" } ] }
+  },
+  {
+    "id": "ccmixter",
+    "name": "ccMixter 音乐（完整曲目，可选）",
+    "enabled": false,
+    "builtin": false,
+    "mediaType": "music",
+    "method": "GET",
+    "url": "https://ccmixter.org/api/query?f=json&search={keyword}&limit={limit}",
+    "headers": { "User-Agent": "Mozilla/5.0" },
+    "itemsPath": "",
+    "fields": {
+      "title": "upload_name",
+      "streamUrl": "files[0].download_url"
+    },
+    "skipIf": { "any": [ { "path": "files[0].download_url", "op": "empty" } ] }
   },
   {
     "id": "web_dmxq",
@@ -149,7 +184,7 @@ const char *kSeedSources = R"JSON(
 )JSON";
 
 /// 预置源解析一次后复用：load() 会在逐条校验和补入缺失内置源时多次
-/// 访问同一份 JSON，避免重复构造 QJsonDocument 和解析 6 个配置对象。
+/// 访问同一份 JSON，避免重复构造 QJsonDocument 和解析 8 个配置对象。
 const QVector<SourceConfig> &seedSources()
 {
     static const QVector<SourceConfig> configs = [] {

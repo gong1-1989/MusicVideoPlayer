@@ -236,6 +236,13 @@ void ConfigSearchProvider::onReplyFinished()
 
         MediaItem base;
         base.type = m_config.mediaType;
+        // 内容范围只看接口字段语义：previewUrl 是试听，url_resolved 是电台流；
+        // 不能沿用 previewOnly，后者只表示“当前会话临时条目”。
+        if (base.type == MediaType::Music) {
+            base.streamScope = inferStreamScope(
+                m_config.fields.value(QStringLiteral("streamUrl")),
+                m_config.detailFields.value(QStringLiteral("streamUrl")));
+        }
         base.title = cleanText(vars.value(QStringLiteral("title")));
         base.artist = cleanText(vars.value(QStringLiteral("artist")));
         base.lyricUrl = normalizeUrl(mapString(node, m_config.fields,

@@ -7,6 +7,8 @@
   "note": "只保存状态、结构、字段名和计数，不保存歌曲标题、播放地址、封面地址和凭据。",
   "stats": {
     "total": 150,
+    "siteCount": 74,
+    "endpointCount": 148,
     "httpOk": 64,
     "json": 36,
     "auth": 21,

@@ -11,6 +11,7 @@
 #include "net/HttpClient.h"
 #include "net/SourceConfig.h"
 #include "net/SourceProbe.h"
+#include "net/SourceRegistry.h"
 #include "net/SearchCoordinator.h"
 #include "settings/AppShortcuts.h"
 #include "stream/StreamProxy.h"
@@ -677,6 +678,7 @@ private slots:
     void lrcParseWithOffsetAndMultipleTimestamps();
     void lrcIndexAt();
     void mediaItemJsonRoundTrip();
+    void audioStreamScopeLabelsAndRoundTrip();
     void preferredPlaybackUrlSelectsProgressive();
     void mediaItemValidity();
     void mediaIdentityUsesStableWebUrl();
@@ -685,6 +687,7 @@ private slots:
     void playlistModelUpdatesPlaybackPositionSeparately();
     void playbackModeTextMatchesCompactLabels();
     void sourceConfigJsonRoundTrip();
+    void sourceRegistryOptionalMusicSeedsDisabled();
     void sourceConfigSecretsNotPlaintext();
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
@@ -873,6 +876,42 @@ void CoreLogicTest::mediaItemJsonRoundTrip()
     QCOMPARE(restored.area, item.area);
     QCOMPARE(restored.genre, item.genre);
     QCOMPARE(restored.description, item.description);
+}
+
+void CoreLogicTest::audioStreamScopeLabelsAndRoundTrip()
+{
+    // 字段名是唯一可靠信号：iTunes 的 previewUrl 只能当试听，Radio Browser 的
+    // url_resolved 是电台流；Audius 的 stream.url 是完整曲目，不应误标。
+    QCOMPARE(inferStreamScope(QStringLiteral("previewUrl")), QStringLiteral("preview"));
+    QCOMPARE(inferStreamScope(QStringLiteral("url_resolved")), QStringLiteral("radio"));
+    QCOMPARE(inferStreamScope(QStringLiteral("stream.url")), QString());
+    QCOMPARE(inferStreamScope(QString(), QStringLiteral("previewUrl")),
+             QStringLiteral("preview"));
+
+    MediaItem preview;
+    preview.type = MediaType::Music;
+    preview.title = QStringLiteral("试听曲目");
+    preview.url = QUrl(QStringLiteral("https://example.com/preview.m4a"));
+    preview.streamScope = QStringLiteral("preview");
+    QCOMPARE(preview.streamScopeLabel(), QStringLiteral("试听"));
+    QVERIFY(preview.metaLine().contains(QStringLiteral("试听")));
+
+    MediaItem restored = mediaItemFromJson(mediaItemToJson(preview));
+    QCOMPARE(restored.streamScope, QStringLiteral("preview"));
+
+    MediaItem radio;
+    radio.type = MediaType::Music;
+    radio.url = QUrl(QStringLiteral("https://example.com/radio.mp3"));
+    radio.streamScope = QStringLiteral("radio");
+    QCOMPARE(radio.streamScopeLabel(), QStringLiteral("电台"));
+    QCOMPARE(mediaItemFromJson(mediaItemToJson(radio)).streamScope,
+             QStringLiteral("radio"));
+
+    MediaItem full;
+    full.type = MediaType::Music;
+    full.url = QUrl(QStringLiteral("https://example.com/full.mp3"));
+    QVERIFY(full.streamScopeLabel().isEmpty());
+    QVERIFY(full.metaLine().isEmpty());
 }
 
 void CoreLogicTest::preferredPlaybackUrlSelectsProgressive()
@@ -1124,6 +1163,37 @@ void CoreLogicTest::sourceConfigJsonRoundTrip()
     QCOMPARE(restored.detailItemsPath, config.detailItemsPath);
     QVERIFY(restored.detailFields == config.detailFields);
     QCOMPARE(restored.timeoutMs, config.timeoutMs);
+}
+
+void CoreLogicTest::sourceRegistryOptionalMusicSeedsDisabled()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    qputenv("MVP_DATA_DIR", temp.path().toUtf8());
+
+    SourceRegistry registry;
+    QVERIFY2(registry.load(), qPrintable(registry.lastError()));
+
+    // 这四个是公开可验证的音乐候选，但都有试听/电台/完整曲目差异或依赖公网，
+    // 不能默认开启；认证类源不进入种子。
+    const QStringList optionalIds = {
+        QStringLiteral("itunes"), QStringLiteral("audius"),
+        QStringLiteral("radio_browser"), QStringLiteral("ccmixter")
+    };
+    for (const QString &id : optionalIds) {
+        const SourceConfig config = registry.sourceById(id);
+        QVERIFY2(!config.id.isEmpty(), qPrintable(id));
+        QVERIFY2(!config.enabled, qPrintable(id));
+        QVERIFY2(!config.builtin, qPrintable(id));
+        QVERIFY(config.mediaType == MediaType::Music);
+        QVERIFY2(config.isValid(), qPrintable(config.validationError()));
+    }
+
+    if (oldDataDir.isEmpty())
+        qunsetenv("MVP_DATA_DIR");
+    else
+        qputenv("MVP_DATA_DIR", oldDataDir);
 }
 
 void CoreLogicTest::sourceConfigSecretsNotPlaintext()
@@ -1432,6 +1502,21 @@ void CoreLogicTest::httpLogUrlRedactsSignature()
         "https://cdn.example.com/sign/0123456789abcdef0123456789abcdef/video.mp4")));
     QVERIFY(!pathText.contains(QStringLiteral("0123456789abcdef0123456789abcdef")));
     QVERIFY(pathText.contains(QStringLiteral("video.mp4")));
+
+    // Subsonic 兼容接口常把账号放在 u/p，token/salt 放在 t/s；
+    // 这些单字母参数也必须出现在日志脱敏范围里。
+    const QString subsonicText = HttpClient::redactUrl(QUrl(QStringLiteral(
+        "https://music.example.com/rest/search3?u=demo&p=secret&t=tok123&s=salt456&query=love&songCount=5")));
+    const QUrlQuery subsonicQuery{QUrl(subsonicText)};
+    QCOMPARE(subsonicQuery.queryItemValue(QStringLiteral("u")), QStringLiteral("***"));
+    QCOMPARE(subsonicQuery.queryItemValue(QStringLiteral("p")), QStringLiteral("***"));
+    QCOMPARE(subsonicQuery.queryItemValue(QStringLiteral("t")), QStringLiteral("***"));
+    QCOMPARE(subsonicQuery.queryItemValue(QStringLiteral("s")), QStringLiteral("***"));
+    QCOMPARE(subsonicQuery.queryItemValue(QStringLiteral("query")), QStringLiteral("love"));
+    QCOMPARE(subsonicQuery.queryItemValue(QStringLiteral("songCount")), QStringLiteral("5"));
+    QVERIFY(!subsonicText.contains(QStringLiteral("secret")));
+    QVERIFY(!subsonicText.contains(QStringLiteral("tok123")));
+    QVERIFY(!subsonicText.contains(QStringLiteral("salt456")));
 }
 
 void CoreLogicTest::playlistSnifferRecognizesBody()

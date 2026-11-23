@@ -9,6 +9,30 @@ $accessed = '2026-11-23'
 $script:nodes = [System.Collections.Generic.List[object]]::new()
 $script:seen = @{}
 
+# 节点数据会随仓库提交，不能把公开 demo 的账号密码原样写进去。
+# u/p 只用于 Subsonic 兼容；t/s 是 token/salt。统一替换成占位符，
+# 真实值只允许出现在 probe 脚本的测试凭据表或用户本地配置里。
+function ConvertTo-RedactedNodeUrl {
+    param([string]$Url)
+    $redactions = [ordered]@{
+        u       = '{user}'
+        p       = '{password}'
+        t       = '{token}'
+        s       = '{salt}'
+        app_key = '{appKey}'
+        api_key = '{apiKey}'
+    }
+    foreach ($entry in $redactions.GetEnumerator()) {
+        $replacement = '$1' + $entry.Value
+        $Url = [regex]::Replace(
+            $Url,
+            ('(?i)([?&]{0}=)[^&]*' -f [regex]::Escape($entry.Key)),
+            $replacement
+        )
+    }
+    return $Url
+}
+
 function Add-Node {
     param(
         [int]$Round,
@@ -18,14 +42,20 @@ function Add-Node {
         [string]$Kind = 'search',
         [string]$Note = ''
     )
+    $redactedUrl = ConvertTo-RedactedNodeUrl $BaseUrl
+    # 去重仍按原始 URL：同一路径换 demo 账号也是独立验证节点，
+    # 但写入文件的 baseUrl 已脱敏，不会把 u/p 带出去。
     $key = $BaseUrl.TrimEnd('/').ToLowerInvariant()
     if ($script:seen.ContainsKey($key)) { return }
     $script:seen[$key] = $true
+    $hostName = ''
+    try { $hostName = ([uri]$BaseUrl).Host.ToLowerInvariant() } catch { }
     $script:nodes.Add([pscustomobject]@{
             round    = $Round
             source   = $Source
             name     = $Name
-            baseUrl  = $BaseUrl
+            baseUrl  = $redactedUrl
+            host     = $hostName
             kind     = $Kind
             note     = $Note
             accessed = $accessed
@@ -258,14 +288,19 @@ $roundCounts = for ($r = 1; $r -le 10; $r++) {
     }
 }
 
+$siteKeys = @($script:nodes | ForEach-Object { $_.host } | Where-Object { $_ } | Sort-Object -Unique)
+$endpointKeys = @($script:nodes | ForEach-Object { $_.baseUrl.TrimEnd('/').ToLowerInvariant() } | Sort-Object -Unique)
+
 $doc = [ordered]@{
     schemaVersion = 1
     mediaType = 'music'
     generatedAt = $accessed
-    note = '节点来自公开文档、公开实例页和公开 API 文档；只保存接口形态，不保存歌曲标题与播放地址。'
+    note = '节点来自公开文档、公开实例页和公开 API 文档；只保存接口形态，不保存歌曲标题与播放地址。公开 demo 凭据已用 {user}/{password} 占位，真实值只留在 probe 测试脚本或本地配置里。'
     rounds = $roundCounts
     stats = [ordered]@{
         total = $script:nodes.Count
+        siteCount = $siteKeys.Count
+        endpointCount = $endpointKeys.Count
     }
     nodes = $script:nodes
 }

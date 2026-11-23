@@ -231,7 +231,9 @@ void StorageTest::sourceRegistrySeedsAndPersists()
     SourceRegistry registry;
     QVERIFY(registry.load());
     QVERIFY(registry.lastError().isEmpty());
-    QCOMPARE(registry.enabledCount(), 3);
+    // 默认启用的仍是网易云和网页影视源；iTunes/Audius/Radio Browser/ccMixter
+    // 改为默认关闭的可选模板，所以从 3 个降到 2 个。
+    QCOMPARE(registry.enabledCount(), 2);
     QVERIFY(QFile::exists(registry.storagePath()));
 
     SourceConfig custom;
@@ -297,7 +299,7 @@ void StorageTest::sourceRegistryCorruptFileBacksUp()
     SourceRegistry registry;
     QVERIFY(registry.load());
     QVERIFY(!registry.lastError().isEmpty());
-    QCOMPARE(registry.enabledCount(), 3);
+    QCOMPARE(registry.enabledCount(), 2);
 
     const QStringList backups =
         QDir(StoragePaths::dataDir())

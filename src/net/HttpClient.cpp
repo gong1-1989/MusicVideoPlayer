@@ -388,6 +388,8 @@ QString HttpClient::redactUrl(const QUrl &url)
         return QString();
 
     QUrl copy(url);
+    if (!copy.userName().isEmpty())
+        copy.setUserName(QStringLiteral("***"));
     if (!copy.password().isEmpty())
         copy.setPassword(QStringLiteral("***"));
 
@@ -446,6 +448,12 @@ QString HttpClient::redactUrl(const QUrl &url)
                                || key.contains(QLatin1String("md5"))
                                || key.contains(QLatin1String("sha1"))
                                || key.contains(QLatin1String("sha256"))
+                               // Subsonic 兼容接口用单字母参数：u=用户名、p=密码、t=token、s=salt。
+                               // 只按参数名打码，不影响 query 里的关键词和分页参数。
+                               || key == QLatin1String("u")
+                               || key == QLatin1String("p")
+                               || key == QLatin1String("t")
+                               || key == QLatin1String("s")
                                || key == QLatin1String("sig")
                                || key == QLatin1String("key")
                                || key.endsWith(QLatin1String("key"))

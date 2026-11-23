@@ -30,11 +30,41 @@ $script:KeywordValue = $Keyword
 $script:SecondKeywordValue = $SecondKeyword
 $script:LimitValue = $Limit
 
+# 节点文件里的 u/p 已脱敏成 {user}/{password}；真实公开 demo 凭据只在本测试脚本里保留。
+# 这些账号只用于验证站点是否可用，不属于内置源，也不会写入正式配置。
 $results = $selected | ForEach-Object -Parallel {
     $node = $_
     $keyword = $using:KeywordValue
     $secondKeyword = $using:SecondKeywordValue
     $limit = $using:LimitValue
+
+    function Resolve-NodeCredentials {
+        param([string]$Template, [string]$NodeName)
+        $result = $Template
+        $userName = ''
+        $password = ''
+        try {
+            $hostName = ([uri]$Template).Host.ToLowerInvariant()
+            switch ($hostName) {
+                'demo.navidrome.org' {
+                    $userName = 'demo'; $password = 'demo'
+                    if ($NodeName -match '错误密码') { $password = 'wrong' }
+                }
+                'demo.subsonic.org' {
+                    $userName = 'guest4'; $password = 'guest'
+                    if ($NodeName -match '(?i)guest5') { $userName = 'guest5' }
+                    elseif ($NodeName -match '(?i)guest6') { $userName = 'guest6' }
+                }
+                'music.install.so' {
+                    $userName = 'demo'; $password = 'demo'
+                }
+            }
+        } catch { }
+        if ($userName -and $password) {
+            $result = $result.Replace('{user}', $userName).Replace('{password}', $password)
+        }
+        return $result.Replace('{token}', '').Replace('{salt}', '').Replace('{appKey}', '').Replace('{apiKey}', '')
+    }
 
     function Get-JsonFields {
         param($Object, [string]$Prefix = '', [int]$Depth = 0)
@@ -192,7 +222,7 @@ $results = $selected | ForEach-Object -Parallel {
         } catch { return '' }
     }
 
-    $urlTemplate = [string]$node.baseUrl
+    $urlTemplate = Resolve-NodeCredentials ([string]$node.baseUrl) ([string]$node.name) $credentialMap
     $firstUrl = Get-Url $urlTemplate $keyword
     $first = Invoke-Probe $firstUrl
     $errorKind = 'ok'
@@ -350,8 +380,15 @@ $results = $selected | ForEach-Object -Parallel {
 
 $results = @($results | Sort-Object round, name, hostPath)
 $total = $results.Count
+$selectedEndpointCount = @($selected | ForEach-Object { $_.baseUrl.TrimEnd('/').ToLowerInvariant() } | Sort-Object -Unique).Count
+$selectedSiteCount = @($selected | ForEach-Object {
+        if ($_.host) { [string]$_.host }
+        else { try { ([uri]$_.baseUrl).Host.ToLowerInvariant() } catch { '' } }
+    } | Where-Object { $_ } | Sort-Object -Unique).Count
 $stats = [ordered]@{
     total = $total
+    siteCount = $selectedSiteCount
+    endpointCount = $selectedEndpointCount
     httpOk = @($results | Where-Object { $_.httpStatus -ge 200 -and $_.httpStatus -lt 300 }).Count
     json = @($results | Where-Object { $_.errorKind -in @('ok','noArray','noTitle','noStream') }).Count
     auth = @($results | Where-Object { $_.errorKind -eq 'auth' }).Count

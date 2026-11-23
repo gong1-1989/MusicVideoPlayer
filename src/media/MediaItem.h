@@ -75,6 +75,21 @@ inline QString inferQuality(const QString &text, MediaType type)
     return QString();
 }
 
+/// 从接口的 streamUrl 字段映射推断音频内容范围。
+/// 只做保守识别：字段名明确叫 previewUrl 才是试听，
+/// Radio Browser 的 url_resolved 才是电台；其他都按完整曲目处理。
+/// 详情接口的字段一并参与判断，避免主接口无直链、详情接口才给试听地址时漏标。
+inline QString inferStreamScope(const QString &streamField,
+                                const QString &detailStreamField = QString())
+{
+    const QString fields = (streamField + QLatin1Char(' ') + detailStreamField).toLower();
+    if (fields.contains(QLatin1String("previewurl")))
+        return QStringLiteral("preview");
+    if (fields.contains(QLatin1String("url_resolved")))
+        return QStringLiteral("radio");
+    return QString();
+}
+
 /// 一条可播放的媒体记录。本地文件与在线流共用同一结构，
 /// 区别只在 url 的 scheme（file:// 还是 http/https）。
 struct MediaItem
@@ -92,9 +107,15 @@ struct MediaItem
     QString sourceId;               // 来自哪个搜索源（本地文件为空）
     QHash<QString, QString> headers; // 播放/下载要补的请求头（Referer 等；敏感头按目标 host 过滤）
     bool online = false;
-    /// 搜索结果试听创建的内存条目。只用于当前会话播放，不参与持久化；
+    /// 搜索结果临时条目。只用于当前会话播放，不参与持久化；
     /// 用户明确“加入列表”或下载完成后会清除该标记。
     bool previewOnly = false;
+    /// 音频内容语义，与 previewOnly 不是一回事：
+    /// - preview：试听片段（如 iTunes previewUrl），不是完整曲目；
+    /// - radio：电台/直播流，不是单曲；
+    /// - 空：默认完整曲目或普通直链。
+    /// 该字段只描述内容范围，不决定条目是否持久化。
+    QString streamScope;
     qint64 durationMs = 0;
     /// 视频已播放位置，随播放列表条目一起持久化；0 表示从头播放。
     /// 删除列表条目时进度随条目一起消失，音乐不使用该字段。
@@ -119,10 +140,23 @@ struct MediaItem
         return QStringLiteral("%1 - %2").arg(title, artist);
     }
 
-    /// 列表行第二段信息：年份 · 地区 · 类型，没有的字段自动跳过
+    /// 内容范围标签：试听/电台；完整曲目返回空，不强行加“完整”字样。
+    QString streamScopeLabel() const
+    {
+        if (streamScope == QLatin1String("preview"))
+            return QStringLiteral("试听");
+        if (streamScope == QLatin1String("radio"))
+            return QStringLiteral("电台");
+        return QString();
+    }
+
+    /// 列表行第二段信息：试听/电台 · 年份 · 地区 · 类型，没有的字段自动跳过
     QString metaLine() const
     {
         QStringList parts;
+        const QString scope = streamScopeLabel();
+        if (!scope.isEmpty())
+            parts.append(scope);
         if (!quality.isEmpty())
             parts.append(quality);
         if (!year.isEmpty())
@@ -267,6 +301,8 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
         object.insert(QStringLiteral("headers"), headers);
     }
     object.insert(QStringLiteral("online"), item.online);
+    if (!item.streamScope.isEmpty())
+        object.insert(QStringLiteral("streamScope"), item.streamScope);
     if (item.durationMs > 0)
         object.insert(QStringLiteral("duration"), static_cast<double>(item.durationMs));
     // 视频进度直接写进播放列表条目：条目删除后进度自然一起删除。
@@ -314,6 +350,9 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
             item.headers.insert(it.key(), it.value().toString());
     }
     item.online = object.value(QStringLiteral("online")).toBool();
+    const QString scope = object.value(QStringLiteral("streamScope")).toString();
+    if (scope == QLatin1String("preview") || scope == QLatin1String("radio"))
+        item.streamScope = scope;
     item.durationMs = static_cast<qint64>(object.value(QStringLiteral("duration")).toDouble());
     if (item.type == MediaType::Video)
         item.positionMs = static_cast<qint64>(object.value(QStringLiteral("position")).toDouble());
