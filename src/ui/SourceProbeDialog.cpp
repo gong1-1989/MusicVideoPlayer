@@ -183,6 +183,7 @@ void SourceProbeDialog::startProbe()
     m_kindLabel->clear();
     m_fieldsLabel->clear();
     m_btnSave->setEnabled(false);
+    m_btnSave->setText(tr("保存这个源"));
     m_btnProbe->setEnabled(false);
     m_status->setText(tr("正在探测，会依次试几条常见接口路径…"));
 
@@ -317,7 +318,10 @@ void SourceProbeDialog::onProbeFinished(const SourceProbe::Result &result)
     if (switched)
         m_type->setCurrentIndex(detectedIndex);
 
-    QString status = tr("探测成功，确认无误后点“保存这个源”。");
+    const bool webSource = result.siteKind == SourceProbe::SiteKind::MaccmsWeb;
+    QString status = webSource
+        ? tr("已识别为网页型影视源，只需要站点地址，不需要字段映射。")
+        : tr("探测成功，确认无误后点“保存这个源”。");
     if (switched) {
         status += tr("已自动识别为%1，类型已切换。")
                       .arg(result.mediaType == MediaType::Video ? tr("视频") : tr("音乐"));
@@ -325,30 +329,41 @@ void SourceProbeDialog::onProbeFinished(const SourceProbe::Result &result)
         status += tr("已识别为%1，与当前选择一致。")
                       .arg(result.mediaType == MediaType::Video ? tr("视频") : tr("音乐"));
     }
+    if (!result.validationNote.isEmpty())
+        status += QLatin1Char(' ') + result.validationNote;
     m_status->setText(status);
     m_nameLabel->setText(result.config.name);
     m_interfaceLabel->setText(result.config.urlTemplate);
 
-    QString path = result.config.itemsPath;
-    if (path.isEmpty())
-        path = tr("（根就是数组）");
-    m_pathLabel->setText(path);
-    m_kindLabel->setText(result.config.streamKind == QLatin1String("episodes")
-                             ? tr("剧集列表（会按集拆成多条）")
-                             : tr("单条直链"));
+    if (webSource) {
+        m_pathLabel->setText(tr("站点首页"));
+        m_kindLabel->setText(tr("网页型影视（内置抓取）"));
+        m_fieldsLabel->setText(tr("网页型影视源不需要字段映射"));
+        m_btnSave->setText(tr("保存这个网页源"));
+    } else {
+        QString path = result.config.itemsPath;
+        if (path.isEmpty())
+            path = tr("（根就是数组）");
+        m_pathLabel->setText(path);
+        m_kindLabel->setText(result.config.streamKind == QLatin1String("episodes")
+                                 ? tr("剧集列表（会按集拆成多条）")
+                                 : tr("单条直链"));
 
-    QStringList fieldLines;
-    for (const QString &key : kFieldOrder) {
-        const QString value = result.config.fields.value(key);
-        if (value.trimmed().isEmpty())
-            continue;
-        fieldLines.append(QStringLiteral("%1 → %2").arg(fieldLabelFor(key), value));
+        QStringList fieldLines;
+        for (const QString &key : kFieldOrder) {
+            const QString value = result.config.fields.value(key);
+            if (value.trimmed().isEmpty())
+                continue;
+            fieldLines.append(QStringLiteral("%1 → %2").arg(fieldLabelFor(key), value));
+        }
+        m_fieldsLabel->setText(fieldLines.join(QStringLiteral("    ")));
     }
-    m_fieldsLabel->setText(fieldLines.join(QStringLiteral("    ")));
 
     m_samples->clear();
     for (const QString &title : result.sampleTitles)
         m_samples->addItem(title);
+    if (webSource && result.sampleCount == 0)
+        m_samples->addItem(tr("网页型影视源尚未试搜，保存后可在源管理里点“测试”"));
     m_samples->addItem(tr("…共 %1 条").arg(result.sampleCount));
 
     m_btnSave->setEnabled(true);

@@ -311,8 +311,9 @@ void SourceManagerDialog::configureHoverHelp()
     help(ui->btn_add, tr("新建一个空白搜索源，自己填写请求地址和字段对应。"));
     help(ui->btn_duplicate, tr("复制当前选中的源，适合在已有配置上改出另一个站点。"));
     help(ui->btn_remove, tr("删除当前选中的源；内置源不能删除，只能停用。"));
-    help(ui->btn_addSite, tr("只填一个网站首页地址，程序会探测搜索接口并推断字段；"
-                            "探测结果确认后才会加入列表。"));
+    help(ui->btn_addSite, tr("只填一个网站首页地址：优先探测 JSON 采集接口；"
+                            "如果是公开 MacCMS/网页型影视站，会自动转为内置网页抓取。"
+                            "音乐源通常仍需要接口地址或账号/API key。"));
     help(ui->btn_import, tr("从 JSON 配置文件导入搜索源；如含外部解析器命令，"
                            "导入时会先展示命令并默认停用。"));
     help(ui->btn_export, tr("把当前全部搜索源导出为 JSON，便于备份或换机导入。"));
@@ -752,7 +753,9 @@ void SourceManagerDialog::onAddFromSite()
     SourceConfig probed = dialog.probedConfig();
     if (!probed.isValid()) {
         QMessageBox::warning(this, tr("探测结果不完整"),
-                             tr("没有拿到完整的标题/播放地址字段，请改用“配置源”手工填写字段映射。"));
+                             tr("没有拿到完整的标题/播放地址字段。"
+                                "如果是公开影视网页站，请用“内置实现 → 网页型影视”添加；"
+                                "否则请改用“配置源”手工填写字段映射。"));
         return;
     }
     probed.id = makeUniqueId(probed.id.isEmpty() ? QStringLiteral("site") : probed.id, m_drafts);
@@ -760,8 +763,13 @@ void SourceManagerDialog::onAddFromSite()
     probed.enabled = true;
     m_drafts.append(probed);
     reloadList(m_drafts.size() - 1);
+    const bool webSource = probed.kind == QLatin1String("builtin")
+                           && probed.provider == QLatin1String("maccms_web");
     QMessageBox::information(this, tr("源已添加"),
-                             tr("“%1”已自动启用；点“保存”后立即参与搜索。").arg(probed.name));
+                             webSource
+                                 ? tr("“%1”已识别为网页型影视源并自动启用；点“保存”后立即参与搜索。")
+                                       .arg(probed.name)
+                                 : tr("“%1”已自动启用；点“保存”后立即参与搜索。").arg(probed.name));
 }
 
 void SourceManagerDialog::onRefreshSelected()

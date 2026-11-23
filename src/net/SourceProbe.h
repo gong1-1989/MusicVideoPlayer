@@ -16,6 +16,7 @@
 class HttpClient;
 class QNetworkReply;
 class ConfigSearchProvider;
+class MaccmsWebProvider;
 
 /// 网站探测：用户只给一个网址，程序试几条常见接口路径，
 /// 从返回的 JSON 里反推「结果路径 + 字段对应 + 播放地址形态」，再试搜一次做校验。
@@ -32,9 +33,22 @@ struct Attempt
 /// 内置的常见接口路径（界面上只读展示，探测时作为兜底候选）
 QStringList defaultPaths(MediaType mediaType);
 
+/// 探测结果的站点类型。ok=true 时是 JsonConfig 或 MaccmsWeb；
+/// 失败时用其余枚举告诉界面“缺的是接口、凭据还是网页解析”。
+enum class SiteKind
+{
+    Unknown,
+    JsonConfig,
+    MaccmsWeb,
+    AuthRequired,
+    XmlOnly,
+    WebOnlyNoApi
+};
+
 struct Result
 {
     bool ok = false;
+    SiteKind siteKind = SiteKind::Unknown;
     MediaType mediaType = MediaType::Music;   ///< 识别出来的类型
     MediaType hintType = MediaType::Music;    ///< 用户选的类型（用来判断要不要自动切换）
     bool autoDetected = false;                ///< 用户没选，或识别结果与所选不同
@@ -43,6 +57,8 @@ struct Result
     SourceConfig config;         ///< 建议配置（enabled=false，等用户确认后写入）
     QStringList sampleTitles;    ///< 试搜到的前几条标题
     int sampleCount = 0;
+    int validationPasses = 0;    ///< JSON 完成了几个关键词校验；网页源试搜为 1
+    QString validationNote;      ///< “两轮通过”/“仅首轮命中”/“网页试搜命中”
     QString error;               ///< 失败原因
     QVector<Attempt> attempts;   ///< 探测记录，失败时展示给用户
 };
@@ -61,6 +77,10 @@ public:
                const QStringList &extraPaths = QStringList(), bool autoDetect = false);
     void cancel();
 
+    /// 首页 HTML 是否具备苹果 CMS 网页型的强特征。只用于影视/自动识别，
+    /// 不对普通 HTML 做“看起来像就猜”的弱匹配。
+    static bool looksLikeMaccmsHome(const QString &html, const QUrl &url = QUrl());
+
 signals:
     void finished(const SourceProbe::Result &result);
 
@@ -70,7 +90,9 @@ private:
     void analyze(const QUrl &url, const QJsonValue &root, int status);
     void validate(const SourceConfig &config, const QString &keyword);
     void startValidation(const SourceConfig &config, const QString &keyword, int pass);
+    void tryWebFallback();
     void acceptConfig(const SourceConfig &config, const QVector<MediaItem> &items);
+    void acceptWebConfig(const SourceConfig &config, const QVector<MediaItem> &items);
     void fail(const QString &error);
     /// 把失败归类成一句用户能看懂、能据此行动的原因
     QString diagnoseFailure() const;
@@ -88,6 +110,9 @@ private:
     QString m_siteName;
     QString m_inputPath;        ///< 用户输入的路径，重定向后仍用它识别“这本身就是接口”
     QStringList m_homeApiHints; ///< 首页 HTML 里直接出现的接口路径，优先级高于内置路径
+    QString m_homeHtml;         ///< 首页 HTML，用于判断是不是苹果 CMS 网页型站点
+    bool m_webFallbackPossible = false;
+    bool m_webFallbackTried = false;
 
     QStringList m_candidates;
     QVector<MediaType> m_candidateTypes;
@@ -107,6 +132,11 @@ private:
     int m_jsonNoFields = 0;     ///< 有数组但猜不出标题/播放地址字段
 
     QVector<MediaItem> m_validationFirstItems; ///< 二次关键词校验前的首轮结果
+    int m_validationPasses = 0;
+    QString m_validationNote;
+
+    /// 网页型影视源的轻量试搜对象；只验搜索命中，不抓详情/播放页。
+    MaccmsWebProvider *m_webValidator = nullptr;
 
     QElapsedTimer m_clock;
     QPointer<QNetworkReply> m_activeReply;

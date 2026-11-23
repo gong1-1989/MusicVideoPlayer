@@ -47,6 +47,7 @@
 #include <QUrlQuery>
 
 #include <cmath>
+#include <functional>
 #include <limits>
 
 namespace {
@@ -666,6 +667,65 @@ bool readProxyResponse(QTcpSocket *socket, QByteArray *head, QByteArray *body,
     return done;
 }
 
+/// 通用探查站点：按请求路径返回固定响应，用来验证 SourceProbe 的候选顺序、
+/// 网页型 fallback 和三轮关键词校验，不依赖公网。
+class ProbeSiteServer : public QTcpServer
+{
+public:
+    using Handler = std::function<void(const QString &target, QByteArray &body,
+                                       QByteArray &contentType, int &status)>;
+
+    explicit ProbeSiteServer(Handler handler, QObject *parent = nullptr)
+        : QTcpServer(parent), m_handler(std::move(handler))
+    {
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("responded").toBool())
+                        return;
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+                    socket->setProperty("responded", true);
+                    const QByteArray requestLine = pending.left(pending.indexOf("\r\n"));
+                    const QList<QByteArray> parts = requestLine.split(' ');
+                    const QString target = parts.size() >= 2
+                                               ? QString::fromUtf8(parts.at(1))
+                                               : QString();
+                    targets.append(target);
+                    QByteArray body;
+                    QByteArray contentType = QByteArrayLiteral("text/html; charset=utf-8");
+                    int status = 404;
+                    if (m_handler)
+                        m_handler(target, body, contentType, status);
+                    QByteArray response = "HTTP/1.1 " + QByteArray::number(status) + " "
+                                          + (status >= 200 && status < 300 ? "OK" : "Not Found")
+                                          + "\r\nContent-Type: " + contentType
+                                          + "\r\nContent-Length: " + QByteArray::number(body.size())
+                                          + "\r\nConnection: close\r\n\r\n" + body;
+                    socket->write(response);
+                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QString baseUrl() const
+    {
+        return QStringLiteral("http://127.0.0.1:%1/").arg(serverPort());
+    }
+
+    QStringList targets;
+
+private:
+    Handler m_handler;
+};
+
 } // namespace
 
 class CoreLogicTest : public QObject
@@ -697,6 +757,11 @@ private slots:
     void sourceProbeLiveMusicSearch();
     void sourceProbeLiveSubsonicStreamTemplate();
     void sourceProbeLiveRadioBrowserSearch();
+    void sourceProbeLiveWebFallback();
+    void sourceProbeWebFallbackForMaccmsSite();
+    void sourceProbeMusicDoesNotBecomeWebVideo();
+    void sourceProbeThirdKeywordValidation();
+    void sourceProbeAutoCoversBothTypeCandidates();
     void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
@@ -1361,6 +1426,29 @@ void CoreLogicTest::sourceProbeMusicPathsAreSearchable()
                  qPrintable(QStringLiteral("音乐路径不应使用影视 wd 参数：") + path));
 }
 
+void CoreLogicTest::sourceProbeLiveWebFallback()
+{
+    // 真实 MacCMS 网页站验证默认跳过；用
+    // MVP_LIVE_PROBE=1 mvp_tests sourceProbeLiveWebFallback 手动执行。
+    if (!qEnvironmentVariableIsSet("MVP_LIVE_PROBE"))
+        QSKIP("设置 MVP_LIVE_PROBE=1 才会访问真实网页站");
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+    prober.start(QUrl(QStringLiteral("https://dmxq.info/")), MediaType::Video, {}, true);
+    QVERIFY2(finished.wait(45000), "真实网页站探测在 45 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("网页型 fallback 失败：") + result.error));
+    QCOMPARE(result.siteKind, SourceProbe::SiteKind::MaccmsWeb);
+    QCOMPARE(result.config.provider, QStringLiteral("maccms_web"));
+    QVERIFY(result.sampleCount > 0);
+}
+
 void CoreLogicTest::sourceProbeLiveMusicSearch()
 {
     // 真实网络验证默认跳过；用
@@ -1455,6 +1543,193 @@ void CoreLogicTest::sourceProbeLiveRadioBrowserSearch()
     QCOMPARE(result.config.fields.value(QStringLiteral("streamUrl")),
              QStringLiteral("url_resolved"));
     QVERIFY(result.sampleCount > 0);
+}
+
+void CoreLogicTest::sourceProbeWebFallbackForMaccmsSite()
+{
+    // 只有网址、没有 JSON 采集接口的公开 MacCMS 站：首页强特征命中后，
+    // 10 条 JSON 候选都失败，应转成“网页型影视源”，而不是把用户推去手工填字段。
+    ProbeSiteServer server([](const QString &target, QByteArray &body,
+                              QByteArray &contentType, int &status) {
+        if (target == QLatin1String("/")) {
+            status = 200;
+            contentType = QByteArrayLiteral("text/html; charset=utf-8");
+            body = QStringLiteral("<html><head><title>MacCMS 测试站</title></head>"
+                                  "<body>maccms vodsearch voddetail</body></html>")
+                       .toUtf8();
+            return;
+        }
+        if (target.contains(QStringLiteral("ajax/suggest"))) {
+            status = 200;
+            contentType = QByteArrayLiteral("application/json");
+            body = QByteArrayLiteral("{\"list\":[{\"id\":1,\"name\":\"庆余年\"}]}");
+            return;
+        }
+        status = 404;
+        contentType = QByteArrayLiteral("text/html");
+        body = QByteArrayLiteral("not found");
+    });
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+    prober.start(QUrl(server.baseUrl()), MediaType::Video, {}, false);
+    QVERIFY2(finished.wait(15000), "网页型 fallback 在 15 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("网页型影视源探测失败：") + result.error));
+    QCOMPARE(result.siteKind, SourceProbe::SiteKind::MaccmsWeb);
+    QCOMPARE(result.mediaType, MediaType::Video);
+    QCOMPARE(result.config.kind, QStringLiteral("builtin"));
+    QCOMPARE(result.config.provider, QStringLiteral("maccms_web"));
+    QVERIFY(result.config.builtin == false);
+    QVERIFY(result.config.urlTemplate.endsWith(QLatin1Char('/')));
+    QVERIFY2(result.sampleTitles.contains(QStringLiteral("庆余年")),
+             qPrintable(QStringLiteral("网页型试搜样例标题不对：")
+                        + result.sampleTitles.join(QStringLiteral(","))));
+}
+
+void CoreLogicTest::sourceProbeMusicDoesNotBecomeWebVideo()
+{
+    // 同一个 MacCMS 首页，用户明确选“音乐”时不能生成网页型影视源：
+    // 音乐没有 maccms_web 抓取器，误配只会制造一个永远搜不到东西的源。
+    ProbeSiteServer server([](const QString &target, QByteArray &body,
+                              QByteArray &contentType, int &status) {
+        if (target == QLatin1String("/")) {
+            status = 200;
+            contentType = QByteArrayLiteral("text/html; charset=utf-8");
+            body = QStringLiteral("<html><head><title>MacCMS 测试站</title></head>"
+                                  "<body>maccms vodsearch</body></html>")
+                       .toUtf8();
+            return;
+        }
+        status = 404;
+        contentType = QByteArrayLiteral("text/html");
+        body = QByteArrayLiteral("not found");
+    });
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+    prober.start(QUrl(server.baseUrl()), MediaType::Music, {}, false);
+    QVERIFY2(finished.wait(15000), "音乐误判测试在 15 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(!result.ok, "音乐类型不应把 MacCMS 首页配成网页型影视源");
+    QVERIFY(result.siteKind != SourceProbe::SiteKind::MaccmsWeb);
+    QVERIFY(result.config.provider != QStringLiteral("maccms_web"));
+}
+
+void CoreLogicTest::sourceProbeThirdKeywordValidation()
+{
+    // 第二轮空结果不能直接放行：继续用第三关键词确认，避免 catalog-only
+    // 或只认单个词的接口被当成可搜索源。
+    ProbeSiteServer server([](const QString &target, QByteArray &body,
+                              QByteArray &contentType, int &status) {
+        const QString decoded = QUrl::fromPercentEncoding(target.toUtf8());
+        if (target == QLatin1String("/")) {
+            status = 200;
+            contentType = QByteArrayLiteral("text/html; charset=utf-8");
+            body = QByteArrayLiteral("<html><head><title>JSON 测试站</title></head><body></body></html>");
+            return;
+        }
+        if (!target.contains(QStringLiteral("provide/vod"))) {
+            status = 404;
+            contentType = QByteArrayLiteral("text/html");
+            body = QByteArrayLiteral("not found");
+            return;
+        }
+        QString title;
+        if (decoded.contains(QStringLiteral("wd=电影")))
+            title = QStringLiteral("首轮电影");
+        else if (decoded.contains(QStringLiteral("wd=庆余年")))
+            title = QStringLiteral("第三轮庆余年");
+        if (title.isEmpty()) {
+            // 第二轮故意返回空列表，验证会继续用第三关键词确认，
+            // 而不是把“请求成功但 0 条”当成通过。
+            status = 200;
+            contentType = QByteArrayLiteral("application/json");
+            body = QByteArrayLiteral("{\"list\":[]}");
+            return;
+        }
+        status = 200;
+        contentType = QByteArrayLiteral("application/json");
+        body = QByteArrayLiteral("{\"list\":[{\"vod_name\":\"")
+               + title.toUtf8()
+               + QByteArrayLiteral("\",\"vod_pic\":\"https://example.com/p.jpg\","
+                                   "\"vod_year\":\"2024\","
+                                   "\"vod_play_url\":\"第1集$https://example.com/a.m3u8\"}]}");
+    });
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+    prober.start(QUrl(server.baseUrl()), MediaType::Video, {}, false);
+    QVERIFY2(finished.wait(15000), "三轮关键词校验在 15 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("三轮关键词探测失败：") + result.error));
+    QCOMPARE(result.siteKind, SourceProbe::SiteKind::JsonConfig);
+    QCOMPARE(result.validationPasses, 3);
+    QVERIFY(result.validationNote.contains(QStringLiteral("三轮")));
+    QVERIFY(result.sampleCount > 0);
+}
+
+void CoreLogicTest::sourceProbeAutoCoversBothTypeCandidates()
+{
+    // 影视 10 条 + 音乐 16 条 = 26 条。自动识别上限如果还是 20，
+    // 后半段候选永远轮不到；这里用本地 404 站点确认两种类型都真的被请求过。
+    ProbeSiteServer server([](const QString &target, QByteArray &body,
+                              QByteArray &contentType, int &status) {
+        if (target == QLatin1String("/")) {
+            status = 200;
+            contentType = QByteArrayLiteral("text/html; charset=utf-8");
+            body = QByteArrayLiteral("<html><head><title>普通站点</title></head><body></body></html>");
+            return;
+        }
+        status = 404;
+        contentType = QByteArrayLiteral("text/html");
+        body = QByteArrayLiteral("not found");
+    });
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+    prober.start(QUrl(server.baseUrl()), MediaType::Video, {}, true);
+    QVERIFY2(finished.wait(20000), "自动识别在 20 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(!result.ok, "全 404 站点不应探测成功");
+    QVERIFY2(server.targets.size() >= 27,
+             qPrintable(QStringLiteral("自动识别只请求了 %1 次，没有覆盖 26 条候选")
+                        .arg(server.targets.size())));
+    bool sawVideo = false;
+    bool sawMusic = false;
+    for (const QString &target : server.targets) {
+        if (target.contains(QStringLiteral("provide/vod")))
+            sawVideo = true;
+        if (target.contains(QStringLiteral("/rest/search3"))
+            || target.contains(QStringLiteral("/json/stations/search")))
+            sawMusic = true;
+    }
+    QVERIFY2(sawVideo, "自动识别没有请求影视候选");
+    QVERIFY2(sawMusic, "自动识别没有请求音乐候选");
 }
 
 void CoreLogicTest::sourceTimeoutUsesConfiguredValue()

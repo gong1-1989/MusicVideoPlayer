@@ -498,6 +498,10 @@ void MaccmsWebProvider::trySuggest()
                       self->m_suggestUsed = true;
                       qCInfo(lcWeb) << "suggest 命中" << self->m_candidates.size() << "条"
                                  << self->m_root;
+                      if (self->m_validationMode) {
+                          self->finishCandidateValidation();
+                          return;
+                      }
                       self->m_nextCursor = 0;
                       self->m_active = 0;
                       self->startWorkers();
@@ -707,6 +711,10 @@ void MaccmsWebProvider::afterSearch(const QString &html, int strategy)
     }
 
     qCInfo(lcWeb) << "网页源搜索命中" << m_candidates.size() << "条" << m_root;
+    if (m_validationMode) {
+        finishCandidateValidation();
+        return;
+    }
     m_nextCursor = 0;
     m_active = 0;
     startWorkers();
@@ -722,6 +730,31 @@ void MaccmsWebProvider::nextStrategyOrFinish()
         return;
     }
     startWorkers();
+}
+
+void MaccmsWebProvider::finishCandidateValidation()
+{
+    if (m_done)
+        return;
+    m_slots.clear();
+    m_filtered = 0;
+    const int take = qMin(m_candidates.size(), m_limit);
+    for (int i = 0; i < take; ++i) {
+        const Candidate &candidate = m_candidates.at(i);
+        MediaItem item;
+        item.type = MediaType::Video;
+        item.title = candidate.title.trimmed();
+        if (item.title.isEmpty())
+            item.title = tr("影片 %1").arg(i + 1);
+        item.webUrl = candidate.detailUrl;
+        item.posterUrl = siteUrl(candidate.poster);
+        item.sourceId = m_config.id;
+        item.sourceOrigin = HeaderPolicy::originOnly(QUrl(m_root));
+        item.online = true;
+        m_slots.append(qMakePair(i, item));
+    }
+    qCInfo(lcWeb) << "网页源试搜命中" << m_slots.size() << "条" << m_root;
+    finish(QString());
 }
 
 void MaccmsWebProvider::startWorkers()

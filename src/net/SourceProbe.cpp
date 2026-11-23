@@ -2,6 +2,7 @@
 
 #include "net/ConfigSearchProvider.h"
 #include "net/HttpClient.h"
+#include "net/MaccmsWebProvider.h"
 #include "net/NetLimits.h"
 
 #include <QCryptographicHash>
@@ -26,9 +27,14 @@ constexpr int kBudgetMs = 24000;        // 整轮探测的总时限
 constexpr int kBudgetMsMusic = 32000;   // 音乐接口更多，且多数快速 404
 constexpr int kBudgetMsAuto = 40000;    // 自动识别（两种类型都试）的时限
 constexpr int kRequestTimeoutMs = 6000; // 单次请求超时
+constexpr int kWebValidationTimeoutMs = 8000; // 网页型影视只做轻量试搜
 // 内置路径影视 10 条、音乐 16 条，首页还可能抓到 /from/xxx/ 等非标准接口。
 // 上限必须给首页线索留出余量，否则后面的内置路径根本没机会被尝试。
 constexpr int kMaxAttempts = 16;
+// 自动识别要覆盖影视 10 + 音乐 16 条，不能再用 20 次把后 6 条截掉。
+constexpr int kMaxAttemptsAuto = 30;
+// 候选列表里的网页型试搜标记；不是真实 URL，只用来在候选顺序中占位。
+constexpr const char *kWebFallbackMarker = "__MVP_MACCM_WEB__";
 
 QString renderUrl(const QString &tpl, const QString &keyword, int limit)
 {
@@ -37,6 +43,38 @@ QString renderUrl(const QString &tpl, const QString &keyword, int limit)
                  QString::fromUtf8(QUrl::toPercentEncoding(keyword)));
     text.replace(QStringLiteral("{limit}"), QString::number(limit));
     return text;
+}
+
+/// 只认苹果 CMS/影视站模板的强特征，避免把普通 HTML 站点误配成网页源。
+bool hasMaccmsHomeSignals(const QString &html, const QUrl &url)
+{
+    if (html.trimmed().isEmpty())
+        return false;
+
+    const QString lower = html.toLower();
+    if (lower.contains(QStringLiteral("maccms"))
+        || lower.contains(QStringLiteral("苹果cms"))
+        || lower.contains(QStringLiteral("苹果 cms"))
+        || lower.contains(QStringLiteral("mac cms")))
+        return true;
+
+    // 搜索/详情路径足够具体：普通资讯站几乎不会同时出现这两个路径。
+    if ((lower.contains(QStringLiteral("vodsearch"))
+         || lower.contains(QStringLiteral("voddetail")))
+        && lower.contains(QStringLiteral("vod")))
+        return true;
+
+    if (lower.contains(QStringLiteral("/index.php/vod/"))
+        || lower.contains(QStringLiteral("ajax/suggest"))
+        || lower.contains(QStringLiteral("index.php/ajax/suggest")))
+        return true;
+
+    const QString path = url.path().toLower();
+    if (path.contains(QStringLiteral("/vodsearch"))
+        || path.contains(QStringLiteral("/voddetail")))
+        return true;
+
+    return false;
 }
 
 /// 把首页里抓到的接口地址补成“能带关键词搜索”的模板。
@@ -703,6 +741,11 @@ Prober::~Prober()
     }
 }
 
+bool Prober::looksLikeMaccmsHome(const QString &html, const QUrl &url)
+{
+    return hasMaccmsHomeSignals(html, url);
+}
+
 void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extraPaths,
                    bool autoDetect)
 {
@@ -719,7 +762,17 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     m_siteName.clear();
     m_inputPath.clear();
     m_homeApiHints.clear();
+    m_homeHtml.clear();
+    m_webFallbackPossible = false;
+    m_webFallbackTried = false;
+    if (m_webValidator != nullptr) {
+        m_webValidator->abort();
+        m_webValidator->deleteLater();
+        m_webValidator = nullptr;
+    }
     m_validationFirstItems.clear();
+    m_validationPasses = 0;
+    m_validationNote.clear();
     // 失败归类计数必须每次探测清零，否则同一个 Prober 复用会把上一站的失败累积过来
     m_homeOk = false;
     m_connFail = 0;
@@ -759,6 +812,11 @@ void Prober::cancel()
         m_validator->abort();
         m_validator->deleteLater();
         m_validator = nullptr;
+    }
+    if (m_webValidator != nullptr) {
+        m_webValidator->abort();
+        m_webValidator->deleteLater();
+        m_webValidator = nullptr;
     }
 }
 
@@ -817,6 +875,9 @@ void Prober::fetchHome()
                 // 首页直接写出的接口路径优先于盲试内置路径；
                 // 这是覆盖 /inc/api.php、/from/xxx/、非标准端口的关键。
                 m_homeApiHints = extractHomeApiHints(html);
+                m_homeHtml = html;
+                if (m_type == MediaType::Video || m_auto)
+                    m_webFallbackPossible = looksLikeMaccmsHome(html, m_site);
             } else {
                 // 首页失败也要归类，否则用户只看到一句笼统的“没有找到接口”
                 if (status == 0)
@@ -843,45 +904,52 @@ void Prober::fetchHome()
         }
         m_homeApiHints = jsonHints + xmlHints;
         const QString userPath = m_inputPath;
-        QStringList paths;
-        QVector<MediaType> pathTypes;
+        const MediaType otherType =
+            m_type == MediaType::Video ? MediaType::Music : MediaType::Video;
+        QStringList samePaths;
+        QStringList otherPaths;
+        QVector<MediaType> sameTypes;
+        QVector<MediaType> otherTypes;
         QSet<QString> seenPaths;
-        auto addPath = [&](QString path, MediaType type) {
+        auto addPath = [&](QString path, MediaType type, bool other) {
             path = appendProbeQuery(path, type);
             if (path.isEmpty() || !path.contains(QLatin1String("{keyword}")))
                 return; // 没有关键词占位符的地址不能当搜索源
             if (seenPaths.contains(path))
                 return;
             seenPaths.insert(path);
-            paths.append(path);
-            pathTypes.append(type);
+            if (other) {
+                otherPaths.append(path);
+                otherTypes.append(type);
+            } else {
+                samePaths.append(path);
+                sameTypes.append(type);
+            }
         };
 
         if (userPath.size() > 1 && looksLikeApiPath(userPath))
-            addPath(userPath, m_type);
+            addPath(userPath, m_type, false);
 
         for (const QString &hint : m_homeApiHints)
-            addPath(hint, m_type);
+            addPath(hint, m_type, false);
 
         for (const QString &extra : m_extraPaths) {
             const QString trimmed = extra.trimmed();
             if (trimmed.isEmpty())
                 continue;
             if (trimmed.startsWith(QLatin1String("http")))
-                addPath(trimmed, m_type);
+                addPath(trimmed, m_type, false);
             else
                 addPath(trimmed.startsWith(QLatin1Char('/')) ? trimmed
                                                              : QLatin1Char('/') + trimmed,
-                        m_type);
+                        m_type, false);
         }
 
-        const MediaType otherType =
-            m_type == MediaType::Video ? MediaType::Music : MediaType::Video;
         for (const QString &path : defaultPaths(m_type))
-            addPath(path, m_type);
+            addPath(path, m_type, false);
         if (m_auto) {
             for (const QString &path : defaultPaths(otherType))
-                addPath(path, otherType);
+                addPath(path, otherType, true);
         }
 
         m_candidates.clear();
@@ -896,26 +964,39 @@ void Prober::fetchHome()
         };
 
         // 完整 URL 只试一次；相对路径先走用户输入的域名，再走首页跳转域名。
-        // 必须按“域名优先”而不是“路径优先”排，否则一个 301 站点就会
-        // 把一半尝试次数浪费在旧域名上。
+        // 先试当前类型的全部候选，再决定是否转网页型，最后才试另一种类型。
+        // 否则影视网页站会把 16 次音乐路径都浪费掉，甚至在 20 次上限前触不到
+        // 网页型 fallback。
         const bool hasRedirect = m_redirectOrigin.isValid() && !m_redirectOrigin.host().isEmpty()
                               && m_redirectOrigin != m_origin;
-        for (int i = 0; i < paths.size(); ++i) {
-            if (paths.at(i).startsWith(QLatin1String("http"), Qt::CaseInsensitive))
-                appendCandidate(paths.at(i), pathTypes.value(i, m_type));
-        }
         const QVector<QUrl> origins = hasRedirect ? QVector<QUrl>{m_origin, m_redirectOrigin}
                                                   : QVector<QUrl>{m_origin};
-        for (const QUrl &origin : origins) {
+        auto appendForOrigin = [&](const QStringList &paths,
+                                   const QVector<MediaType> &types,
+                                   const QUrl &origin) {
             for (int i = 0; i < paths.size(); ++i) {
                 const QString path = paths.at(i);
-                if (path.startsWith(QLatin1String("http"), Qt::CaseInsensitive))
+                if (path.startsWith(QLatin1String("http"), Qt::CaseInsensitive)) {
+                    appendCandidate(path, types.value(i, m_type));
                     continue;
+                }
                 const QString relative = path.startsWith(QLatin1Char('/'))
                                              ? path
                                              : QLatin1Char('/') + path;
-                appendCandidate(origin.toString() + relative, pathTypes.value(i, m_type));
+                appendCandidate(origin.toString() + relative, types.value(i, m_type));
             }
+        };
+
+        for (const QUrl &origin : origins)
+            appendForOrigin(samePaths, sameTypes, origin);
+
+        // 同类型 JSON 候选都失败后再给网页型影视一次机会；标记不是真实 URL。
+        if (m_webFallbackPossible)
+            appendCandidate(QString::fromLatin1(kWebFallbackMarker), MediaType::Video);
+
+        if (m_auto) {
+            for (const QUrl &origin : origins)
+                appendForOrigin(otherPaths, otherTypes, origin);
         }
 
         probeNextCandidate();
@@ -926,20 +1007,33 @@ void Prober::probeNextCandidate()
 {
     if (m_finished)
         return;
-    const int baseAttempts = m_auto ? 20 : kMaxAttempts;
+    const int baseAttempts = m_auto ? kMaxAttemptsAuto : kMaxAttempts;
     // 首页线索和用户自定义路径是额外候选，不能占用内置路径的预算。
     const int maxAttempts = baseAttempts + m_extraPaths.size() + m_homeApiHints.size();
     if (m_candidateIndex >= m_candidates.size() || m_candidateIndex >= maxAttempts) {
+        // 候选末尾还没走到网页型标记时，也要给网页型一次机会。
+        if (m_webFallbackPossible && !m_webFallbackTried) {
+            tryWebFallback();
+            return;
+        }
         fail(diagnoseFailure());
         return;
     }
     if (!budgetLeft()) {
+        if (m_webFallbackPossible && !m_webFallbackTried) {
+            tryWebFallback();
+            return;
+        }
         fail(tr("探测超时：%1 个候选里没有一个在时限内返回").arg(m_candidateIndex));
         return;
     }
 
     const int candidateIndex = m_candidateIndex++;
     const QString tpl = m_candidates.at(candidateIndex);
+    if (tpl == QString::fromLatin1(kWebFallbackMarker)) {
+        tryWebFallback();
+        return;
+    }
     const MediaType candidateType = m_candidateTypes.value(candidateIndex, m_type);
     // 音乐真实验证用的是 love/jazz，而不是中文“音乐/歌曲”：
     // 国际音乐 API（iTunes/Audius/ccMixter/Radio Browser）对英文基准词更稳定，
@@ -1239,6 +1333,38 @@ void Prober::startValidation(const SourceConfig &config, const QString &keyword,
                     return;
                 }
 
+                if (pass == 2) {
+                    if (error.isEmpty() && !items.isEmpty()
+                        && sameResultTitles(m_validationFirstItems, items)) {
+                        recordAttempt(config.urlTemplate, 0,
+                                      tr("接口忽略关键词，只返回固定列表，不能作为搜索源"));
+                        m_validationFirstItems.clear();
+                        probeNextCandidate();
+                        return;
+                    }
+                    if (error.isEmpty() && items.isEmpty()) {
+                        // 第二次恰好没有结果并不等于接口不能用：影视站的片库可能
+                        // 没有“电视剧”，音乐 API 也可能没有 jazz。再补一个高频词，
+                        // 三轮都空才降级为“仅首轮命中”，并明确提示用户。
+                        const QString thirdKeyword =
+                            config.mediaType == MediaType::Video ? tr("庆余年")
+                                                                  : QStringLiteral("hello");
+                        startValidation(config, thirdKeyword, 3);
+                        return;
+                    }
+                    if (!error.isEmpty()) {
+                        m_validationPasses = 1;
+                        m_validationNote = tr("第二关键词请求失败，按首轮结果接受");
+                    } else {
+                        m_validationPasses = 2;
+                        m_validationNote = tr("两轮关键词校验通过");
+                    }
+                    acceptConfig(config, items.isEmpty() ? m_validationFirstItems : items);
+                    return;
+                }
+
+                // 第三轮：有结果就再确认一次“不是固定列表”；仍为空则按首轮接受，
+                // 但 validationPasses 保持 1，让界面知道只验证了一个关键词。
                 if (error.isEmpty() && !items.isEmpty()
                     && sameResultTitles(m_validationFirstItems, items)) {
                     recordAttempt(config.urlTemplate, 0,
@@ -1247,25 +1373,147 @@ void Prober::startValidation(const SourceConfig &config, const QString &keyword,
                     probeNextCandidate();
                     return;
                 }
-                // 第二次请求失败或没有结果时，说明首轮确实按关键词返回过数据，
-                // 不能用一次网络抖动否定整个源。
-                if (error.isEmpty() && items.isEmpty())
-                    qCInfo(lcProbe) << config.id << "二次关键词没有命中，按首轮结果接受";
+                if (error.isEmpty() && !items.isEmpty()) {
+                    m_validationPasses = 3;
+                    m_validationNote = tr("三轮关键词校验通过");
+                    acceptConfig(config, items);
+                    return;
+                }
+                m_validationPasses = 1;
+                m_validationNote = tr("第三关键词仍无结果，仅首轮命中，建议手工确认");
+                qCInfo(lcProbe) << config.id << "第三关键词没有命中，按首轮结果接受";
                 acceptConfig(config, m_validationFirstItems);
             });
     provider->search(keyword, 10);
+}
+
+void Prober::tryWebFallback()
+{
+    if (m_finished || m_webFallbackTried)
+        return;
+    m_webFallbackTried = true;
+
+    if (!m_webFallbackPossible || (!m_auto && m_type != MediaType::Video)) {
+        probeNextCandidate();
+        return;
+    }
+
+    QUrl origin = m_origin;
+    if (!origin.isValid() || origin.host().isEmpty())
+        origin = originOf(m_site);
+    if (!origin.isValid() || origin.host().isEmpty()) {
+        recordAttempt(m_site.toString(), 0, tr("网页型影视源没有可用站点域名"));
+        probeNextCandidate();
+        return;
+    }
+
+    SourceConfig config;
+    QString hostPart = origin.host().toLower();
+    hostPart.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("_"));
+    if (hostPart.isEmpty())
+        hostPart = QStringLiteral("site");
+    const QString suffix = QString::fromLatin1(
+        QCryptographicHash::hash(origin.toString().toUtf8(), QCryptographicHash::Sha1)
+            .toHex()
+            .left(6));
+    config.id = QStringLiteral("web_") + hostPart + QLatin1Char('_') + suffix;
+    config.name = m_siteName.isEmpty() ? origin.host() : m_siteName;
+    if (!config.name.contains(QStringLiteral("网页")))
+        config.name += tr("（网页源）");
+    config.enabled = true;
+    config.builtin = false; // 用户添加的网页源，允许删除
+    config.kind = QStringLiteral("builtin");
+    config.provider = QStringLiteral("maccms_web");
+    config.mediaType = MediaType::Video;
+    config.urlTemplate = origin.toString() + QLatin1Char('/');
+    config.headers.insert(QStringLiteral("Referer"), m_origin.toString() + QLatin1Char('/'));
+
+    if (!config.isValid()) {
+        recordAttempt(config.urlTemplate, 0, tr("网页型影视源配置不完整"));
+        probeNextCandidate();
+        return;
+    }
+
+    // 只验搜索页是否真的按关键词返回影片链接，不抓详情/播放页；
+    // 完整播放链交给保存后的“测试”按钮，避免探测阶段长时间卡住。
+    MaccmsWebProvider *provider = new MaccmsWebProvider(config, m_http, this);
+    m_webValidator = provider;
+    provider->setValidationMode(true);
+    QPointer<MaccmsWebProvider> guard(provider);
+
+    QTimer::singleShot(kWebValidationTimeoutMs, this, [this, guard] {
+        if (m_finished || guard.isNull() || m_webValidator != guard)
+            return;
+        m_webValidator->abort();
+        m_webValidator->deleteLater();
+        m_webValidator = nullptr;
+        recordAttempt(m_site.toString(), 0, tr("网页型影视试搜超时"));
+        probeNextCandidate();
+    });
+
+    connect(provider, &SearchProviderBase::finished, this,
+            [this, config, guard](const QString &sourceId, const QVector<MediaItem> &items,
+                                  int filtered, const QString &error) {
+                Q_UNUSED(sourceId)
+                Q_UNUSED(filtered)
+                if (m_finished)
+                    return;
+                if (m_webValidator != guard)
+                    return;
+                if (!guard.isNull())
+                    guard->deleteLater();
+                m_webValidator = nullptr;
+
+                if (error.isEmpty() && !items.isEmpty()) {
+                    acceptWebConfig(config, items);
+                    return;
+                }
+                recordAttempt(config.urlTemplate, 0,
+                              error.isEmpty() ? tr("网页型影视试搜没有结果")
+                                              : tr("网页型影视试搜失败：%1").arg(error));
+                probeNextCandidate();
+            });
+
+    provider->search(tr("电影"), 3);
+}
+
+void Prober::acceptWebConfig(const SourceConfig &config, const QVector<MediaItem> &items)
+{
+    Result result = m_result;
+    result.ok = true;
+    result.siteKind = SiteKind::MaccmsWeb;
+    result.mediaType = MediaType::Video;
+    result.autoDetected = m_result.hintType != MediaType::Video;
+    result.siteName = config.name;
+    result.siteUrl = m_site;
+    result.config = config;
+    result.sampleCount = items.size();
+    result.validationPasses = 1;
+    result.validationNote = tr("网页型影视源试搜命中 %1 条").arg(items.size());
+    const int take = qMin(items.size(), 5);
+    for (int i = 0; i < take; ++i) {
+        QString line = items.at(i).displayName();
+        const QString meta = items.at(i).metaLine();
+        if (!meta.isEmpty())
+            line += QStringLiteral("  ·  ") + meta;
+        result.sampleTitles.append(line);
+    }
+    done(result);
 }
 
 void Prober::acceptConfig(const SourceConfig &config, const QVector<MediaItem> &items)
 {
     Result result = m_result;
     result.ok = true;
+    result.siteKind = SiteKind::JsonConfig;
     result.mediaType = config.mediaType;
     result.autoDetected = config.mediaType != m_result.hintType;
     result.siteName = config.name;
     result.siteUrl = m_site;
     result.config = config;
     result.sampleCount = items.size();
+    result.validationPasses = m_validationPasses;
+    result.validationNote = m_validationNote;
     const int take = qMin(items.size(), 5);
     for (int i = 0; i < take; ++i) {
         QString line = items.at(i).displayName();
@@ -1317,6 +1565,9 @@ QString Prober::diagnoseFailure() const
                   .arg(m_jsonNoFields)
             : tr("接口有结果数组但猜不出标题/播放地址字段（%1 次）：该站点字段命名不标准，需要手动配置字段映射")
                   .arg(m_jsonNoFields);
+    if (m_webFallbackPossible || m_webFallbackTried)
+        return tr("已识别为网页型影视站，但网页搜索试搜没有命中：站点搜索页可能改版、关闭搜索或需要登录；"
+                  "可以先保存为网页型影视源，再在源管理里点“测试”确认");
     if (m_notJson > 0 && m_notFound == 0)
         return music
             ? tr("地址能访问但返回网页/播放器（%1 次），不是音乐 JSON 接口：请直接填 API 地址，例如 /rest/search3?f=json、/api/v1/tracks/?q=、/json/stations/search?name=")
@@ -1335,12 +1586,21 @@ QString Prober::diagnoseFailure() const
 }
 
 void Prober::fail(const QString &error)
-{    Result result = m_result;
+{
+    Result result = m_result;
     result.ok = false;
     result.mediaType = m_result.hintType;
     result.siteName = m_siteName;
     result.siteUrl = m_site;
     result.error = error;
+    if (m_denied > 0 || m_authRequired > 0)
+        result.siteKind = SiteKind::AuthRequired;
+    else if (m_xml > 0)
+        result.siteKind = SiteKind::XmlOnly;
+    else if (m_webFallbackPossible || m_webFallbackTried)
+        result.siteKind = SiteKind::WebOnlyNoApi;
+    else
+        result.siteKind = SiteKind::Unknown;
     done(result);
 }
 
@@ -1352,6 +1612,10 @@ void Prober::done(const Result &result)
     if (m_validator != nullptr) {
         m_validator->deleteLater();
         m_validator = nullptr;
+    }
+    if (m_webValidator != nullptr) {
+        m_webValidator->deleteLater();
+        m_webValidator = nullptr;
     }
     emit finished(result);
 }

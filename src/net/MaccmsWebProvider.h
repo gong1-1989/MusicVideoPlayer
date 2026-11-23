@@ -31,7 +31,12 @@ public:
     void search(const QString &keyword, int limit) override;
     void abort() override;
 
+    /// 探测阶段只验证“搜索页确实按关键词返回影片链接”，
+    /// 命中候选后立即结束，不抓详情页和播放页。
+    void setValidationMode(bool enabled) { m_validationMode = enabled; }
+
 private:
+    void finishCandidateValidation();
     struct Candidate
     {
         QString title;
@@ -95,6 +100,7 @@ private:
     bool m_done = false;
     bool m_suggestUsed = false;      // 本次结果来自 ajax/suggest
     bool m_htmlSearchTried = false;  // 已经试过 HTML 搜索链（防止 suggest 失败后反复回退）
+    bool m_validationMode = false;   // 探测用：只验搜索命中，不抓详情/播放
 };
 
 #endif // MACCMSWEBPROVIDER_H
