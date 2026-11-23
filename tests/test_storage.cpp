@@ -65,6 +65,7 @@ private slots:
     void sourceRegistryCorruptFileBacksUp();
     void sourceRegistryCorruptBackupNameCollision();
     void sourceRegistryUnwritableDataDirFails();
+    void sourceRegistryDirectoryPathFailsWithoutOverwrite();
     void downloadJobRoundTripEncryptsSensitiveHeaders();
     void downloadPathsAvoidOverwriteAndPickSuffix();
     void downloadPathsTreatPartialAsOccupied();
@@ -375,6 +376,24 @@ void StorageTest::sourceRegistryUnwritableDataDirFails()
     QVERIFY(!error.isEmpty());
 }
 
+void StorageTest::sourceRegistryDirectoryPathFailsWithoutOverwrite()
+{
+    const QString path = StoragePaths::dataFile(QStringLiteral("sources.json"));
+    // 目录占了 sources.json 的位置：不是“内容损坏”，不能备份/删除/覆盖，
+    // 也不能用预置源把现场抹掉，只能明确报错让用户处理。
+    QVERIFY(QDir().mkpath(path));
+
+    SourceRegistry registry;
+    QVERIFY(!registry.load());
+    QVERIFY(registry.lastError().contains(QStringLiteral("不是普通文件")));
+    QVERIFY(QDir(path).exists());
+
+    const QStringList backups =
+        QDir(StoragePaths::dataDir())
+            .entryList({QStringLiteral("sources.json.corrupt-*")}, QDir::Files);
+    QVERIFY(backups.isEmpty());
+}
+
 void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
 {
     DownloadJob job;
@@ -501,6 +520,16 @@ void StorageTest::downloadPathsTreatPartialAsOccupied()
                                           return candidate.endsWith(QStringLiteral("队列占用.mp4"));
                                       });
     QCOMPARE(queueReserved, QDir(dir).filePath(QStringLiteral("队列占用 (1).mp4")));
+
+    // 队列里另一个任务的最终名可能是 `HLS占用.mp4.ts`（或它的中间名），
+    // 只按最终名比较会让当前任务拿到 `HLS占用.mp4`，随后与派生文件撞名。
+    const QString hlsReserved =
+        DownloadPaths::uniqueFilePath(dir, QStringLiteral("HLS占用.mp4"),
+                                      [](const QString &candidate) {
+                                          return candidate.endsWith(
+                                              QStringLiteral("HLS占用.mp4.ts"));
+                                      });
+    QCOMPARE(hlsReserved, QDir(dir).filePath(QStringLiteral("HLS占用 (1).mp4")));
 }
 
 void StorageTest::downloadManagerReservesActiveTarget()

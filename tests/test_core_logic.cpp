@@ -1967,6 +1967,9 @@ void CoreLogicTest::playlistSnifferRecognizesBody()
 {
     QVERIFY(PlaylistSniffer::metadataIndicatesPlaylist(
         QUrl(QStringLiteral("https://cdn.example.com/a/index.m3u8")), QString()));
+    // 部分源会在 m3u8 地址末尾多给一个斜杠，仍然应识别为播放列表。
+    QVERIFY(PlaylistSniffer::metadataIndicatesPlaylist(
+        QUrl(QStringLiteral("https://cdn.example.com/a/index.m3u8/")), QString()));
     QVERIFY(PlaylistSniffer::metadataIndicatesPlaylist(
         QUrl(QStringLiteral("https://cdn.example.com/signed/abc")),
         QStringLiteral("application/vnd.apple.mpegurl")));
@@ -2129,6 +2132,14 @@ void CoreLogicTest::configMapperBoolRulesDoNotMixWithNumbers()
         item, QJsonObject{{QStringLiteral("path"), QStringLiteral("play_count")},
                           {QStringLiteral("op"), QStringLiteral("gt")},
                           {QStringLiteral("value"), 10}}));
+
+    // all/any 是可编辑规则，不能无限递归；超过 64 层按不匹配处理。
+    QJsonObject deep{{QStringLiteral("path"), QStringLiteral("is_streamable")},
+                     {QStringLiteral("op"), QStringLiteral("eq")},
+                     {QStringLiteral("value"), true}};
+    for (int i = 0; i < 70; ++i)
+        deep = QJsonObject{{QStringLiteral("all"), QJsonArray{deep}}};
+    QVERIFY(!ConfigMapper::ruleMatches(item, deep));
 }
 
 void CoreLogicTest::configMapperSplitsEpisodesAndResolvesUrls()
@@ -2755,6 +2766,20 @@ void CoreLogicTest::hlsCacheManifestParsesMasterAndSingleFile()
     QVERIFY(!HlsCacheManifest::sameUrlIgnoringQuery(
         QUrl(QStringLiteral("https://cdn.example.com/fmp4/v4/prog.m3u8")),
         QUrl(QStringLiteral("https://cdn.example.com/fmp4/v9/prog.m3u8"))));
+    // id/seq 是能区分资源的稳定参数，不能因为“忽略 query”被当成同一文件。
+    QVERIFY(!HlsCacheManifest::sameUrlIgnoringQuery(
+        QUrl(QStringLiteral("https://cdn.example.com/fmp4/prog.m3u8?id=1&token=one")),
+        QUrl(QStringLiteral("https://cdn.example.com/fmp4/prog.m3u8?id=2&token=two"))));
+
+    // 有 STREAM-INF 但没有任何可用变体地址时，必须返回 false 并带错误，
+    // 不能返回 true 让调用方拿到空 variants 继续执行。
+    HlsCacheManifest::Master emptyMaster;
+    QString emptyError;
+    QVERIFY(!HlsCacheManifest::parseMaster(
+        QByteArrayLiteral("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\n"),
+        masterUrl, &emptyMaster, &emptyError));
+    QVERIFY(emptyMaster.variants.isEmpty());
+    QVERIFY(!emptyError.isEmpty());
 }
 
 void CoreLogicTest::lyricsCacheRoundTrip()

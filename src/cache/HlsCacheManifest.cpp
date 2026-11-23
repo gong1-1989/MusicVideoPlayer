@@ -1,5 +1,7 @@
 #include "cache/HlsCacheManifest.h"
 
+#include "media/MediaItem.h"
+
 #include <QRegularExpression>
 #include <QStringList>
 
@@ -29,13 +31,6 @@ QString capture(const QRegularExpression &re, const QString &line)
 {
     const QRegularExpressionMatch match = re.match(line);
     return match.hasMatch() ? match.captured(1).trimmed() : QString();
-}
-
-int effectivePort(const QUrl &url)
-{
-    if (url.port() >= 0)
-        return url.port();
-    return url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) == 0 ? 443 : 80;
 }
 
 } // namespace
@@ -103,7 +98,7 @@ bool parseMaster(const QByteArray &body, const QUrl &baseUrl, Master *out, QStri
     if (out->variants.isEmpty()) {
         if (error != nullptr)
             *error = QStringLiteral("主播放列表里没有可用的码率地址");
-        return true;
+        return false;
     }
     return true;
 }
@@ -186,10 +181,15 @@ bool sameUrlIgnoringQuery(const QUrl &a, const QUrl &b)
 {
     if (!a.isValid() || !b.isValid())
         return false;
-    return a.scheme().compare(b.scheme(), Qt::CaseInsensitive) == 0
-        && a.host().compare(b.host(), Qt::CaseInsensitive) == 0
-        && effectivePort(a) == effectivePort(b)
-        && a.path() == b.path();
+    // 只忽略会轮换的签名参数，保留 id/seq 等稳定查询参数；整段忽略 query
+    // 会把 ?id=1 与 ?id=2 当成同一资源，错误启用“单文件整段下载”。
+    QUrl left = a;
+    QUrl right = b;
+    left.setScheme(left.scheme().toLower());
+    left.setHost(left.host().toLower());
+    right.setScheme(right.scheme().toLower());
+    right.setHost(right.host().toLower());
+    return identityUrlWithoutVolatileQuery(left) == identityUrlWithoutVolatileQuery(right);
 }
 
 } // namespace HlsCacheManifest

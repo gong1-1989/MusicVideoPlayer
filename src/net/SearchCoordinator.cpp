@@ -325,6 +325,10 @@ void SearchCoordinator::finishSearch()
 
 void SearchCoordinator::cancel()
 {
+    // 没有在途请求时不要发空结果：调用方可能只是收尾，空信号会把已经
+    // 展示的搜索结果清掉。
+    if (!m_busy)
+        return;
     if (m_globalTimer != nullptr)
         m_globalTimer->stop();
     const QVector<SourceTask> tasks = m_tasks;

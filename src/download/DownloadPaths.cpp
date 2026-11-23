@@ -52,7 +52,12 @@ QString uniqueFilePath(const QString &directory, const QString &fileName,
             return true;
         return inUse
             && (inUse(candidate)
-                || inUse(candidate + QStringLiteral(".mvpdownload")));
+                || inUse(candidate + QStringLiteral(".mvpdownload"))
+                // 队列里已有任务的最终名可能是 `foo.mp4.ts`，或 HLS 任务的
+                // 中间名是 `foo.mp4.ts`；只检查最终名和 `.mvpdownload` 会
+                // 让另一个任务拿到 `foo.mp4` 后与这些派生文件撞名。
+                || inUse(candidate + QStringLiteral(".ts"))
+                || inUse(candidate + QStringLiteral(".ts.mvpdownload")));
     };
     if (!occupied(base))
         return base;

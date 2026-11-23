@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QStringList>
 
 namespace {
 
@@ -291,10 +292,22 @@ void setShortcut(const QString &actionId, const QString &sequence)
 
 QString lastDir()
 {
-    return settings()
-        .value(QLatin1String(kLastDir),
-               QStandardPaths::writableLocation(QStandardPaths::MusicLocation))
-        .toString();
+    QString saved = settings().value(QLatin1String(kLastDir)).toString();
+    // 设置里可能是空字符串（旧版本或清理过），也可能指向已删除/拔掉的
+    // 目录；QFileDialog 收到这种路径会从“桌面/文档”随机位置打开，这里
+    // 逐级回退到音乐目录、主目录、当前目录，保证始终给一个存在的起点。
+    if (!saved.isEmpty() && QDir(saved).exists())
+        return saved;
+    const QStringList fallbacks = {
+        QStandardPaths::writableLocation(QStandardPaths::MusicLocation),
+        QStandardPaths::writableLocation(QStandardPaths::HomeLocation),
+        QDir::currentPath(),
+    };
+    for (const QString &candidate : fallbacks) {
+        if (!candidate.isEmpty() && QDir(candidate).exists())
+            return candidate;
+    }
+    return QDir::homePath();
 }
 
 void setLastDir(const QString &dir)

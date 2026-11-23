@@ -222,6 +222,12 @@ void HlsCacheBuilder::onMasterReady(const QByteArray &body, const QUrl &finalUrl
         beginVariantSelection();
         return;
     }
+    // parseMaster 返回 false 有两种情况：不是主列表，或确实是主列表但没有
+    // 可用码率。后者带 masterError，必须直接报错，不能退回去当媒体列表解析。
+    if (!masterError.isEmpty()) {
+        finishFailed(masterError);
+        return;
+    }
 
     // 原始地址本身就是媒体列表，没有码率可选，直接按视频轨处理。
     HlsCacheManifest::MediaTrack track;
@@ -662,8 +668,13 @@ void HlsCacheBuilder::onRemuxFinished(bool success, const QString &outputPath,
         m_remux->deleteLater();
         m_remux = nullptr;
     }
-    if (!m_active)
+    if (!m_active) {
+        // 取消后 MediaRemux 才完成：此时没有任务认领输出，必须删掉，
+        // 否则缓存目录会留下一个无主 MP4/半成品，后续扫描也找不到归属。
+        if (!outputPath.isEmpty() && QFileInfo::exists(outputPath))
+            QFile::remove(outputPath);
         return;
+    }
 
     if (!success) {
         finishFailed(error.isEmpty() ? tr("FFmpeg 无损转封装失败") : error);

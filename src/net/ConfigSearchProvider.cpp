@@ -382,9 +382,11 @@ void ConfigSearchProvider::launchDetails()
 
         QHash<QString, QString> vars;
         // 详情模板的变量也要按 URL 组件编码：搜索结果里的 id/title/artist
-        // 可能带空格、&、#，原样替换会把 query 拆断或注入额外参数。
+        // 可能带空格、&、#，原样替换会把 query 拆断或注入额外参数。斜杠要
+        // 保留，部分源的 id 是 `artist/album/track` 形式，编码成 %2F 会被
+        // 服务端当成一个字面 id 而查不到。
         const auto encoded = [](const QString &value) {
-            return QString::fromUtf8(QUrl::toPercentEncoding(value));
+            return QString::fromUtf8(QUrl::toPercentEncoding(value, QByteArrayLiteral("/")));
         };
         vars.insert(QStringLiteral("keyword"), encoded(m_keyword));
         vars.insert(QStringLiteral("id"), encoded(m_pendingIds.at(index)));

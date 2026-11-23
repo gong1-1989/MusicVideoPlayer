@@ -7,6 +7,12 @@
 
 Q_LOGGING_CATEGORY(lcMapper, "mvp.net.mapper")
 
+namespace {
+// 规则来自可编辑配置/远端 JSON，any/all 可以无限互相嵌套；限制深度，
+// 避免恶意或误配规则把递归栈打爆。
+constexpr int kMaxRuleDepth = 64;
+} // namespace
+
 namespace ConfigMapper {
 
 double toNumber(const QJsonValue &value)
@@ -71,15 +77,19 @@ QString renderTemplate(QString text, const QHash<QString, QString> &vars)
     return text;
 }
 
-bool ruleMatches(const QJsonValue &item, const QJsonObject &rule)
+bool ruleMatchesAtDepth(const QJsonValue &item, const QJsonObject &rule, int depth)
 {
     if (rule.isEmpty())
         return false;
+    if (depth > kMaxRuleDepth) {
+        qCWarning(lcMapper) << "规则嵌套超过" << kMaxRuleDepth << "层，按不匹配处理";
+        return false;
+    }
 
     if (rule.contains(QStringLiteral("any"))) {
         const QJsonArray any = rule.value(QStringLiteral("any")).toArray();
         for (const QJsonValue &entry : any) {
-            if (entry.isObject() && ruleMatches(item, entry.toObject()))
+            if (entry.isObject() && ruleMatchesAtDepth(item, entry.toObject(), depth + 1))
                 return true;
         }
         return false;
@@ -87,7 +97,8 @@ bool ruleMatches(const QJsonValue &item, const QJsonObject &rule)
     if (rule.contains(QStringLiteral("all"))) {
         const QJsonArray all = rule.value(QStringLiteral("all")).toArray();
         for (const QJsonValue &entry : all) {
-            if (!entry.isObject() || !ruleMatches(item, entry.toObject()))
+            if (!entry.isObject()
+                || !ruleMatchesAtDepth(item, entry.toObject(), depth + 1))
                 return false;
         }
         return true;
@@ -132,6 +143,11 @@ bool ruleMatches(const QJsonValue &item, const QJsonObject &rule)
 
     qCWarning(lcMapper) << "未知的过滤操作符：" << op;
     return false;
+}
+
+bool ruleMatches(const QJsonValue &item, const QJsonObject &rule)
+{
+    return ruleMatchesAtDepth(item, rule, 0);
 }
 
 QString mapString(const QJsonValue &node, const QHash<QString, QString> &fields,

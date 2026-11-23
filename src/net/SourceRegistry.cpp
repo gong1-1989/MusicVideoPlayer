@@ -291,16 +291,22 @@ bool SourceRegistry::load()
     QString selectedPath;
     QJsonArray selectedArray;
     QString parseErrorReason;
+    bool unreadable = false;
 
     // 源配置只读程序目录下的 Data/sources.json，不再回退用户 AppData。
     const QFileInfo info(primary);
     if (info.exists()) {
         if (!info.isFile()) {
-            parseErrorReason = tr("%1：不是普通文件").arg(primary);
+            m_lastError = tr("%1：不是普通文件；未备份、未覆盖。").arg(primary);
+            unreadable = true;
         } else {
             QFile file(primary);
             if (!file.open(QIODevice::ReadOnly)) {
-                parseErrorReason = tr("%1：%2").arg(primary, file.errorString());
+                // 打不开不等于内容损坏：文件被占用/权限不足时备份通常也会失败，
+                // 不能把它当损坏文件删改，否则一次临时占用会丢掉用户配置。
+                m_lastError = tr("%1：无法读取（%2）；未备份、未覆盖。")
+                                  .arg(primary, file.errorString());
+                unreadable = true;
             } else if (file.size() > kMaxSourceFileBytes) {
                 parseErrorReason = tr("%1：文件超过 %2 MB 上限")
                                        .arg(primary)
@@ -321,6 +327,11 @@ bool SourceRegistry::load()
                 }
             }
         }
+    }
+
+    if (unreadable) {
+        qCWarning(lcRegistry) << m_lastError;
+        return false;
     }
 
     if (selectedPath.isEmpty()) {
