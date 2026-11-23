@@ -341,12 +341,21 @@ bool sameResultTitles(const QVector<MediaItem> &first, const QVector<MediaItem> 
 {
     if (first.size() != second.size() || first.isEmpty())
         return false;
-    QSet<QString> titles;
-    titles.reserve(second.size());
+    // 必须按“标题出现次数”比较：只比较集合会把 A,A,B 与 A,B,B 误判成同一组，
+    // 结果是顺序/重复变化被当成固定列表，或者反过来漏判。
+    QHash<QString, int> counts;
+    counts.reserve(second.size());
     for (const MediaItem &item : second)
-        titles.insert(item.title.trimmed());
+        ++counts[item.title.trimmed()];
     for (const MediaItem &item : first) {
-        if (!titles.contains(item.title.trimmed()))
+        const QString title = item.title.trimmed();
+        auto it = counts.find(title);
+        if (it == counts.end() || it.value() <= 0)
+            return false;
+        --it.value();
+    }
+    for (int count : counts) {
+        if (count != 0)
             return false;
     }
     return true;
@@ -741,11 +750,6 @@ Prober::~Prober()
     }
 }
 
-bool Prober::looksLikeMaccmsHome(const QString &html, const QUrl &url)
-{
-    return hasMaccmsHomeSignals(html, url);
-}
-
 void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extraPaths,
                    bool autoDetect)
 {
@@ -762,7 +766,9 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     m_siteName.clear();
     m_inputPath.clear();
     m_homeApiHints.clear();
-    m_homeHtml.clear();
+    // 重定向域名是上一站的兜底地址；复用同一个 Prober 时必须清空，
+    // 否则会把上一站的接口再拼到新站上试一遍。
+    m_redirectOrigin = QUrl();
     m_webFallbackPossible = false;
     m_webFallbackTried = false;
     if (m_webValidator != nullptr) {
@@ -875,9 +881,8 @@ void Prober::fetchHome()
                 // 首页直接写出的接口路径优先于盲试内置路径；
                 // 这是覆盖 /inc/api.php、/from/xxx/、非标准端口的关键。
                 m_homeApiHints = extractHomeApiHints(html);
-                m_homeHtml = html;
                 if (m_type == MediaType::Video || m_auto)
-                    m_webFallbackPossible = looksLikeMaccmsHome(html, m_site);
+                    m_webFallbackPossible = hasMaccmsHomeSignals(html, m_site);
             } else {
                 // 首页失败也要归类，否则用户只看到一句笼统的“没有找到接口”
                 if (status == 0)
@@ -1008,8 +1013,12 @@ void Prober::probeNextCandidate()
     if (m_finished)
         return;
     const int baseAttempts = m_auto ? kMaxAttemptsAuto : kMaxAttempts;
-    // 首页线索和用户自定义路径是额外候选，不能占用内置路径的预算。
-    const int maxAttempts = baseAttempts + m_extraPaths.size() + m_homeApiHints.size();
+    // 首页线索、用户自定义路径、用户直接粘贴的接口都是额外候选，
+    // 不能占用内置路径的预算，否则最后几条默认路径会被截断。
+    const int userPathBudget =
+        (m_inputPath.size() > 1 && looksLikeApiPath(m_inputPath)) ? 1 : 0;
+    const int maxAttempts = baseAttempts + m_extraPaths.size() + m_homeApiHints.size()
+                            + userPathBudget;
     if (m_candidateIndex >= m_candidates.size() || m_candidateIndex >= maxAttempts) {
         // 候选末尾还没走到网页型标记时，也要给网页型一次机会。
         if (m_webFallbackPossible && !m_webFallbackTried) {
@@ -1300,17 +1309,19 @@ void Prober::startValidation(const SourceConfig &config, const QString &keyword,
 
     ConfigSearchProvider *provider = new ConfigSearchProvider(config, m_http, this);
     m_validator = provider;
+    // 捕获本次 provider 的 QPointer：回调里只能清理自己，不能把同一轮
+    // 已经启动的新 validator 当成旧对象 deleteLater。
+    QPointer<ConfigSearchProvider> guard(provider);
     connect(provider, &SearchProviderBase::finished, this,
-            [this, config, pass](const QString &sourceId, const QVector<MediaItem> &items,
-                                 int filtered, const QString &error) {
+            [this, config, pass, guard](const QString &sourceId, const QVector<MediaItem> &items,
+                                        int filtered, const QString &error) {
                 Q_UNUSED(sourceId)
                 Q_UNUSED(filtered)
-                if (m_finished)
+                if (m_finished || guard.isNull() || m_validator.data() != guard.data())
                     return;
-                if (m_validator != nullptr) {
-                    m_validator->deleteLater();
-                    m_validator = nullptr;
-                }
+                if (!guard.isNull())
+                    guard->deleteLater();
+                m_validator = nullptr;
 
                 if (pass == 1) {
                     if (!error.isEmpty()) {
@@ -1550,9 +1561,11 @@ QString Prober::diagnoseFailure() const
                   .arg(m_xml)
             : tr("接口返回 XML（%1 次）：当前探查器只解析 JSON；如果站点同时提供 /at/json/，请改用 JSON 路径，否则需要手动配置外部解析器")
                   .arg(m_xml);
-    if (m_connFail > 0 && !m_homeOk)
-        return tr("站点连不上（%1 次连接失败）：本机网络到该域名不通，或域名已失效；Deezer/Openverse/Mixcloud 等境外 API 可能被网络拦截")
-            .arg(m_connFail);
+    if (m_connFail > 0 && m_notFound == 0 && m_notJson == 0)
+        return tr("候选接口连接失败（%1 次）：%2；本机到该域名的连接被断开或超时，不是路径 404")
+            .arg(m_connFail)
+            .arg(m_homeOk ? tr("首页能打开，但接口请求连接失败")
+                          : tr("首页也打不开，域名或网络不可达"));
     if (m_jsonNoItems > 0 && m_notFound == 0 && m_notJson == 0)
         return music
             ? tr("音乐接口返回 JSON 但没有结果数组（%1 次）：Subsonic 可能是认证失败（status=failed），或关键词参数不是 query/q/name/searchTerm")
@@ -1574,12 +1587,18 @@ QString Prober::diagnoseFailure() const
                   .arg(m_notJson)
             : tr("地址能访问但返回的是网页（%1 次），不是 JSON 接口：请直接填接口地址，例如 https://域名/api.php/provide/vod/")
                   .arg(m_notJson);
-    if (m_homeOk)
+    if (m_homeOk) {
+        if (m_connFail > 0) {
+            return tr("首页能打开，但候选接口里有 %1 次连接失败、%2 次 404：先确认接口域名/端口可用，再检查路径")
+                .arg(m_connFail)
+                .arg(m_notFound);
+        }
         return music
             ? tr("首页能打开，但 %1 条候选路径全部 404：这个站可能只有网页/播放器，没有公开音乐 API，需要它的接口地址（如 /rest/search3、/api/v1/tracks）")
                   .arg(m_notFound)
             : tr("首页能打开，但 %1 条候选路径全部 404：这个站很可能只有网页、没有采集接口，需要它的接口地址（形如 https://域名/api.php/provide/vod/）")
                   .arg(m_notFound);
+    }
     return music
         ? tr("没有找到可用的音乐接口地址：这个网站可能不是标准 JSON API，需要手动配置，或先填带认证的 Subsonic/Jellyfin 地址")
         : tr("没有找到可用的接口地址，这个网站可能不是标准 JSON 接口，需要手动配置");

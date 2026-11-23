@@ -54,7 +54,7 @@ struct Result
     bool autoDetected = false;                ///< 用户没选，或识别结果与所选不同
     QString siteName;            ///< 站点标题（取不到时用 host）
     QUrl siteUrl;                ///< 重定向后的站点地址
-    SourceConfig config;         ///< 建议配置（enabled=false，等用户确认后写入）
+    SourceConfig config;         ///< 建议配置（enabled=true，保存后立即生效）
     QStringList sampleTitles;    ///< 试搜到的前几条标题
     int sampleCount = 0;
     int validationPasses = 0;    ///< JSON 完成了几个关键词校验；网页源试搜为 1
@@ -77,10 +77,7 @@ public:
                const QStringList &extraPaths = QStringList(), bool autoDetect = false);
     void cancel();
 
-    /// 首页 HTML 是否具备苹果 CMS 网页型的强特征。只用于影视/自动识别，
-    /// 不对普通 HTML 做“看起来像就猜”的弱匹配。
-    static bool looksLikeMaccmsHome(const QString &html, const QUrl &url = QUrl());
-
+    /// 首页 HTML 是否具备苹果 CMS 网页型的强特征，仅在探测内部使用。
 signals:
     void finished(const SourceProbe::Result &result);
 
@@ -110,7 +107,6 @@ private:
     QString m_siteName;
     QString m_inputPath;        ///< 用户输入的路径，重定向后仍用它识别“这本身就是接口”
     QStringList m_homeApiHints; ///< 首页 HTML 里直接出现的接口路径，优先级高于内置路径
-    QString m_homeHtml;         ///< 首页 HTML，用于判断是不是苹果 CMS 网页型站点
     bool m_webFallbackPossible = false;
     bool m_webFallbackTried = false;
 

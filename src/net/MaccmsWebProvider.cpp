@@ -42,22 +42,70 @@ QString decodeHtml(const QByteArray &raw)
 {
     if (raw.isEmpty())
         return QString();
+    // 先认 BOM：UTF-16 页面按 UTF-8 解会整页乱码，靠 charset 又可能没写。
+    if (raw.startsWith("\xEF\xBB\xBF"))
+        return QString::fromUtf8(raw.mid(3));
+    if (raw.startsWith("\xFF\xFE") || raw.startsWith("\xFE\xFF")) {
+        const bool littleEndian = raw.startsWith("\xFF\xFE");
+        QStringDecoder decoder(littleEndian ? "UTF-16LE" : "UTF-16BE");
+        return decoder.decode(raw.mid(2));
+    }
     if (looksBinary(raw)) {
         QStringDecoder decoder("GB18030");
         return decoder.decode(raw);
     }
-    return QString::fromUtf8(raw);
+    const QString utf8 = QString::fromUtf8(raw);
+    // 声明 utf-8 但正文实际是 GBK 的站点不少：出现替换字符时按 GB18030 再解一次，
+    // 避免把整站中文变成 U+FFFD。
+    if (utf8.contains(QChar(0xFFFD))) {
+        QStringDecoder decoder("GB18030");
+        return decoder.decode(raw);
+    }
+    return utf8;
 }
 
 QString decodeEntities(const QString &raw)
 {
+    // 采集站经常把同一段文字做两次 HTML 转义（&amp;#39; / &amp;quot;）。
+    // 最多解两轮；数字实体也要还原，否则片名里会出现 &#x4E07; 这种原样文本。
     QString text = raw;
-    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
-    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
-    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
-    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
-    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
-    text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+    static const QRegularExpression numeric(
+        QStringLiteral("&#(?:[xX]([0-9a-fA-F]{1,6})|([0-9]{1,7}));"));
+    for (int pass = 0; pass < 2; ++pass) {
+        const QString before = text;
+        text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+        text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+        text.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
+        text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+        text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+        text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+        text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+
+        QString decoded;
+        int last = 0;
+        QRegularExpressionMatchIterator it = numeric.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch match = it.next();
+            bool ok = false;
+            const uint code = match.captured(1).isEmpty()
+                                  ? match.captured(2).toUInt(&ok, 10)
+                                  : match.captured(1).toUInt(&ok, 16);
+            const bool valid = ok && code > 0 && code <= 0x10FFFF
+                               && !(code >= 0xD800 && code <= 0xDFFF);
+            decoded += text.mid(last, match.capturedStart() - last);
+            if (valid) {
+                const char32_t codePoint = static_cast<char32_t>(code);
+                decoded += QString::fromUcs4(&codePoint, 1);
+            } else {
+                decoded += match.captured(0);
+            }
+            last = match.capturedEnd();
+        }
+        decoded += text.mid(last);
+        text = decoded;
+        if (text == before)
+            break;
+    }
     return text;
 }
 
@@ -110,10 +158,21 @@ QUrl encodeMediaUrl(const QString &decoded)
 
 bool looksLikeStream(const QString &url)
 {
-    const QString lower = url.toLower();
-    return lower.contains(QStringLiteral(".m3u8")) || lower.contains(QStringLiteral(".mp4"))
-           || lower.contains(QStringLiteral(".flv")) || lower.contains(QStringLiteral(".mkv"))
-           || lower.contains(QStringLiteral("m3u8?"));
+    const QUrl parsed(url);
+    if (!parsed.isValid() || parsed.host().isEmpty())
+        return false;
+    static const QRegularExpression extension(
+        QStringLiteral("\\.(?:m3u8|mp4|flv|mkv)$"), QRegularExpression::CaseInsensitiveOption);
+    // 只认 path 末尾（以及 query 里嵌套的播放地址）的扩展名；
+    // `https://mp4.example.com/play` 这种主机名含 mp4 的地址不是直链。
+    if (extension.match(parsed.path()).hasMatch())
+        return true;
+    const QUrlQuery query(parsed);
+    for (const auto &item : query.queryItems(QUrl::FullyDecoded)) {
+        if (extension.match(item.second).hasMatch())
+            return true;
+    }
+    return false;
 }
 
 /// 站点把播放地址写成自己的域名占位（encrypt 3 的典型形态），这种拿不到直链
@@ -152,8 +211,9 @@ QString pickSid(const QString &href)
 QVector<QString> extractHrefs(const QString &html, const char *pattern)
 {
     QVector<QString> hrefs;
+    // 站点模板有双引号也有单引号，只认 href="..." 会漏掉整页结果。
     const QString expression =
-        QStringLiteral("<a[^>]*href=\"(%1)\"").arg(QString::fromLatin1(pattern));
+        QStringLiteral("<a[^>]*href\\s*=\\s*[\"'](%1)[\"']").arg(QString::fromLatin1(pattern));
     const QRegularExpression re(expression);
     QRegularExpressionMatchIterator it = re.globalMatch(html);
     while (it.hasNext()) {
@@ -172,7 +232,7 @@ QVector<QPair<QString, QString>> extractEntries(const QString &html, const char 
 {
     QVector<QPair<QString, QString>> entries;
     const QString expression =
-        QStringLiteral("<a[^>]*href=\"(%1)\"[^>]*>([\\s\\S]{0,200}?)</a>")
+        QStringLiteral("<a[^>]*href\\s*=\\s*[\"'](%1)[\"'][^>]*>([\\s\\S]{0,200}?)</a>")
             .arg(QString::fromLatin1(pattern));
     const QRegularExpression re(expression);
     QRegularExpressionMatchIterator it = re.globalMatch(html);
@@ -239,11 +299,25 @@ QString detailTitle(const QString &html)
         cut = candidate.indexOf(QLatin1Char('_'));
     if (cut > 0)
         candidate.truncate(cut);
-    static const QStringList noise = {
-        QStringLiteral("电视剧"), QStringLiteral("电影"), QStringLiteral("在线观看"),
-        QStringLiteral("高清"), QStringLiteral("完整版"), QStringLiteral("百度云")};
-    for (const QString &word : noise)
-        candidate.remove(word);
+    // 只剥掉结尾的“在线观看/高清/电影/电视剧”等装饰词。
+    // 不能在任意位置 remove：像《电影人生》这种片名会被删成《人生》。
+    static const QStringList suffixes = {
+        QStringLiteral("在线观看"), QStringLiteral("完整版"), QStringLiteral("高清"),
+        QStringLiteral("电影"), QStringLiteral("电视剧"), QStringLiteral("百度云")};
+    const QString before = candidate;
+    bool stripped = false;
+    do {
+        stripped = false;
+        for (const QString &word : suffixes) {
+            if (candidate.endsWith(word)) {
+                candidate.chop(word.size());
+                candidate = candidate.trimmed();
+                stripped = true;
+            }
+        }
+    } while (stripped);
+    if (candidate.isEmpty())
+        candidate = before;
     return candidate.simplified();
 }
 
@@ -285,20 +359,30 @@ void MaccmsWebProvider::search(const QString &keyword, int limit)
     m_nextCursor = 0;
     m_active = 0;
     m_rootLength = 0;
+    // 同一个 provider 可能被“测试”按钮复用多次；上一轮用过的降级分支
+    // 必须清零，否则新一轮会跳过 suggest/HTML 搜索，误判成“没有结果”。
+    m_suggestUsed = false;
+    m_htmlSearchTried = false;
 
     QString base = m_config.urlTemplate.trimmed();
     if (base.isEmpty()) {
         finish(tr("没有配置站点地址"));
         return;
     }
-    if (!base.endsWith(QLatin1Char('/')))
-        base += QLatin1Char('/');
-    const QUrl parsed(base);
-    if (parsed.scheme() != QLatin1String("http") && parsed.scheme() != QLatin1String("https")) {
+    // 站点根只保留 scheme/host/port/path；直接字符串补 `/` 会把
+    // `https://host/api.php?x=1` 变成 `...?x=1/`，后续拼路径全部失效。
+    QUrl rootUrl(base);
+    if (rootUrl.scheme() != QLatin1String("http") && rootUrl.scheme() != QLatin1String("https")) {
         finish(tr("站点地址不是 http/https：%1").arg(base));
         return;
     }
-    m_root = base;
+    if (rootUrl.path().isEmpty())
+        rootUrl.setPath(QStringLiteral("/"));
+    else if (!rootUrl.path().endsWith(QLatin1Char('/')))
+        rootUrl.setPath(rootUrl.path() + QLatin1Char('/'));
+    rootUrl.setQuery(QString());
+    rootUrl.setFragment(QString());
+    m_root = rootUrl.toString(QUrl::FullyEncoded);
 
     if (m_http == nullptr) {
         finish(tr("网络模块未就绪"));
@@ -322,12 +406,8 @@ QHash<QString, QString> MaccmsWebProvider::requestHeaders() const
 
 QHash<QString, QString> MaccmsWebProvider::mediaHeaders() const
 {
-    // 播放/下载要按源补 Referer：dmxq 的 m3u8 不带 Referer 直接 403
-    QHash<QString, QString> headers = m_config.headers;
-    headers.insert(QStringLiteral("Referer"), m_root);
-    if (!m_config.cookie.isEmpty())
-        headers.insert(QStringLiteral("Cookie"), m_config.cookie);
-    return headers;
+    // 播放/下载与站点请求共用同一份 Referer/Cookie 规则，避免两套实现漂移。
+    return requestHeaders();
 }
 
 QUrl MaccmsWebProvider::siteUrl(const QString &relative) const
@@ -367,11 +447,8 @@ void MaccmsWebProvider::requestHtml(
                           callback(false, QString());
                           return;
                       }
-                      bool tooLarge = false;
-                      const QByteArray raw =
-                          HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
-                      // 先判 HTTP 状态，再判大小：404/500 的大错误页不能被
-                      // “超过 4 MB”覆盖掉真实状态码。
+                      // 先判 HTTP 状态再读正文：404/500 的大错误页不应先被
+                      // 读进内存，也不该让“超过上限”覆盖真实状态码。
                       if (!HttpClient::isHttpSuccess(reply)) {
                           qCDebug(lcWeb) << "请求失败"
                                        << HttpClient::redactUrl(reply->url())
@@ -380,6 +457,9 @@ void MaccmsWebProvider::requestHtml(
                           callback(false, QString());
                           return;
                       }
+                      bool tooLarge = false;
+                      const QByteArray raw =
+                          HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
                       if (tooLarge) {
                           qCWarning(lcWeb) << "页面超过" << NetLimits::kHtmlBytes
                                            << "字节上限："
@@ -414,11 +494,13 @@ void MaccmsWebProvider::fetchRoot()
                           return;
                       }
                       if (reply != nullptr) {
-                          bool tooLarge = false;
-                          const QByteArray raw = HttpClient::readAllLimited(
-                              reply, NetLimits::kHtmlBytes, &tooLarge);
-                          if (!tooLarge && HttpClient::isHttpSuccess(reply) && !raw.isEmpty())
-                              self->m_rootLength = decodeHtml(raw).size();
+                          if (HttpClient::isHttpSuccess(reply)) {
+                              bool tooLarge = false;
+                              const QByteArray raw = HttpClient::readAllLimited(
+                                  reply, NetLimits::kHtmlBytes, &tooLarge);
+                              if (!tooLarge && !raw.isEmpty())
+                                  self->m_rootLength = decodeHtml(raw).size();
+                          }
                           reply->deleteLater();
                       }
                       self->trySuggest();
@@ -446,10 +528,12 @@ void MaccmsWebProvider::trySuggest()
                       QByteArray raw;
                       bool ok = false;
                       if (reply != nullptr) {
-                          bool tooLarge = false;
-                          raw = HttpClient::readAllLimited(reply, NetLimits::kJsonBytes,
-                                                           &tooLarge);
-                          ok = !tooLarge && HttpClient::isHttpSuccess(reply);
+                          if (HttpClient::isHttpSuccess(reply)) {
+                              bool tooLarge = false;
+                              raw = HttpClient::readAllLimited(reply, NetLimits::kJsonBytes,
+                                                               &tooLarge);
+                              ok = !tooLarge;
+                          }
                           reply->deleteLater();
                       }
                       QJsonParseError parseError{};
@@ -578,13 +662,13 @@ void MaccmsWebProvider::trySearch(int strategy)
             reply->deleteLater();
             if (self.isNull())
                 return;
-            bool tooLarge = false;
-            const QByteArray raw =
-                HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
             if (!HttpClient::isHttpSuccess(reply)) {
                 fail(HttpClient::describeError(reply));
                 return;
             }
+            bool tooLarge = false;
+            const QByteArray raw =
+                HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
             if (tooLarge) {
                 fail(tr("搜索结果超过 4 MB 上限"));
                 return;
@@ -610,13 +694,13 @@ void MaccmsWebProvider::trySearch(int strategy)
             reply->deleteLater();
             if (self.isNull())
                 return;
-            bool tooLarge = false;
-            const QByteArray raw =
-                HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
             if (!HttpClient::isHttpSuccess(reply)) {
                 fail(HttpClient::describeError(reply));
                 return;
             }
+            bool tooLarge = false;
+            const QByteArray raw =
+                HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &tooLarge);
             if (tooLarge) {
                 fail(tr("搜索结果超过 4 MB 上限"));
                 return;
@@ -662,6 +746,13 @@ void MaccmsWebProvider::afterSearch(const QString &html, int strategy)
     // 关键词只回显在 <title> 里，长度校验骗不过它。真搜索的头三条一定与关键词相关，
     // 热榜/推荐位不会，所以只看前三条做相关性判定。
     const QVector<QPair<QString, QString>> entries = extractEntries(html, kDetailPattern);
+    if (entries.isEmpty()) {
+        // 只有链接没有可读标题时，页面很可能是热榜/推荐位；不能拿来做相关性判定，
+        // 更不能把这些链接当搜索结果，直接降级到下一个搜索策略。
+        m_searchErrors.append(tr("策略%1 没有可读的影片标题").arg(strategy + 1));
+        trySearch(strategy + 1);
+        return;
+    }
     QHash<QString, QString> titles;
     for (const QPair<QString, QString> &entry : entries) {
         if (!titles.contains(entry.first))
@@ -938,7 +1029,7 @@ void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
             const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);
             if (parseError.error == QJsonParseError::NoError && document.isObject()) {
                 const QJsonObject object = document.object();
-                encrypt = object.value(QStringLiteral("encrypt")).toInt(0);
+                encrypt = object.value(QStringLiteral("encrypt")).toVariant().toInt();
                 url = object.value(QStringLiteral("url")).toString();
                 from = object.value(QStringLiteral("from")).toString();
                 vodName = object.value(QStringLiteral("vod_data"))

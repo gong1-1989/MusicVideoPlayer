@@ -28,6 +28,30 @@ QHash<QString, QString> headersFromJson(const QJsonObject &object)
     return headers;
 }
 
+/// 配置里的请求头只允许表达“业务身份”（Referer/Origin/UA 等）。
+/// Host/Length 这类连接级头必须由网络层生成，原样透传会破坏重定向、分块传输，
+/// 甚至让两个请求共享错误的长度。
+bool isForbiddenRequestHeader(const QString &name)
+{
+    const QString lower = name.trimmed().toLower();
+    return lower == QLatin1String("host")
+        || lower == QLatin1String("content-length")
+        || lower == QLatin1String("transfer-encoding")
+        || lower == QLatin1String("connection")
+        || lower == QLatin1String("proxy-connection")
+        || lower == QLatin1String("keep-alive")
+        || lower == QLatin1String("upgrade")
+        || lower == QLatin1String("te")
+        || lower == QLatin1String("trailer")
+        || lower == QLatin1String("expect")
+        || lower == QLatin1String("proxy-authenticate");
+}
+
+bool hasHeaderInjection(const QString &text)
+{
+    return text.contains(QLatin1Char('\r')) || text.contains(QLatin1Char('\n'));
+}
+
 /// 普通请求头明文写入，敏感头单独加密到 headersProtected。
 QJsonObject requestHeadersToJson(const QHash<QString, QString> &headers,
                                  const QString &sourceId,
@@ -249,6 +273,9 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
     const QJsonObject plainHeaders = object.value(QStringLiteral("headers")).toObject();
     for (auto it = plainHeaders.constBegin(); it != plainHeaders.constEnd(); ++it) {
         const QString key = it.key();
+        if (isForbiddenRequestHeader(key) || hasHeaderInjection(key)
+            || hasHeaderInjection(it.value().toString()))
+            continue;
         QString value = it.value().toString();
         // 兼容旧版：敏感头过去也写在 headers 里，读出后下次保存会迁到 headersProtected。
         if (HeaderPolicy::isSensitiveHeader(key))
@@ -259,6 +286,9 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
     const QJsonObject protectedHeaders =
         object.value(QStringLiteral("headersProtected")).toObject();
     for (auto it = protectedHeaders.constBegin(); it != protectedHeaders.constEnd(); ++it) {
+        if (isForbiddenRequestHeader(it.key()) || hasHeaderInjection(it.key())
+            || hasHeaderInjection(it.value().toString()))
+            continue;
         const QString value = SecretStore::revealStored(
             it.value().toString(), config.id + QLatin1Char('/') + it.key());
         if (!value.isEmpty())

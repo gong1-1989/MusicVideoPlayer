@@ -52,7 +52,8 @@ private:
     };
 
     /// 一个候选的完整抓取链：详情页 → 若干播放页 → 一条 MediaItem。
-    /// 并发抓取时每个 job 自己保存线路进度，避免共享 m_current 互相踩。
+    /// 并发抓取时每个 job 保存自己的线路进度；provider 不保存“当前候选”，
+    /// 避免多个 job 共享可变游标互相踩。
     struct Job
     {
         int index = 0;

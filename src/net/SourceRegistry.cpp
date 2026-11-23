@@ -209,6 +209,41 @@ QString primaryDir()
     return StoragePaths::dataDir();
 }
 
+/// 内置源只允许用户改 enabled；实现、地址、请求头等必须始终以预置配置为准。
+/// upsert/replaceAll/load 共用这套逻辑，避免只有 load 做保护、别的入口能绕过。
+SourceConfig protectBuiltinConfig(const SourceConfig &input, bool *changed)
+{
+    SourceConfig config = input;
+    if (changed != nullptr)
+        *changed = false;
+
+    const SourceConfig *seed = nullptr;
+    for (const SourceConfig &candidate : seedSources()) {
+        if (candidate.builtin && candidate.id == config.id) {
+            seed = &candidate;
+            break;
+        }
+    }
+
+    if (seed == nullptr) {
+        // 非预置源不能通过配置文件自称内置，否则会绕过“内置源不可删除”。
+        if (config.builtin) {
+            config.builtin = false;
+            if (changed != nullptr)
+                *changed = true;
+        }
+        return config;
+    }
+
+    SourceConfig protectedSeed = *seed;
+    protectedSeed.enabled = config.enabled;
+    const bool differs =
+        sourceConfigToJson(protectedSeed, true) != sourceConfigToJson(config, true);
+    if (differs && changed != nullptr)
+        *changed = true;
+    return protectedSeed;
+}
+
 /// 损坏的源配置先改名备份，绝不能直接补种子覆盖用户原文件。
 QString backupCorruptFile(const QString &path)
 {
@@ -297,7 +332,7 @@ bool SourceRegistry::load()
                 qCWarning(lcRegistry) << m_lastError;
                 return false;
             }
-            m_lastError = tr("源配置已损坏（%1），原文件已备份为 %2，已恢复预置源。")
+            m_lastError = tr("源配置已损坏（%1），原文件已备份为 %2。")
                               .arg(parseErrorReason)
                               .arg(QFileInfo(backup).fileName());
             qCWarning(lcRegistry) << m_lastError;
@@ -311,8 +346,9 @@ bool SourceRegistry::load()
                 m_lastError = corruptMessage + tr(" 预置源写入失败：%1").arg(m_lastError);
             return false;
         }
-        // save() 会清空错误；恢复成功后仍要把“原文件已损坏并备份”带到界面提示
-        m_lastError = corruptMessage;
+        // 只有真的写盘成功后才能说“已恢复预置源”，否则用户会以为损坏文件已被修好。
+        if (!corruptMessage.isEmpty())
+            m_lastError = corruptMessage + tr(" 已恢复预置源。");
         return true;
     }
 
@@ -343,16 +379,17 @@ bool SourceRegistry::load()
         }
         // 内置源 ID 的实现、地址和头部不允许被 sources.json 改写；
         // 只保留用户对启用状态的选择，避免“自定义源声明 builtin”绕过限制。
-        for (const SourceConfig &seed : seedSources()) {
-            if (!seed.builtin || seed.id != config.id)
-                continue;
-            SourceConfig protectedSeed = seed;
-            protectedSeed.enabled = config.enabled;
-            config = protectedSeed;
+        bool builtinChanged = false;
+        const SourceConfig protectedConfig = protectBuiltinConfig(config, &builtinChanged);
+        if (builtinChanged) {
             dirty = true;
-            qCWarning(lcRegistry) << "内置源 ID 被外部配置改写，已恢复预置实现：" << config.id;
-            break;
+            if (protectedConfig.builtin)
+                qCWarning(lcRegistry) << "内置源 ID 被外部配置改写，已恢复预置实现："
+                                      << protectedConfig.id;
+            else
+                qCWarning(lcRegistry) << "非预置源声明 builtin，已清除标记：" << config.id;
         }
+        config = protectedConfig;
         seenIds.insert(config.id);
         if (!ok) {
             config.enabled = false;
@@ -495,18 +532,35 @@ MediaItem SourceRegistry::mediaItemWithCredentials(const MediaItem &item) const
 
 bool SourceRegistry::upsert(const SourceConfig &config)
 {
+    if (config.id.trimmed().isEmpty()) {
+        m_lastError = tr("源配置缺少 id，未保存");
+        qCWarning(lcRegistry) << m_lastError;
+        return false;
+    }
+
+    // 与 load 同一套内置保护：按 id 命中预置源时只接受 enabled 变化，
+    // 非预置源不能把自己的 builtin 改成 true。
+    bool builtinChanged = false;
+    const SourceConfig safeConfig = protectBuiltinConfig(config, &builtinChanged);
+    if (builtinChanged && safeConfig.builtin)
+        qCWarning(lcRegistry) << "内置源不可改写实现，已恢复预置配置：" << safeConfig.id;
+    else if (builtinChanged)
+        qCWarning(lcRegistry) << "非预置源不能声明 builtin，已清除标记：" << safeConfig.id;
+
     const QVector<SourceConfig> old = m_sources;
+    QVector<SourceConfig> next = m_sources;
     bool found = false;
-    for (SourceConfig &existing : m_sources) {
-        if (existing.id == config.id) {
-            existing = config;
+    for (SourceConfig &existing : next) {
+        if (existing.id == safeConfig.id) {
+            existing = safeConfig;
             found = true;
             break;
         }
     }
     if (!found)
-        m_sources.append(config);
+        next.append(safeConfig);
 
+    m_sources = next;
     if (!save()) {
         m_sources = old;
         return false;
@@ -557,8 +611,44 @@ bool SourceRegistry::setEnabled(const QString &id, bool enabled)
 
 bool SourceRegistry::replaceAll(const QVector<SourceConfig> &sources)
 {
+    // 整表提交也要做与单条保存相同的校验，否则空 id/重复 id 会直接落盘，
+    // 下次加载时才被剔除，用户会以为“保存成功但源消失了”。
+    QVector<SourceConfig> next;
+    next.reserve(sources.size() + seedSources().size());
+    QSet<QString> ids;
+    for (const SourceConfig &input : sources) {
+        const QString id = input.id.trimmed();
+        if (id.isEmpty()) {
+            m_lastError = tr("有源缺少 id，整表未保存");
+            qCWarning(lcRegistry) << m_lastError;
+            return false;
+        }
+        if (ids.contains(id)) {
+            m_lastError = tr("源 id 重复：%1，整表未保存").arg(id);
+            qCWarning(lcRegistry) << m_lastError;
+            return false;
+        }
+        ids.insert(id);
+
+        bool builtinChanged = false;
+        SourceConfig config = protectBuiltinConfig(input, &builtinChanged);
+        if (builtinChanged && config.builtin)
+            qCWarning(lcRegistry) << "内置源 ID 被改写，已恢复预置实现：" << config.id;
+        else if (builtinChanged)
+            qCWarning(lcRegistry) << "非预置源声明 builtin，已清除标记：" << config.id;
+        next.append(config);
+    }
+    // 内置源不可删除：整表里漏掉的预置源按默认配置补回，避免通过整表提交绕过限制。
+    for (const SourceConfig &seed : seedSources()) {
+        if (!seed.builtin || ids.contains(seed.id))
+            continue;
+        next.append(seed);
+        ids.insert(seed.id);
+        qCWarning(lcRegistry) << "整表提交缺少内置源，已补回：" << seed.id;
+    }
+
     const QVector<SourceConfig> old = m_sources;
-    m_sources = sources;
+    m_sources = next;
     if (!save()) {
         m_sources = old;
         return false;
