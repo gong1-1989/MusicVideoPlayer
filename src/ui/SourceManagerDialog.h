@@ -58,7 +58,7 @@ private:
     void selectRow(int row);
     void commitFormToDraft();
     void loadDraftToForm(const SourceConfig &config);
-    SourceConfig readForm() const;
+    SourceConfig readForm();
     void updateActions();
     void updateKindUi();
 

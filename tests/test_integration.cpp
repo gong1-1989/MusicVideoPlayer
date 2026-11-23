@@ -220,6 +220,7 @@ private slots:
     void redirectKeepsAuthorizationOnSameHost();
     void downloadReportsHttp404WithoutFile();
     void downloadRejectsHtmlMasqueradingAsMedia();
+    void downloadAcceptsMediaContentTypeParameters();
     void downloadFailsOnShortContentLength();
     void downloadStopsAtInjectedByteLimit();
     void downloadRejectsShortHlsSegmentRange();
@@ -456,6 +457,34 @@ void IntegrationTest::downloadRejectsHtmlMasqueradingAsMedia()
     QCOMPARE(succeeded.count(), 0);
     QCOMPARE(failed.count(), 1);
     QVERIFY(!QFile::exists(path));
+}
+
+void IntegrationTest::downloadAcceptsMediaContentTypeParameters()
+{
+    // application/mp4; codecs=... 是合法 MP4 响应；旧实现按整串精确比较，
+    // 会把带参数的容器类型当成网页数据直接拒绝。
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray payload("mp4-payload");
+    server.handler = [payload](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 200, payload,
+                                 "application/mp4; codecs=avc1.42E01E", payload.size());
+    };
+
+    HttpClient http;
+    const QString path = m_tempDir.filePath(QStringLiteral("codec-params.mp4"));
+    QFile::remove(path);
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/codec-params.mp4")), path);
+
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 5000);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(succeeded.count(), 1);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), payload);
 }
 
 void IntegrationTest::downloadFailsOnShortContentLength()

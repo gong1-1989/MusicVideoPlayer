@@ -358,8 +358,9 @@ void DownloadTask::resolveAmbiguousTextReply(QNetworkReply *reply,
 
     // peek 不消费正文；确认不是播放列表后，原字节仍会交给 writeReplyData。
     const QByteArray prefix = reply->peek(512);
-    const QString head = QString::fromUtf8(prefix).trimmed();
-    if (head.startsWith(QLatin1String("#EXTM3U"))) {
+    // PlaylistSniffer 会剥 UTF-8 BOM 和前导空白；不能直接 startsWith，
+    // 否则带 BOM 的 text/plain m3u8 会被误判成普通文本。
+    if (PlaylistSniffer::bodyIsPlaylist(prefix)) {
         m_ambiguousTextResolved = true;
         beginPlaylistReply(reply);
         return;
@@ -1300,18 +1301,21 @@ bool DownloadTask::isMediaContentType(const QString &contentType)
     const QString type = contentType.toLower().trimmed();
     if (type.isEmpty())
         return true; // 空类型由 writeReplyData 用文件头魔数二次确认
-    if (type.startsWith(QLatin1String("audio/"))
-        || type.startsWith(QLatin1String("video/"))
-        || type.contains(QLatin1String("octet-stream"))
-        || type.contains(QLatin1String("mpegurl"))
-        || type.contains(QLatin1String("ogg"))
-        || type.contains(QLatin1String("matroska"))
-        || type.contains(QLatin1String("x-flv"))
-        || type.contains(QLatin1String("quicktime"))
-        || type == QLatin1String("application/mp4")
-        || type == QLatin1String("application/x-m4a")
-        || type == QLatin1String("application/x-m4v")
-        || type == QLatin1String("application/vnd.rn-realmedia"))
+    // `application/mp4; codecs=avc1` 和 `audio/mpeg; charset=binary` 都合法；
+    // 容器类型比较只看分号前的 MIME，不能让参数导致整段下载被误拒。
+    const QString mime = type.section(QLatin1Char(';'), 0, 0).trimmed();
+    if (mime.startsWith(QLatin1String("audio/"))
+        || mime.startsWith(QLatin1String("video/"))
+        || mime.contains(QLatin1String("octet-stream"))
+        || mime.contains(QLatin1String("mpegurl"))
+        || mime.contains(QLatin1String("ogg"))
+        || mime.contains(QLatin1String("matroska"))
+        || mime.contains(QLatin1String("x-flv"))
+        || mime.contains(QLatin1String("quicktime"))
+        || mime == QLatin1String("application/mp4")
+        || mime == QLatin1String("application/x-m4a")
+        || mime == QLatin1String("application/x-m4v")
+        || mime == QLatin1String("application/vnd.rn-realmedia"))
         return true;
     // 网页、接口 JSON/XML、图片、PDF 都不是音视频，不能落成媒体文件。
     return false;

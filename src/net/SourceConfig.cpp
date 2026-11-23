@@ -89,6 +89,8 @@ bool SourceConfig::isValid() const
 {
     if (id.trimmed().isEmpty() || name.trimmed().isEmpty())
         return false;
+    if (hasHeaderInjection(cookie))
+        return false;
 
     if (kind == QLatin1String("builtin")) {
         // 内置实现见 createSearchProvider()：目前只剩网页型影视（内置抓取）
@@ -123,6 +125,8 @@ QString SourceConfig::validationError() const
         return QObject::tr("缺少 id");
     if (name.trimmed().isEmpty())
         return QObject::tr("缺少名称");
+    if (hasHeaderInjection(cookie))
+        return QObject::tr("Cookie 里不能包含换行符");
 
     if (kind == QLatin1String("builtin")) {
         if (provider == QLatin1String("maccms_web")) {
@@ -301,6 +305,10 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
     }
     config.cookie = SecretStore::revealStored(object.value(QStringLiteral("cookie")).toString(),
                                               config.id + QStringLiteral("/cookie"));
+    // Cookie 和普通 header 走同一条请求通道；CR/LF 会在 HttpClient 层被丢弃，
+    // 但读入时先清掉，避免 UI 显示“已配置”而实际请求从未带上。
+    if (hasHeaderInjection(config.cookie))
+        config.cookie.clear();
     config.itemsPath = object.value(QStringLiteral("itemsPath")).toString();
     config.fields = headersFromJson(object.value(QStringLiteral("fields")).toObject());
     config.streamKind = object.value(QStringLiteral("streamKind"))

@@ -80,6 +80,20 @@ QString identityDigest(const MediaItem &item, int length)
         .left(length);
 }
 
+/// 第一轮缓存按“去掉整个查询串”的 mediaIdentity 算哈希。mediaIdentity 后来
+/// 改为保留 `id` 等稳定参数后，老版本留下的 `<hash>/media.*` 目录会换个哈希，
+/// 升级用户就会看不到已经下好的缓存。这里保留旧口径用于兼容查找与清理。
+QString legacyIdentityDigest(const MediaItem &item, int length)
+{
+    MediaItem legacy = item;
+    legacy.url.setQuery(QString());
+    legacy.url.setFragment(QString());
+    return QCryptographicHash::hash(mediaIdentity(legacy).toUtf8(),
+                                    QCryptographicHash::Sha256)
+        .toHex()
+        .left(length);
+}
+
 QUrl comparableUrl(QUrl url)
 {
     url.setQuery(QString());
@@ -98,11 +112,17 @@ bool adoptLegacyCache(const MediaItem &item)
     if (QFileInfo::exists(newPath) || QFileInfo::exists(MediaCache::metaPathForFile(newPath)))
         return false;
 
-    const QString legacyDir =
-        MediaCache::rootDir() + QLatin1Char('/') + identityDigest(item, 32);
-    QDir dir(legacyDir);
-    if (!dir.exists())
+    QString legacyDir;
+    for (const QString &digest : {identityDigest(item, 32), legacyIdentityDigest(item, 32)}) {
+        const QString candidate = MediaCache::rootDir() + QLatin1Char('/') + digest;
+        if (QDir(candidate).exists()) {
+            legacyDir = candidate;
+            break;
+        }
+    }
+    if (legacyDir.isEmpty())
         return false;
+    QDir dir(legacyDir);
 
     QFile meta(dir.filePath(QStringLiteral("meta.json")));
     if (!meta.open(QIODevice::ReadOnly))
@@ -339,10 +359,13 @@ bool removeForItem(const MediaItem &item)
     }
 
     // 第一轮缓存是 `<32 位哈希>/media.<ext>`；删除条目时连旧布局一起清掉，
-    // 避免用户升级后删了列表却留下看不见的孤儿目录。
-    const QString legacy = cacheRoot + QLatin1Char('/') + identityDigest(item, 32);
-    if (QDir(legacy).exists())
-        ok = QDir(legacy).removeRecursively() && ok;
+    // 避免用户升级后删了列表却留下看不见的孤儿目录。查询串稳定参数改造
+    // 前后哈希口径不同，两种都要清。
+    for (const QString &digest : {identityDigest(item, 32), legacyIdentityDigest(item, 32)}) {
+        const QString legacy = cacheRoot + QLatin1Char('/') + digest;
+        if (QDir(legacy).exists())
+            ok = QDir(legacy).removeRecursively() && ok;
+    }
     return ok;
 }
 

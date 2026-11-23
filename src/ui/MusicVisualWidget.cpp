@@ -99,6 +99,7 @@ QColor accentFromCover(const QPixmap &cover)
 MusicVisualWidget::MusicVisualWidget(QWidget *parent)
     : QWidget(parent)
 {
+    m_uiFontPx = qBound(9, AppSettings::uiFontSizePx(), 20);
     setObjectName(QStringLiteral("musicVisual"));
     setAttribute(Qt::WA_TransparentForMouseEvents, true);
     setAttribute(Qt::WA_OpaquePaintEvent, true);
@@ -173,6 +174,15 @@ void MusicVisualWidget::setAccentColor(const QColor &color)
     // 没有封面主色时（例如网络条目或本地无封面音乐）立即跟随主题。
     if (!accentFromCover(m_cover).isValid())
         m_accent = color;
+    update();
+}
+
+void MusicVisualWidget::setUiFontPx(int pixels)
+{
+    const int bounded = qBound(9, pixels, 20);
+    if (m_uiFontPx == bounded)
+        return;
+    m_uiFontPx = bounded;
     update();
 }
 
@@ -258,8 +268,8 @@ void MusicVisualWidget::paintEvent(QPaintEvent *event)
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
     const QRectF rect = QRectF(this->rect());
-    // 每帧重绘只读一次设置；原先 drawTrackInfo/drawLyrics 各建一个 QSettings。
-    const int basePx = qBound(9, AppSettings::uiFontSizePx(), 20);
+    // 字号由窗口在设置变化时推入，避免每帧构造 QSettings。
+    const int basePx = m_uiFontPx;
     drawBackground(painter, rect);
     drawSpectrum(painter, rect);
     drawDisc(painter, rect);

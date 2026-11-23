@@ -10,7 +10,10 @@
 #include <QString>
 #include <QStringList>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVector>
+
+#include <algorithm>
 
 #include "util/HeaderPolicy.h"
 
@@ -233,11 +236,51 @@ inline bool playbackIsHls(const MediaItem &item)
     return isHlsUrl(preferredPlaybackUrl(item));
 }
 
+/// 没有网页地址时，直链查询串不能整段丢掉：`?id=1` 和 `?id=2` 是两条不同
+/// 内容；但 B 站等签名直链的 token/sign/expires 每次搜索都会变，必须剔除，
+/// 否则同一首歌会被当成新条目反复入列表。保留其余稳定参数，并按 key 排序。
+inline QString identityUrlWithoutVolatileQuery(QUrl url)
+{
+    url.setFragment(QString());
+    if (url.query().isEmpty())
+        return url.toString();
+
+    QList<QPair<QString, QString>> kept;
+    const QList<QPair<QString, QString>> items = QUrlQuery(url).queryItems();
+    for (const auto &item : items) {
+        const QString key = item.first.toLower();
+        if (key.contains(QLatin1String("token"))
+            || key.contains(QLatin1String("sign"))
+            || key.contains(QLatin1String("expire"))
+            || key.contains(QLatin1String("timestamp"))
+            || key == QLatin1String("ts")
+            || key == QLatin1String("nonce")
+            || key == QLatin1String("auth")
+            || key.contains(QLatin1String("authkey"))
+            || key == QLatin1String("playkey")
+            || key == QLatin1String("wssecret")
+            || key == QLatin1String("wstime")
+            || key == QLatin1String("hmac")
+            || key == QLatin1String("checksum")) {
+            continue;
+        }
+        kept.append(item);
+    }
+    std::sort(kept.begin(), kept.end(), [](const auto &a, const auto &b) {
+        return a.first < b.first;
+    });
+    QUrlQuery query;
+    query.setQueryItems(kept);
+    url.setQuery(query);
+    return url.toString();
+}
+
 /// 去重用的身份标识：
 /// - 本地文件看路径；
 /// - 在线条目优先看原始网页地址（稳定），再带上标题——
 ///   采集接口一季剧共用同一个详情页，只有标题能区分集数；
-/// - 没有网页地址时退回去掉查询串的直链（B站等直链带过期签名，每次搜索都不一样）。
+/// - 没有网页地址时退回直链，剔除 token/sign 等易变签名参数，保留 id 等
+///   真正区分内容的查询参数（B站等直链带过期签名，每次搜索都不一样）。
 inline QString mediaIdentity(const MediaItem &item)
 {
     if (!item.online)
@@ -248,9 +291,7 @@ inline QString mediaIdentity(const MediaItem &item)
                + item.title;
     }
 
-    QUrl bare = item.url;
-    bare.setQuery(QString());
-    return QStringLiteral("url:") + bare.toString();
+    return QStringLiteral("url:") + identityUrlWithoutVolatileQuery(item.url);
 }
 
 /// 按 mediaIdentity 保序去重。搜索结果分页和播放列表恢复必须用同一规则，

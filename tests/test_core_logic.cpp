@@ -751,6 +751,7 @@ private slots:
     void sourceConfigSecretsNotPlaintext();
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
+    void sourceConfigRejectsCookieInjection();
     void sourceProbeVideoPathsAreSearchable();
     void sourceProbeMusicPathsAreSearchable();
     void sourceProbeLiveVideoSearch();
@@ -762,6 +763,7 @@ private slots:
     void sourceProbeMusicDoesNotBecomeWebVideo();
     void sourceProbeThirdKeywordValidation();
     void sourceProbeNestedArrayItemsPath();
+    void sourceProbeKeepsOuterListOverEpisodeArrays();
     void sourceProbeAutoCoversBothTypeCandidates();
     void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
@@ -783,6 +785,7 @@ private slots:
     void lyricsCacheRoundTrip();
     void shortcutsDefaultConflictDetection();
     void streamProxyHandlesSuffixlessTextPlaylist();
+    void streamProxyDoesNotReuseLocalPrefixEntry();
     void streamProxyEvictsPrefetchWithoutLeakingSlots();
     void seekPrefetchWindowFollowsPlaylistIndex();
     void streamProxyMultiRangeForHlsSegment();
@@ -1051,6 +1054,14 @@ void CoreLogicTest::mediaIdentityUsesStableWebUrl()
     MediaItem noWeb2 = noWeb;
     noWeb2.url = QUrl(QStringLiteral("https://cdn.example.com/a.mp4?token=new"));
     QCOMPARE(mediaIdentity(noWeb), mediaIdentity(noWeb2));
+
+    // query 里真正区分内容的 id 不能一起丢掉，否则 ?id=1 / ?id=2 会被
+    // 当成同一条，播放列表和缓存都会串到第一条。
+    MediaItem idOne = noWeb;
+    idOne.url = QUrl(QStringLiteral("https://cdn.example.com/play?id=1"));
+    MediaItem idTwo = idOne;
+    idTwo.url = QUrl(QStringLiteral("https://cdn.example.com/play?id=2"));
+    QVERIFY(mediaIdentity(idOne) != mediaIdentity(idTwo));
 }
 
 void CoreLogicTest::dedupeItemsKeepsFirstOccurrence()
@@ -1360,6 +1371,31 @@ void CoreLogicTest::sourceConfigNormalizesTimeout()
     const SourceConfig absentConfig = sourceConfigFromJson(absent, &ok);
     QVERIFY(ok);
     QCOMPARE(absentConfig.timeoutMs, 0);
+}
+
+void CoreLogicTest::sourceConfigRejectsCookieInjection()
+{
+    SourceConfig config;
+    config.id = QStringLiteral("cookie-injection");
+    config.name = QStringLiteral("Cookie 注入");
+    config.kind = QStringLiteral("external");
+    config.command = QStringLiteral("parser.exe");
+    config.cookie = QStringLiteral("sid=1\r\nX-Injected: yes");
+    QVERIFY(!config.isValid());
+    QVERIFY(config.validationError().contains(QStringLiteral("换行")));
+
+    // 旧配置/手工导入里的非法 Cookie 读入时直接清掉，不能显示成“已配置”
+    // 但请求层实际丢弃，造成“登录态已填却不生效”的错觉。
+    QJsonObject object;
+    object.insert(QStringLiteral("id"), config.id);
+    object.insert(QStringLiteral("name"), config.name);
+    object.insert(QStringLiteral("kind"), config.kind);
+    object.insert(QStringLiteral("command"), config.command);
+    object.insert(QStringLiteral("cookie"), config.cookie);
+    bool ok = false;
+    const SourceConfig restored = sourceConfigFromJson(object, &ok);
+    QVERIFY(ok);
+    QVERIFY(restored.cookie.isEmpty());
 }
 
 void CoreLogicTest::sourceProbeLiveVideoSearch()
@@ -1739,6 +1775,61 @@ void CoreLogicTest::sourceProbeNestedArrayItemsPath()
     QCOMPARE(result.config.itemsPath, QStringLiteral("[0].list"));
     QCOMPARE(result.sampleCount, 2);
     QVERIFY(!result.sampleTitles.isEmpty());
+}
+
+void CoreLogicTest::sourceProbeKeepsOuterListOverEpisodeArrays()
+{
+    // 结果项自身可能带一个更大的 episodes/tracks 数组。旧扫描对所有数组
+    // 无条件下钻，会选中 data.list[0].episodes（50 条），把 10 条结果误读成
+    // 第 1 条结果的播放片段。这里锁住“只有包装层数组才下钻”。
+    ProbeSiteServer server([](const QString &target, QByteArray &body,
+                              QByteArray &contentType, int &status) {
+        const QString decoded = QUrl::fromPercentEncoding(target.toUtf8());
+        if (target.contains(QStringLiteral("provide/vod"))) {
+            QString title = QStringLiteral("外层列表片");
+            if (decoded.contains(QStringLiteral("wd=电影")))
+                title = QStringLiteral("外层列表电影");
+            else if (decoded.contains(QStringLiteral("wd=庆余年")))
+                title = QStringLiteral("外层列表庆余年");
+            QByteArray items;
+            for (int i = 0; i < 10; ++i) {
+                if (i > 0)
+                    items += ',';
+                items += "{\"title\":\"" + title.toUtf8() + QByteArray::number(i)
+                         + "\",\"vod_play_url\":\"第1集$https://example.com/"
+                         + QByteArray::number(i) + ".m3u8\",\"episodes\":[";
+                for (int j = 0; j < 50; ++j) {
+                    if (j > 0)
+                        items += ',';
+                    items += "{\"name\":\"片段" + QByteArray::number(j)
+                             + "\",\"url\":\"https://example.com/ep"
+                             + QByteArray::number(j) + ".mp4\"}";
+                }
+                items += "]}";
+            }
+            status = 200;
+            contentType = QByteArrayLiteral("application/json");
+            body = "{\"code\":0,\"data\":{\"list\":[" + items + "]}}";
+            return;
+        }
+        status = 404;
+        contentType = QByteArrayLiteral("text/html");
+        body = QByteArrayLiteral("not found");
+    });
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    prober.start(QUrl(server.baseUrl()), MediaType::Video, {}, false);
+    QVERIFY2(finished.wait(15000), "外层列表探查在 15 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("外层列表探测失败：") + result.error));
+    QCOMPARE(result.config.itemsPath, QStringLiteral("data.list"));
+    QCOMPARE(result.sampleCount, 10);
 }
 
 void CoreLogicTest::sourceProbeAutoCoversBothTypeCandidates()
@@ -2777,6 +2868,64 @@ void CoreLogicTest::streamProxyHandlesSuffixlessTextPlaylist()
     QVERIFY(body.contains("#EXTM3U"));
     QVERIFY(body.contains("/stream/"));
     QCOMPARE(upstream.requestCount, 1);
+}
+
+void CoreLogicTest::streamProxyDoesNotReuseLocalPrefixEntry()
+{
+    // 预置 300 字节半截缓存：先发有界 Range 只读前缀，随后整段请求必须
+    // 从 300 继续向上游续传。旧实现把前缀条目留在正常缓存表里，第二次
+    // 请求会拿到 206 头后停在前缀末尾，连接一直等不到后续字节。
+    const QByteArray full = proxyTestBody(1000);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cachePath = dir.filePath(QStringLiteral("partial-cache"));
+    {
+        QFile file(cachePath);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write(full.left(300)) == 300);
+    }
+
+    RangeSupportingServer upstream;
+    upstream.body = full;
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+    const QUrl upstreamUrl =
+        QStringLiteral("http://127.0.0.1:%1/media/partial.mp4").arg(upstream.serverPort());
+    QVERIFY(MediaCache::writeState(cachePath, QStringLiteral("partial-identity"),
+                                   upstreamUrl, "video/mp2t", full.size(), false,
+                                   QStringLiteral(".ts")));
+    const QUrl local = proxy.proxyUrlFor(upstreamUrl, {}, cachePath,
+                                         QStringLiteral("partial-identity"));
+    QVERIFY(local.isValid());
+
+    auto fetch = [&local](const QByteArray &range, QByteArray *head, QByteArray *body) {
+        QTcpSocket socket;
+        socket.connectToHost(local.host(), quint16(local.port()));
+        if (!socket.waitForConnected(3000))
+            return false;
+        QByteArray request = "GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                             "Host: 127.0.0.1\r\n"
+                             "Range: " + range + "\r\n"
+                             "Connection: close\r\n\r\n";
+        socket.write(request);
+        socket.flush();
+        return readProxyResponse(&socket, head, body, 8000);
+    };
+
+    QByteArray head;
+    QByteArray body;
+    QVERIFY(fetch("bytes=0-200", &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QCOMPARE(body, full.left(201));
+    QCOMPARE(upstream.requestCount, 0);
+
+    QVERIFY(fetch("bytes=0-", &head, &body));
+    QVERIFY2(head.startsWith("HTTP/1.1 206"), head.constData());
+    QCOMPARE(body, full);
+    QCOMPARE(upstream.requestCount, 1);
+    QCOMPARE(upstream.ranges.first(), qMakePair(qint64(300), qint64(999)));
 }
 
 void CoreLogicTest::streamProxyEvictsPrefetchWithoutLeakingSlots()

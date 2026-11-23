@@ -37,6 +37,10 @@ struct StreamCacheEntry
     qint64 reservedBytes = 0;
     bool complete = false;
     bool failed = false;
+    // 只用于把已有半截文件的前缀切片交给播放器，不参与后续缓存命中。
+    // 客户端发送完毕后必须从缓存表移除，否则会留下一个没有 upstream 的
+    // 半截条目，下一次整段请求会停在本地前缀后一直等不到数据。
+    bool transient = false;
     // 预取请求已占位但响应头还没到。播放器这时命中缓存不能另开一条上游，
     // 否则同一片会重复下载，反而把刚腾出的带宽又吃掉。
     bool pending = false;

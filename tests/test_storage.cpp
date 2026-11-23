@@ -3,11 +3,13 @@
 #include "download/DownloadJob.h"
 #include "download/DownloadManager.h"
 #include "download/DownloadPaths.h"
+#include "cache/MediaCache.h"
 #include "net/HttpClient.h"
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
 #include "util/SecretStore.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -71,6 +73,7 @@ private slots:
     void downloadManagerDelayedRemoveSkipsReservedPath();
     void downloadManagerDoesNotResumeSnapshot();
     void sourceRegistryRehydratesPlaylistCredentials();
+    void mediaCacheAdoptsLegacyQueryCache();
 
 private:
     QTemporaryDir m_tempDir;
@@ -725,6 +728,46 @@ void StorageTest::sourceRegistryRehydratesPlaylistCredentials()
         QCOMPARE(hydrated.headers.value(QStringLiteral("Authorization")),
                  QStringLiteral("Bearer playlist-token"));
     }
+}
+
+void StorageTest::mediaCacheAdoptsLegacyQueryCache()
+{
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("旧缓存歌曲");
+    item.url = QUrl(QStringLiteral("https://example.com/song?id=1&token=old"));
+    item.online = true;
+
+    // 旧版 identity 会丢掉整个查询串；新版保留 id、剔除 token。
+    // 旧布局目录必须仍能被升级后的程序认出来。
+    const QString oldIdentity = QStringLiteral("url:https://example.com/song");
+    const QString oldDigest =
+        QCryptographicHash::hash(oldIdentity.toUtf8(), QCryptographicHash::Sha256)
+            .toHex()
+            .left(32);
+    const QString oldDir = MediaCache::rootDir() + QLatin1Char('/') + oldDigest;
+    QVERIFY(QDir().mkpath(oldDir));
+    const QString oldMedia = oldDir + QStringLiteral("/media.mp3");
+    {
+        QFile file(oldMedia);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write(QByteArray(1234, 'x')) == 1234);
+    }
+    QJsonObject meta;
+    meta.insert(QStringLiteral("version"), 1);
+    meta.insert(QStringLiteral("url"), QStringLiteral("https://example.com/song"));
+    meta.insert(QStringLiteral("total"), 1234);
+    meta.insert(QStringLiteral("complete"), true);
+    meta.insert(QStringLiteral("contentType"), QStringLiteral("audio/mpeg"));
+    QFile metaFile(oldDir + QStringLiteral("/meta.json"));
+    QVERIFY(metaFile.open(QIODevice::WriteOnly));
+    metaFile.write(QJsonDocument(meta).toJson(QJsonDocument::Compact));
+    metaFile.close();
+
+    const QString migrated = MediaCache::completeFileForItem(item);
+    QVERIFY(!migrated.isEmpty());
+    QCOMPARE(QFileInfo(migrated).size(), 1234);
+    QVERIFY(!QDir(oldDir).exists());
 }
 
 QTEST_GUILESS_MAIN(StorageTest)

@@ -633,16 +633,23 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
             const qint64 opened = openCacheFile(*entry, cachePath, resumeOffset);
             if (opened >= 0) {
                 entry->complete = cacheDataSize(*entry) >= entry->total;
-                m_cache.insert(cacheKey, entry);
+                // 这条条目只用于本次有界 Range 的前缀切片。用独立临时 key，
+                // 避免它出现在正常缓存命中路径，也避免和随后从断点续传的
+                // 完整条目互相覆盖。客户端发送完毕后由 pumpCache 清理。
+                entry->transient = true;
+                const QString transientKey =
+                    cacheKey + QStringLiteral("#local-")
+                    + QString::number(QRandomGenerator::global()->generate64());
+                m_cache.insert(transientKey, entry);
                 const QString localRange = QStringLiteral("bytes=%1-%2")
                                                .arg(reqStart)
                                                .arg(reqEnd);
-                if (serveFromCache(client, entry, cacheKey, localRange, true)) {
+                if (serveFromCache(client, entry, transientKey, localRange, true)) {
                     qCInfo(lcProxy) << "流转缓存用本地半截文件响应有界 Range"
                                     << reqStart << reqEnd << HttpClient::redactUrl(upstream);
                     return;
                 }
-                m_cache.remove(cacheKey);
+                m_cache.remove(transientKey);
                 closeCacheFile(*entry);
             }
         }
@@ -1232,7 +1239,7 @@ void StreamProxy::rememberPlaylist(const QByteArray &body, const QUrl &playlistU
 
     qCDebug(lcProxy) << "HLS 分片索引" << info->segments.size() << "片，总时长"
                      << info->totalMs << "ms，可预取" << info->prefetchable;
-    if (info->segments.size() > 143) {
+    if (info->segments.size() > 152 && info->starts.size() > 152) {
         qCDebug(lcProxy) << "HLS 分片抽样：0" << info->segments.at(0)
                          << "143" << info->segments.at(143) << "起始" << info->starts.at(143)
                          << "152" << info->segments.at(152) << "起始" << info->starts.at(152);
@@ -1890,12 +1897,17 @@ bool StreamProxy::serveFromCache(QTcpSocket *client, const QSharedPointer<CacheE
                     pumpCache(cacheKey, entry);
             });
     connect(client, &QTcpSocket::disconnected, this,
-            [entry, client] {
+            [this, cacheKey, entry, client] {
                 qCInfo(lcProxy) << "流转缓存播放器连接断开，已写到"
                                 << client->property(kCacheNext).toLongLong() << "字节";
                 for (int i = entry->clients.size() - 1; i >= 0; --i) {
                     if (entry->clients.at(i).isNull() || entry->clients.at(i).data() == client)
                         entry->clients.removeAt(i);
+                }
+                if (entry->transient && entry->clients.isEmpty()) {
+                    if (m_cache.value(cacheKey) == entry)
+                        m_cache.remove(cacheKey);
+                    closeCacheFile(*entry);
                 }
             });
 
@@ -2019,6 +2031,14 @@ void StreamProxy::pumpCache(const QString &key, const QSharedPointer<CacheEntry>
             entry->clients.removeAt(i);
         }
     }
+
+    if (entry->transient && entry->clients.isEmpty()) {
+        // 临时前缀条目只服务一次有界 Range；最后一个客户端发送完（或断开）
+        // 后立即从缓存表移除并释放文件句柄，不能留给后续整段请求复用。
+        if (m_cache.value(key) == entry)
+            m_cache.remove(key);
+        closeCacheFile(*entry);
+    }
 }
 
 void StreamProxy::readIntoCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
@@ -2036,6 +2056,7 @@ void StreamProxy::readIntoCache(const QString &key, const QSharedPointer<CacheEn
     const qint64 remain = entry->total - cacheDataSize(*entry);
     if (chunk.size() > remain)
         chunk.truncate(static_cast<int>(remain));
+    const qint64 before = cacheDataSize(*entry);
     if (!appendCacheData(*entry, chunk)) {
         qCWarning(lcProxy) << "流转缓存写入失败，停止该条目" << entry->filePath;
         entry->failed = true;
@@ -2044,6 +2065,8 @@ void StreamProxy::readIntoCache(const QString &key, const QSharedPointer<CacheEn
         pumpCache(key, entry);
         return;
     }
+    if (cacheDataSize(*entry) > before)
+        entry->resumeAttempts = 0;
     entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
     if (cacheDataSize(*entry) >= entry->total && !entry->complete) {
         entry->complete = true;

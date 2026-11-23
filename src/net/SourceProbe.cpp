@@ -666,14 +666,46 @@ int itemFieldCount(const QJsonArray &array)
     return count;
 }
 
+/// 包装层数组的特征：首元素里的标量字段只有 total/count/code 这类分页或状态
+/// 元数据，真正的条目在它内部的数组里。结果项也可能带一个很大的 episodes/
+/// tracks 数组，但结果项还有 title/vod_name 等业务字段，不能继续下钻，否则
+/// 会把 10 条结果识别成第 1 条结果里的 50 个播放片段。
+bool isWrapperArray(const QJsonArray &array)
+{
+    if (array.isEmpty() || !array.first().isObject())
+        return false;
+    static const QSet<QString> metadataKeys = {
+        QStringLiteral("total"), QStringLiteral("count"), QStringLiteral("page"),
+        QStringLiteral("pages"), QStringLiteral("pagecount"), QStringLiteral("size"),
+        QStringLiteral("limit"), QStringLiteral("offset"), QStringLiteral("code"),
+        QStringLiteral("status"), QStringLiteral("success"), QStringLiteral("message"),
+        QStringLiteral("msg"), QStringLiteral("hasmore"), QStringLiteral("more"),
+        QStringLiteral("totalcount"), QStringLiteral("totalpage"),
+    };
+    const QJsonObject first = array.first().toObject();
+    bool hasChildArray = false;
+    for (auto it = first.constBegin(); it != first.constEnd(); ++it) {
+        if (it.value().isArray()) {
+            hasChildArray = true;
+            continue;
+        }
+        if (it.value().isObject())
+            continue;
+        if (!metadataKeys.contains(it.key().toLower()))
+            return false;
+    }
+    return hasChildArray;
+}
+
 /// 在 JSON 里找最像“条目列表”的数组，并生成带数组索引的路径（如 `[0].list`）。
 /// 以前遇到数组就返回，根为 `[{"list":[...]}]` 时只看到外层 1 条；
-/// 现在继续向下扫描，索引路径可直接交给 ConfigMapper::valueAtPath。
+/// 现在只对明确的包装层继续向下扫描，索引路径可直接交给 ConfigMapper::valueAtPath。
 void scanArrays(const QJsonValue &node, const QString &path, int depth, int *bestScore,
-                QJsonArray *best, QString *bestPath)
+                QJsonArray *best, QString *bestPath, int *budget)
 {
-    if (depth > 6)
+    if (depth > 6 || budget == nullptr || *budget <= 0)
         return;
+    --*budget;
     if (node.isArray()) {
         const QJsonArray array = node.toArray();
         const int fields = itemFieldCount(array);
@@ -684,12 +716,14 @@ void scanArrays(const QJsonValue &node, const QString &path, int depth, int *bes
             *best = array;
             *bestPath = path;
         }
-        // 只向下钻有限个元素：根数组可能是上千条数据，全扫会放大探测耗时。
+        if (!isWrapperArray(array))
+            return;
+        // 包装层通常只有 1 条对象；仍限制每层扫描数量，避免异常数据放大耗时。
         const int scanCount = qMin(array.size(), 16);
         for (int i = 0; i < scanCount; ++i) {
             const QString child = path + QLatin1Char('[') + QString::number(i)
                                   + QLatin1Char(']');
-            scanArrays(array.at(i), child, depth + 1, bestScore, best, bestPath);
+            scanArrays(array.at(i), child, depth + 1, bestScore, best, bestPath, budget);
         }
         return;
     }
@@ -697,7 +731,7 @@ void scanArrays(const QJsonValue &node, const QString &path, int depth, int *bes
         const QJsonObject object = node.toObject();
         for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
             const QString child = path.isEmpty() ? it.key() : path + QLatin1Char('.') + it.key();
-            scanArrays(it.value(), child, depth + 1, bestScore, best, bestPath);
+            scanArrays(it.value(), child, depth + 1, bestScore, best, bestPath, budget);
         }
     }
 }
@@ -1179,7 +1213,8 @@ void Prober::probeNextCandidate()
         QJsonArray items;
         QString itemsPath;
         int itemsScore = -1;
-        scanArrays(root, QString(), 0, &itemsScore, &items, &itemsPath);
+        int nodeBudget = 4096;
+        scanArrays(root, QString(), 0, &itemsScore, &items, &itemsPath, &nodeBudget);
         if (items.isEmpty()) {
             ++m_jsonNoItems;
             recordAttempt(probeUrl, status, tr("JSON 里没有结果数组"));

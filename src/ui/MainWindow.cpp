@@ -7,6 +7,7 @@
 #include "net/SearchCoordinator.h"
 #include "net/SourceRegistry.h"
 #include "settings/AppShortcuts.h"
+#include "settings/AppSettings.h"
 #include "ui/DownloadController.h"
 #include "ui/FullscreenController.h"
 #include "ui/LyricsController.h"
@@ -309,9 +310,11 @@ MainWindow::MainWindow(QWidget *parent)
                 QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
                 QTimer::singleShot(0, this, &MainWindow::updateAdaptiveMetrics);
                 m_lyrics->refreshHighlight();
-                if (m_musicVisual != nullptr)
+                if (m_musicVisual != nullptr) {
                     m_musicVisual->setAccentColor(
                         ThemeManager::instance().current().accentColor);
+                    m_musicVisual->setUiFontPx(AppSettings::uiFontSizePx());
+                }
                 updateShortcutTooltips();
             });
 
@@ -746,7 +749,7 @@ bool MainWindow::playSearchItem(const MediaItem &item)
     // 搜索结果只能播放网络地址：file/data/ftp 等协议既不该由远程源返回，
     // 也会绕过代理的请求头与缓存边界。
     if (!playable.isValid() || playable.url.isRelative()
-        || scheme != QLatin1String("http") && scheme != QLatin1String("https")) {
+        || (scheme != QLatin1String("http") && scheme != QLatin1String("https"))) {
         ui->label_status->setText(tr("搜索结果缺少可播放地址，换一个来源或重新搜索试试"));
         qCWarning(lcWindow) << "搜索结果地址无效" << playable.title
                             << playable.url.toString();

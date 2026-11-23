@@ -31,6 +31,8 @@ public:
     void setSourceDisplayName(const QString &name);
     /// 主题强调色；有封面时会用封面主色覆盖，复位时回落到这里。
     void setAccentColor(const QColor &color);
+    /// 界面字号变化时由窗口推入，避免 30fps 重绘每帧构造 QSettings。
+    void setUiFontPx(int pixels);
     /// 删除当前播放条目后整轨复位：曲目文案、封面、频谱、歌词和动画状态一起清空
     void reset();
     void setPlaying(bool playing);
@@ -72,6 +74,7 @@ private:
     QColor m_themeAccent{96, 132, 255};
     QStringList m_lyrics;
     int m_lyricIndex = -1;
+    int m_uiFontPx = 13;
     qreal m_phase = 0.0;
     int m_coverScaledRadius = 0;
     bool m_playing = false;

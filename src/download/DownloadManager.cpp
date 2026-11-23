@@ -406,6 +406,9 @@ bool DownloadManager::removeJob(const QString &id)
     scheduleSave();
     scheduleNotify();
     emit statusMessage(tr("已移除下载记录"));
+    // 移除活动任务后并发槽位已经释放；队列里的 Paused 任务必须马上补位。
+    // 用排队调用避免从 finishJob/removeJob 栈内同步重入 startJob。
+    QTimer::singleShot(0, this, &DownloadManager::pumpQueue);
     return true;
 }
 
@@ -1188,8 +1191,13 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
     DownloadJob &job = m_jobs[index];
     job.filePath = path;
     job.bytesReceived = QFileInfo(path).size();
-    if (job.bytesTotal <= 0)
+    if (success) {
+        // HLS 任务的记录长度是合并后的 TS，成功转封装后路径已变成 MP4；
+        // 完成后统一按最终文件大小收口，否则进度条会停在 TS 大小的比例上。
         job.bytesTotal = job.bytesReceived;
+    } else if (job.bytesTotal <= 0) {
+        job.bytesTotal = job.bytesReceived;
+    }
     job.status = success ? DownloadJob::Status::Completed
                          : DownloadJob::Status::Failed;
     if (success) {

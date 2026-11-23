@@ -629,12 +629,14 @@ void SourceManagerDialog::updateKindUi()
     }
 }
 
-SourceConfig SourceManagerDialog::readForm() const
+SourceConfig SourceManagerDialog::readForm()
 {
     SourceConfig config;
     if (m_currentRow >= 0 && m_currentRow < m_drafts.size())
         config = m_drafts.at(m_currentRow);
 
+    const QString originalKind = config.kind;
+    const QString originalProvider = config.provider;
     config.name = m_name->text().trimmed();
     if (config.id.isEmpty())
         config.id = makeUniqueId(config.name.isEmpty() ? QStringLiteral("source") : config.name,
@@ -644,7 +646,6 @@ SourceConfig SourceManagerDialog::readForm() const
                            : MediaType::Music;
     const bool wasBuiltin = config.builtin;
     const bool wasExternal = config.kind == QLatin1String("external");
-    const QString originalKind = config.kind;
     config.kind = m_kind->currentData().toString();
     // provider 只属于内置实现。配置型/外部解析器写 provider=maccms_web
     // 会让后续重建 provider 时走错分支。
@@ -657,10 +658,20 @@ SourceConfig SourceManagerDialog::readForm() const
     // kind=config + builtin=true，不能因此被强制改成内置实现。
     if (wasBuiltin && config.kind != originalKind) {
         config.kind = originalKind;
+        // provider 也必须锁回预置源的原始实现；否则网易云这类
+        // kind=config 的预置源会残留一个 maccms_web provider。
+        config.provider = originalProvider;
         if (m_kind->findData(config.kind) >= 0) {
             QSignalBlocker blocker(m_kind);
             m_kind->setCurrentIndex(m_kind->findData(config.kind));
         }
+        if (m_provider->findData(config.provider) >= 0) {
+            QSignalBlocker blocker(m_provider);
+            m_provider->setCurrentIndex(m_provider->findData(config.provider));
+        }
+        // 让字段分组/类型控件跟随被锁回的 kind 立即复位，而不是等下一次
+        // 切换才刷新；这一步只做 UI 同步，不改已保存的 draft。
+        updateKindUi();
     }
     config.builtin = wasBuiltin;
     if (config.kind == QLatin1String("builtin")
