@@ -140,6 +140,9 @@ private:
 
     Result m_result;
     bool m_finished = false;
+    /// 每轮探测的唯一代次：旧首页请求迟到时用它识别并丢弃，避免把上一轮
+    /// 的响应写进本轮结果；也防止复用 Prober 时旧回调访问已重置的状态。
+    int m_runGeneration = 0;
 };
 
 } // namespace SourceProbe

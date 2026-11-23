@@ -824,6 +824,9 @@ Prober::~Prober()
 void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extraPaths,
                    bool autoDetect)
 {
+    // 新的一轮探测必须换一个代次：上一轮首页请求可能还在路上，
+    // 不能让它复用同一个 Prober 时把迟到响应写进本轮结果。
+    ++m_runGeneration;
     m_finished = false;
     m_type = hintType;
     m_auto = autoDetect;
@@ -880,6 +883,9 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
 /// @brief 取消探查并释放在途请求。
 void Prober::cancel()
 {
+    // 让首页回调的代次立即失效；首页请求无法在这里单独 abort（HttpClient
+    // 由多个源共享），但迟到回调只做 deleteLater，不再访问本对象。
+    ++m_runGeneration;
     m_finished = true;
     if (m_activeReply != nullptr)
         m_activeReply->abort();
@@ -924,9 +930,18 @@ void Prober::fetchHome()
     QHash<QString, QString> headers;
     headers.insert(QStringLiteral("Referer"), m_origin.toString() + QLatin1Char('/'));
 
+    // 首页请求的完成回调可能晚于 Prober/探测对话框的析构；这里用 QPointer
+    // 作为生命周期护栏，并带上本轮代次，迟到响应只释放 reply，不再碰本对象。
+    const int generation = m_runGeneration;
+    QPointer<Prober> self(this);
     // 首页只用来拿站点标题和真实域名，打不开也照样去试接口
-    m_http->fetch(m_site, QByteArray(), headers, [this](QNetworkReply *reply) {
-        if (m_finished) {
+    m_http->fetch(m_site, QByteArray(), headers, [this, self, generation](QNetworkReply *reply) {
+        if (self.isNull()) {
+            if (reply != nullptr)
+                reply->deleteLater();
+            return;
+        }
+        if (m_finished || generation != m_runGeneration) {
             if (reply != nullptr)
                 reply->deleteLater();
             return;

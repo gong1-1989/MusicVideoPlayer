@@ -100,6 +100,10 @@ SourceProbeDialog::SourceProbeDialog(HttpClient *http, MediaType type, const QSt
 
 SourceProbeDialog::~SourceProbeDialog()
 {
+    // 先让探测对象停止回传：析构期间 UI 控件马上删除，任何迟到的结果信号
+    // 都不应再访问 m_status/m_samples 等成员。
+    if (m_prober != nullptr)
+        m_prober->cancel();
     delete ui;
 }
 
@@ -154,6 +158,12 @@ void SourceProbeDialog::bindUi()
     connect(m_btnProbe, &QPushButton::clicked, this, &SourceProbeDialog::startProbe);
     connect(m_btnSave, &QPushButton::clicked, this, &SourceProbeDialog::accept);
     connect(ui->btn_cancel, &QPushButton::clicked, this, &SourceProbeDialog::reject);
+    // 取消按钮、Esc、关闭窗口和 accept 最终都会走 finished；在这里统一
+    // 取消探测，覆盖不经过 closeEvent 的 reject() 路径。
+    connect(this, &QDialog::finished, this, [this](int) {
+        if (m_prober != nullptr)
+            m_prober->cancel();
+    });
     connect(m_url, &QLineEdit::returnPressed, this, &SourceProbeDialog::startProbe);
     connect(ui->btn_addPath, &QPushButton::clicked, this, &SourceProbeDialog::addCustomPath);
     connect(ui->btn_removePath, &QPushButton::clicked, this,
@@ -204,8 +214,13 @@ void SourceProbeDialog::startProbe()
     m_btnProbe->setEnabled(false);
     m_status->setText(tr("正在探测，会依次试几条常见接口路径…"));
 
-    if (m_prober != nullptr)
+    if (m_prober != nullptr) {
+        // 重建前先取消旧对象并断开它到本窗口的信号，避免旧探测在
+        // deleteLater 真正执行前把过期结果投到新界面。
+        m_prober->cancel();
+        m_prober->disconnect(this);
         m_prober->deleteLater();
+    }
     m_prober = new SourceProbe::Prober(m_http, this);
     connect(m_prober, &SourceProbe::Prober::finished, this,
             &SourceProbeDialog::onProbeFinished);

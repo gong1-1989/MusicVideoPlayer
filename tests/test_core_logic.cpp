@@ -710,8 +710,12 @@ public:
                                           + "\r\nContent-Type: " + contentType
                                           + "\r\nContent-Length: " + QByteArray::number(body.size())
                                           + "\r\nConnection: close\r\n\r\n" + body;
-                    socket->write(response);
-                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                    QTimer::singleShot(m_delayMs, socket, [socket, response] {
+                        if (socket->state() != QAbstractSocket::ConnectedState)
+                            return;
+                        socket->write(response);
+                        socket->disconnectFromHost();
+                    });
                 });
                 connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
             }
@@ -723,10 +727,15 @@ public:
         return QStringLiteral("http://127.0.0.1:%1/").arg(serverPort());
     }
 
+    /// 让响应延迟 ms 毫秒写出，用来覆盖“请求在途时取消/销毁 Prober”的
+    /// 生命周期路径；默认 0，不改变既有探查用例的时序。
+    void setResponseDelay(int ms) { m_delayMs = qMax(0, ms); }
+
     QStringList targets;
 
 private:
     Handler m_handler;
+    int m_delayMs = 0;
 };
 
 } // namespace
@@ -769,6 +778,8 @@ private slots:
     void sourceProbeNestedArrayItemsPath();
     void sourceProbeKeepsOuterListOverEpisodeArrays();
     void sourceProbeAutoCoversBothTypeCandidates();
+    void sourceProbeCancelBeforeHomeReply();
+    void sourceProbeDeletedBeforeHomeReply();
     void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
@@ -1902,6 +1913,55 @@ void CoreLogicTest::sourceProbeAutoCoversBothTypeCandidates()
     }
     QVERIFY2(sawVideo, "自动识别没有请求影视候选");
     QVERIFY2(sawMusic, "自动识别没有请求音乐候选");
+}
+
+void CoreLogicTest::sourceProbeCancelBeforeHomeReply()
+{
+    // 首页请求在途时取消探测：迟到响应必须被代次判断丢弃，不能再发
+    // finished，也不能继续访问已经取消的 Prober 状态。
+    ProbeSiteServer server([](const QString &target, QByteArray &body,
+                              QByteArray &contentType, int &status) {
+        Q_UNUSED(target);
+        status = 200;
+        contentType = QByteArrayLiteral("text/html; charset=utf-8");
+        body = QByteArrayLiteral("<html><head><title>慢站点</title></head><body></body></html>");
+    });
+    server.setResponseDelay(250);
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+    prober.start(QUrl(server.baseUrl()), MediaType::Video, {}, true);
+    QVERIFY2(QTest::qWaitFor([&] { return !server.targets.isEmpty(); }, 1000),
+             "首页请求还没有发到本地站点");
+    prober.cancel();
+    QTest::qWait(500);
+    QCOMPARE(finished.count(), 0);
+}
+
+void CoreLogicTest::sourceProbeDeletedBeforeHomeReply()
+{
+    // 更极端的生命周期路径：对话框关闭后 Prober 先被析构，首页响应随后
+    // 到达。QPointer 护栏必须保证回调只释放 reply，不触碰已释放的 Prober。
+    ProbeSiteServer server([](const QString &target, QByteArray &body,
+                              QByteArray &contentType, int &status) {
+        Q_UNUSED(target);
+        status = 200;
+        contentType = QByteArrayLiteral("text/html; charset=utf-8");
+        body = QByteArrayLiteral("<html><head><title>关闭后的迟到响应</title></head><body></body></html>");
+    });
+    server.setResponseDelay(250);
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    HttpClient http;
+    SourceProbe::Prober *prober = new SourceProbe::Prober(&http);
+    prober->start(QUrl(server.baseUrl()), MediaType::Video, {}, true);
+    QVERIFY2(QTest::qWaitFor([&] { return !server.targets.isEmpty(); }, 1000),
+             "首页请求还没有发到本地站点");
+    delete prober;
+    QTest::qWait(500);
 }
 
 void CoreLogicTest::sourceTimeoutUsesConfiguredValue()
