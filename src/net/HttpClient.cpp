@@ -1,3 +1,5 @@
+/// @file HttpClient.cpp
+/// @brief 统一 HTTP 客户端：请求头安全过滤、手动重定向前跟随、响应体上限与 URL 脱敏。
 #include "net/HttpClient.h"
 
 #include <QLoggingCategory>
@@ -24,6 +26,10 @@ const char kLimitExceededProperty[] = "mvpReplyLimitExceeded";
 const char kLimitHookedProperty[] = "mvpReplyLimitHooked";
 const char kReceivedBytesProperty[] = "mvpReplyReceivedBytes";
 
+/// @brief 已接收字节超过上限时中止响应。
+/// @param reply 目标响应。
+/// @note QNetworkReply 没有累计接收字节的 getter，优先使用 downloadProgress 记录的
+///       累计值，bytesAvailable 仅兜底尚未触发 progress 的同步响应。
 void abortReplyIfOverLimit(QNetworkReply *reply)
 {
     if (reply == nullptr)
@@ -47,11 +53,13 @@ void abortReplyIfOverLimit(QNetworkReply *reply)
 }
 
 
+/// @brief 判断状态码是否为需要跟随的重定向。
 bool isRedirectStatus(int status)
 {
     return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
+/// @brief 只允许 http/https 协议。
 bool isAllowedScheme(const QUrl &url)
 {
     return url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https");
@@ -65,6 +73,7 @@ QHash<QString, QString> headersForRedirect(const QHash<QString, QString> &header
     return HeaderPolicy::sanitizedForTarget(to, headers, from);
 }
 
+/// @brief 校验头名是合法 HTTP token，头值不含 CR/LF/NUL。
 bool isSafeHeader(const QString &name, const QByteArray &value)
 {
     if (name.isEmpty())
@@ -82,6 +91,11 @@ bool isSafeHeader(const QString &name, const QByteArray &value)
     return !value.contains('\r') && !value.contains('\n') && !value.contains('\0');
 }
 
+/// @brief 构造带默认头与安全过滤的请求。
+/// @param url 目标地址。
+/// @param extra 各源自定义头，可覆盖默认值但会经过 HeaderPolicy 与安全校验。
+/// @param sourceOrigin 可信源站；敏感头只会发往该源站。
+/// @param redirectPolicy Qt 的重定向策略。
 QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &extra,
                              const QUrl &sourceOrigin,
                              QNetworkRequest::RedirectPolicy redirectPolicy =
@@ -140,6 +154,7 @@ QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &ext
 
 } // namespace
 
+/// @brief 构造 HTTP 客户端：15 秒传输超时，并为每个实例保留独立 Cookie 会话。
 HttpClient::HttpClient(QObject *parent)
     : QObject(parent)
     , m_nam(new QNetworkAccessManager(this))
@@ -150,6 +165,13 @@ HttpClient::HttpClient(QObject *parent)
     m_nam->setCookieJar(new QNetworkCookieJar(m_nam));
 }
 
+/// @brief 发起带 Range 的 GET 请求。
+/// @param url 目标地址。
+/// @param range Range 头值，空表示整段。
+/// @param headers 自定义请求头。
+/// @param maxBytes 响应体上限，<=0 不限制。
+/// @param sourceOrigin 可信源站。
+/// @return 已登记到活动集合的响应对象。
 QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
                                const QHash<QString, QString> &headers, qint64 maxBytes,
                                const QUrl &sourceOrigin)
@@ -163,6 +185,7 @@ QNetworkReply *HttpClient::get(const QUrl &url, const QByteArray &range,
     return trackReply(m_nam->get(request), maxBytes);
 }
 
+/// @brief 以表单方式提交 POST；实际复用 postJson 的请求构建与上限逻辑。
 QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body,
                                     const QHash<QString, QString> &headers, qint64 maxBytes,
                                     const QUrl &sourceOrigin)
@@ -170,6 +193,7 @@ QNetworkReply *HttpClient::postForm(const QUrl &url, const QByteArray &body,
     return postJson(url, body, headers, maxBytes, sourceOrigin);
 }
 
+/// @brief 发起 POST 请求，Content-Type 来自自定义头，默认表单类型。
 QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
                                     const QHash<QString, QString> &headers, qint64 maxBytes,
                                     const QUrl &sourceOrigin)
@@ -189,17 +213,20 @@ QNetworkReply *HttpClient::postJson(const QUrl &url, const QByteArray &body,
     return trackReply(m_nam->post(request, body), maxBytes);
 }
 
+/// @brief 小型响应的一步式获取（默认 JSON 上限）。
 void HttpClient::fetch(const QUrl &url, const QByteArray &range, const ReplyHandler &onReady)
 {
     fetch(url, range, QHash<QString, QString>(), onReady);
 }
 
+/// @brief 带自定义头的 fetch（默认 JSON 上限）。
 void HttpClient::fetch(const QUrl &url, const QByteArray &range,
                        const QHash<QString, QString> &headers, const ReplyHandler &onReady)
 {
     fetch(url, range, headers, onReady, NetLimits::kJsonBytes);
 }
 
+/// @brief 完整版 fetch：可指定响应体上限与可信源站。
 void HttpClient::fetch(const QUrl &url, const QByteArray &range,
                        const QHash<QString, QString> &headers, const ReplyHandler &onReady,
                        qint64 maxBytes, const QUrl &sourceOrigin)
@@ -207,6 +234,7 @@ void HttpClient::fetch(const QUrl &url, const QByteArray &range,
     fetchInternal(url, range, headers, onReady, 0, false, maxBytes, sourceOrigin);
 }
 
+/// @brief 流式获取：响应头到达即回调，供音视频边下边播，不设置响应体上限。
 void HttpClient::stream(const QUrl &url, const QByteArray &range,
                         const QHash<QString, QString> &headers, const ReplyHandler &onReady,
                         const QUrl &sourceOrigin)
@@ -214,6 +242,9 @@ void HttpClient::stream(const QUrl &url, const QByteArray &range,
     fetchInternal(url, range, headers, onReady, 0, true, 0, sourceOrigin);
 }
 
+/// @brief 把响应登记进活动集合，挂接字节统计与上限检查。
+/// @note finished 后再从集合摘除；abortAll() 先复制再清空，避免同步 finished
+///       回调修改容器导致迭代器失效。
 QNetworkReply *HttpClient::trackReply(QNetworkReply *reply, qint64 maxBytes)
 {
     if (reply == nullptr)
@@ -235,6 +266,7 @@ QNetworkReply *HttpClient::trackReply(QNetworkReply *reply, qint64 maxBytes)
     return reply;
 }
 
+/// @brief 为响应设置接收上限；重复设置时保留更严格的值。
 void HttpClient::limitReplySize(QNetworkReply *reply, qint64 maxBytes)
 {
     if (reply == nullptr || maxBytes <= 0)
@@ -255,6 +287,7 @@ void HttpClient::limitReplySize(QNetworkReply *reply, qint64 maxBytes)
     abortReplyIfOverLimit(reply);
 }
 
+/// @brief 中止全部在途响应，用于退出或切换搜索任务。
 void HttpClient::abortAll()
 {
     const QSet<QNetworkReply *> replies = m_activeReplies;
@@ -265,6 +298,11 @@ void HttpClient::abortAll()
     }
 }
 
+/// @brief fetch/stream 的统一实现：手动跟随重定向并在每跳重新清洗鉴权头。
+/// @param hop 当前跳数，超过 kMaxRedirects 直接回调失败。
+/// @param deliverOnHeaders 为 true 时响应头一到就交付 running reply（流式播放）。
+/// @note 采用 ManualRedirectPolicy：默认策略会拒绝 https→http 降级，
+///       而部分站点（如 163）的外链恰好 302 到 http CDN。
 void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
                                const QHash<QString, QString> &headers,
                                const ReplyHandler &onReady, int hop, bool deliverOnHeaders,
@@ -332,6 +370,9 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
 }
 
 
+/// @brief 判断响应是否可当成功处理。
+/// @note 超限 abort() 后 error 为 OperationCanceledError，此时 2xx/无状态码仍算成功，
+///       交给 readAllLimited 报“超限”；404/500 的大错误页必须按 HTTP 失败。
 bool HttpClient::isHttpSuccess(QNetworkReply *reply)
 {
     if (!reply)
@@ -354,6 +395,9 @@ bool HttpClient::isHttpSuccess(QNetworkReply *reply)
     return code >= 200 && code < 300;
 }
 
+/// @brief 限长读取响应体。
+/// @param limit 字节上限，负数表示不限制。
+/// @param exceeded 输出是否已超限；超限时不返回任何数据。
 QByteArray HttpClient::readAllLimited(QNetworkReply *reply, qint64 limit, bool *exceeded)
 {
     if (exceeded != nullptr)
@@ -370,6 +414,7 @@ QByteArray HttpClient::readAllLimited(QNetworkReply *reply, qint64 limit, bool *
     return reply->readAll();
 }
 
+/// @brief 生成可读错误描述，有状态码时带上 HTTP 码。
 QString HttpClient::describeError(QNetworkReply *reply)
 {
     if (!reply)
@@ -382,6 +427,8 @@ QString HttpClient::describeError(QNetworkReply *reply)
     return message;
 }
 
+/// @brief 脱敏 URL：打码账号密码、路径中的签名段与敏感查询参数，供日志使用。
+/// @return 可直接写日志的地址；空输入返回空。
 QString HttpClient::redactUrl(const QUrl &url)
 {
     if (url.isEmpty())

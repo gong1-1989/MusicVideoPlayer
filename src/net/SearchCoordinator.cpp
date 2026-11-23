@@ -1,3 +1,5 @@
+/// @file SearchCoordinator.cpp
+/// @brief 多源并发搜索调度：单源/全局预算、结果归并、失败汇总与取消。
 #include "net/SearchCoordinator.h"
 
 #include "net/ConfigSearchProvider.h"
@@ -10,6 +12,11 @@
 
 Q_LOGGING_CATEGORY(lcSearch, "mvp.search")
 
+/// @brief 按源配置类型创建对应的搜索实现。
+/// @param config 源配置，kind 决定实现：builtin / external / 可配置 HTTP。
+/// @param http 共享 HTTP 客户端。
+/// @param parent 父对象，负责生命周期回收。
+/// @return 新建的提供者；遇到程序不支持的内置 provider 时返回 nullptr，由调用方跳过。
 SearchProviderBase *createSearchProvider(const SourceConfig &config, HttpClient *http,
                                          QObject *parent)
 {
@@ -26,6 +33,10 @@ SearchProviderBase *createSearchProvider(const SourceConfig &config, HttpClient 
     return new ConfigSearchProvider(config, http, parent);
 }
 
+/// @brief 构造协调器并创建全局预算计时器。
+/// @param registry 源注册表，为空时搜索直接返回空结果。
+/// @param http 共享 HTTP 客户端。
+/// @param parent 父对象。
 SearchCoordinator::SearchCoordinator(SourceRegistry *registry, HttpClient *http, QObject *parent)
     : QObject(parent)
     , m_registry(registry)
@@ -36,6 +47,10 @@ SearchCoordinator::SearchCoordinator(SourceRegistry *registry, HttpClient *http,
     connect(m_globalTimer, &QTimer::timeout, this, &SearchCoordinator::onGlobalTimeout);
 }
 
+/// @brief 发起一次多源搜索。
+/// @param keyword 搜索关键词；空串或已有搜索在途时直接返回。
+/// @param limitPerSource 每个源的条数上限，<=0 时按 20。
+/// @note 会清空上一轮分桶并启动全局预算计时器；没有任何启用源时立即以空结果结束。
 void SearchCoordinator::search(const QString &keyword, int limitPerSource)
 {
     if (m_busy || keyword.trimmed().isEmpty())
@@ -75,6 +90,9 @@ void SearchCoordinator::search(const QString &keyword, int limitPerSource)
     startAll();
 }
 
+/// @brief 实例化全部启用源并统一下发搜索。
+/// @note 先完成全部实例化再启动，避免某个源同步完成/报错时把尚未启动的源
+///       误判成“全部结束”；不支持的内置 provider 直接计为失败并跳过。
 void SearchCoordinator::startAll()
 {
     // 先把所有源都实例化出来，再统一下发搜索；任何一个源同步报错/同步完成
@@ -133,11 +151,17 @@ void SearchCoordinator::startAll()
         finishSearch();
 }
 
+/// @brief 返回指定源的单源预算（毫秒）。
 int SearchCoordinator::timeoutForSource(const SourceConfig &config) const
 {
     return sourceTimeoutMs(config, m_limit);
 }
 
+/// @brief 计算单源超时预算。
+/// @param config 源配置。
+/// @param limitPerSource 每源条数上限。
+/// @return 配置了 timeoutMs 时按其值夹到 1..60 秒；否则网页影视源随条数放宽，
+///         其他源使用 kSourceTimeoutMs。
 int SearchCoordinator::sourceTimeoutMs(const SourceConfig &config, int limitPerSource)
 {
     // 配置了超时的源必须真正按配置限时，否则设置界面上的值只是装饰。
@@ -153,6 +177,7 @@ int SearchCoordinator::sourceTimeoutMs(const SourceConfig &config, int limitPerS
                     : kSourceTimeoutMs;
 }
 
+/// @brief 计算整次搜索的全局预算，至少覆盖最慢的单源预算。
 int SearchCoordinator::globalBudgetForLimit() const
 {
     // 总预算至少覆盖最慢的单源配置，否则单源还没到自己的超时就被全局计时截断。
@@ -162,6 +187,8 @@ int SearchCoordinator::globalBudgetForLimit() const
     return budget;
 }
 
+/// @brief 按提供者指针查找在途任务下标。
+/// @return 任务下标；已超时/取消/完成时返回 -1。
 int SearchCoordinator::taskIndexFor(SearchProviderBase *provider) const
 {
     for (int i = 0; i < m_tasks.size(); ++i) {
@@ -171,6 +198,8 @@ int SearchCoordinator::taskIndexFor(SearchProviderBase *provider) const
     return -1;
 }
 
+/// @brief 处理单源超时：中止该源、记录失败原因并推进进度。
+/// @param provider 超时的提供者。
 void SearchCoordinator::onSourceTimeout(SearchProviderBase *provider)
 {
     const int index = taskIndexFor(provider);
@@ -204,6 +233,7 @@ void SearchCoordinator::onSourceTimeout(SearchProviderBase *provider)
         finishSearch();
 }
 
+/// @brief 全局预算用尽：中止全部未完成源、补齐失败原因并结束搜索。
 void SearchCoordinator::onGlobalTimeout()
 {
     if (!m_busy)
@@ -235,6 +265,11 @@ void SearchCoordinator::onGlobalTimeout()
     finishSearch();
 }
 
+/// @brief 接收单个源的结果，写入对应分桶并推进进度。
+/// @param provider 完成的提供者。
+/// @param items 该源返回的条目。
+/// @param filtered 被该源过滤掉的条数。
+/// @param error 该源失败原因，空表示成功。
 void SearchCoordinator::onProviderFinished(SearchProviderBase *provider,
                                            const QVector<MediaItem> &items, int filtered,
                                            const QString &error)
@@ -267,6 +302,8 @@ void SearchCoordinator::onProviderFinished(SearchProviderBase *provider,
         finishSearch();
 }
 
+/// @brief 按源配置顺序合并各源结果，并补齐缺失的品质字段。
+/// @return 合并后的条目列表；顺序稳定，不随网络返回先后变化。
 QVector<MediaItem> SearchCoordinator::mergedItems() const
 {
     // 按源配置顺序合并，而不是按网络返回先后；同一关键词多次搜索的列表顺序保持稳定
@@ -288,6 +325,7 @@ QVector<MediaItem> SearchCoordinator::mergedItems() const
     return all;
 }
 
+/// @brief 汇总各源被过滤掉的条数。
 int SearchCoordinator::mergedFiltered() const
 {
     int total = 0;
@@ -296,6 +334,7 @@ int SearchCoordinator::mergedFiltered() const
     return total;
 }
 
+/// @brief 返回所有非空的源失败说明，供界面提示。
 QStringList SearchCoordinator::failedSources() const
 {
     QStringList failed;
@@ -306,6 +345,7 @@ QStringList SearchCoordinator::failedSources() const
     return failed;
 }
 
+/// @brief 结束本轮搜索：停全局计时、归并结果并发出 succeeded/finished。
 void SearchCoordinator::finishSearch()
 {
     if (!m_busy)
@@ -323,6 +363,8 @@ void SearchCoordinator::finishSearch()
     emit searchFinished();
 }
 
+/// @brief 取消本轮搜索：中止所有在途源，并发出空结果让界面清掉半成品。
+/// @note 没有在途搜索时直接返回，避免误清已经展示的结果。
 void SearchCoordinator::cancel()
 {
     // 没有在途请求时不要发空结果：调用方可能只是收尾，空信号会把已经
