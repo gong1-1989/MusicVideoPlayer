@@ -58,6 +58,8 @@ public:
     bool updateDownloadedItem(const MediaItem &source, const QString &localPath);
     /// 弹出文件选择框并导入本地音乐/视频，目录记忆走 AppSettings
     void chooseLocalFiles(MediaType type);
+    /// 本地文件选择器的过滤器；独立成静态函数便于测试专用格式分组
+    static QString localFileDialogFilter(MediaType type);
 
 signals:
     void statusMessage(const QString &text);

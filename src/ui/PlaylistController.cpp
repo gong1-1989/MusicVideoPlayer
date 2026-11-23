@@ -10,6 +10,7 @@
 #include <QAction>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -69,6 +70,54 @@ QVector<MediaItem> persistentItems(const QVector<MediaItem> &items)
             result.append(item);
     }
     return result;
+}
+
+/// 各视频客户端把离线缓存封装成自己的私有格式，普通播放器无法直接解出正片。
+/// 这里只负责识别和提示，不尝试解码或绕过平台保护。
+const QStringList &proprietaryVideoSuffixes()
+{
+    static const QStringList suffixes = {
+        QStringLiteral("bhd"),   // 暴风影音
+        QStringLiteral("xv"),    // 迅雷影音 / 迅雷看看缓存
+        QStringLiteral("xlmv"),  // 迅雷商城
+        QStringLiteral("kux"),   // 优酷
+        QStringLiteral("qsv"),   // 爱奇艺
+        QStringLiteral("qlv"),   // 腾讯视频
+        QStringLiteral("ifox"),  // 搜狐影音
+        QStringLiteral("qmv"),   // 快播
+        QStringLiteral("mgcf"),  // 芒果TV
+        QStringLiteral("letv"),  // 乐视视频
+        QStringLiteral("bdv"),   // 百度视频
+    };
+    return suffixes;
+}
+
+QString proprietaryPlayerForSuffix(const QString &suffix)
+{
+    static const QHash<QString, QString> players = {
+        {QStringLiteral("bhd"), QStringLiteral("暴风影音")},
+        {QStringLiteral("xv"), QStringLiteral("迅雷影音")},
+        {QStringLiteral("xlmv"), QStringLiteral("迅雷影音")},
+        {QStringLiteral("kux"), QStringLiteral("优酷")},
+        {QStringLiteral("qsv"), QStringLiteral("爱奇艺")},
+        {QStringLiteral("qlv"), QStringLiteral("腾讯视频")},
+        {QStringLiteral("ifox"), QStringLiteral("搜狐影音")},
+        {QStringLiteral("qmv"), QStringLiteral("快播")},
+        {QStringLiteral("mgcf"), QStringLiteral("芒果TV")},
+        {QStringLiteral("letv"), QStringLiteral("乐视视频")},
+        {QStringLiteral("bdv"), QStringLiteral("百度视频")},
+    };
+    return players.value(suffix.toLower());
+}
+
+QString proprietaryVideoFilterPatterns()
+{
+    QStringList patterns;
+    const QStringList suffixes = proprietaryVideoSuffixes();
+    patterns.reserve(suffixes.size());
+    for (const QString &suffix : suffixes)
+        patterns.append(QStringLiteral("*.") + suffix);
+    return patterns.join(QLatin1Char(' '));
 }
 
 } // namespace
@@ -377,9 +426,20 @@ void PlaylistController::addLocalFiles(MediaType type, const QStringList &files)
 {
     PlaylistModel *model = modelFor(type);
     int added = 0;
+    QStringList skippedFiles;
+    QStringList skippedSuffixes;
 
     for (const QString &path : files) {
         const QFileInfo info(path);
+        const QString suffix = info.suffix().toLower();
+        const QString proprietaryPlayer = proprietaryPlayerForSuffix(suffix);
+        if (!proprietaryPlayer.isEmpty()) {
+            skippedFiles.append(info.fileName());
+            if (!skippedSuffixes.contains(suffix))
+                skippedSuffixes.append(suffix);
+            continue;
+        }
+
         MediaItem item;
         item.type = type;
         // 列表标题不显示扩展名，避免 “xxx.mp3” 与在线条目的观感不一致
@@ -397,14 +457,46 @@ void PlaylistController::addLocalFiles(MediaType type, const QStringList &files)
             ++added;
     }
 
+    if (!skippedFiles.isEmpty()) {
+        QStringList players;
+        for (const QString &suffix : skippedSuffixes) {
+            const QString player = proprietaryPlayerForSuffix(suffix);
+            if (!player.isEmpty() && !players.contains(player))
+                players.append(player);
+        }
+
+        QWidget *parentWidget = qobject_cast<QWidget *>(parent());
+        QMessageBox box(parentWidget);
+        box.setIcon(QMessageBox::Information);
+        box.setWindowTitle(tr("播放器专用格式"));
+        box.setText(tr("已跳过 %1 个专用格式文件").arg(skippedFiles.size()));
+        box.setInformativeText(
+            tr("这些文件是其他播放器的专用/加密缓存格式，当前播放器不保证能直接播放正片。\n"
+               "请用对应客户端打开，或在客户端内转码/导出为 MP4、MKV 后再加入列表。\n"
+               "涉及客户端：%1\n"
+               "若文件只是改了后缀，可先改回 .mp4/.mkv 再试。")
+                .arg(players.join(QStringLiteral("、"))));
+        box.setDetailedText(skippedFiles.join(QLatin1Char('\n')));
+        box.exec();
+    }
+
     if (added > 0) {
-        if (save())
-            emit statusMessage(tr("已添加 %1 个文件").arg(added));
+        if (save()) {
+            emit statusMessage(
+                skippedFiles.isEmpty()
+                    ? tr("已添加 %1 个文件").arg(added)
+                    : tr("已添加 %1 个文件，跳过 %2 个专用格式文件")
+                          .arg(added)
+                          .arg(skippedFiles.size()));
+        }
+    } else if (!skippedFiles.isEmpty()) {
+        emit statusMessage(tr("已跳过 %1 个专用格式文件").arg(skippedFiles.size()));
     } else {
         emit statusMessage(tr("列表中已存在相同文件"));
     }
     qCInfo(lcPlaylist) << "加载本地文件" << (type == MediaType::Music ? "音乐" : "视频") << "共"
-                       << files.size() << "个，新增" << added << "个";
+                       << files.size() << "个，新增" << added << "个，跳过专用格式"
+                       << skippedFiles.size() << "个";
 }
 
 bool PlaylistController::updateDownloadedItem(const MediaItem &source, const QString &localPath)
@@ -482,13 +574,7 @@ bool PlaylistController::promotePreviewRow(MediaType type, int row)
 void PlaylistController::chooseLocalFiles(MediaType type)
 {
     QWidget *parent = m_ui.tabs != nullptr ? m_ui.tabs->window() : nullptr;
-    const QString filter =
-        type == MediaType::Music
-            ? tr("音乐文件 (*.mp3 *.flac *.wav *.m4a *.m4b *.aac *.ogg *.opus *.wma *.ape "
-                 "*.aiff *.aif *.amr *.ac3 *.mka *.caf *.wv);;所有文件 (*)")
-            : tr("视频文件 (*.mp4 *.m4v *.mkv *.avi *.mov *.flv *.wmv *.webm *.ts *.m2ts "
-                 "*.mts *.mpg *.mpeg *.3gp *.3g2 *.ogv *.rmvb *.rm *.vob *.asf *.divx "
-                 "*.f4v *.m2v);;所有文件 (*)");
+    const QString filter = localFileDialogFilter(type);
     const QStringList files = QFileDialog::getOpenFileNames(
         parent, type == MediaType::Music ? tr("选择音乐文件") : tr("选择视频文件"),
         AppSettings::lastDir(), filter);
@@ -497,6 +583,22 @@ void PlaylistController::chooseLocalFiles(MediaType type)
 
     AppSettings::setLastDir(QFileInfo(files.first()).absolutePath());
     addLocalFiles(type, files);
+}
+
+QString PlaylistController::localFileDialogFilter(MediaType type)
+{
+    if (type == MediaType::Music) {
+        return tr("音乐文件 (*.mp3 *.flac *.wav *.m4a *.m4b *.aac *.ogg *.opus *.wma *.ape "
+                  "*.aiff *.aif *.amr *.ac3 *.mka *.caf *.wv);;所有文件 (*)");
+    }
+
+    // 专用格式单独列一组，用户能看见文件，但导入时会统一拦截并提示。
+    const QString proprietaryFilter =
+        tr("播放器专用格式 (%1);;").arg(proprietaryVideoFilterPatterns());
+    return tr("视频文件 (*.mp4 *.m4v *.mkv *.avi *.mov *.flv *.wmv *.webm *.ts *.m2ts "
+              "*.mts *.mpg *.mpeg *.3gp *.3g2 *.ogv *.rmvb *.rm *.vob *.asf *.divx "
+              "*.f4v *.m2v);;%1所有文件 (*)")
+        .arg(proprietaryFilter);
 }
 
 void PlaylistController::bindView(QListView *view, PlaylistModel *model, MediaType type)

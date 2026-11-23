@@ -12,10 +12,12 @@
 #include "ui/SettingsDialog.h"
 #include "ui/ThemeManager.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QFile>
 #include <QListView>
 #include <QMainWindow>
+#include <QMessageBox>
 #include <QSlider>
 #include <QTemporaryDir>
 #include <QTabWidget>
@@ -89,6 +91,7 @@ private slots:
     void playlistSaveFailureKeepsDirtyAndRetries();
     void previewItemNeverPersistsUnlessPromoted();
     void downloadedItemSwitchesPlaylistToLocalSource();
+    void proprietaryVideoFilesAreRejectedWithHint();
     void settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault();
     void settingsRemoveCacheCheckboxReflectsSetting();
 };
@@ -349,6 +352,62 @@ void UiLogicTest::downloadedItemSwitchesPlaylistToLocalSource()
         qunsetenv("MVP_DATA_DIR");
     else
         qputenv("MVP_DATA_DIR", oldDataDir);
+}
+
+void UiLogicTest::proprietaryVideoFilesAreRejectedWithHint()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+
+    const QString bhdFile = temp.filePath(QStringLiteral("暴风样本.bhd"));
+    const QString kuxFile = temp.filePath(QStringLiteral("优酷样本.kux"));
+    for (const QString &path : {bhdFile, kuxFile}) {
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("placeholder");
+        file.close();
+    }
+
+    PlaybackController player;
+    QTabWidget tabs;
+    QListView *musicView = new QListView;
+    QListView *videoView = new QListView;
+    tabs.addTab(musicView, QStringLiteral("音乐"));
+    tabs.addTab(videoView, QStringLiteral("视频"));
+    PlaylistController controller(&player, PlaylistUi{musicView, videoView, &tabs});
+
+    QString dialogText;
+    QTimer::singleShot(10, [&dialogText] {
+        auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+        if (box == nullptr)
+            return;
+        dialogText = box->windowTitle() + QLatin1Char('\n') + box->text()
+                     + QLatin1Char('\n') + box->informativeText();
+        box->accept();
+    });
+
+    QSignalSpy status(&controller, &PlaylistController::statusMessage);
+    controller.addLocalFiles(MediaType::Video, {bhdFile, kuxFile});
+
+    QCOMPARE(controller.videoModel()->size(), 0);
+    QVERIFY2(dialogText.contains(QStringLiteral("暴风影音")), qPrintable(dialogText));
+    QVERIFY2(dialogText.contains(QStringLiteral("优酷")), qPrintable(dialogText));
+    QVERIFY2(dialogText.contains(QStringLiteral("专用")), qPrintable(dialogText));
+    QCOMPARE(status.count(), 1);
+    QVERIFY(status.first().first().toString().contains(QStringLiteral("跳过")));
+
+    const QString videoFilter =
+        PlaylistController::localFileDialogFilter(MediaType::Video);
+    QVERIFY2(videoFilter.contains(QStringLiteral("播放器专用格式")),
+             qPrintable(videoFilter));
+    QVERIFY2(videoFilter.contains(QStringLiteral("*.bhd")), qPrintable(videoFilter));
+    QVERIFY2(videoFilter.contains(QStringLiteral("*.kux")), qPrintable(videoFilter));
+    QVERIFY2(videoFilter.contains(QStringLiteral("*.qlv")), qPrintable(videoFilter));
+    QVERIFY2(videoFilter.contains(QStringLiteral("*.mp4")), qPrintable(videoFilter));
+
+    const QString musicFilter =
+        PlaylistController::localFileDialogFilter(MediaType::Music);
+    QVERIFY2(!musicFilter.contains(QStringLiteral("*.bhd")), qPrintable(musicFilter));
 }
 
 void UiLogicTest::settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault()
