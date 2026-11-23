@@ -165,11 +165,20 @@ bool looksLikeStream(const QString &url)
         QStringLiteral("\\.(?:m3u8|mp4|flv|mkv)$"), QRegularExpression::CaseInsensitiveOption);
     // 只认 path 末尾（以及 query 里嵌套的播放地址）的扩展名；
     // `https://mp4.example.com/play` 这种主机名含 mp4 的地址不是直链。
-    if (extension.match(parsed.path()).hasMatch())
+    const auto pathLooksLikeStream = [](QString path) {
+        // CDN 偶尔给出 `/a.mp4/` 形式，尾斜杠不应影响扩展名判断。
+        while (path.endsWith(QLatin1Char('/')))
+            path.chop(1);
+        return extension.match(path).hasMatch();
+    };
+    if (pathLooksLikeStream(parsed.path()))
         return true;
     const QUrlQuery query(parsed);
     for (const auto &item : query.queryItems(QUrl::FullyDecoded)) {
-        if (extension.match(item.second).hasMatch())
+        // query 里的嵌套地址本身可能还带 query（?url=https://.../a.mp4?token=...），
+        // 直接匹配整串会漏；应按嵌套 URL 的 path 判断。
+        const QUrl nested(item.second);
+        if (nested.isValid() && pathLooksLikeStream(nested.path()))
             return true;
     }
     return false;

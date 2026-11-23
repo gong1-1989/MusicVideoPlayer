@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSet>
+#include <QUuid>
 
 namespace {
 
@@ -72,8 +73,17 @@ QString uniqueFilePath(const QString &directory, const QString &fileName,
         if (!occupied(candidate))
             return candidate;
     }
-    return dir.absoluteFilePath(
-        QStringLiteral("%1 (copy)%2").arg(stem, tail));
+    // 最后一级兜底也必须检查占用/队列预留。旧实现直接返回固定
+    // “(copy)”路径，极端情况下会覆盖已有文件或另一个任务的半成品。
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const QString token =
+            QUuid::createUuid().toString(QUuid::WithoutBraces).left(12);
+        const QString candidate =
+            dir.absoluteFilePath(QStringLiteral("%1 (copy %2)%3").arg(stem, token, tail));
+        if (!occupied(candidate))
+            return candidate;
+    }
+    return QString();
 }
 
 bool pathsReferToSameFile(const QString &a, const QString &b)

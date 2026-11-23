@@ -69,11 +69,20 @@ void LyricsService::load(const QUrl &url, const MediaItem &item)
         }
     }
 
-    if (m_http == nullptr)
+    if (m_http == nullptr) {
+        // 网络模块不可用时也要给出终态，否则界面会一直停在“正在加载歌词”，
+        // 而 failed/ready 两个信号都没有发出。
+        qCWarning(lcLyrics) << "歌词加载失败：网络模块未就绪";
+        emit lyricsFailed(tr("网络模块未就绪，无法加载在线歌词"));
         return;
+    }
 
     const int generation = m_generation;
     m_reply = m_http->get(url);
+    if (m_reply == nullptr) {
+        emit lyricsFailed(tr("歌词请求未能发出"));
+        return;
+    }
     connect(m_reply, &QNetworkReply::finished, this, [this, generation] {
         onFinished(generation);
     });
@@ -143,7 +152,7 @@ void LyricsService::onFinished(int generation)
     // 先落原始响应体再解析：歌词接口返回是否 JSON 包裹由上游决定，
     // 保存原文可以让下次命中和本次在线解析走完全相同的分支。
     if (LyricsCache::isEligible(m_item)
-        && LyricsCache::store(m_item, m_lyricUrl, payload)) {
+        && LyricsCache::store(m_item, payload)) {
         qCDebug(lcLyrics) << "歌词已缓存：" << m_item.displayName();
     }
     deliverPayload(payload);

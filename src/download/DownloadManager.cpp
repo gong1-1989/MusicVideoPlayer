@@ -198,6 +198,10 @@ QString DownloadManager::enqueue(const MediaItem &item, const QUrl &url,
     // 最终文件或同名的 .mvpdownload。
     const QFileInfo targetInfo(filePath);
     job.filePath = reserveFilePath(targetInfo.absolutePath(), targetInfo.fileName());
+    if (job.filePath.isEmpty()) {
+        emit statusMessage(tr("无法为下载分配唯一文件名，请检查下载目录"));
+        return QString();
+    }
     job.hls = hls;
     job.maxBytes = maxBytes;
     job.status = DownloadJob::Status::Paused;
@@ -255,6 +259,10 @@ QString DownloadManager::importFromCache(const MediaItem &item, const QString &c
     job.headers = item.headers;
     const QFileInfo targetInfo(filePath);
     job.filePath = reserveFilePath(targetInfo.absolutePath(), targetInfo.fileName());
+    if (job.filePath.isEmpty()) {
+        emit statusMessage(tr("无法为下载分配唯一文件名，请检查下载目录"));
+        return QString();
+    }
     job.cacheCopySourcePath = cachePath;
     job.bytesTotal = sourceSize;
     job.bytesReceived = 0;
@@ -1190,13 +1198,21 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
         return;
     DownloadJob &job = m_jobs[index];
     job.filePath = path;
-    job.bytesReceived = QFileInfo(path).size();
+    const qint64 finalSize = QFileInfo(path).size();
     if (success) {
+        job.bytesReceived = finalSize;
         // HLS 任务的记录长度是合并后的 TS，成功转封装后路径已变成 MP4；
         // 完成后统一按最终文件大小收口，否则进度条会停在 TS 大小的比例上。
         job.bytesTotal = job.bytesReceived;
-    } else if (job.bytesTotal <= 0) {
-        job.bytesTotal = job.bytesReceived;
+    } else {
+        // 失败时 path 通常是最终目标名，真正的半成品在同名 .mvpdownload；
+        // 直接按最终路径取大小会把已接收字节清零，丢失续传进度。
+        const qint64 partialSize = QFileInfo(path + QStringLiteral(".mvpdownload")).size();
+        const qint64 measured = qMax(finalSize, partialSize);
+        if (measured > 0)
+            job.bytesReceived = measured;
+        if (job.bytesTotal <= 0)
+            job.bytesTotal = job.bytesReceived;
     }
     job.status = success ? DownloadJob::Status::Completed
                          : DownloadJob::Status::Failed;

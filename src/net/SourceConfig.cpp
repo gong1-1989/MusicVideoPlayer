@@ -108,6 +108,13 @@ bool SourceConfig::isValid() const
     const QString scheme = QUrl(urlTemplate).scheme();
     if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
         return false;
+    // 详情模板同样走 QNetworkRequest；手工改 sources.json 时 file:/// 会让
+    // 客户端去读本地文件，必须在 isValid() 里与 validationError() 保持同规则。
+    if (needsDetailFetch()) {
+        const QString detailScheme = QUrl(detailUrlTemplate).scheme();
+        if (detailScheme != QLatin1String("http") && detailScheme != QLatin1String("https"))
+            return false;
+    }
     // 没有播放地址就没法用：要么搜索结果里直接给，要么二次解析详情里给
     const bool streamFromList = !fields.value(QStringLiteral("streamUrl")).trimmed().isEmpty();
     const bool streamFromDetail = needsDetailFetch()

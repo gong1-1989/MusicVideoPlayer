@@ -380,6 +380,7 @@ void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
     job.item.type = MediaType::Video;
     job.item.title = QStringLiteral("测试下载");
     job.item.url = QUrl(QStringLiteral("https://example.com/a.m3u8"));
+    job.item.alternateUrls.append(QStringLiteral("https://cdn.example.com/a.m3u8?sign=secret"));
     job.item.online = true;
     job.url = job.item.url;
     job.headers.insert(QStringLiteral("Referer"), QStringLiteral("https://example.com/"));
@@ -412,6 +413,7 @@ void StorageTest::downloadJobRoundTripEncryptsSensitiveHeaders()
     QVERIFY(!stored.contains(QStringLiteral("url")));
     QVERIFY(stored.contains(QStringLiteral("urlProtected")));
     QVERIFY(!stored.value(QStringLiteral("item")).toObject().contains(QStringLiteral("url")));
+    QVERIFY(!stored.value(QStringLiteral("item")).toObject().contains(QStringLiteral("altUrls")));
 
     DownloadJob parsed;
     QString error;

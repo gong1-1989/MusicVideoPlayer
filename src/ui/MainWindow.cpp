@@ -543,12 +543,13 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // 先确认播放列表真的落盘，再停止播放/退全屏/暂停下载。
     // 否则用户在保存失败对话框里点“取消退出”后，窗口还在但播放已停、下载已暂停。
     if (m_playlists->storageBlocked()) {
-        // 读取失败且连备份都做不了：保存会覆盖原文件，只能明确告知本次不保存后退出。
+        // 读取失败或文件被占用：保存会覆盖原文件，只能明确告知本次不保存后退出。
         QMessageBox::warning(
             this, tr("播放列表未安全读取"),
-            tr("播放列表原文件读取失败，且无法备份到其他路径。\n\n"
-               "为避免用空列表覆盖原文件，本次退出不会保存当前列表修改；原文件保持不变。\n"
-               "请检查 Data/playlists.json 的权限或占用情况后重启程序。"));
+            tr("播放列表原文件读取失败、被占用或超过大小上限，未能安全加载。\n\n"
+               "为避免用空列表或旧快照覆盖原文件，本次退出不会保存当前列表修改；"
+               "原文件未被覆盖（已判为损坏的文件会保留备份）。\n"
+               "请检查 Data/playlists.json 的权限、占用情况后重启程序。"));
     } else {
         while (!m_playlists->save()) {
             const QMessageBox::StandardButton answer = QMessageBox::warning(

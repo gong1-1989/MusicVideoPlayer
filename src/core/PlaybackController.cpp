@@ -458,7 +458,10 @@ void PlaybackController::seek(qint64 ms)
     m_player->setPosition(ms);
 
     // 目标片本身仍交给播放器/代理的多连接 Range 请求，避免重复占带宽。
-    const MediaItem item = currentItem();
+    // 预取必须使用 resolver 解析后的条目：列表里保存的是脱敏头，
+    // 直接拿 currentItem().headers 会让 HLS 拖动后的分片请求缺少 Cookie 而 403。
+    const MediaItem modelItem = currentItem();
+    const MediaItem item = m_itemResolver ? m_itemResolver(modelItem) : modelItem;
     const QUrl playbackUrl = preferredPlaybackUrl(item);
     if (m_proxyReady && m_proxy != nullptr && item.online && isHlsUrl(playbackUrl)) {
         QMetaObject::invokeMethod(

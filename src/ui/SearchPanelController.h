@@ -108,6 +108,9 @@ private:
     /// 搜索发起后抑制联想弹层：结果返回时 rebuildSuggestions() 不能再把列表顶出来，
     /// 只有用户重新点进输入框或实际改字后才恢复。
     bool m_suggestionsSuppressed = false;
+    /// 网页链接解析的序号：解析是异步的，用户可能已发起新的关键词搜索或
+    /// 另一个链接；旧的网页回调必须丢弃，不能覆盖新结果。
+    int m_linkParseSerial = 0;
 
     /// 完整结果留在内存，筛选后的可见结果再按页切片
     QVector<MediaItem> m_results;

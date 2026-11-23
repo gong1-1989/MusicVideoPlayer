@@ -827,12 +827,22 @@ void SearchPanelController::handleWebPageLink(const QUrl &url)
     }
     emit statusMessage(tr("正在解析网页中的音视频地址…"));
 
+    const int serial = ++m_linkParseSerial;
     QPointer<SearchPanelController> self(this);
     m_http->fetch(
         url, QByteArray(), {},
-        [self, url](QNetworkReply *reply) {
-            if (self.isNull())
+        [self, url, serial](QNetworkReply *reply) {
+            if (self.isNull()) {
+                if (reply != nullptr)
+                    reply->deleteLater();
                 return;
+            }
+            if (serial != self->m_linkParseSerial) {
+                // 已作废的回调仍要释放 reply，否则每次换搜索都会漏一个已完成的响应。
+                if (reply != nullptr)
+                    reply->deleteLater();
+                return;
+            }
             if (reply == nullptr) {
                 emit self->statusMessage(tr("网页打开失败，检查链接是否可访问"));
                 return;
@@ -904,6 +914,8 @@ void SearchPanelController::toggleSearch()
     // 从点击搜索/回车开始，联想层就不再参与，直到用户重新编辑关键词。
     m_suggestionsSuppressed = true;
     hideSuggestions();
+    // 新的搜索/链接操作会作废上一条网页解析回调。
+    ++m_linkParseSerial;
     if (m_coordinator->isBusy()) {
         cancelSearch();
         return;

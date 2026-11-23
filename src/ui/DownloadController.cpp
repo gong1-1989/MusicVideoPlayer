@@ -75,6 +75,13 @@ void DownloadController::download(const MediaItem &item)
         fileName = tr("未命名");
     fileName = DownloadTask::sanitizeFileName(fileName, suffix);
     const QString target = m_manager->reserveFilePath(directory, fileName);
+    if (target.isEmpty()) {
+        const QString message = tr("无法为下载分配唯一文件名：%1").arg(directory);
+        emit statusMessage(message);
+        if (m_dialogParent != nullptr)
+            QMessageBox::warning(m_dialogParent, tr("无法下载"), message);
+        return;
+    }
     const qint64 limit = qint64(AppSettings::downloadLimitMb()) * 1024 * 1024;
 
     // 播放缓存是给播放器用的无后缀副本；下载是用户要长期保存的文件。

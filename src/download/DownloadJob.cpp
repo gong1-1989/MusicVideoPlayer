@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QFileInfo>
+#include <QObject>
 
 namespace {
 
@@ -76,14 +77,27 @@ QJsonObject DownloadJob::toJson() const
     // item.url 和 job.url 是同一个直链；只保留 job.url 的加密形式，
     // 避免 DPAPI 只保护一份、另一份仍以明文留在 JSON 里。
     itemObject.remove(QStringLiteral("url"));
+    // altUrls 也是可直接播放的签名地址，下载恢复不使用它们；不写进记录，
+    // 否则“只加密主直链”仍会留下另一组明文 URL。
+    itemObject.remove(QStringLiteral("altUrls"));
     object.insert(QStringLiteral("item"), itemObject);
-    object.insert(QStringLiteral("url"), url.toString());
-    // 直链 query 常带签名/API key，不能像标题一样明文落盘；能加密就只存密文。
+    // 直链 query 常带签名/API key，不能像标题一样明文落盘。
+    // 只有加密成功才写 urlProtected；加密失败时宁可不写 URL，也不能
+    // 先插入明文 url 再“加密成功才删除”，否则 DPAPI 失败会留下明文。
     const QString protectedUrl =
         SecretStore::protectForStorage(url.toString(), QStringLiteral("download/%1/url").arg(id));
+    Status storedStatus = status;
+    QString storedMessage = message;
     if (!protectedUrl.isEmpty()) {
         object.insert(QStringLiteral("urlProtected"), protectedUrl);
-        object.remove(QStringLiteral("url"));
+    } else {
+        object.insert(QStringLiteral("urlUnavailable"), true);
+        if (status != Status::Completed) {
+            // 没有可恢复的直链时，不要把任务留在 Paused/Downloading，
+            // 否则下次启动会拿空 URL 发起请求。保留记录但明确标为失败。
+            storedStatus = Status::Failed;
+            storedMessage = QObject::tr("直链凭据保护失败，任务无法在下次启动时续传");
+        }
     }
     object.insert(QStringLiteral("filePath"), filePath);
     object.insert(QStringLiteral("cacheCopySourcePath"), cacheCopySourcePath);
@@ -98,8 +112,8 @@ QJsonObject DownloadJob::toJson() const
     object.insert(QStringLiteral("allowIncomplete"), allowIncomplete);
     object.insert(QStringLiteral("needsSnapshotConsent"), needsSnapshotConsent);
     object.insert(QStringLiteral("committed"), committed);
-    object.insert(QStringLiteral("status"), statusKey(status));
-    object.insert(QStringLiteral("message"), message);
+    object.insert(QStringLiteral("status"), statusKey(storedStatus));
+    object.insert(QStringLiteral("message"), storedMessage);
     object.insert(QStringLiteral("createdAt"), createdAt.toString(Qt::ISODate));
     object.insert(QStringLiteral("completedAt"), completedAt.toString(Qt::ISODate));
 
@@ -133,12 +147,18 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     parsed.id = object.value(QStringLiteral("id")).toString();
     parsed.item = mediaItemFromJson(object.value(QStringLiteral("item")).toObject());
     const QString protectedUrl = object.value(QStringLiteral("urlProtected")).toString();
+    bool urlUnavailable = object.value(QStringLiteral("urlUnavailable")).toBool(false);
     const QString plainUrl = protectedUrl.isEmpty()
                                  ? object.value(QStringLiteral("url")).toString()
                                  : SecretStore::revealStored(
                                        protectedUrl,
                                        QStringLiteral("download/%1/url").arg(parsed.id));
-    parsed.url = QUrl(plainUrl);
+    if (!plainUrl.isEmpty()) {
+        parsed.url = QUrl(plainUrl);
+    } else if (!protectedUrl.isEmpty()) {
+        // 密文存在但当前用户/机器解不开：旧任务无法续传，按“直链不可用”处理。
+        urlUnavailable = true;
+    }
     if (parsed.item.url.isEmpty())
         parsed.item.url = parsed.url;
     parsed.filePath = object.value(QStringLiteral("filePath")).toString();
@@ -177,11 +197,25 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
             parsed.headers.insert(it.key(), value);
     }
 
-    if (parsed.id.isEmpty() || parsed.url.isEmpty() || parsed.filePath.isEmpty()
-        || parsed.item.title.isEmpty()) {
+    if (parsed.id.isEmpty() || parsed.filePath.isEmpty() || parsed.item.title.isEmpty()) {
         if (error != nullptr)
             *error = QStringLiteral("下载任务缺少必要字段");
         return false;
+    }
+    // 历史记录里的 Completed/Failed 不依赖直链，允许无 URL 加载；
+    // 只有 Paused/Downloading 需要续传地址。加密失败的续传任务被降级为
+    // Failed，保留记录与半成品路径，但不让 DownloadManager 拉起空请求。
+    const bool needsUrl =
+        parsed.status == DownloadJob::Status::Paused
+        || parsed.status == DownloadJob::Status::Downloading;
+    if (parsed.url.isEmpty() && needsUrl) {
+        if (!urlUnavailable) {
+            if (error != nullptr)
+                *error = QStringLiteral("下载任务缺少直链地址");
+            return false;
+        }
+        parsed.status = DownloadJob::Status::Failed;
+        parsed.message = QObject::tr("直链凭据保护失败，任务无法在下次启动时续传");
     }
 
     *job = parsed;

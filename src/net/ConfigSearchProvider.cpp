@@ -144,6 +144,18 @@ void ConfigSearchProvider::abort()
         reply->abort();
         reply->deleteLater();
     }
+    // 详情阶段最多 3 路并发，旧实现只中止 m_reply，详情请求会继续跑完。
+    // 取消/超时后必须把它们一起中止并从集合移除，避免后台占用连接。
+    const QSet<QNetworkReply *> details = m_detailReplies;
+    m_detailReplies.clear();
+    for (QNetworkReply *reply : details) {
+        if (reply == nullptr)
+            continue;
+        reply->abort();
+        reply->deleteLater();
+    }
+    m_activeDetails = 0;
+    m_detailBuckets.clear();
 }
 
 void ConfigSearchProvider::onReplyFinished()
@@ -369,14 +381,22 @@ void ConfigSearchProvider::launchDetails()
         }
 
         QHash<QString, QString> vars;
-        vars.insert(QStringLiteral("keyword"), m_keyword);
-        vars.insert(QStringLiteral("id"), m_pendingIds.at(index));
-        vars.insert(QStringLiteral("title"), m_pendingTitles.value(index));
-        vars.insert(QStringLiteral("artist"), m_pendingArtists.value(index));
+        // 详情模板的变量也要按 URL 组件编码：搜索结果里的 id/title/artist
+        // 可能带空格、&、#，原样替换会把 query 拆断或注入额外参数。
+        const auto encoded = [](const QString &value) {
+            return QString::fromUtf8(QUrl::toPercentEncoding(value));
+        };
+        vars.insert(QStringLiteral("keyword"), encoded(m_keyword));
+        vars.insert(QStringLiteral("id"), encoded(m_pendingIds.at(index)));
+        vars.insert(QStringLiteral("title"), encoded(m_pendingTitles.value(index)));
+        vars.insert(QStringLiteral("artist"), encoded(m_pendingArtists.value(index)));
 
         const QUrl requestUrl(renderTemplate(m_config.detailUrlTemplate, vars));
-        if (!requestUrl.isValid()) {
-            qCWarning(lcProvider) << m_config.id << "详情地址无效："
+        const QString detailScheme = requestUrl.scheme();
+        if (!requestUrl.isValid()
+            || (detailScheme != QLatin1String("http")
+                && detailScheme != QLatin1String("https"))) {
+            qCWarning(lcProvider) << m_config.id << "详情地址不是 HTTP(S)："
                                   << HttpClient::redactUrl(requestUrl);
             ++m_filtered;
             continue;
@@ -394,6 +414,7 @@ void ConfigSearchProvider::launchDetails()
             ++m_filtered;
             continue;
         }
+        m_detailReplies.insert(reply);
 
         ++m_activeDetails;
         QElapsedTimer timer;
@@ -409,6 +430,8 @@ void ConfigSearchProvider::launchDetails()
 
 void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index, qint64 elapsedMs)
 {
+    if (reply != nullptr)
+        m_detailReplies.remove(reply);
     if (m_done) {
         if (reply != nullptr)
             reply->deleteLater();
@@ -503,5 +526,6 @@ void ConfigSearchProvider::finishSearch()
     m_detailBuckets.clear();
     m_nextDetail = 0;
     m_activeDetails = 0;
+    m_detailReplies.clear();
     emit finished(m_config.id, result, filtered, QString());
 }

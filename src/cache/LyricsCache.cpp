@@ -94,13 +94,12 @@ QString writablePath(const MediaItem &item)
            + QStringLiteral("__") + digest;
 }
 
-bool writeMeta(const QString &path, const MediaItem &item, const QUrl &lyricUrl,
-               const QByteArray &payload)
+bool writeMeta(const QString &path, const MediaItem &item, const QByteArray &payload)
 {
     QJsonObject object;
     object.insert(QStringLiteral("version"), kLyricsMetaVersion);
     object.insert(QStringLiteral("identity"), lyricIdentity(item));
-    object.insert(QStringLiteral("url"), lyricUrl.toString());
+    object.insert(QStringLiteral("url"), item.lyricUrl.toString());
     object.insert(QStringLiteral("extension"),
                   payload.trimmed().startsWith('{') ? QStringLiteral(".json")
                                                     : QStringLiteral(".lrc"));
@@ -150,7 +149,7 @@ bool load(const MediaItem &item, QByteArray *payload)
     return !payload->isEmpty();
 }
 
-bool store(const MediaItem &item, const QUrl &lyricUrl, const QByteArray &payload)
+bool store(const MediaItem &item, const QByteArray &payload)
 {
     if (!isEligible(item) || payload.isEmpty())
         return false;
@@ -168,9 +167,14 @@ bool store(const MediaItem &item, const QUrl &lyricUrl, const QByteArray &payloa
     if (!file.commit())
         return false;
 
-    if (!writeMeta(path, item, lyricUrl, payload)) {
-        // 正文已写、旁车失败会留下无法归属的孤儿文件；直接回收，下次重试。
+    if (!writeMeta(path, item, payload)) {
+        // 正文已写、旁车失败会留下“有正文无 JSON”的孤儿；直接回收，下次重试。
+        // 如果该路径原本就有同身份的旧 JSON，也必须一并删掉，否则下一次
+        // writablePath() 会把它当成可用槽位，load() 却打不开正文。
         QFile::remove(path);
+        QString storedIdentity;
+        if (readMetaIdentity(path, &storedIdentity) && storedIdentity == lyricIdentity(item))
+            QFile::remove(path + QStringLiteral(".json"));
         return false;
     }
     return true;

@@ -86,7 +86,13 @@ bool HlsCacheBuilder::start(const MediaItem &item)
                       ? item.sourceOrigin
                       : HeaderPolicy::originFromHeaders(item.headers);
     // 没命中完整缓存时可能残留上一次的半成品；先清掉再开始。
-    MediaCache::removeForItem(item);
+    // 删除失败说明有文件仍被占用（例如播放器还在读），此时继续构建会
+    // 覆盖/争用同一路径；本次放弃，下一轮再试。
+    if (!MediaCache::removeForItem(item)) {
+        qCWarning(lcHlsCache) << "无法清理旧的 HLS 缓存文件，跳过本次后台缓存："
+                              << item.displayName();
+        return false;
+    }
     m_bodyPath = MediaCache::filePathForItem(item);
     m_videoPath = m_bodyPath + QStringLiteral(".video");
     m_audioPath = m_bodyPath + QStringLiteral(".audio");

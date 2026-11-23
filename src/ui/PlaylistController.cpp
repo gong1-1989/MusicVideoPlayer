@@ -125,11 +125,15 @@ void PlaylistController::restore()
     m_storageBlocked = loadResult.storageBlocked;
 
     if (m_storageBlocked) {
-        qCCritical(lcPlaylist) << "播放列表读取失败且无法备份，禁止保存：" << loadResult.message;
-        QMessageBox::critical(
-            m_ui.tabs, tr("播放列表未加载"),
-            loadResult.message
-                + tr("\n\n当前列表为空，原文件未被覆盖。请退出程序，检查或恢复 Data/playlists.json 后重启。"));
+        qCCritical(lcPlaylist) << "播放列表未能安全读取，禁止保存：" << loadResult.message;
+        // 损坏文件已被改名备份时不能再提示“原文件未被覆盖”；否则用户会去
+        // 原路径找一个已经不存在的文件。
+        const QString detail = loadResult.corruptBackupPath.isEmpty()
+            ? tr("\n\n当前列表为空，原文件未被覆盖。请退出程序，检查或恢复 "
+                 "Data/playlists.json 后重启。")
+            : tr("\n\n当前列表为空，原文件已备份为 %1。请检查备份后重启。")
+                  .arg(loadResult.corruptBackupPath);
+        QMessageBox::critical(m_ui.tabs, tr("播放列表未加载"), loadResult.message + detail);
     } else if (!loadResult.message.isEmpty()) {
         emit statusMessage(loadResult.message);
     }
@@ -213,8 +217,8 @@ bool PlaylistController::save()
     // 任何同步保存都让排队中的防抖保存失效。
     ++m_saveGeneration;
     if (m_storageBlocked) {
-        qCWarning(lcPlaylist) << "播放列表读取失败且无法备份，拒绝保存";
-        emit statusMessage(tr("播放列表读取失败且无法备份，已禁止保存以避免覆盖原文件；请检查 Data/playlists.json 后重启"));
+        qCWarning(lcPlaylist) << "播放列表未能安全读取，拒绝保存";
+        emit statusMessage(tr("播放列表未能安全读取，已禁止保存以避免覆盖原文件；请检查 Data/playlists.json 后重启"));
         return false;
     }
 
@@ -251,7 +255,7 @@ bool PlaylistController::retrySave()
     if (!m_dirty)
         return true;
     if (m_storageBlocked) {
-        emit statusMessage(tr("播放列表读取失败且无法备份，仍禁止保存；请检查 Data/playlists.json 后重启"));
+        emit statusMessage(tr("播放列表未能安全读取，仍禁止保存；请检查 Data/playlists.json 后重启"));
         return false;
     }
     if (!PlaylistStore::saveAll(persistentItems(m_musicModel->items()),

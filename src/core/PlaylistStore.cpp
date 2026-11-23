@@ -217,6 +217,23 @@ LoadResult loadAll()
             return result;
         }
 
+        // 只有“内容确实损坏”才应该把原文件改名备份。ReadError 常见于
+        // 文件被占用/权限不足，文件内容可能仍然有效；此时改名会移走用户
+        // 的最新列表，再回退旧快照并允许保存，等于用旧数据覆盖新数据。
+        if (read.status == ReadStatus::ReadError || read.status == ReadStatus::TooLarge) {
+            result.storageBlocked = true;
+            result.message = read.status == ReadStatus::ReadError
+                ? QStringLiteral(
+                      "播放列表读取失败，原文件可能被占用或没有读取权限；为避免覆盖，"
+                      "当前禁止保存。文件：%1（%2）")
+                      .arg(primary, read.error)
+                : QStringLiteral(
+                      "播放列表文件超过 32MB 上限，未加载；为避免覆盖，当前禁止保存。文件：%1")
+                      .arg(primary);
+            qCCritical(lcStore) << "播放列表未能读取，禁止保存：" << primary << "：" << read.error;
+            return result;
+        }
+
         const QString corrupt = backupCorrupt(primary);
         if (corrupt.isEmpty()) {
             // 既读不了、又无法把原文件移走：绝不能把空模型写回去覆盖它。
@@ -236,7 +253,8 @@ LoadResult loadAll()
         result.fileMissing = true;
     }
 
-    // 主文件缺失、损坏或读不了时，回退到最近一次成功保存的完整快照。
+    // 主文件缺失或确实损坏时，回退到最近一次成功保存的完整快照。
+    // ReadError/TooLarge 已在上方直接 blocked 返回，不能拿快照覆盖可能仍有效的原文件。
     const QFileInfo snapshotInfo(snapshot);
     if (snapshotInfo.exists()) {
         const ReadFileResult read = readPlaylistFile(snapshot);
@@ -256,8 +274,13 @@ LoadResult loadAll()
     }
 
     if (!result.corruptBackupPath.isEmpty()) {
+        // 原文件损坏且没有可用快照时，列表只能为空；如果允许保存，
+        // 退出时会把空列表写成新的主文件。备份仍在，但当前会话的修改
+        // 会以“成功保存”的方式掩盖问题，所以同样禁止保存。
+        result.storageBlocked = true;
         result.message = QStringLiteral(
-            "播放列表原文件已备份为 %1，但最近一次成功快照不可用；当前显示空列表，保存前请确认。")
+            "播放列表原文件已备份为 %1，但最近一次成功快照不可用；"
+            "当前显示空列表，为避免误写空文件，已禁止保存。")
             .arg(result.corruptBackupPath);
     }
     return result;

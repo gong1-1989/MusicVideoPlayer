@@ -752,6 +752,7 @@ private slots:
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
     void sourceConfigRejectsCookieInjection();
+    void sourceConfigRejectsNonHttpDetailTemplate();
     void sourceProbeVideoPathsAreSearchable();
     void sourceProbeMusicPathsAreSearchable();
     void sourceProbeLiveVideoSearch();
@@ -1396,6 +1397,29 @@ void CoreLogicTest::sourceConfigRejectsCookieInjection()
     const SourceConfig restored = sourceConfigFromJson(object, &ok);
     QVERIFY(ok);
     QVERIFY(restored.cookie.isEmpty());
+}
+
+void CoreLogicTest::sourceConfigRejectsNonHttpDetailTemplate()
+{
+    // 详情模板也由 QNetworkRequest 发起；file:/// 会让客户端去读本地文件，
+    // isValid() 和 validationError() 必须给出同样的拒绝结果。
+    SourceConfig config;
+    config.id = QStringLiteral("detail-scheme");
+    config.name = QStringLiteral("详情协议校验");
+    config.kind = QStringLiteral("config");
+    config.method = QStringLiteral("GET");
+    config.urlTemplate = QStringLiteral("https://api.example.com/search");
+    config.detailUrlTemplate = QStringLiteral("file:///etc/passwd");
+    config.itemsPath = QStringLiteral("data");
+    config.fields.insert(QStringLiteral("title"), QStringLiteral("title"));
+    config.detailFields.insert(QStringLiteral("streamUrl"), QStringLiteral("url"));
+    QVERIFY(config.needsDetailFetch());
+    QVERIFY(!config.isValid());
+    QVERIFY(config.validationError().contains(QStringLiteral("详情地址")));
+
+    config.detailUrlTemplate = QStringLiteral("https://api.example.com/detail/{id}");
+    QVERIFY(config.isValid());
+    QVERIFY(config.validationError().isEmpty());
 }
 
 void CoreLogicTest::sourceProbeLiveVideoSearch()
@@ -2764,7 +2788,7 @@ void CoreLogicTest::lyricsCacheRoundTrip()
     const QByteArray payload =
         QByteArrayLiteral("{\"lrc\":{\"lyric\":\"[00:01.00]第一句\\n[00:02.00]第二句\"}}");
     QVERIFY(LyricsCache::isEligible(music));
-    QVERIFY(LyricsCache::store(music, music.lyricUrl, payload));
+    QVERIFY(LyricsCache::store(music, payload));
 
     QByteArray loaded;
     QVERIFY(LyricsCache::load(music, &loaded));

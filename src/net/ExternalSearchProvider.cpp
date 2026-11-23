@@ -250,8 +250,10 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
 
     qCInfo(lcExternal) << m_config.id << "外部解析器返回" << result.size() << "条，过滤"
                        << m_filtered << "条";
-    emit finished(m_config.id, result, m_filtered, QString());
+    // 先置完成位再发信号：finished 的同步槽可能立刻发起第二次搜索，
+    // 旧顺序会看到 m_done=false，造成重入或旧输出覆盖新搜索。
     m_done = true;
+    emit finished(m_config.id, result, m_filtered, QString());
 }
 
 void ExternalSearchProvider::finish(const QString &error)
