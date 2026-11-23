@@ -1,3 +1,5 @@
+/// @file SourceManagerDialog.h
+/// @brief 搜索源管理对话框声明：草稿编辑、试搜验证、导入导出与延迟提交模式。
 #ifndef SOURCEMANAGERDIALOG_H
 #define SOURCEMANAGERDIALOG_H
 
@@ -25,20 +27,26 @@ class SourceManagerDialog;
 }
 QT_END_NAMESPACE
 
-/// 搜索源管理：左侧源列表，右侧编辑当前源，底部可试搜、导入导出。
-/// 改动先留在草稿里，点“保存”才写回 registry；延迟提交模式下只把草稿交给调用方。
+/// @brief 搜索源管理：左侧源列表，右侧编辑当前源，底部可试搜、导入导出。
+/// @note 改动先留在草稿里，点“保存”才写回 registry；延迟提交模式下只把草稿交给调用方。
 class SourceManagerDialog : public QDialog
 {
     Q_OBJECT
 
 public:
+    /// @brief 构造函数。
+    /// @param registry 源注册表，非延迟模式下保存会直接写回。
+    /// @param http 试搜复用的共享 HTTP 客户端（带站点 Cookie 会话）。
+    /// @param parent 父窗口。
+    /// @param deferCommit 为 true 时 accept() 不落盘，只把草稿交给调用方。
     SourceManagerDialog(SourceRegistry *registry, HttpClient *http, QWidget *parent = nullptr,
                         bool deferCommit = false);
+    /// @brief 析构：停止在途试搜并释放界面。
     ~SourceManagerDialog() override;
 
-    /// 延迟提交模式：accept() 只把最终草稿交给调用方，不写 sources.json
+    /// @brief 延迟提交模式下取走最终草稿（accept() 只交给调用方，不写 sources.json）。
     QVector<SourceConfig> committedSources() const { return m_committedSources; }
-    /// 延迟提交模式下重新打开时，用上一次未提交的草稿继续编辑
+    /// @brief 延迟提交模式下重新打开时，用上一次未提交的草稿继续编辑。
     void setDraftSources(const QVector<SourceConfig> &sources);
 
 protected:

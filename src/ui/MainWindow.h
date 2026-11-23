@@ -1,3 +1,5 @@
+/// @file MainWindow.h
+/// @brief 主窗口声明：装配各控制器、承载播放列表/视觉区/控制条，并管理搜索窗与全屏。
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
@@ -37,6 +39,9 @@ class MainWindow;
 }
 QT_END_NAMESPACE
 
+/// @brief 应用主窗口。
+/// @note 本类只做装配与转发，播放、列表、搜索、下载、全屏等具体行为分别委托给
+///       对应控制器；窗口自身负责几何约束、退出确认与快捷键分发。
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -46,9 +51,13 @@ public:
     ~MainWindow() override;
 
 protected:
+    /// @brief 关闭前处理下载未完成、保存播放列表与设置。
     void closeEvent(QCloseEvent *event) override;
+    /// @brief 窗口尺寸变化时重算自适应度量与面板定位。
     void resizeEvent(QResizeEvent *event) override;
+    /// @brief 拦截控制条/音量弹层等控件的事件，用于浮动与隐藏逻辑。
     bool eventFilter(QObject *watched, QEvent *event) override;
+    /// @brief 首次显示后夹回屏幕可用区，并按需恢复上次几何。
     void showEvent(QShowEvent *event) override;
 
 private slots:
@@ -57,17 +66,26 @@ private slots:
     void on_btn_downloads_clicked();
 
 private:
+    /// @brief 连接播放器、列表、界面控件之间的信号槽。
     void setupConnections();
+    /// @brief 打开（或前置）独立搜索窗口。
     void showSearchWindow();
     /// 依据 AppSettings/AppShortcuts 重建全部动态快捷键；设置变化后立即生效
     void rebuildShortcuts();
+    /// @brief 按动作 ID 执行一次快捷键动作。
     void executeShortcutAction(const QString &actionId);
+    /// @brief 把当前快捷键映射写进按钮/菜单的提示文本。
     void updateShortcutTooltips();
+    /// @brief 播放搜索结果条目。
+    /// @return 成功发起播放返回 true；失败时界面已给出提示。
     bool playSearchItem(const MediaItem &item);
+    /// @brief 把搜索结果加入对应类型播放列表。
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
+    /// @brief 清空播放相关界面（标题、进度、视觉区）。
     void clearPlaybackUi();
     /// 音量按钮改成右侧竖排悬浮条：滑块仍复用 ui->slider_volume，设置持久化不断链
     void setupVolumePopup();
+    /// @brief 在音量按钮上方弹出竖排滑块，并保持当前音量值。
     void showVolumePopup();
     /// 让控制条左右两列等宽，保证中间播放键组落在面板真正的中线
     void updateControlBarCentering();

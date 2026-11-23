@@ -1,3 +1,5 @@
+/// @file SettingsController.cpp
+/// @brief 设置的读取、回写与即时应用：音量/播放模式/窗口预设/主题。
 #include "ui/SettingsController.h"
 
 #include "core/PlaybackController.h"
@@ -38,6 +40,11 @@ QSize availableWindowSize()
 
 } // namespace
 
+/// @brief 构造控制器并监听用户手动改音量。
+/// @param player 播放控制器，必须非空。
+/// @param registry 搜索源注册表，必须非空。
+/// @param http 搜索源管理复用的 HTTP 客户端，必须非空。
+/// @param ui 主窗口相关控件集合。
 SettingsController::SettingsController(PlaybackController *player, SourceRegistry *registry,
                                        HttpClient *http, const SettingsUi &ui, QObject *parent)
     : QObject(parent)
@@ -57,6 +64,8 @@ SettingsController::SettingsController(PlaybackController *player, SourceRegistr
     });
 }
 
+/// @brief 启动时恢复音量、播放模式与窗口几何。
+/// @note 音量/模式取自 AppSettings；窗口按预设策略处理，“记住上次”时才恢复几何。
 void SettingsController::restore()
 {
     // 音量、播放模式、窗口尺寸全部来自设置，不再有散落的默认值
@@ -75,6 +84,8 @@ void SettingsController::restore()
     applyWindowPreset();
 }
 
+/// @brief 按窗口预设调整尺寸并居中。
+/// @note 只有“记住上次”沿用历史几何；自适应铺满可用区，固定预设按标准分辨率且超屏自动收紧。
 void SettingsController::applyWindowPreset()
 {
     const WindowPreset preset = AppSettings::windowPreset();
@@ -105,6 +116,8 @@ void SettingsController::applyWindowPreset()
     }
 }
 
+/// @brief 设置变更后立即套用窗口尺寸（不重定位）。
+/// @note “记住上次”模式下不改尺寸，交给用户自己拉。
 void SettingsController::resizeToPreset()
 {
     // 尺寸实时跟着设置走：自适应铺开，固定预设按标准分辨率（超屏自动收）
@@ -119,6 +132,9 @@ void SettingsController::resizeToPreset()
         m_ui.window->resize(target);
 }
 
+/// @brief 退出或设置确认时回写默认音量、播放模式与窗口几何。
+/// @note 播放列表已改为只写 Data/playlists.json，这里不再双写 QSettings，
+///       否则删除后的列表会“复活”。
 void SettingsController::save()
 {
     AppSettings::setDefaultVolume(m_player->volumePercent());
@@ -130,6 +146,8 @@ void SettingsController::save()
         AppSettings::setSavedGeometry(m_ui.window->saveGeometry());
 }
 
+/// @brief 设置确认后即时生效：主题、窗口尺寸、默认音量与联动信号。
+/// @note 仅当本轮用户没手动调过音量时才套用新默认值，避免覆盖用户操作。
 void SettingsController::apply()
 {
     ThemeManager::instance().apply(AppSettings::themeId());
@@ -152,6 +170,7 @@ void SettingsController::apply()
     emit applied();
 }
 
+/// @brief 打开模态设置窗口，用户确认后立即应用。
 void SettingsController::openDialog()
 {
     SettingsDialog dialog(m_registry, m_http, m_ui.window);
