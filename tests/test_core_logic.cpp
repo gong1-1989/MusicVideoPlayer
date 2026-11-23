@@ -10,6 +10,7 @@
 #include "net/ConfigMapper.h"
 #include "net/HttpClient.h"
 #include "net/SourceConfig.h"
+#include "net/SourceProbe.h"
 #include "net/SearchCoordinator.h"
 #include "settings/AppShortcuts.h"
 #include "stream/StreamProxy.h"
@@ -687,6 +688,8 @@ private slots:
     void sourceConfigSecretsNotPlaintext();
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
+    void sourceProbeVideoPathsAreSearchable();
+    void sourceProbeLiveVideoSearch();
     void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
@@ -1211,6 +1214,53 @@ void CoreLogicTest::sourceConfigNormalizesTimeout()
     const SourceConfig autoConfig = sourceConfigFromJson(absent, &ok);
     QVERIFY(ok);
     QCOMPARE(autoConfig.timeoutMs, 0);
+}
+
+void CoreLogicTest::sourceProbeLiveVideoSearch()
+{
+    // 真实网络验证默认跳过，避免 CI/离线环境误报；用
+    // MVP_LIVE_PROBE=1 mvp_tests sourceProbeLiveVideoSearch 手动执行。
+    if (!qEnvironmentVariableIsSet("MVP_LIVE_PROBE"))
+        QSKIP("设置 MVP_LIVE_PROBE=1 才会访问真实站点");
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+
+    prober.start(QUrl(QStringLiteral("https://api.apibdzy.com")), MediaType::Video, {}, true);
+    QVERIFY2(finished.wait(40000), "真实站点探测在 40 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("探测失败：") + result.error));
+    QVERIFY(result.mediaType == MediaType::Video);
+    QVERIFY2(result.config.urlTemplate.contains(QStringLiteral("wd=")),
+             qPrintable(QStringLiteral("保存的地址没有关键词参数：") + result.config.urlTemplate));
+    QVERIFY(result.sampleCount > 0);
+    QVERIFY(!result.sampleTitles.isEmpty());
+}
+
+void CoreLogicTest::sourceProbeVideoPathsAreSearchable()
+{
+    const QStringList paths = SourceProbe::defaultPaths(MediaType::Video);
+    // 真实节点验证表明 MacCMS 有 ac=detail/videolist/list、/inc/api.php、
+    // /inc/api_mac10.php、/index.php/ajax/data、带/不带尾斜杠等多种形态。
+    QVERIFY(paths.size() >= 10);
+    for (const QString &path : paths) {
+        QVERIFY2(path.contains(QStringLiteral("{keyword}")),
+                 qPrintable(QStringLiteral("探测路径必须带关键词占位符：") + path));
+        QVERIFY2(path.contains(QStringLiteral("wd=")),
+                 qPrintable(QStringLiteral("探测路径必须使用 wd 关键词参数：") + path));
+    }
+    QVERIFY(paths.contains(QStringLiteral("/api.php/provide/vod/?ac=detail&wd={keyword}")));
+    QVERIFY(paths.contains(QStringLiteral("/api.php/provide/vod/?ac=videolist&wd={keyword}")));
+    QVERIFY(paths.contains(QStringLiteral("/inc/api.php?ac=detail&wd={keyword}")));
+    QVERIFY(paths.contains(QStringLiteral("/inc/api_mac10.php?ac=detail&wd={keyword}")));
+    QVERIFY(paths.contains(QStringLiteral("/index.php/ajax/data?mid=1&wd={keyword}&limit={limit}")));
+    // 不能把不带关键词的列表页当成搜索源，否则试搜会“有结果”但搜索词完全无效。
+    QVERIFY(!paths.contains(QStringLiteral("/api.php/provide/vod/?ac=list")));
 }
 
 void CoreLogicTest::sourceTimeoutUsesConfiguredValue()

@@ -69,6 +69,8 @@ private:
     void probeNextCandidate();
     void analyze(const QUrl &url, const QJsonValue &root, int status);
     void validate(const SourceConfig &config, const QString &keyword);
+    void startValidation(const SourceConfig &config, const QString &keyword, int pass);
+    void acceptConfig(const SourceConfig &config, const QVector<MediaItem> &items);
     void fail(const QString &error);
     /// 把失败归类成一句用户能看懂、能据此行动的原因
     QString diagnoseFailure() const;
@@ -84,6 +86,8 @@ private:
     QUrl m_origin;          ///< 用户输入的域名，候选接口优先拼在它上面
     QUrl m_redirectOrigin;  ///< 首页跳转后的域名，仅作兜底
     QString m_siteName;
+    QString m_inputPath;        ///< 用户输入的路径，重定向后仍用它识别“这本身就是接口”
+    QStringList m_homeApiHints; ///< 首页 HTML 里直接出现的接口路径，优先级高于内置路径
 
     QStringList m_candidates;
     QVector<MediaType> m_candidateTypes;
@@ -94,8 +98,14 @@ private:
     bool m_homeOk = false;      ///< 首页是否打得开
     int m_connFail = 0;         ///< 连不上（DNS/超时/被断连）
     int m_denied = 0;           ///< 403/401：拒绝程序访问
+    int m_unauthorized = 0;     ///< 200 但正文提示 IP 未授权/已到期
     int m_notFound = 0;         ///< 404：路径不存在
     int m_notJson = 0;          ///< 200 但返回网页而非 JSON
+    int m_xml = 0;              ///< 200 但返回 XML 接口（当前只支持 JSON）
+    int m_jsonNoItems = 0;      ///< JSON 解析成功但没有结果数组
+    int m_jsonNoFields = 0;     ///< 有数组但猜不出标题/播放地址字段
+
+    QVector<MediaItem> m_validationFirstItems; ///< 二次关键词校验前的首轮结果
 
     QElapsedTimer m_clock;
     QPointer<QNetworkReply> m_activeReply;

@@ -1,0 +1,1536 @@
+{
+  "generatedAt": "2026-11-23T07:21:08+08:00",
+  "note": "公开网络收集的影视站点/采集接口候选；不含影片标题与播放地址。",
+  "rounds": [
+    {
+      "round": 1,
+      "count": 37
+    },
+    {
+      "round": 2,
+      "count": 20
+    },
+    {
+      "round": 3,
+      "count": 17
+    },
+    {
+      "round": 4,
+      "count": 22
+    },
+    {
+      "round": 5,
+      "count": 15
+    },
+    {
+      "round": 6,
+      "count": 15
+    },
+    {
+      "round": 7,
+      "count": 15
+    },
+    {
+      "round": 8,
+      "count": 15
+    },
+    {
+      "round": 9,
+      "count": 15
+    },
+    {
+      "round": 10,
+      "count": 15
+    }
+  ],
+  "nodes": [
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "1080资源库",
+      "baseUrl": "https://api.1080zyku.com/inc/api_mac10.php/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "360资源",
+      "baseUrl": "https://360zy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "百度云资源",
+      "baseUrl": "https://api.apibdzy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "暴风资源",
+      "baseUrl": "https://bfzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "步步高资源",
+      "baseUrl": "https://api.yparse.com/api/json",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "电影天堂资源",
+      "baseUrl": "https://caiji.dyttzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "豆瓣资源",
+      "baseUrl": "https://dbzy.tv/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "非凡影视",
+      "baseUrl": "http://ffzy5.tv/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "光速资源",
+      "baseUrl": "https://api.guangsuapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "豪华资源",
+      "baseUrl": "https://hhzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "红牛资源",
+      "baseUrl": "https://www.hongniuzy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "虎牙资源",
+      "baseUrl": "https://www.huyaapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "极速资源",
+      "baseUrl": "https://jszyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "金鹰资源",
+      "baseUrl": "https://jyzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "快车资源",
+      "baseUrl": "https://caiji.kuaichezy.org/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "量子资源站",
+      "baseUrl": "https://cj.lziapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "茅台资源",
+      "baseUrl": "https://caiji.maotaizy.cc/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "魔都资源",
+      "baseUrl": "https://www.mdzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "魔爪资源",
+      "baseUrl": "https://mozhuazy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "牛牛点播",
+      "baseUrl": "https://api.niuniuzy.me/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "飘零资源",
+      "baseUrl": "https://p2100.net/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "如意资源",
+      "baseUrl": "http://cj.rycjapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "闪电资源",
+      "baseUrl": "https://sdzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "速播资源",
+      "baseUrl": "https://subocaiji.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "索尼资源",
+      "baseUrl": "https://suoniapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "天涯资源",
+      "baseUrl": "https://tyyszy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "旺旺短剧",
+      "baseUrl": "https://wwzy.tv/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "卧龙资源",
+      "baseUrl": "https://wolongzyw.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "卧龙资源2",
+      "baseUrl": "https://collect.wolongzyw.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "无尽资源",
+      "baseUrl": "https://api.wujinapi.me/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "新浪点播",
+      "baseUrl": "https://api.xinlangapi.com/xinlangapi.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "丫丫点播",
+      "baseUrl": "https://cj.yayazy.net/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "樱花资源",
+      "baseUrl": "https://m3u8.apiyhzy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "最大资源",
+      "baseUrl": "https://api.zuidapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "CK资源",
+      "baseUrl": "https://ckzy.me/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "iKun资源",
+      "baseUrl": "https://ikunzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 1,
+      "source": "club.ugnas.com/tid=1712",
+      "name": "U酷资源",
+      "baseUrl": "https://api.ukuapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "1080资源",
+      "baseUrl": "http://api.1080zyku.com/inc/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "百度优化接口",
+      "baseUrl": "https://api.apibdzy.com/api.php/provide/vod/from/dbm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "暴风优化接口",
+      "baseUrl": "https://bfzyapi.com/api.php/provide/vod/from/bfzym3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "电影天堂优化接口",
+      "baseUrl": "http://caiji.dyttzyapi.com/api.php/provide/vod/from/dyttm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "电影天堂资源",
+      "baseUrl": "http://caiji.dyttzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "非凡优化接口",
+      "baseUrl": "http://cj.ffzyapi.com/api.php/provide/vod/from/ffm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "非凡资源",
+      "baseUrl": "http://cj.ffzyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "光速优化接口",
+      "baseUrl": "https://api.guangsuapi.com/api.php/provide/vod/from/gsm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "豪华优化接口",
+      "baseUrl": "https://hhzyapi.com/api.php/provide/vod/from/hhm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "红牛优化接口",
+      "baseUrl": "https://www.hongniuzy2.com/api.php/provide/vod/from/hnm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "极速优化接口",
+      "baseUrl": "https://jszyapi.com/api.php/provide/vod/from/jsm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "快车优化接口",
+      "baseUrl": "https://caiji.kczyapi.com/api.php/provide/vod/from/kcm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "快车资源",
+      "baseUrl": "https://caiji.kczyapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "量子优化接口",
+      "baseUrl": "http://cj.lziapi.com/api.php/provide/vod/from/lzm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "量子资源",
+      "baseUrl": "http://cj.lziapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "魔都资源",
+      "baseUrl": "https://caiji.moduapi.cc/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "索尼优化接口",
+      "baseUrl": "https://suoniapi.com/api.php/provide/vod/from/snm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "天空资源",
+      "baseUrl": "http://m3u8.tiankongapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "无尽优化接口",
+      "baseUrl": "https://api.wujinapi.com/api.php/provide/vod/from/wjm3u8/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 2,
+      "source": "mac-cms.com/cms/cms-share",
+      "name": "无尽资源",
+      "baseUrl": "https://api.wujinapi.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "8090资源",
+      "baseUrl": "http://zy.yilans.net:8090/api.php/provide/vod/",
+      "kind": "custom",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "百度云M3U8",
+      "baseUrl": "https://m3u8.apibdzy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "番茄播放解析",
+      "baseUrl": "https://jiexi.8b5q.cn/player/jx.php",
+      "kind": "parser",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "番茄资源",
+      "baseUrl": "http://api.fqzy.cc/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "海外看",
+      "baseUrl": "https://haiwaikan.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "黑木耳",
+      "baseUrl": "https://heimuer.tv/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "红牛播放解析",
+      "baseUrl": "https://www.tutukiki.com/m3u8/",
+      "kind": "parser",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "红牛资源旧域名",
+      "baseUrl": "https://www.hongniuzy1.com/inc/api.php",
+      "kind": "inc",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "快播资源",
+      "baseUrl": "http://www.kuaibozy.com/api.php/provide/vod/from/kbm3u8/",
+      "kind": "custom",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "快帆",
+      "baseUrl": "https://api.kuaifan.tv/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "麒麟资源",
+      "baseUrl": "https://www.qilinzyz.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "CDN播放解析",
+      "baseUrl": "https://cdn.zyc888.top/",
+      "kind": "parser",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "h2解析备用",
+      "baseUrl": "https://www.h2sheji.com/doc/api/cj",
+      "kind": "parser",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "h2解析接口",
+      "baseUrl": "https://api.h2api.com/vinfo/index",
+      "kind": "parser",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "U酷播放解析",
+      "baseUrl": "https://api.ukubf.com/m3u8/",
+      "kind": "parser",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "UU资源站",
+      "baseUrl": "https://www.uuzy.net/",
+      "kind": "web",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 3,
+      "source": "公开技术文档",
+      "name": "WLZY非标准接口",
+      "baseUrl": "http://cj.wlzy.tv/inc/api_mac_m3u8.php",
+      "kind": "inc",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "6U资源",
+      "baseUrl": "https://www.6uzy.co/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡资源站",
+      "baseUrl": "https://aosikazy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用",
+      "baseUrl": "https://feisuzy.cc/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速资源",
+      "baseUrl": "https://fszy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "非凡资源网",
+      "baseUrl": "https://www.ffzy.tv/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "光速备用A",
+      "baseUrl": "https://guangsuzy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "光速备用B",
+      "baseUrl": "https://guangsuziyuan.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "金鹰备用A",
+      "baseUrl": "https://jyzy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "玖玖备用",
+      "baseUrl": "https://99fby2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "玖玖资源",
+      "baseUrl": "https://jjzyw33.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "酷豆资源",
+      "baseUrl": "https://kudouzy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "乐鱼资源",
+      "baseUrl": "https://leyuzy.me/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "量子备用A",
+      "baseUrl": "https://lzizy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "闪电资源",
+      "baseUrl": "https://shandianzy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "淘片备用",
+      "baseUrl": "https://taopianzy.net/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "淘片资源",
+      "baseUrl": "https://taopianzy.vip/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "卧龙备用A",
+      "baseUrl": "https://wlzyw1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用A",
+      "baseUrl": "https://wuzy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用B",
+      "baseUrl": "https://wujinzy.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉资源",
+      "baseUrl": "https://xiangjiaozy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "优质资源A",
+      "baseUrl": "https://1080zyk1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 4,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用A",
+      "baseUrl": "https://ukuzy0.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用1",
+      "baseUrl": "https://aosikazy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用10",
+      "baseUrl": "https://aosikazy10.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用2",
+      "baseUrl": "https://aosikazy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用3",
+      "baseUrl": "https://aosikazy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用4",
+      "baseUrl": "https://aosikazy4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用5",
+      "baseUrl": "https://aosikazy5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用6",
+      "baseUrl": "https://aosikazy6.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用7",
+      "baseUrl": "https://aosikazy7.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用8",
+      "baseUrl": "https://aosikazy8.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "奥斯卡备用9",
+      "baseUrl": "https://aosikazy9.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "金鹰备用B",
+      "baseUrl": "https://jyzy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "金鹰备用C",
+      "baseUrl": "https://jyzy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "酷豆备用B",
+      "baseUrl": "https://kudouzy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "酷豆备用C",
+      "baseUrl": "https://kudouzy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 5,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "酷豆备用D",
+      "baseUrl": "https://kudouzy4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用10",
+      "baseUrl": "https://fszy10.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用2",
+      "baseUrl": "https://fszy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用3",
+      "baseUrl": "https://fszy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用4",
+      "baseUrl": "https://fszy4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用5",
+      "baseUrl": "https://fszy5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用6",
+      "baseUrl": "https://fszy6.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用7",
+      "baseUrl": "https://fszy7.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用8",
+      "baseUrl": "https://fszy8.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "飞速备用9",
+      "baseUrl": "https://fszy9.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "量子备用2",
+      "baseUrl": "https://lzizy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "量子备用3",
+      "baseUrl": "https://lzizy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "量子备用4",
+      "baseUrl": "https://lzizy4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "量子备用5",
+      "baseUrl": "https://lzizy5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "量子备用6",
+      "baseUrl": "https://lzizy6.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 6,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "量子备用7",
+      "baseUrl": "https://lzizy7.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用2",
+      "baseUrl": "https://wuzy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用3",
+      "baseUrl": "https://wuzy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用4",
+      "baseUrl": "https://wuzy4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用5",
+      "baseUrl": "https://wuzy5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用6",
+      "baseUrl": "https://wuzy6.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用7",
+      "baseUrl": "https://wuzy7.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用8",
+      "baseUrl": "https://wuzy8.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用9",
+      "baseUrl": "https://wuzy9.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用C",
+      "baseUrl": "https://wujinzy.net/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用D",
+      "baseUrl": "https://wujinzy.co/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "无尽备用E",
+      "baseUrl": "https://wujinzy.cc/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "优质资源2",
+      "baseUrl": "https://1080zyk2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "优质资源3",
+      "baseUrl": "https://1080zyk3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "优质资源4",
+      "baseUrl": "https://1080zyk4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 7,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "优质资源5",
+      "baseUrl": "https://1080zyk5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "闪电备用B",
+      "baseUrl": "https://shandianzy.net/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "闪电备用C",
+      "baseUrl": "https://shandianzy.cc/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "卧龙备用2",
+      "baseUrl": "https://wlzyw2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "卧龙备用3",
+      "baseUrl": "https://wlzyw3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "卧龙备用5",
+      "baseUrl": "https://wlzyw5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "卧龙备用6",
+      "baseUrl": "https://wlzyw6.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用1",
+      "baseUrl": "https://ukuzy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用2",
+      "baseUrl": "https://ukuzy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用3",
+      "baseUrl": "https://ukuzy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用4",
+      "baseUrl": "https://ukuzy4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用5",
+      "baseUrl": "https://ukuzy5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用6",
+      "baseUrl": "https://ukuzy6.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用7",
+      "baseUrl": "https://ukuzy7.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用8",
+      "baseUrl": "https://ukuzy8.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 8,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "U酷备用9",
+      "baseUrl": "https://ukuzy9.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用1",
+      "baseUrl": "https://tkzy1.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用2",
+      "baseUrl": "https://tkzy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用3",
+      "baseUrl": "https://tkzy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用4",
+      "baseUrl": "https://tkzy4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用5",
+      "baseUrl": "https://tkzy5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用6",
+      "baseUrl": "https://tkzy6.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用10",
+      "baseUrl": "https://xiangjiaozy10.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用2",
+      "baseUrl": "https://xiangjiaozy2.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用3",
+      "baseUrl": "https://xiangjiaozy3.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用4",
+      "baseUrl": "https://xiangjiaozy4.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用5",
+      "baseUrl": "https://xiangjiaozy5.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用6",
+      "baseUrl": "https://xiangjiaozy6.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用7",
+      "baseUrl": "https://xiangjiaozy7.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用8",
+      "baseUrl": "https://xiangjiaozy8.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 9,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "香蕉备用9",
+      "baseUrl": "https://xiangjiaozy9.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用10",
+      "baseUrl": "https://tkzy10.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用11",
+      "baseUrl": "https://tkzy11.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用12",
+      "baseUrl": "https://tkzy12.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用13",
+      "baseUrl": "https://tkzy13.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用14",
+      "baseUrl": "https://tkzy14.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用15",
+      "baseUrl": "https://tkzy15.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用16",
+      "baseUrl": "https://tkzy16.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用17",
+      "baseUrl": "https://tkzy17.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用18",
+      "baseUrl": "https://tkzy18.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用19",
+      "baseUrl": "https://tkzy19.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用20",
+      "baseUrl": "https://tkzy20.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用21",
+      "baseUrl": "https://tkzy21.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用7",
+      "baseUrl": "https://tkzy7.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用8",
+      "baseUrl": "https://tkzy8.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    },
+    {
+      "round": 10,
+      "source": "openi.cn/favorites/14897.html",
+      "name": "天空备用9",
+      "baseUrl": "https://tkzy9.com/api.php/provide/vod/",
+      "kind": "standard",
+      "accessed": "2026-11-23"
+    }
+  ]
+}

@@ -22,10 +22,12 @@ Q_LOGGING_CATEGORY(lcProbe, "mvp.net.probe")
 
 namespace {
 
-constexpr int kBudgetMs = 15000;        // 整轮探测的总时限
-constexpr int kBudgetMsAuto = 22000;    // 自动识别（两种类型都试）的时限
+constexpr int kBudgetMs = 24000;        // 整轮探测的总时限
+constexpr int kBudgetMsAuto = 32000;    // 自动识别（两种类型都试）的时限
 constexpr int kRequestTimeoutMs = 6000; // 单次请求超时
-constexpr int kMaxAttempts = 7;
+// 内置路径已有 10 条，首页还可能抓到 /from/xxx/ 等非标准接口。
+// 上限必须给首页线索留出余量，否则后面的内置路径根本没机会被尝试。
+constexpr int kMaxAttempts = 16;
 
 QString renderUrl(const QString &tpl, const QString &keyword, int limit)
 {
@@ -34,6 +36,97 @@ QString renderUrl(const QString &tpl, const QString &keyword, int limit)
                  QString::fromUtf8(QUrl::toPercentEncoding(keyword)));
     text.replace(QStringLiteral("{limit}"), QString::number(limit));
     return text;
+}
+
+/// 把首页里抓到的接口地址补成“能带关键词搜索”的模板。
+/// 已经含 {keyword} 的原样返回；已有 ac= 参数时只补 wd，避免重复 ac。
+QString appendProbeQuery(QString location)
+{
+    location = location.trimmed();
+    if (location.isEmpty())
+        return {};
+    location.replace(QStringLiteral("\\/"), QStringLiteral("/"));
+    const int fragment = location.indexOf(QLatin1Char('#'));
+    if (fragment >= 0)
+        location.truncate(fragment);
+    if (location.contains(QLatin1String("{keyword}")))
+        return location;
+
+    QString separator;
+    if (location.endsWith(QLatin1Char('?')) || location.endsWith(QLatin1Char('&')))
+        separator.clear();
+    else if (location.contains(QLatin1Char('?')))
+        separator = QStringLiteral("&");
+    else
+        separator = QStringLiteral("?");
+
+    if (location.contains(QLatin1String("wd="), Qt::CaseInsensitive)) {
+        // 用户可能直接粘贴了一条带示例关键词的搜索地址（?ac=detail&wd=电影）。
+        // 把固定值换成占位符，比直接丢掉这条地址更有用；否则试搜永远无法验证搜索词。
+        QRegularExpression wdRe(QStringLiteral("([?&])wd=[^&]*"),
+                                QRegularExpression::CaseInsensitiveOption);
+        location.replace(wdRe, QStringLiteral("\\1wd={keyword}"));
+        return location;
+    }
+
+    if (location.contains(QLatin1String("/index.php/ajax/data"))) {
+        if (!location.contains(QLatin1String("mid=")))
+            location += separator + QStringLiteral("mid=1");
+        if (!location.contains(QLatin1String("limit=")))
+            location += QStringLiteral("&limit={limit}");
+        return location + QStringLiteral("&wd={keyword}");
+    }
+    if (location.contains(QLatin1String("ac="), Qt::CaseInsensitive))
+        return location + separator + QStringLiteral("wd={keyword}");
+    return location + separator + QStringLiteral("ac=detail&wd={keyword}");
+}
+
+bool looksLikeApiPath(const QString &path)
+{
+    const QString lower = path.toLower();
+    return lower.contains(QLatin1String("provide/vod"))
+           || lower.contains(QLatin1String("/inc/api"))
+           || lower.contains(QLatin1String("ajax/data"))
+           || lower.contains(QLatin1String("api.php"));
+}
+
+/// 首页 HTML/JS 里经常直接写着采集接口，先把它抓出来，
+/// 比盲试内置路径更可靠，也能覆盖 /inc/api.php、/from/xxx/ 这类非标准路径。
+QStringList extractHomeApiHints(const QString &html)
+{
+    QString normalized = html;
+    normalized.replace(QStringLiteral("\\/"), QStringLiteral("/"));
+    QRegularExpression re(
+        QStringLiteral("(/api\\.php/provide/vod(?:/from/[A-Za-z0-9_]+)?"
+                       "(?:/at/(?:json|xml))?/?"
+                       "|/inc/api(?:_mac10|_mac_m3u8)?\\.php"
+                       "|/index\\.php/ajax/data)"),
+        QRegularExpression::CaseInsensitiveOption);
+    QStringList hints;
+    QRegularExpressionMatchIterator it = re.globalMatch(normalized);
+    while (it.hasNext() && hints.size() < 10) {
+        const QString path = it.next().captured(1);
+        if (!hints.contains(path))
+            hints.append(path);
+    }
+    return hints;
+}
+
+/// 二次关键词校验：两次返回完全同一组标题，说明接口忽略了 wd，
+/// 只能列目录、不能按关键词搜索，不能当作可搜索源保存。
+bool sameResultTitles(const QVector<MediaItem> &first, const QVector<MediaItem> &second)
+{
+    if (first.size() != second.size() || first.isEmpty())
+        return false;
+    QSet<QString> titles;
+    titles.reserve(second.size());
+    for (const MediaItem &item : second)
+        titles.insert(item.title.trimmed());
+    for (const MediaItem &item : first) {
+        if (!titles.contains(item.title.trimmed()))
+            return false;
+    }
+    return true;
 }
 
 QUrl originOf(const QUrl &url)
@@ -255,10 +348,18 @@ namespace SourceProbe {
 QStringList defaultPaths(MediaType mediaType)
 {
     if (mediaType == MediaType::Video) {
+        // 基于 186 个真实影视节点验证：MacCMS 的 ac 取值、接口文件位置、
+        // 是否带尾斜杠都可能不同；所有模板都必须带 {keyword}，否则会
+        // 把“只能列目录”的接口误判成可搜索源。
         return {QStringLiteral("/api.php/provide/vod/?ac=detail&wd={keyword}"),
-                QStringLiteral("/api.php/provide/vod/?ac=list"),
+                QStringLiteral("/api.php/provide/vod/?ac=videolist&wd={keyword}"),
+                QStringLiteral("/api.php/provide/vod/?ac=list&wd={keyword}"),
                 QStringLiteral("/api.php/provide/vod/at/json/?ac=detail&wd={keyword}"),
-                QStringLiteral("/index.php/ajax/data?mid=1&wd={keyword}"),
+                QStringLiteral("/index.php/ajax/data?mid=1&wd={keyword}&limit={limit}"),
+                QStringLiteral("/inc/api.php?ac=detail&wd={keyword}"),
+                QStringLiteral("/inc/api_mac10.php?ac=detail&wd={keyword}"),
+                QStringLiteral("/inc/api_mac_m3u8.php?ac=detail&wd={keyword}"),
+                QStringLiteral("/api.php/provide/vod?ac=detail&wd={keyword}"),
                 QStringLiteral("/api.php/provide/vod/?wd={keyword}")};
     }
     return {QStringLiteral("/wp-json/wp/v2/search?search={keyword}&per_page={limit}"),
@@ -300,12 +401,19 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     m_candidates.clear();
     m_candidateTypes.clear();
     m_siteName.clear();
+    m_inputPath.clear();
+    m_homeApiHints.clear();
+    m_validationFirstItems.clear();
     // 失败归类计数必须每次探测清零，否则同一个 Prober 复用会把上一站的失败累积过来
     m_homeOk = false;
     m_connFail = 0;
     m_denied = 0;
+    m_unauthorized = 0;
     m_notFound = 0;
     m_notJson = 0;
+    m_xml = 0;
+    m_jsonNoItems = 0;
+    m_jsonNoFields = 0;
     m_clock.start();
 
     m_site = site;
@@ -317,6 +425,7 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     }
     if (m_site.path().isEmpty())
         m_site.setPath(QStringLiteral("/"));
+    m_inputPath = m_site.path();
     m_origin = originOf(m_site);
     fetchHome();
 }
@@ -387,6 +496,9 @@ void Prober::fetchHome()
                     m_siteName = match.captured(1).simplified();
                     m_siteName.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
                 }
+                // 首页直接写出的接口路径优先于盲试内置路径；
+                // 这是覆盖 /inc/api.php、/from/xxx/、非标准端口的关键。
+                m_homeApiHints = extractHomeApiHints(html);
             } else {
                 // 首页失败也要归类，否则用户只看到一句笼统的“没有找到接口”
                 if (status == 0)
@@ -400,19 +512,38 @@ void Prober::fetchHome()
             reply->deleteLater();
         }
 
-        // 候选路径：用户给的路径像接口时优先试它自己，
-        // 其次是自己加的路径，最后才是内置那几条；
-        // 自动识别时把另一种类型的候选也排在后面
-        const QString userPath = m_site.path();
+        // 候选路径：用户明确给的接口 > 首页里抓到的接口 > 用户自定义路径 > 内置路径。
+        // 首页线索里 /at/xml/ 不能解析，必须排在 JSON 线索之后，
+        // 否则真实站点会先浪费一次请求（apibdzy 首页同时暴露 xml 和 json）。
+        QStringList jsonHints;
+        QStringList xmlHints;
+        for (const QString &hint : m_homeApiHints) {
+            if (hint.contains(QLatin1String("/at/xml"), Qt::CaseInsensitive))
+                xmlHints.append(hint);
+            else
+                jsonHints.append(hint);
+        }
+        m_homeApiHints = jsonHints + xmlHints;
+        const QString userPath = m_inputPath;
         QStringList paths;
         QVector<MediaType> pathTypes;
-        auto addPath = [&](const QString &path, MediaType type) {
+        QSet<QString> seenPaths;
+        auto addPath = [&](QString path, MediaType type) {
+            path = appendProbeQuery(path);
+            if (path.isEmpty() || !path.contains(QLatin1String("{keyword}")))
+                return; // 没有关键词占位符的地址不能当搜索源
+            if (seenPaths.contains(path))
+                return;
+            seenPaths.insert(path);
             paths.append(path);
             pathTypes.append(type);
         };
 
-        if (userPath.size() > 1 && userPath.contains(QLatin1String("api")))
-            addPath(userPath + QStringLiteral("?ac=detail&wd={keyword}"), m_type);
+        if (userPath.size() > 1 && looksLikeApiPath(userPath))
+            addPath(userPath, m_type);
+
+        for (const QString &hint : m_homeApiHints)
+            addPath(hint, m_type);
 
         for (const QString &extra : m_extraPaths) {
             const QString trimmed = extra.trimmed();
@@ -437,25 +568,35 @@ void Prober::fetchHome()
 
         m_candidates.clear();
         m_candidateTypes.clear();
+        QSet<QString> seenCandidates;
+        auto appendCandidate = [&](const QString &url, MediaType type) {
+            if (seenCandidates.contains(url))
+                return;
+            seenCandidates.insert(url);
+            m_candidates.append(url);
+            m_candidateTypes.append(type);
+        };
+
+        // 完整 URL 只试一次；相对路径先走用户输入的域名，再走首页跳转域名。
+        // 必须按“域名优先”而不是“路径优先”排，否则一个 301 站点就会
+        // 把一半尝试次数浪费在旧域名上。
         const bool hasRedirect = m_redirectOrigin.isValid() && !m_redirectOrigin.host().isEmpty()
                               && m_redirectOrigin != m_origin;
         for (int i = 0; i < paths.size(); ++i) {
-            const QString path = paths.at(i);
-            const MediaType type = pathTypes.value(i, m_type);
-            if (path.startsWith(QLatin1String("http"), Qt::CaseInsensitive)) {
-                m_candidates.append(path); // 用户填的是完整 URL，不要再拼站点
-                m_candidateTypes.append(type);
-                continue;
-            }
-            const QString relative = path.startsWith(QLatin1Char('/'))
-                                         ? path
-                                         : QLatin1Char('/') + path;
-            // 先按用户输入的域名试，再用首页跳转后的域名兜底
-            m_candidates.append(m_origin.toString() + relative);
-            m_candidateTypes.append(type);
-            if (hasRedirect) {
-                m_candidates.append(m_redirectOrigin.toString() + relative);
-                m_candidateTypes.append(type);
+            if (paths.at(i).startsWith(QLatin1String("http"), Qt::CaseInsensitive))
+                appendCandidate(paths.at(i), pathTypes.value(i, m_type));
+        }
+        const QVector<QUrl> origins = hasRedirect ? QVector<QUrl>{m_origin, m_redirectOrigin}
+                                                  : QVector<QUrl>{m_origin};
+        for (const QUrl &origin : origins) {
+            for (int i = 0; i < paths.size(); ++i) {
+                const QString path = paths.at(i);
+                if (path.startsWith(QLatin1String("http"), Qt::CaseInsensitive))
+                    continue;
+                const QString relative = path.startsWith(QLatin1Char('/'))
+                                             ? path
+                                             : QLatin1Char('/') + path;
+                appendCandidate(origin.toString() + relative, pathTypes.value(i, m_type));
             }
         }
 
@@ -467,8 +608,9 @@ void Prober::probeNextCandidate()
 {
     if (m_finished)
         return;
-    const int baseAttempts = m_auto ? 11 : kMaxAttempts;
-    const int maxAttempts = baseAttempts + m_extraPaths.size();
+    const int baseAttempts = m_auto ? 20 : kMaxAttempts;
+    // 首页线索和用户自定义路径是额外候选，不能占用内置路径的预算。
+    const int maxAttempts = baseAttempts + m_extraPaths.size() + m_homeApiHints.size();
     if (m_candidateIndex >= m_candidates.size() || m_candidateIndex >= maxAttempts) {
         fail(diagnoseFailure());
         return;
@@ -539,6 +681,30 @@ void Prober::probeNextCandidate()
             return;
         }
 
+        // 先按正文形态归类，避免把所有非 JSON 响应都笼统说成“返回网页”。
+        const QString prefix = QString::fromUtf8(payload.left(512)).trimmed();
+        const QString lowerPrefix = prefix.toLower();
+        if (prefix.contains(QStringLiteral("未授权"))
+            || prefix.contains(QStringLiteral("已到期"))
+            || prefix.contains(QStringLiteral("授权已到期"))) {
+            ++m_unauthorized;
+            recordAttempt(probeUrl, status, tr("接口提示 IP 未授权/已到期"));
+            probeNextCandidate();
+            return;
+        }
+        const bool looksXml = lowerPrefix.startsWith(QLatin1String("<?xml"))
+                           || lowerPrefix.startsWith(QLatin1String("<rss"))
+                           || lowerPrefix.startsWith(QLatin1String("<list"))
+                           || (lowerPrefix.startsWith(QLatin1Char('<'))
+                               && !lowerPrefix.startsWith(QLatin1String("<html"))
+                               && !lowerPrefix.startsWith(QLatin1String("<!doctype")));
+        if (looksXml) {
+            ++m_xml;
+            recordAttempt(probeUrl, status, tr("返回 XML 接口（当前只解析 JSON）"));
+            probeNextCandidate();
+            return;
+        }
+
         QJsonParseError parseError{};
         const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
         if (parseError.error != QJsonParseError::NoError) {
@@ -555,6 +721,7 @@ void Prober::probeNextCandidate()
         QString itemsPath;
         scanArrays(root, QString(), 0, &items, &itemsPath);
         if (items.isEmpty()) {
+            ++m_jsonNoItems;
             recordAttempt(probeUrl, status, tr("JSON 里没有结果数组"));
             probeNextCandidate();
             return;
@@ -567,6 +734,7 @@ void Prober::probeNextCandidate()
                               QStringLiteral("title"), QStringLiteral("name")}, {}, true);
         const StreamPick stream = pickStream(samples);
         if (titleKey.isEmpty() || stream.key.isEmpty()) {
+            ++m_jsonNoFields;
             recordAttempt(probeUrl, status,
                           titleKey.isEmpty() ? tr("没有标题字段") : tr("没有播放地址字段"));
             probeNextCandidate();
@@ -661,13 +829,24 @@ void Prober::probeNextCandidate()
 
 void Prober::validate(const SourceConfig &config, const QString &keyword)
 {
-    qCInfo(lcProbe) << "校验配置" << config.id << config.name;
+    if (!config.urlTemplate.contains(QLatin1String("{keyword}"))) {
+        recordAttempt(config.urlTemplate, 0, tr("接口地址不含关键词占位符，不能作为搜索源"));
+        probeNextCandidate();
+        return;
+    }
+    m_validationFirstItems.clear();
+    startValidation(config, keyword, 1);
+}
+
+void Prober::startValidation(const SourceConfig &config, const QString &keyword, int pass)
+{
+    qCInfo(lcProbe) << "校验配置" << config.id << config.name << "第" << pass << "轮";
 
     ConfigSearchProvider *provider = new ConfigSearchProvider(config, m_http, this);
     m_validator = provider;
     connect(provider, &SearchProviderBase::finished, this,
-            [this, config](const QString &sourceId, const QVector<MediaItem> &items, int filtered,
-                           const QString &error) {
+            [this, config, pass](const QString &sourceId, const QVector<MediaItem> &items,
+                                 int filtered, const QString &error) {
                 Q_UNUSED(sourceId)
                 Q_UNUSED(filtered)
                 if (m_finished)
@@ -677,36 +856,64 @@ void Prober::validate(const SourceConfig &config, const QString &keyword)
                     m_validator = nullptr;
                 }
 
-                if (!error.isEmpty()) {
-                    recordAttempt(config.urlTemplate, 0, tr("试搜失败：%1").arg(error));
-                    probeNextCandidate();
-                    return;
-                }
-                if (items.isEmpty()) {
-                    recordAttempt(config.urlTemplate, 0, tr("试搜没有结果"));
-                    probeNextCandidate();
+                if (pass == 1) {
+                    if (!error.isEmpty()) {
+                        recordAttempt(config.urlTemplate, 0, tr("试搜失败：%1").arg(error));
+                        probeNextCandidate();
+                        return;
+                    }
+                    if (items.isEmpty()) {
+                        recordAttempt(config.urlTemplate, 0, tr("试搜没有结果"));
+                        probeNextCandidate();
+                        return;
+                    }
+                    // 第一次用“电影”搜到结果，再用另一个常见词确认接口真的处理 wd。
+                    // 很多站点的 ac=detail 会忽略 wd 并返回固定最新列表，只做一次
+                    // 试搜会把这种“只能列目录”的接口误存成可搜索源。
+                    m_validationFirstItems = items;
+                    const QString secondKeyword =
+                        config.mediaType == MediaType::Video ? tr("电视剧") : tr("歌曲");
+                    startValidation(config, secondKeyword, 2);
                     return;
                 }
 
-                Result result = m_result;
-                result.ok = true;
-                result.mediaType = config.mediaType;
-                result.autoDetected = config.mediaType != m_result.hintType;
-                result.siteName = config.name;
-                result.siteUrl = m_site;
-                result.config = config;
-                result.sampleCount = items.size();
-                const int take = qMin(items.size(), 5);
-                for (int i = 0; i < take; ++i) {
-                    QString line = items.at(i).displayName();
-                    const QString meta = items.at(i).metaLine();
-                    if (!meta.isEmpty())
-                        line += QStringLiteral("  ·  ") + meta;
-                    result.sampleTitles.append(line);
+                if (error.isEmpty() && !items.isEmpty()
+                    && sameResultTitles(m_validationFirstItems, items)) {
+                    recordAttempt(config.urlTemplate, 0,
+                                  tr("接口忽略关键词，只返回固定列表，不能作为搜索源"));
+                    m_validationFirstItems.clear();
+                    probeNextCandidate();
+                    return;
                 }
-                done(result);
+                // 第二次请求失败或没有结果时，说明首轮确实按关键词返回过数据，
+                // 不能用一次网络抖动否定整个源。
+                if (error.isEmpty() && items.isEmpty())
+                    qCInfo(lcProbe) << config.id << "二次关键词没有命中，按首轮结果接受";
+                acceptConfig(config, m_validationFirstItems);
             });
     provider->search(keyword, 10);
+}
+
+void Prober::acceptConfig(const SourceConfig &config, const QVector<MediaItem> &items)
+{
+    Result result = m_result;
+    result.ok = true;
+    result.mediaType = config.mediaType;
+    result.autoDetected = config.mediaType != m_result.hintType;
+    result.siteName = config.name;
+    result.siteUrl = m_site;
+    result.config = config;
+    result.sampleCount = items.size();
+    const int take = qMin(items.size(), 5);
+    for (int i = 0; i < take; ++i) {
+        QString line = items.at(i).displayName();
+        const QString meta = items.at(i).metaLine();
+        if (!meta.isEmpty())
+            line += QStringLiteral("  ·  ") + meta;
+        result.sampleTitles.append(line);
+    }
+    m_validationFirstItems.clear();
+    done(result);
 }
 
 QString Prober::diagnoseFailure() const
@@ -714,9 +921,21 @@ QString Prober::diagnoseFailure() const
     if (m_denied > 0)
         return tr("站点拒绝程序访问（HTTP 401/403，命中 %1 次）：拦的是访问方式，不是接口路径，换地址也没用，只能用浏览器打开")
             .arg(m_denied);
+    if (m_unauthorized > 0)
+        return tr("接口返回“IP 未授权/已到期”（%1 次）：这不是路径问题，需要在资源站后台授权当前 IP 或更换有授权的域名")
+            .arg(m_unauthorized);
+    if (m_xml > 0)
+        return tr("接口返回 XML（%1 次）：当前探查器只解析 JSON；如果站点同时提供 /at/json/，请改用 JSON 路径，否则需要手动配置外部解析器")
+            .arg(m_xml);
     if (m_connFail > 0 && !m_homeOk)
-        return tr("站点连不上（%1 次连接失败）：本机网络到该域名不通，被墙或被打不开的可能性大")
+        return tr("站点连不上（%1 次连接失败）：本机网络到该域名不通，或域名已失效")
             .arg(m_connFail);
+    if (m_jsonNoItems > 0 && m_notFound == 0 && m_notJson == 0)
+        return tr("接口返回 JSON 但没有结果数组（%1 次）：可能只支持分类/列表参数，或关键词参数名不是 wd")
+            .arg(m_jsonNoItems);
+    if (m_jsonNoFields > 0 && m_notFound == 0)
+        return tr("接口有结果数组但猜不出标题/播放地址字段（%1 次）：该站点字段命名不标准，需要手动配置字段映射")
+            .arg(m_jsonNoFields);
     if (m_notJson > 0 && m_notFound == 0)
         return tr("地址能访问但返回的是网页（%1 次），不是 JSON 接口：请直接填接口地址，例如 https://域名/api.php/provide/vod/")
             .arg(m_notJson);
