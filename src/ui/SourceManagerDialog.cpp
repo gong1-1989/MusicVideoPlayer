@@ -300,27 +300,53 @@ void SourceManagerDialog::bindUi()
             return;
         const QString id = item->data(Qt::UserRole).toString();
         const bool wantsEnabled = item->checkState() == Qt::Checked;
-        for (SourceConfig &config : m_drafts) {
-            if (config.id != id)
-                continue;
-            // 外部解析器启用即执行本机命令，必须在勾选当场确认；
-            // 否则“保存”会静默把任意命令带进下一次搜索。
-            if (wantsEnabled && config.kind == QLatin1String("external")) {
-                const QMessageBox::StandardButton choice = QMessageBox::warning(
-                    this, tr("启用外部解析器"),
-                    tr("启用后搜索会直接启动本机程序：\n\n%1 %2\n\n只在你信任这个命令时启用。")
-                        .arg(config.command, config.arguments),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-                if (choice != QMessageBox::Yes) {
-                    m_updating = true;
-                    item->setCheckState(Qt::Unchecked);
-                    m_updating = false;
-                    config.enabled = false;
-                    updateActions();
-                    return;
+        // 外部解析器启用即执行本机命令，必须在勾选当场确认；否则“保存”会
+        // 静默把任意命令带进下一次搜索。
+        int externalIndex = -1;
+        if (wantsEnabled) {
+            for (int i = 0; i < m_drafts.size(); ++i) {
+                if (m_drafts.at(i).id == id
+                    && m_drafts.at(i).kind == QLatin1String("external")) {
+                    externalIndex = i;
+                    break;
                 }
             }
-            config.enabled = wantsEnabled;
+        }
+        if (externalIndex >= 0) {
+            const SourceConfig external = m_drafts.at(externalIndex);
+            const QMessageBox::StandardButton choice = QMessageBox::warning(
+                this, tr("启用外部解析器"),
+                tr("启用后搜索会直接启动本机程序：\n\n%1 %2\n\n只在你信任这个命令时启用。")
+                    .arg(external.command, external.arguments),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+            if (choice != QMessageBox::Yes) {
+                // 确认框会跑嵌套事件循环，站点体检/试搜回调可能已经 reloadList，
+                // 原来的 item/config 引用都可能失效；按 id 重新找回再复位。
+                m_updating = true;
+                for (int i = 0; i < m_list->count(); ++i) {
+                    QListWidgetItem *current = m_list->item(i);
+                    if (current != nullptr
+                        && current->data(Qt::UserRole).toString() == id) {
+                        current->setCheckState(Qt::Unchecked);
+                        break;
+                    }
+                }
+                m_updating = false;
+                for (SourceConfig &config : m_drafts) {
+                    if (config.id == id) {
+                        config.enabled = false;
+                        break;
+                    }
+                }
+                updateActions();
+                return;
+            }
+        }
+        for (SourceConfig &config : m_drafts) {
+            if (config.id == id) {
+                config.enabled = wantsEnabled;
+                break;
+            }
         }
         updateActions();
     });

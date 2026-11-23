@@ -510,7 +510,15 @@ void DownloadManager::load()
         return;
     }
 
-    const QJsonArray array = document.object().value(QStringLiteral("jobs")).toArray();
+    // jobs 不是数组说明状态文件结构已损坏；直接 toArray() 会得到空列表，
+    // 随后一次保存就会把用户所有下载记录静默覆盖掉。
+    const QJsonValue jobsValue = document.object().value(QStringLiteral("jobs"));
+    if (!jobsValue.isArray()) {
+        qCWarning(lcDownloadManager) << "下载状态文件缺少 jobs 数组";
+        backupCorruptState(m_statePath);
+        return;
+    }
+    const QJsonArray array = jobsValue.toArray();
     QVector<DownloadJob> loaded;
     QSet<QString> seenIds;
     bool changedInLoad = false;

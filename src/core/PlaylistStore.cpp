@@ -182,6 +182,15 @@ ReadFileResult readPlaylistFile(const QString &path)
     }
 
     const QJsonObject root = doc.object();
+    // 合法保存必定同时写音乐和视频数组。若两个键都不是数组，说明文件被
+    // 手工改坏或只写了一半；不能再当成“空列表”正常加载，否则退出保存会
+    // 用空列表覆盖仍然可恢复的备份。
+    if (!root.value(keyFor(MediaType::Music)).isArray()
+        || !root.value(keyFor(MediaType::Video)).isArray()) {
+        result.status = ReadStatus::Corrupt;
+        result.error = QStringLiteral("缺少音乐/视频数组");
+        return result;
+    }
     result.music = parsePartition(root, MediaType::Music);
     result.video = parsePartition(root, MediaType::Video);
     result.status = ReadStatus::Ok;

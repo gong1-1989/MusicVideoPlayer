@@ -621,6 +621,7 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     QAction *savePreviewAction = nullptr;
     QAction *removeAction = nullptr;
     MediaItem selectedItem;
+    const int selectedRow = index.isValid() ? index.row() : -1;
     if (index.isValid()) {
         selectedItem = model->itemAt(index.row());
         if (selectedItem.previewOnly) {
@@ -651,7 +652,9 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
 
     // menu.exec 会开嵌套事件循环，期间下载完成、自动刷新等都可能改动模型；
     // 原先缓存的 index/selectedItem 可能已指向别的条目或越界，必须按身份重新定位。
-    auto rowForSelection = [model, &selectedItem]() -> int {
+    // 下载完成会把条目从“在线 web/url 身份”改成“本地 file 身份”，此时原身份
+    // 必然找不到；再用稳定的标题/歌手/类型在唯一匹配项上兜底。
+    auto rowForSelection = [model, &selectedItem, selectedRow]() -> int {
         if (!selectedItem.isValid())
             return -1;
         const QString identity = mediaIdentity(selectedItem);
@@ -659,7 +662,25 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
             if (mediaIdentity(model->itemAt(row)) == identity)
                 return row;
         }
-        return -1;
+        auto looksSame = [](const MediaItem &a, const MediaItem &b) {
+            return a.type == b.type && a.title == b.title && a.artist == b.artist;
+        };
+        if (selectedRow >= 0 && selectedRow < model->rowCount()) {
+            const MediaItem current = model->itemAt(selectedRow);
+            // 只在“原来在线、现在已变成本地”这一种身份切换上接受原行。
+            if (selectedItem.online && !current.online && looksSame(current, selectedItem))
+                return selectedRow;
+        }
+        int candidate = -1;
+        for (int row = 0; row < model->rowCount(); ++row) {
+            const MediaItem current = model->itemAt(row);
+            if (!looksSame(current, selectedItem))
+                continue;
+            if (candidate >= 0)
+                return -1; // 同标题同歌手有多条，无法确定用户当初选的是哪条
+            candidate = row;
+        }
+        return candidate;
     };
 
     if (chosen == downloadAction) {

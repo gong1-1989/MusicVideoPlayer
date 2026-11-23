@@ -110,19 +110,29 @@ bool PlaylistModel::refreshItem(int row, const MediaItem &item)
     };
 
     // 标题、来源等展示字段有值就刷新；直链签名每次搜索都会变，必须替换。
+    // 但已经下载/导入成“本地文件”的条目不能被后续搜索结果改回在线：否则
+    // 用户点同一首歌会重新走网络，已下载的文件也随之被遗忘。
+    const bool existingLocal = !merged.online;
     takeString(merged.title, item.title);
     takeString(merged.artist, item.artist);
-    if (merged.url != item.url) {
-        merged.url = item.url;
-        changed = true;
-    }
-    if (merged.alternateUrls != item.alternateUrls) {
-        merged.alternateUrls = item.alternateUrls;
-        changed = true;
-    }
-    if (!item.headers.isEmpty() && merged.headers != item.headers) {
-        merged.headers = item.headers;
-        changed = true;
+    if (!existingLocal) {
+        if (merged.url != item.url) {
+            merged.url = item.url;
+            changed = true;
+        }
+        if (merged.alternateUrls != item.alternateUrls) {
+            merged.alternateUrls = item.alternateUrls;
+            changed = true;
+        }
+        if (!item.headers.isEmpty() && merged.headers != item.headers) {
+            merged.headers = item.headers;
+            changed = true;
+        }
+        // 只允许在线条目转成本地条目；本地条目永远不因搜索结果变回在线。
+        if (merged.online && !item.online) {
+            merged.online = false;
+            changed = true;
+        }
     }
     takeUrl(merged.lyricUrl, item.lyricUrl);
     takeUrl(merged.posterUrl, item.posterUrl);
@@ -134,10 +144,6 @@ bool PlaylistModel::refreshItem(int row, const MediaItem &item)
     takeString(merged.genre, item.genre);
     takeString(merged.description, item.description);
     takeString(merged.quality, item.quality);
-    if (merged.online != item.online) {
-        merged.online = item.online;
-        changed = true;
-    }
     if (item.durationMs > 0 && merged.durationMs != item.durationMs) {
         merged.durationMs = item.durationMs;
         changed = true;

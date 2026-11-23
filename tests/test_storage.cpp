@@ -56,6 +56,7 @@ private slots:
     void playlistRoundTrip();
     void playlistSaveWritesPrimaryOnly();
     void playlistCorruptFileBacksUp();
+    void playlistMissingPartitionsIsCorrupt();
     void playlistSnapshotRecoversAfterCorruption();
     void playlistVideoProgressRoundTrip();
     void playlistVideoProgressRemovedWithItem();
@@ -69,6 +70,7 @@ private slots:
     void downloadPathsTreatPartialAsOccupied();
     void downloadManagerReservesActiveTarget();
     void downloadManagerRejectsOversizedStateFile();
+    void downloadManagerRejectsStateWithoutJobsArray();
     void downloadManagerClearsStalePartialOnPathConflict();
     void downloadManagerDelayedRemoveSkipsReservedPath();
     void downloadManagerDoesNotResumeSnapshot();
@@ -523,6 +525,39 @@ void StorageTest::downloadManagerReservesActiveTarget()
     const QString reserved = manager.reserveFilePath(dir, QStringLiteral("同名.mp3"));
     QCOMPARE(reserved, QDir(dir).filePath(QStringLiteral("同名 (1).mp3")));
     manager.shutdownForExit();
+}
+
+void StorageTest::playlistMissingPartitionsIsCorrupt()
+{
+    const QString path = StoragePaths::dataFile(QStringLiteral("playlists.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    // 合法 JSON 对象，但缺少 music/video 数组：旧实现会当成空列表正常加载，
+    // 退出保存时用空列表覆盖仍可能可恢复的备份。
+    file.write("{\"version\": 1}");
+    file.close();
+
+    const PlaylistStore::LoadResult result = PlaylistStore::loadAll();
+    QVERIFY(result.storageBlocked);
+    QVERIFY(result.music.isEmpty());
+    QVERIFY(result.video.isEmpty());
+    QVERIFY(!result.corruptBackupPath.isEmpty());
+}
+
+void StorageTest::downloadManagerRejectsStateWithoutJobsArray()
+{
+    const QString statePath = StoragePaths::dataFile(QStringLiteral("downloads.json"));
+    QFile file(statePath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    // 结构损坏时不能静默读成空队列，否则下一次保存会覆盖全部下载记录。
+    QVERIFY(file.write("{\"version\": 1, \"jobs\": {}}") > 0);
+    file.close();
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QVERIFY(manager.isEmpty());
+    QVERIFY(!QFile::exists(statePath));
+    QVERIFY(QFile::exists(statePath + QStringLiteral(".corrupt")));
 }
 
 void StorageTest::downloadManagerRejectsOversizedStateFile()

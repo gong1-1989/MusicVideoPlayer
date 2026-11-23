@@ -341,7 +341,9 @@ void DownloadManagerDialog::removeSelected()
     if (job == nullptr || m_manager == nullptr)
         return;
 
-    const QString text = job->status == DownloadJob::Status::Completed
+    const QString id = job->id;
+    const bool completed = job->status == DownloadJob::Status::Completed;
+    const QString text = completed
         ? tr("只移除这条下载记录，磁盘上的文件不会删除。确定继续？")
         : tr("该任务尚未完成，移除时已下载的部分和临时文件会一起删除。确定继续？");
     if (QMessageBox::question(this, tr("移除下载记录"), text)
@@ -350,7 +352,9 @@ void DownloadManagerDialog::removeSelected()
     }
 
     m_selectedId.clear();
-    m_manager->removeJob(job->id);
+    // 确认框会跑嵌套事件循环，期间后台任务可能完成并让 m_jobs 重新分配；
+    // 上面保存的 job 指针已经失效，后续只能使用提前复制的 id。
+    m_manager->removeJob(id);
     rebuild();
 }
 
