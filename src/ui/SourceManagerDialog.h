@@ -66,6 +66,8 @@ private:
     void onAddExample();
     void onAddFromSite();
     void onRefreshSelected();
+    /// 预置配置源（如网易云音乐）字段由程序维护，更新改为按当前配置试搜验证
+    void verifyProtectedSource(const SourceConfig &draft);
     /// 内置网页型影视源的“一键更新”：探测地址跳转 + 试搜验真，不写死字段映射
     void refreshWebSource(const SourceConfig &draft, const QString &previousUrl);
     void onDuplicate();

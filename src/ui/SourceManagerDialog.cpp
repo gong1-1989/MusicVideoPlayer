@@ -290,6 +290,7 @@ void SourceManagerDialog::bindUi()
     connect(ui->btn_refresh, &QPushButton::clicked, this,
             &SourceManagerDialog::onRefreshSelected);
     ui->btn_refresh->setToolTip(tr("配置源：重新探测接口与字段映射；"
+                                   "预置配置源（如网易云）：按当前配置试搜验证；"
                                    "网页型影视源：体检站点地址（含跳转）并试搜验真"));
     connect(m_btnTest, &QPushButton::clicked, this, &SourceManagerDialog::onTest);
 
@@ -643,22 +644,25 @@ SourceConfig SourceManagerDialog::readForm() const
                            : MediaType::Music;
     const bool wasBuiltin = config.builtin;
     const bool wasExternal = config.kind == QLatin1String("external");
+    const QString originalKind = config.kind;
     config.kind = m_kind->currentData().toString();
     // provider 只属于内置实现。配置型/外部解析器写 provider=maccms_web
     // 会让后续重建 provider 时走错分支。
     config.provider = config.kind == QLatin1String("builtin")
                           ? m_provider->currentData().toString()
                           : QString();
-    // 内置源不能通过改 kind 变成普通配置：SourceRegistry 会拒绝，
-    // UI 先把类型锁回 builtin，避免表单显示与保存结果不一致。
-    if (wasBuiltin && config.kind != QLatin1String("builtin")) {
-        config.kind = QStringLiteral("builtin");
+    // 预置源不能借表单改掉实现类型：SourceRegistry 会按预置配置覆盖，
+    // UI 先把类型锁回原值，避免表单显示与保存结果不一致。
+    // 注意 builtin 表示“受保护的预置源”，不等于 kind=builtin：网易云就是
+    // kind=config + builtin=true，不能因此被强制改成内置实现。
+    if (wasBuiltin && config.kind != originalKind) {
+        config.kind = originalKind;
         if (m_kind->findData(config.kind) >= 0) {
             QSignalBlocker blocker(m_kind);
             m_kind->setCurrentIndex(m_kind->findData(config.kind));
         }
     }
-    config.builtin = config.kind == QLatin1String("builtin") && wasBuiltin;
+    config.builtin = wasBuiltin;
     if (config.kind == QLatin1String("builtin")
         && config.provider == QLatin1String("maccms_web")) {
         config.mediaType = MediaType::Video;
@@ -834,6 +838,12 @@ void SourceManagerDialog::onRefreshSelected()
         refreshWebSource(draft, draft.urlTemplate);
         return;
     }
+    if (draft.builtin && draft.kind != QLatin1String("builtin")) {
+        // 网易云这类预置配置源：搜索地址、字段和过滤规则由程序维护，
+        // 不能像普通源那样从站点首页重新探测；更新改成按当前配置试搜验真。
+        verifyProtectedSource(draft);
+        return;
+    }
     if (draft.builtin) {
         QMessageBox::information(this, tr("内置源"),
                                  tr("内置源由程序实现，不能通过探测更新。"));
@@ -888,6 +898,76 @@ void SourceManagerDialog::onRefreshSelected()
     merged.fields = probed.fields;
     m_drafts[m_currentRow] = merged;
     reloadList(m_currentRow);
+}
+
+void SourceManagerDialog::verifyProtectedSource(const SourceConfig &draft)
+{
+    if (m_testBusy) {
+        QMessageBox::information(this, tr("正在验证"),
+                                 tr("上一次试搜或更新检查还没结束，请稍等。"));
+        return;
+    }
+
+    // 预置源没有站点首页可供重新探测，但必须能确认“当前配置仍然可用”。
+    // 用一次真实试搜代替探测，成功就明确报通过，不再弹“一键更新失败”。
+    QString keyword = m_testKeyword->text().trimmed();
+    if (keyword.isEmpty()) {
+        keyword = draft.mediaType == MediaType::Music ? QStringLiteral("晴天")
+                                                      : QStringLiteral("流浪地球");
+        m_testKeyword->setText(keyword);
+    }
+
+    m_testBusy = true;
+    m_testList->clear();
+    m_testList->addItem(tr("正在验证预置源“%1”…").arg(draft.name));
+    m_btnTest->setEnabled(false);
+
+    SearchProviderBase *provider = createSearchProvider(draft, m_http, this);
+    if (provider == nullptr) {
+        m_testBusy = false;
+        m_btnTest->setEnabled(true);
+        m_testList->clear();
+        m_testList->addItem(tr("失败：无法创建搜索器"));
+        QMessageBox::warning(this, tr("更新检查失败"), tr("无法创建这个源的搜索器。"));
+        return;
+    }
+
+    connect(provider, &SearchProviderBase::finished, this,
+            [this, provider, draft, keyword](const QString &, const QVector<MediaItem> &items,
+                                            int filtered, const QString &error) {
+                m_testBusy = false;
+                m_btnTest->setEnabled(true);
+                m_testList->clear();
+                if (!error.isEmpty()) {
+                    m_testList->addItem(tr("失败：%1").arg(error));
+                    QMessageBox::warning(
+                        this, tr("更新检查失败"),
+                        tr("“%1”按当前配置试搜没有通过：\n\n%2\n\n"
+                           "如果正常搜索仍可用，可先核对试搜关键词和网络状态。")
+                            .arg(draft.name, error));
+                } else if (items.isEmpty()) {
+                    m_testList->addItem(tr("没有搜到可用结果（被过滤 %1 条）").arg(filtered));
+                    QMessageBox::warning(
+                        this, tr("更新检查"),
+                        tr("“%1”当前配置能请求，但试搜“%2”没有可用结果（被过滤 %3 条）。")
+                            .arg(draft.name, keyword, QString::number(filtered)));
+                } else {
+                    for (int i = 0; i < qMin(items.size(), 5); ++i) {
+                        const MediaItem &item = items.at(i);
+                        m_testList->addItem(tr("%1. %2  →  %3")
+                                                .arg(QString::number(i + 1), item.displayName(),
+                                                     item.url.toString()));
+                    }
+                    QMessageBox::information(
+                        this, tr("更新检查通过"),
+                        tr("“%1”按当前配置试搜“%2”，返回 %3 条可用结果。\n\n"
+                           "这是预置配置源，搜索地址和字段映射由程序维护，无需重新探测；"
+                           "如需改字段，请先复制成普通配置源。")
+                            .arg(draft.name, keyword, QString::number(items.size())));
+                }
+                provider->deleteLater();
+            });
+    provider->search(keyword, 20);
 }
 
 void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QString &previousUrl)
