@@ -1,3 +1,5 @@
+/// @file SourceManagerDialog.cpp
+/// @brief 搜索源管理对话框实现：表单/草稿双向同步、试搜验证、站点更新与导入导出。
 #include "ui/SourceManagerDialog.h"
 
 #include "net/HttpClient.h"
@@ -164,6 +166,7 @@ SourceManagerDialog::~SourceManagerDialog()
     delete ui;
 }
 
+/// @brief 用外部草稿替换当前列表，用于延迟提交模式再次打开。
 void SourceManagerDialog::setDraftSources(const QVector<SourceConfig> &sources)
 {
     // 先把编辑区从旧草稿上摘下来，否则 reloadList() 会把旧表单写回新草稿第 0 行
@@ -173,6 +176,7 @@ void SourceManagerDialog::setDraftSources(const QVector<SourceConfig> &sources)
     reloadList(m_drafts.isEmpty() ? -1 : 0);
 }
 
+/// @brief 绑定界面信号，并把表单编辑实时写回当前草稿。
 void SourceManagerDialog::bindUi()
 {
     m_list = ui->list_sources;
@@ -352,6 +356,7 @@ void SourceManagerDialog::bindUi()
     });
 }
 
+/// @brief 为各输入框设置悬停说明，解释字段含义与留空后的行为。
 void SourceManagerDialog::configureHoverHelp()
 {
     auto help = [](QWidget *widget, const QString &text) {
@@ -492,6 +497,7 @@ void SourceManagerDialog::configureHoverHelp()
          tr("把左侧列表和右侧表单的修改写入搜索源配置；关闭窗口后立即生效。"));
 }
 
+/// @brief 重建左侧源列表并尽量保持选中行。
 void SourceManagerDialog::reloadList(int targetRow)
 {
     m_updating = true;
@@ -533,6 +539,7 @@ void SourceManagerDialog::reloadList(int targetRow)
     selectRow(row);
 }
 
+/// @brief 选中指定行并把该源载入表单。
 void SourceManagerDialog::selectRow(int row)
 {
     if (m_updating)
@@ -546,6 +553,7 @@ void SourceManagerDialog::selectRow(int row)
     updateActions();
 }
 
+/// @brief 把当前表单内容写回草稿（切换行/保存前调用）。
 void SourceManagerDialog::commitFormToDraft()
 {
     if (m_currentRow < 0 || m_currentRow >= m_drafts.size() || m_updating)
@@ -556,6 +564,7 @@ void SourceManagerDialog::commitFormToDraft()
     m_drafts[m_currentRow] = edited;
 }
 
+/// @brief 把指定源填入表单，并刷新类型相关控件的可见状态。
 void SourceManagerDialog::loadDraftToForm(const SourceConfig &config)
 {
     m_updating = true;
@@ -601,6 +610,7 @@ void SourceManagerDialog::loadDraftToForm(const SourceConfig &config)
     updateKindUi();
 }
 
+/// @brief 按源类型（内置/接口/网页/外部程序）切换表单分组的可见性。
 void SourceManagerDialog::updateKindUi()
 {
     if (m_kind == nullptr)
@@ -655,6 +665,8 @@ void SourceManagerDialog::updateKindUi()
     }
 }
 
+/// @brief 从表单读出完整源配置。
+/// @return 校验后的配置；必填缺失时返回空 id 的配置，由保存流程提示。
 SourceConfig SourceManagerDialog::readForm()
 {
     SourceConfig config;
@@ -766,6 +778,7 @@ SourceConfig SourceManagerDialog::readForm()
     return config;
 }
 
+/// @brief 按当前草稿与忙碌标记刷新按钮可用状态。
 void SourceManagerDialog::updateActions()
 {
     const bool hasSelection = m_currentRow >= 0 && m_currentRow < m_drafts.size();
@@ -780,6 +793,7 @@ void SourceManagerDialog::updateActions()
         ui->btn_refresh->setEnabled(hasSelection && !busy);
 }
 
+/// @brief 新增一个空白源草稿。
 void SourceManagerDialog::onAdd()
 {
     commitFormToDraft();
@@ -794,6 +808,7 @@ void SourceManagerDialog::onAdd()
     m_name->setFocus();
 }
 
+/// @brief 添加一条带示例字段的源，方便用户照着改。
 void SourceManagerDialog::onAddExample()
 {
     commitFormToDraft();
@@ -831,6 +846,7 @@ void SourceManagerDialog::onAddExample()
     m_url->setFocus();
 }
 
+/// @brief 根据输入的站点地址智能生成一条网页影视源。
 void SourceManagerDialog::onAddFromSite()
 {
     commitFormToDraft();
@@ -866,6 +882,7 @@ void SourceManagerDialog::onAddFromSite()
                                  : tr("“%1”已自动启用；点“保存”后立即参与搜索。").arg(probed.name));
 }
 
+/// @brief 刷新选中源：预置源改试搜验证，网页源走一键更新，其余重新探查。
 void SourceManagerDialog::onRefreshSelected()
 {
     if (m_currentRow < 0 || m_currentRow >= m_drafts.size()) {
@@ -942,6 +959,7 @@ void SourceManagerDialog::onRefreshSelected()
     reloadList(m_currentRow);
 }
 
+/// @brief 预置配置源的“更新”改为按当前配置试搜验真，不覆盖程序维护的字段。
 void SourceManagerDialog::verifyProtectedSource(const SourceConfig &draft)
 {
     // 试搜和站点体检都会写同一块结果区；两种请求必须互斥。
@@ -1014,6 +1032,7 @@ void SourceManagerDialog::verifyProtectedSource(const SourceConfig &draft)
     provider->search(keyword, 20);
 }
 
+/// @brief 网页影视源一键更新：跟随站点跳转并试搜验真，只更新可推导字段。
 void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QString &previousUrl)
 {
     // 与试搜共用结果列表：试搜在途时不允许再发起站点体检。
@@ -1171,6 +1190,7 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
     }, NetLimits::kHtmlBytes);
 }
 
+/// @brief 复制当前源为一条新草稿。
 void SourceManagerDialog::onDuplicate()
 {
     if (m_currentRow < 0 || m_currentRow >= m_drafts.size())
@@ -1185,6 +1205,7 @@ void SourceManagerDialog::onDuplicate()
     reloadList(m_drafts.size() - 1);
 }
 
+/// @brief 删除选中源草稿（内置源只允许停用，不允许删除）。
 void SourceManagerDialog::onRemove()
 {
     if (m_currentRow < 0 || m_currentRow >= m_drafts.size())
@@ -1200,6 +1221,7 @@ void SourceManagerDialog::onRemove()
     reloadList(row < m_drafts.size() ? row : m_drafts.size() - 1);
 }
 
+/// @brief 用当前表单配置试搜，结果显示在右侧列表。
 void SourceManagerDialog::onTest()
 {
     if (m_currentRow < 0)
@@ -1277,6 +1299,7 @@ void SourceManagerDialog::onTest()
     provider->search(keyword, 20);
 }
 
+/// @brief 从 JSON 文件导入源并合并进草稿（同 id 覆盖）。
 void SourceManagerDialog::onImport()
 {
     const QString path = QFileDialog::getOpenFileName(this, tr("导入搜索源"), QString(),
@@ -1383,6 +1406,7 @@ void SourceManagerDialog::onImport()
     QMessageBox::information(this, tr("导入完成"), detail);
 }
 
+/// @brief 把当前草稿导出为 JSON 文件。
 void SourceManagerDialog::onExport()
 {
     commitFormToDraft();
@@ -1427,6 +1451,9 @@ void SourceManagerDialog::onExport()
         QMessageBox::warning(this, tr("导出失败"), tr("无法写入文件"));
 }
 
+/// @brief 校验过滤规则并提交草稿。
+/// @return 成功返回 true；语法错误或写盘失败返回 false，对话框保持打开。
+/// @note 草稿中缺失的内置源会自动补回，避免保存时误删；非延迟模式下整表原子替换。
 bool SourceManagerDialog::saveAll()
 {
     // 手写过滤 JSON 有语法错误时不能静默丢掉这一段；先拦下并指明问题。
@@ -1473,6 +1500,7 @@ bool SourceManagerDialog::saveAll()
     return true;
 }
 
+/// @brief 原子写出源列表 JSON，避免中断留下半截文件。
 bool SourceManagerDialog::writeSourcesToFile(const QVector<SourceConfig> &sources,
                                              const QString &path)
 {
@@ -1492,6 +1520,10 @@ bool SourceManagerDialog::writeSourcesToFile(const QVector<SourceConfig> &source
     return file.commit();
 }
 
+/// @brief 从 JSON 数组读取源列表，跳过无法解析的条目。
+/// @param sources 输出源列表。
+/// @param error 输出失败原因。
+/// @return 至少解析出一条有效源时返回 true。
 bool SourceManagerDialog::readSourcesFromFile(QVector<SourceConfig> *sources, const QString &path,
                                               QString *error)
 {
@@ -1531,6 +1563,7 @@ bool SourceManagerDialog::readSourcesFromFile(QVector<SourceConfig> *sources, co
     return true;
 }
 
+/// @brief 确认按钮：保存成功才关闭，失败保留现场供用户重试。
 void SourceManagerDialog::accept()
 {
     if (!saveAll())
