@@ -1,3 +1,5 @@
+/// @file MaccmsWebProvider.cpp
+/// @brief 苹果 CMS 网页影视源：站点探测、多策略搜索、详情解析与并发取直链。
 #include "net/MaccmsWebProvider.h"
 
 #include "net/HttpClient.h"
@@ -343,6 +345,7 @@ MaccmsWebProvider::MaccmsWebProvider(const SourceConfig &config, HttpClient *htt
     Q_UNUSED(http)
 }
 
+/// @brief 中止本轮搜索及全部在途请求。
 void MaccmsWebProvider::abort()
 {
     // 先置 done，abort 同步触发的 finished 回调不会再启动下一跳请求。
@@ -351,6 +354,9 @@ void MaccmsWebProvider::abort()
         m_http->abortAll();
 }
 
+/// @brief 发起搜索：先探测站点入口，再按联想词/搜索页多策略尝试。
+/// @param keyword 用户关键词。
+/// @param limit 返回条数上限。
 void MaccmsWebProvider::search(const QString &keyword, int limit)
 {
     m_keyword = keyword.trimmed();
@@ -400,6 +406,7 @@ void MaccmsWebProvider::search(const QString &keyword, int limit)
     fetchRoot();
 }
 
+/// @brief 返回请求站点页面时复用的请求头。
 QHash<QString, QString> MaccmsWebProvider::requestHeaders() const
 {
     QHash<QString, QString> headers = m_config.headers;
@@ -413,12 +420,14 @@ QHash<QString, QString> MaccmsWebProvider::requestHeaders() const
     return headers;
 }
 
+/// @brief 返回请求媒体直链时复用的请求头（含 Referer/Cookie）。
 QHash<QString, QString> MaccmsWebProvider::mediaHeaders() const
 {
     // 播放/下载与站点请求共用同一份 Referer/Cookie 规则，避免两套实现漂移。
     return requestHeaders();
 }
 
+/// @brief 把站点相对路径补成绝对地址。
 QUrl MaccmsWebProvider::siteUrl(const QString &relative) const
 {
     if (relative.isEmpty())
@@ -433,6 +442,7 @@ QUrl MaccmsWebProvider::siteUrl(const QString &relative) const
     return QUrl(m_root + path);
 }
 
+/// @brief 请求一页 HTML，限长后交给回调。
 void MaccmsWebProvider::requestHtml(
     const QUrl &url, const std::function<void(bool, const QString &)> &callback)
 {
@@ -489,6 +499,7 @@ void MaccmsWebProvider::requestHtml(
                   }, NetLimits::kHtmlBytes);
 }
 
+/// @brief 拉取站点首页，确认站点存活并记录基础地址。
 void MaccmsWebProvider::fetchRoot()
 {
     // 首页只用来测量"回首页"的长度基线，以及确认站点还活着
@@ -516,6 +527,7 @@ void MaccmsWebProvider::fetchRoot()
                   }, NetLimits::kHtmlBytes);
 }
 
+/// @brief 尝试站点联想接口，拿到更准确的标题后再搜索。
 void MaccmsWebProvider::trySuggest()
 {
     if (m_done)
@@ -601,6 +613,8 @@ void MaccmsWebProvider::trySuggest()
                   });
 }
 
+/// @brief 按指定策略请求搜索页。
+/// @param strategy 策略序号，失败后递增换下一种入口。
 void MaccmsWebProvider::trySearch(int strategy)
 {
     if (m_done)
@@ -725,6 +739,7 @@ void MaccmsWebProvider::trySearch(int strategy)
     }
 }
 
+/// @brief 解析搜索页：提取候选条目并进入详情/直链校验。
 void MaccmsWebProvider::afterSearch(const QString &html, int strategy)
 {
     if (m_done)
@@ -820,6 +835,7 @@ void MaccmsWebProvider::afterSearch(const QString &html, int strategy)
     startWorkers();
 }
 
+/// @brief 当前策略无结果时切下一策略；全部用尽则结束。
 void MaccmsWebProvider::nextStrategyOrFinish()
 {
     if (m_items.isEmpty() && m_candidates.isEmpty()) {
@@ -832,6 +848,7 @@ void MaccmsWebProvider::nextStrategyOrFinish()
     startWorkers();
 }
 
+/// @brief 候选校验收尾：凑够目标条数或全部处理完后结束搜索。
 void MaccmsWebProvider::finishCandidateValidation()
 {
     if (m_done)
@@ -857,6 +874,7 @@ void MaccmsWebProvider::finishCandidateValidation()
     finish(QString());
 }
 
+/// @brief 启动固定数量的并发 worker 处理详情任务。
 void MaccmsWebProvider::startWorkers()
 {
     if (m_done)
@@ -895,6 +913,7 @@ void MaccmsWebProvider::startWorkers()
     }
 }
 
+/// @brief 请求详情页并解析剧集/播放地址。
 void MaccmsWebProvider::processJob(const QSharedPointer<Job> &job)
 {
     if (m_done || job.isNull())
@@ -984,6 +1003,7 @@ void MaccmsWebProvider::processJob(const QSharedPointer<Job> &job)
     });
 }
 
+/// @brief 取播放页/接口，解析出可播放的媒体直链。
 void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
 {
     if (m_done || job.isNull())
@@ -1117,6 +1137,7 @@ void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
     });
 }
 
+/// @brief 单个详情任务收尾：成功则产出条目，失败计数并在无剩余任务时结束。
 void MaccmsWebProvider::finishJob(const QSharedPointer<Job> &job, bool ok, const MediaItem &item,
                                  const QString &reason)
 {
@@ -1138,6 +1159,7 @@ void MaccmsWebProvider::finishJob(const QSharedPointer<Job> &job, bool ok, const
     startWorkers();
 }
 
+/// @brief 结束本轮搜索（error 为空表示成功），并做去重与条数裁剪。
 void MaccmsWebProvider::finish(const QString &error)
 {
     if (m_done)
