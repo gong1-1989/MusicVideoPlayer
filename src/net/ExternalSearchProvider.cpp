@@ -1,3 +1,5 @@
+/// @file ExternalSearchProvider.cpp
+/// @brief 外部命令解析器搜索源的进程管理与输出解析实现。
 #include "net/ExternalSearchProvider.h"
 #include "net/NetLimits.h"
 
@@ -15,6 +17,8 @@ Q_LOGGING_CATEGORY(lcExternal, "mvp.net.external")
 
 namespace {
 
+/// @brief 解析解析器命令路径。
+/// @return 绝对路径原样返回；相对路径优先按程序目录解析，找不到则交给 PATH。
 QString resolveCommand(const QString &command)
 {
     const QFileInfo info(command);
@@ -28,8 +32,12 @@ QString resolveCommand(const QString &command)
     return command; // 交给系统按 PATH 查找（例如 python / node）
 }
 
-/// 外部解析器可能直接吐站点里的相对地址；能补成绝对 URL 的就补，
-/// 补不出来的返回空，避免“非空但不可播”的条目混进列表。
+/// @brief 归一化外部解析器返回的地址。
+/// @param raw 原始地址。
+/// @param base 用于解析相对地址的站点地址。
+/// @return 可用的绝对/相对 URL；空输入返回空。
+/// @note 外部解析器可能直接吐站点相对地址；补不出绝对 URL 的条目
+///       后续会被过滤，避免“非空但不可播”混进列表。
 QUrl normalizeExternalUrl(const QString &raw, const QUrl &base = QUrl())
 {
     QString text = raw.trimmed();
@@ -49,12 +57,19 @@ QUrl normalizeExternalUrl(const QString &raw, const QUrl &base = QUrl())
 
 } // namespace
 
+/// @brief 构造外部解析器搜索源。
+/// @param config 源配置，内部按值保存。
+/// @param parent 父对象。
 ExternalSearchProvider::ExternalSearchProvider(const SourceConfig &config, QObject *parent)
     : SearchProviderBase(parent)
     , m_config(config)
 {
 }
 
+/// @brief 启动外部命令并按 JSON 输出解析结果。
+/// @param keyword 关键词，替换参数中的 {keyword}。
+/// @param limit 期望条数，替换 {limit} 并作为硬截断上限。
+/// @note 同时限制 stdout/stderr 各 2MB；超时默认 8 秒，可被配置覆盖。
 void ExternalSearchProvider::search(const QString &keyword, int limit)
 {
     m_done = false;
@@ -95,8 +110,8 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
         if (m_process->bytesAvailable() > NetLimits::kJsonBytes)
             finish(tr("解析器输出超过 2 MB 上限"));
     });
-    // stderr 过去只在进程结束时读，持续输出的错误日志会一直堆在
-    // QProcess 内部缓冲区。这里边到边丢并计总字节，超限就中止。
+    // stderr 边到边读并计总字节，避免持续输出的错误日志堆在 QProcess
+    // 内部缓冲区；超限立即中止。
     connect(m_process, &QProcess::readyReadStandardError, this, [this] {
         if (m_done || m_process == nullptr)
             return;
@@ -123,6 +138,7 @@ void ExternalSearchProvider::search(const QString &keyword, int limit)
     m_process->start(resolveCommand(m_config.command), arguments);
 }
 
+/// @brief 取消当前搜索：停止计时并终止子进程。
 void ExternalSearchProvider::abort()
 {
     m_done = true;
@@ -132,12 +148,14 @@ void ExternalSearchProvider::abort()
         m_process->kill();
 }
 
+/// @brief 子进程启动失败时收口并提示检查命令路径/运行时。
 void ExternalSearchProvider::onFailedToStart()
 {
     finish(tr("解析器启动失败：%1（检查命令路径或运行时是否安装）")
                .arg(m_process ? m_process->errorString() : QString()));
 }
 
+/// @brief 超时后终止子进程并按失败收口，避免搜索永久挂起。
 void ExternalSearchProvider::onTimeout()
 {
     if (m_done)
@@ -148,6 +166,8 @@ void ExternalSearchProvider::onTimeout()
     finish(tr("解析器超时（%1 ms）").arg(timeoutMs));
 }
 
+/// @brief 子进程正常退出后读取 stdout 并解析。
+/// @note 非 0 退出码或异常退出只附带 stderr 末尾 240 字符，避免日志过长。
 void ExternalSearchProvider::onProcessFinished(int exitCode, QProcess::ExitStatus status)
 {
     if (m_done)
@@ -171,6 +191,10 @@ void ExternalSearchProvider::onProcessFinished(int exitCode, QProcess::ExitStatu
     parseOutput(output);
 }
 
+/// @brief 解析外部解析器的 JSON 输出并构建条目。
+/// @param output stdout 原始字节。
+/// @note 支持顶层数组或 {items:[],filtered:N,error:"..."}；按 limit 硬截断；
+///       凭据作用域只认配置源站，解析器输出的 webUrl 仅用于补全相对地址。
 void ExternalSearchProvider::parseOutput(const QByteArray &output)
 {
     QJsonParseError parseError{};
@@ -256,6 +280,7 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
     emit finished(m_config.id, result, m_filtered, QString());
 }
 
+/// @brief 以失败收口并停止计时/子进程；已结束时直接返回。
 void ExternalSearchProvider::finish(const QString &error)
 {
     if (m_done)

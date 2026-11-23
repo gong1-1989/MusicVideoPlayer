@@ -1,3 +1,5 @@
+/// @file AppSettings.cpp
+/// @brief 应用设置的键名、默认值、范围收口与兼容读取实现。
 #include "settings/AppSettings.h"
 
 #include <QDir>
@@ -7,6 +9,8 @@
 
 namespace {
 
+// QSettings 键名集中在这里，避免界面层散落字符串。历史键名只在迁移/兼容
+// 函数中读取，不再作为新写入目标。
 const char kTheme[] = "ui/theme";
 const char kFontSizePx[] = "ui/fontSizePx";
 const char kLegacyFontPercent[] = "ui/fontPercent";
@@ -38,6 +42,7 @@ const int kDefaultSearchLimit = 20;
 const int kDefaultDownloadLimitMb = 8192;
 const int kDefaultMode = 0;
 
+/// @brief 每次读写都创建新的 QSettings，保证跨线程/多窗口看到最新值。
 QSettings settings()
 {
     return QSettings();
@@ -57,6 +62,9 @@ void setThemeId(const QString &id)
     settings().setValue(QLatin1String(kTheme), id);
 }
 
+/// @brief 读取界面基础字号（px）。
+/// @return 9..20 之间的像素字号；新键缺失时把旧版百分比按 13px=100% 换算。
+/// @note 旧键 ui/fontPercent 只在首次升级时读取，之后不再写回。
 int uiFontSizePx()
 {
     QSettings store;
@@ -144,6 +152,8 @@ void setControlsAutoHide(bool enabled)
     settings().setValue(QLatin1String(kControlsAutoHide), enabled);
 }
 
+/// @brief 读取默认音量。
+/// @return 0..100；优先 playback/volume，旧版顶层 volume 作为兼容回退。
 int defaultVolume()
 {
     // 兼容旧版本键名 "volume"
@@ -159,6 +169,9 @@ void setDefaultVolume(int percent)
     settings().setValue(QLatin1String(kVolume), qBound(0, percent, 100));
 }
 
+/// @brief 读取播放模式。
+/// @return 0=列表循环、1=单曲循环、2=随机；越界值统一夹到合法范围。
+/// @note 旧版顶层 mode 键仍可读取一次，新值写入 playback/mode。
 int playbackMode()
 {
     QSettings store;
@@ -186,6 +199,8 @@ void setSearchLimit(int limit)
     settings().setValue(QLatin1String(kSearchLimit), qBound(1, limit, 100));
 }
 
+/// @brief 读取最近搜索词。
+/// @return 去掉空白、按原顺序去重后的最多 8 条记录。
 QStringList searchHistory()
 {
     const QStringList stored =
@@ -210,6 +225,8 @@ void setSearchHistory(const QStringList &history)
     settings().setValue(QLatin1String(kSearchHistory), cleaned.mid(0, 8));
 }
 
+/// @brief 读取单个下载任务的体积上限（MB）。
+/// @return 512..65536；下限防止误填 0 让所有任务立即失败。
 int downloadLimitMb()
 {
     const int value =
@@ -223,6 +240,9 @@ void setDownloadLimitMb(int limitMb)
     settings().setValue(QLatin1String(kDownloadLimitMb), qBound(512, limitMb, 65536));
 }
 
+/// @brief 读取默认下载根目录。
+/// @return 用户配置的绝对目录；未配置或清理过时返回“下载/MusicVideoPlayer”。
+/// @note 返回路径不做存在性检查，由下载管理器在创建任务时确保目录可用。
 QString downloadDir()
 {
     QString fallback =
@@ -257,6 +277,8 @@ void setRemovePlaybackCacheAfterDownload(bool enabled)
     settings().setValue(QLatin1String(kRemovePlaybackCacheAfterDownload), enabled);
 }
 
+/// @brief 读取指定媒体类型的自定义探测路径。
+/// @return 去空白、去重后的路径列表；网页型影视源不使用这些路径时为空。
 QStringList probePaths(MediaType type)
 {
     const char *key = type == MediaType::Video ? kProbePathsVideo : kProbePathsMusic;
@@ -282,6 +304,8 @@ void setProbePaths(MediaType type, const QStringList &paths)
     settings().setValue(QLatin1String(key), cleaned);
 }
 
+/// @brief 读取指定快捷键动作当前保存的按键文本。
+/// @return 未配置或动作 id 为空时返回空字符串；不负责回落到默认值。
 QString shortcut(const QString &actionId)
 {
     if (actionId.isEmpty())
@@ -303,6 +327,9 @@ void setShortcut(const QString &actionId, const QString &sequence)
     settings().setValue(QLatin1String(kShortcutPrefix) + actionId, sequence);
 }
 
+/// @brief 读取最近一次文件选择目录。
+/// @return 一个确定存在的目录，按“保存值 → 音乐目录 → 主目录 → 当前目录”
+///         逐级回退，避免 QFileDialog 从随机位置打开。
 QString lastDir()
 {
     QString saved = settings().value(QLatin1String(kLastDir)).toString();
@@ -328,6 +355,8 @@ void setLastDir(const QString &dir)
     settings().setValue(QLatin1String(kLastDir), dir);
 }
 
+/// @brief 读取旧版 QSettings 中的播放列表 JSON。
+/// @note 正式存储已迁移到 Data/playlists.json；这里只服务一次性迁移。
 QByteArray playlist(MediaType type)
 {
     const char *key = type == MediaType::Video ? kPlaylistVideo : kPlaylistMusic;
@@ -340,17 +369,21 @@ void setPlaylist(MediaType type, const QByteArray &json)
     settings().setValue(QLatin1String(key), json);
 }
 
+/// @brief 旧版播放列表是否已完成迁移。
+/// @return 已迁移返回 true；迁移成功后不会再重复读取旧 QSettings。
 bool playlistsMigrated()
 {
     return settings().value(QStringLiteral("playlists/migrated"), false).toBool();
 }
 
+/// @brief 标记迁移完成并立即 sync，防止崩溃时状态丢失。
 void setPlaylistsMigrated(bool migrated)
 {
     settings().setValue(QStringLiteral("playlists/migrated"), migrated);
     settings().sync();
 }
 
+/// @brief 删除旧版 QSettings 中的播放列表键，释放重复存储。
 void clearLegacyPlaylists()
 {
     QSettings store = settings();

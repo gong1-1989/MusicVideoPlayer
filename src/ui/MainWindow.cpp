@@ -1,3 +1,5 @@
+/// @file MainWindow.cpp
+/// @brief 主窗口装配：控制器创建、界面自适应、快捷键、设置/下载入口与关闭流程。
 #include "ui/MainWindow.h"
 #include "ui_MainWindow.h"
 
@@ -57,6 +59,10 @@
 
 Q_LOGGING_CATEGORY(lcWindow, "mvp.window")
 
+/// @brief 构造主窗口并装配全部子控制器。
+/// @param parent 父窗口。
+/// @note 创建顺序有依赖：源注册表先加载，再建搜索协调器、下载控制器和
+///       HLS 缓存器；界面控制器在绑定后才恢复播放列表。
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
@@ -355,6 +361,7 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
+/// @brief 连接各控制器与子窗口信号。
 void MainWindow::setupConnections()
 {
     connect(ui->btn_openSearch, &QPushButton::clicked,
@@ -391,6 +398,8 @@ void MainWindow::setupConnections()
             });
 }
 
+/// @brief 按用户绑定重建全部窗口级快捷键。
+/// @note 先清空旧 QShortcut，避免设置页保存后重复触发同一动作。
 void MainWindow::rebuildShortcuts()
 {
     for (QShortcut *shortcut : m_shortcuts) {
@@ -427,6 +436,8 @@ void MainWindow::rebuildShortcuts()
     updateShortcutTooltips();
 }
 
+/// @brief 执行一个快捷键动作。
+/// @param actionId AppShortcuts 中的稳定动作 id；未知 id 直接忽略。
 void MainWindow::executeShortcutAction(const QString &actionId)
 {
     if (m_player == nullptr)
@@ -463,6 +474,7 @@ void MainWindow::executeShortcutAction(const QString &actionId)
     }
 }
 
+/// @brief 按当前绑定刷新按钮悬停提示，让用户看到实际快捷键。
 void MainWindow::updateShortcutTooltips()
 {
     const QHash<QString, QString> bindings = AppShortcuts::currentBindings();
@@ -788,10 +800,9 @@ void MainWindow::clearPlaybackUi()
 
 void MainWindow::setupVolumePopup()
 {
-    // 要求是“右侧竖排悬浮音量条”：原来横向滑块长期占着控制条宽度，
-    // 现在只保留一个音量图标，点开后在按钮上方弹出竖排滑块。
-    // slider_volume 对象本身继续复用，PlaybackUiController 的音量联动和
-    // SettingsController 的持久化都不需要改接口。
+    // 控制条只保留一个音量图标；点开后在按钮上方弹出竖排滑块，避免横向
+    // 滑块长期占用控制条宽度。slider_volume 对象继续复用，
+    // PlaybackUiController 的音量联动和 SettingsController 的持久化接口不变。
     ui->label_volume->hide();
     ui->layout_auxButtons->removeWidget(ui->label_volume);
     ui->label_volume->deleteLater();

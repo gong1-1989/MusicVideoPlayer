@@ -1,3 +1,5 @@
+/// @file LyricsService.cpp
+/// @brief 在线/本地歌词获取、缓存与载荷解析实现。
 #include "lyrics/LyricsService.h"
 
 #include "cache/LyricsCache.h"
@@ -14,6 +16,9 @@ Q_LOGGING_CATEGORY(lcLyrics, "mvp.lyrics")
 
 namespace {
 
+/// @brief 从网易云风格的 JSON 响应中提取 LRC 文本。
+/// @return 依次取 lrc（原文）、klyric（卡拉 OK）、tlyric（翻译），
+///         都不存在或为空时返回空字符串。
 QString extractLyricText(const QByteArray &payload)
 {
     QJsonParseError error{};
@@ -36,12 +41,19 @@ QString extractLyricText(const QByteArray &payload)
 
 } // namespace
 
+/// @brief 构造歌词服务。
+/// @param http 共享 HTTP 客户端，可为空；为空时在线加载直接失败。
+/// @param parent 父对象。
 LyricsService::LyricsService(HttpClient *http, QObject *parent)
     : QObject(parent)
     , m_http(http)
 {
 }
 
+/// @brief 加载指定歌词地址。
+/// @param url 在线或本地歌词地址。
+/// @param item 当前媒体条目，用于缓存 key 与后续展示。
+/// @note 每次加载先 cancel 上一次请求，防止切歌后旧响应覆盖新歌词。
 void LyricsService::load(const QUrl &url, const MediaItem &item)
 {
     cancel();
@@ -77,6 +89,7 @@ void LyricsService::load(const QUrl &url, const MediaItem &item)
         return;
     }
 
+    // 记录本次请求的世代号；回调里拿它和当前世代比较，丢弃取消后的迟到响应。
     const int generation = m_generation;
     m_reply = m_http->get(url);
     if (m_reply == nullptr) {
@@ -88,6 +101,9 @@ void LyricsService::load(const QUrl &url, const MediaItem &item)
     });
 }
 
+/// @brief 读取本地 LRC 文件并按字节解析。
+/// @param filePath 本地歌词文件绝对路径。
+/// @note 读取失败会发 lyricsFailed；空文件按“无歌词”成功返回。
 void LyricsService::loadLocalFile(const QString &filePath)
 {
     cancel();
@@ -103,6 +119,8 @@ void LyricsService::loadLocalFile(const QString &filePath)
     emit lyricsReady(lines);
 }
 
+/// @brief 取消当前请求并清空请求上下文。
+/// @note 通过递增 generation 让旧回调失效，再 abort/deleteLater 释放回复。
 void LyricsService::cancel()
 {
     // 每次取消都让旧请求的世代号失效，即使 abort 之后的 finished 回调
@@ -118,6 +136,9 @@ void LyricsService::cancel()
     reply->deleteLater();
 }
 
+/// @brief 处理网络回复完成。
+/// @param generation 发起请求时的世代号。
+/// @note 先校验回复仍属于当前请求，再判断 HTTP 状态、大小上限并解析。
 void LyricsService::onFinished(int generation)
 {
     QNetworkReply *reply = qobject_cast<QNetworkReply *>(sender());
@@ -158,6 +179,8 @@ void LyricsService::onFinished(int generation)
     deliverPayload(payload);
 }
 
+/// @brief 解析响应载荷并发出行数据。
+/// @param payload 原始响应体，可能是 JSON 包裹或纯 LRC。
 void LyricsService::deliverPayload(const QByteArray &payload)
 {
     QVector<LrcLine> lines;

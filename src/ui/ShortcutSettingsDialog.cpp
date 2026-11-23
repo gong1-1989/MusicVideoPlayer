@@ -1,3 +1,5 @@
+/// @file ShortcutSettingsDialog.cpp
+/// @brief 快捷键草稿编辑对话框实现。
 #include "ui/ShortcutSettingsDialog.h"
 
 #include "settings/AppShortcuts.h"
@@ -13,6 +15,12 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+/// @brief 构建快捷键编辑表格。
+/// @param bindings 打开对话框时的当前绑定；会与 AppSettings 中的值合并，
+///        调用方传入的草稿优先。
+/// @param parent 对话框父窗口。
+/// @note 本对话框只维护草稿，不写 AppSettings；保存由调用方在系统设置页
+///       统一提交，取消时整页回滚。
 ShortcutSettingsDialog::ShortcutSettingsDialog(const QHash<QString, QString> &bindings,
                                                QWidget *parent)
     : QDialog(parent)
@@ -90,6 +98,8 @@ ShortcutSettingsDialog::ShortcutSettingsDialog(const QHash<QString, QString> &bi
     ThemeManager::instance().applyWindowChrome(this);
 }
 
+/// @brief 按全局动作表创建每一行：动作名、快捷键编辑器、缺省值和恢复按钮。
+/// @note 编辑器只允许一个组合键；空快捷键表示该动作不绑定，不做默认回落。
 void ShortcutSettingsDialog::buildRows()
 {
     const QVector<AppShortcuts::Action> &actions = AppShortcuts::actions();
@@ -150,6 +160,8 @@ void ShortcutSettingsDialog::buildRows()
     }
 }
 
+/// @brief 把所有动作恢复为缺省快捷键，并立即刷新冲突提示。
+/// @note 只改界面草稿，用户点“保存”后才会真正落盘。
 void ShortcutSettingsDialog::resetAllToDefaults()
 {
     for (const AppShortcuts::Action &action : AppShortcuts::actions()) {
@@ -162,6 +174,8 @@ void ShortcutSettingsDialog::resetAllToDefaults()
     refreshConflictHint();
 }
 
+/// @brief 从表格收集当前草稿。
+/// @return 动作 id 到规范化快捷键的映射；空编辑器对应空字符串。
 QHash<QString, QString> ShortcutSettingsDialog::collectBindings() const
 {
     QHash<QString, QString> bindings;
@@ -176,6 +190,8 @@ QHash<QString, QString> ShortcutSettingsDialog::collectBindings() const
     return bindings;
 }
 
+/// @brief 保存前校验快捷键是否重复。
+/// @return 无冲突返回 true；有冲突时弹出中文说明并返回 false。
 bool ShortcutSettingsDialog::validateAndWarn()
 {
     const QHash<QString, QString> bindings = collectBindings();
@@ -192,6 +208,8 @@ bool ShortcutSettingsDialog::validateAndWarn()
     return false;
 }
 
+/// @brief 实时刷新表格下方的重复提示。
+/// @note 冲突只做提示，不阻止用户继续编辑；真正拦截发生在 accept()。
 void ShortcutSettingsDialog::refreshConflictHint()
 {
     if (m_hint == nullptr)
@@ -209,6 +227,7 @@ void ShortcutSettingsDialog::refreshConflictHint()
     }
 }
 
+/// @brief 确认保存：先校验冲突，通过后把草稿固化为最终绑定并关闭对话框。
 void ShortcutSettingsDialog::accept()
 {
     if (!validateAndWarn())

@@ -1,3 +1,5 @@
+/// @file LyricsCache.cpp
+/// @brief 在线歌词正文与旁车元数据的磁盘缓存实现。
 #include "cache/LyricsCache.h"
 
 #include "cache/MediaCache.h"
@@ -16,6 +18,7 @@ namespace {
 
 constexpr int kLyricsMetaVersion = 1;
 
+/// @brief 歌词缓存的唯一身份：媒体缓存身份 + 歌词地址。
 QString lyricIdentity(const MediaItem &item)
 {
     const QUrl lyricUrl = item.lyricUrl;
@@ -23,6 +26,7 @@ QString lyricIdentity(const MediaItem &item)
            + lyricUrl.toString();
 }
 
+/// @brief 生成第 index 个候选正文路径；index 0 用基础名，之后追加 “ (n)”。
 QString candidatePath(const MediaItem &item, int index)
 {
     const QString base = MediaCache::entryBaseName(item);
@@ -32,6 +36,10 @@ QString candidatePath(const MediaItem &item, int index)
     return LyricsCache::rootDir() + QLatin1Char('/') + name;
 }
 
+/// @brief 读取旁车 JSON 的版本与 identity。
+/// @param path 正文路径（函数自动加 .json）。
+/// @param identity 输出 identity，可为空。
+/// @return 文件可读、版本匹配且 identity 解析成功返回 true。
 bool readMetaIdentity(const QString &path, QString *identity)
 {
     QFile file(path + QStringLiteral(".json"));
@@ -64,6 +72,9 @@ QString existingPath(const MediaItem &item)
     return QString();
 }
 
+/// @brief 为当前条目挑选可写候选路径。
+/// @return 空槽位或同身份已有槽位；全部候选被占时用短哈希兜底。
+/// @note 有正文但缺 JSON 的残片不复用、不覆盖，换下一个名字。
 QString writablePath(const MediaItem &item)
 {
     const QString root = LyricsCache::rootDir();
@@ -94,6 +105,8 @@ QString writablePath(const MediaItem &item)
            + QStringLiteral("__") + digest;
 }
 
+/// @brief 写入旁车 JSON，记录版本、identity、来源、格式与大小。
+/// @return 写入并 commit 成功返回 true；短写时 cancel，避免截断 JSON。
 bool writeMeta(const QString &path, const MediaItem &item, const QByteArray &payload)
 {
     QJsonObject object;
@@ -124,12 +137,15 @@ bool writeMeta(const QString &path, const MediaItem &item, const QByteArray &pay
 
 namespace LyricsCache {
 
+/// @brief 返回歌词缓存根目录（与播放缓存同级）。
 QString rootDir()
 {
     const QString dataDir = QFileInfo(MediaCache::rootDir()).absolutePath();
     return QDir::cleanPath(dataDir + QStringLiteral("/lyrics-cache"));
 }
 
+/// @brief 判断条目是否适合写歌词缓存。
+/// @return 仅在线音乐且歌词地址为绝对 http(s) 时返回 true。
 bool isEligible(const MediaItem &item)
 {
     if (item.type != MediaType::Music || !item.online)
@@ -141,6 +157,9 @@ bool isEligible(const MediaItem &item)
     return scheme == QLatin1String("http") || scheme == QLatin1String("https");
 }
 
+/// @brief 读取当前条目的歌词正文。
+/// @param payload 输出正文；可为空。
+/// @return 命中且正文非空返回 true。
 bool load(const MediaItem &item, QByteArray *payload)
 {
     if (payload == nullptr)
@@ -155,6 +174,10 @@ bool load(const MediaItem &item, QByteArray *payload)
     return !payload->isEmpty();
 }
 
+/// @brief 原子写入歌词正文及旁车元数据。
+/// @return 正文和旁车都成功返回 true；旁车失败时回收正文与旧 JSON。
+/// @note 正文已落盘但旁车失败会留下孤儿，必须一并删除，避免后续候选位被
+///       误判为可用而 load() 打不开正文。
 bool store(const MediaItem &item, const QByteArray &payload)
 {
     if (!isEligible(item) || payload.isEmpty())
@@ -188,6 +211,10 @@ bool store(const MediaItem &item, const QByteArray &payload)
     return true;
 }
 
+/// @brief 删除条目在全部候选位上的正文与旁车。
+/// @return 全部删除成功返回 true；正文删不掉时保留 JSON 供重试。
+/// @note 同一条目可能散落在基础名、“(2)”等多个候选位；缺 JSON 的孤儿
+///       也要清理，否则会永久占位并把后续写入推到更后面的序号。
 bool removeForItem(const MediaItem &item)
 {
     if (!LyricsCache::isEligible(item))

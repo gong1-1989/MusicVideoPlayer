@@ -1,3 +1,5 @@
+/// @file DownloadController.cpp
+/// @brief 下载入口的目录选择、缓存复用与队列桥接实现。
 #include "ui/DownloadController.h"
 
 #include "cache/MediaCache.h"
@@ -14,6 +16,10 @@
 
 #include <utility>
 
+/// @brief 构造下载控制器并创建内部 DownloadManager。
+/// @param http 共享 HTTP 客户端。
+/// @param dialogParent 下载管理器对话框的父窗口，可为空。
+/// @param parent 父对象。
 DownloadController::DownloadController(HttpClient *http, QWidget *dialogParent, QObject *parent)
     : QObject(parent)
     , m_http(http)
@@ -33,11 +39,16 @@ DownloadController::DownloadController(HttpClient *http, QWidget *dialogParent, 
             this, &DownloadController::itemDownloaded);
 }
 
+/// @brief 设置条目补全回调（通常注入 SourceRegistry::mediaItemWithCredentials）。
 void DownloadController::setMediaItemResolver(std::function<MediaItem(const MediaItem &)> resolver)
 {
     m_itemResolver = std::move(resolver);
 }
 
+/// @brief 把在线条目加入下载队列，或从已有播放缓存直接生成下载文件。
+/// @param item 用户请求下载的条目。
+/// @note 只接受 http/https 直链；下载目录按音乐/影视拆分，文件名走唯一化；
+///       队列提示用 enqueue 返回的实际路径，避免提示预分配但未使用的名字。
 void DownloadController::download(const MediaItem &item)
 {
     const MediaItem resolved = m_itemResolver ? m_itemResolver(item) : item;
@@ -123,6 +134,7 @@ void DownloadController::download(const MediaItem &item)
                            : tr("已加入下载：%1").arg(QFileInfo(queuedPath).fileName()));
 }
 
+/// @brief 打开下载管理器窗口；已打开时置顶并激活。
 void DownloadController::openManager()
 {
     if (m_dialog != nullptr) {
@@ -140,16 +152,19 @@ void DownloadController::openManager()
     dialog->show();
 }
 
+/// @brief 是否还有进行中的下载任务（退出前提示用）。
 bool DownloadController::hasActiveDownloads() const
 {
     return activeDownloadCount() > 0;
 }
 
+/// @brief 返回进行中的下载任务数。
 int DownloadController::activeDownloadCount() const
 {
     return m_manager != nullptr ? m_manager->activeCount() : 0;
 }
 
+/// @brief 退出前让下载管理器保存快照并停止调度。
 void DownloadController::prepareForExit()
 {
     if (m_manager != nullptr)

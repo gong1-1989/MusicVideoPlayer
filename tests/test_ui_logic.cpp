@@ -1,3 +1,6 @@
+/// @file test_ui_logic.cpp
+/// @brief 界面层纯逻辑测试：列表度量、播放列表/设置控制器、主题、歌词与
+///        本地文件过滤器（含播放器专用格式拦截）。
 #include "core/PlaybackController.h"
 #include "core/PlaylistStore.h"
 #include "media/MediaItem.h"

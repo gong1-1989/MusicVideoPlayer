@@ -1,3 +1,5 @@
+/// @file DownloadJob.cpp
+/// @brief 单个下载任务的进度换算、状态文案与持久化 JSON 编解码。
 #include "download/DownloadJob.h"
 
 #include "util/HeaderPolicy.h"
@@ -10,6 +12,7 @@
 
 namespace {
 
+/// @brief 状态枚举转持久化字符串。
 QString statusKey(DownloadJob::Status status)
 {
     switch (status) {
@@ -25,6 +28,7 @@ QString statusKey(DownloadJob::Status status)
     return QStringLiteral("paused");
 }
 
+/// @brief 持久化字符串转状态枚举；未知值按暂停处理，避免误触发下载。
 DownloadJob::Status statusFromKey(const QString &key)
 {
     if (key == QLatin1String("downloading"))
@@ -38,6 +42,8 @@ DownloadJob::Status statusFromKey(const QString &key)
 
 } // namespace
 
+/// @brief 计算 0..100 的进度百分比。
+/// @return 完成时恒为 100；HLS 按已完成分片数计算；普通下载按字节比计算。
 int DownloadJob::percent() const
 {
     if (status == Status::Completed)
@@ -49,6 +55,7 @@ int DownloadJob::percent() const
     return 0;
 }
 
+/// @brief 返回界面显示的状态文案；有自定义消息时优先显示消息。
 QString DownloadJob::statusText() const
 {
     switch (status) {
@@ -64,11 +71,16 @@ QString DownloadJob::statusText() const
     return message;
 }
 
+/// @brief 未完成文件的临时路径（正式文件名后追加 .mvpdownload）。
 QString DownloadJob::partialPath() const
 {
     return filePath + QStringLiteral(".mvpdownload");
 }
 
+/// @brief 序列化任务记录。
+/// @return 可直接写入 jobs.json 的对象。
+/// @note 直链与敏感请求头用 DPAPI 加密后再落盘；加密失败时写 urlUnavailable
+///       并把未完成任务降级为 Failed，避免下次启动拿空地址续传。
 QJsonObject DownloadJob::toJson() const
 {
     QJsonObject object;
@@ -137,6 +149,13 @@ QJsonObject DownloadJob::toJson() const
     return object;
 }
 
+/// @brief 从持久化对象恢复任务。
+/// @param object jobs.json 中的单条记录。
+/// @param job 输出任务，必须非空。
+/// @param error 失败原因输出，可为空。
+/// @return 必需字段齐全且续传地址可用时返回 true。
+/// @note 已暂停/下载中的任务若无可用直链，降级为 Failed 并保留记录与半成品路径；
+///       已完成/已失败任务不要求直链，允许无 URL 载入。
 bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString *error)
 {
     if (job == nullptr) {

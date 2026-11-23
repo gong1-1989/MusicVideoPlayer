@@ -1,3 +1,6 @@
+/// @file test_storage.cpp
+/// @brief 存储与安全测试：播放列表/下载任务持久化、下载路径、播放缓存、
+///        源配置与 DPAPI 凭据保护。
 #include "core/PlaylistModel.h"
 #include "core/PlaylistStore.h"
 #include "download/DownloadJob.h"

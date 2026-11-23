@@ -1,3 +1,5 @@
+/// @file LrcParser.cpp
+/// @brief LRC 歌词的解码、时间轴解析与当前行定位实现。
 #include "lyrics/LrcParser.h"
 
 #include <QRegularExpression>
@@ -7,13 +9,16 @@
 
 namespace {
 
+/// @brief UTF-8 BOM 字节序列，用于在解码前剥离。
 const QByteArray &utf8Bom()
 {
     static const QByteArray bom = QByteArray::fromHex("EFBBBF");
     return bom;
 }
 
-/// [mm:ss] / [mm:ss.xx] / [mm:ss:xx]，分最多 3 位，秒最多 2 位，小数最多 3 位
+/// @brief 匹配 LRC 行首时间戳。
+/// @note 支持 [mm:ss]、[mm:ss.xx]、[mm:ss:xx]；分 1-3 位、秒 1-2 位、
+///       小数 1-3 位，兼容“厘秒”写法和不补零的分钟。
 const QRegularExpression &timestampRegex()
 {
     static const QRegularExpression rx(
@@ -21,6 +26,7 @@ const QRegularExpression &timestampRegex()
     return rx;
 }
 
+/// @brief 匹配 [offset:±毫秒] 全局时间偏移标签。
 const QRegularExpression &offsetRegex()
 {
     static const QRegularExpression rx(
@@ -29,7 +35,9 @@ const QRegularExpression &offsetRegex()
     return rx;
 }
 
-/// 小数位按位数归一：1 位=十分之一秒，2 位=厘秒，3 位=毫秒。
+/// @brief 把时间戳的小数部分换算成毫秒。
+/// @param fraction 小数位文本，长度 1-3。
+/// @return 按位数归一：1 位代表十分之一秒，2 位代表百分之一秒，3 位代表毫秒。
 qint64 fractionToMs(const QString &fraction)
 {
     if (fraction.isEmpty())
@@ -47,6 +55,9 @@ qint64 fractionToMs(const QString &fraction)
 
 } // namespace
 
+/// @brief 解码 LRC 原始字节。
+/// @param data 文件内容。
+/// @return 优先按 UTF-8（剥离 BOM）；解码失败时回退系统编码，兼容 GBK/GB18030。
 QString LrcParser::decode(const QByteArray &data)
 {
     if (data.isEmpty())
@@ -65,6 +76,11 @@ QString LrcParser::decode(const QByteArray &data)
     return text;
 }
 
+/// @brief 解析已解码的 LRC 文本。
+/// @param content 完整歌词文本。
+/// @return 按时间升序排列的歌词行；无有效时间戳时返回空。
+/// @note 一行可带多个时间戳（副歌复用），每个时间戳生成一条独立记录；
+///       [offset:] 会加到所有时间上，最后统一 stable_sort 保持同时间行原顺序。
 QVector<LrcLine> LrcParser::parse(const QString &content)
 {
     QVector<LrcLine> lines;
@@ -107,11 +123,17 @@ QVector<LrcLine> LrcParser::parse(const QString &content)
     return lines;
 }
 
+/// @brief 解码并解析原始 LRC 字节。
 QVector<LrcLine> LrcParser::parseBytes(const QByteArray &data)
 {
     return parse(decode(data));
 }
 
+/// @brief 查找 posMs 时刻正在播放的歌词行。
+/// @param lines 已排序的歌词行。
+/// @param posMs 当前播放位置（毫秒）。
+/// @return 最后一条 timeMs <= posMs 的行下标；早于第一行时返回 -1。
+/// @note 使用 upper_bound，时间复杂度 O(log n)，适合逐帧调用。
 int LrcParser::indexAt(const QVector<LrcLine> &lines, qint64 posMs)
 {
     if (lines.isEmpty())

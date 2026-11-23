@@ -1,3 +1,5 @@
+/// @file AudioSpectrumAnalyzer.cpp
+/// @brief 从 QMediaPlayer 解码后 PCM 提取实时频谱的实现。
 #include "audio/AudioSpectrumAnalyzer.h"
 
 #include "audio/SpectrumMath.h"
@@ -11,6 +13,9 @@
 
 namespace {
 
+/// @brief 限制单声道采样缓存长度，只保留最近 4 个 FFT 窗。
+/// @note 分析只需要最后一窗，保留少量余量可避免频繁搬移，同时防止
+///       长时间播放后内存无限增长。
 void trimBuffer(QVector<float> &mono)
 {
     const int keep = SpectrumMath::kFftSize * 4;
@@ -20,6 +25,8 @@ void trimBuffer(QVector<float> &mono)
 
 } // namespace
 
+/// @brief 构造分析器并启动 33ms 空闲计时器。
+/// @note 计时器只在 startCapture() 后运行，用于播放器缓冲停顿时送静音帧。
 AudioSpectrumAnalyzer::AudioSpectrumAnalyzer(QObject *parent)
     : QObject(parent)
 {
@@ -32,6 +39,7 @@ AudioSpectrumAnalyzer::AudioSpectrumAnalyzer(QObject *parent)
     connect(m_idleTimer, &QTimer::timeout, this, &AudioSpectrumAnalyzer::emitIdleLevels);
 }
 
+/// @brief 析构时停止采集并解除播放器的音频缓冲输出绑定。
 AudioSpectrumAnalyzer::~AudioSpectrumAnalyzer()
 {
     stopCapture();
@@ -39,6 +47,10 @@ AudioSpectrumAnalyzer::~AudioSpectrumAnalyzer()
         m_player->setAudioBufferOutput(nullptr);
 }
 
+/// @brief 绑定/切换要分析的 QMediaPlayer。
+/// @param player 目标播放器；传 nullptr 会解除旧绑定并发出 unavailable。
+/// @note QAudioBufferOutput 与 QAudioOutput 可以并存：播放链路不变，只是额外
+///       拿到同一份解码后的 PCM；不会接触系统混音或其他应用的声音。
 void AudioSpectrumAnalyzer::attachPlayer(QMediaPlayer *player)
 {
     if (m_player == player)
@@ -69,6 +81,8 @@ void AudioSpectrumAnalyzer::attachPlayer(QMediaPlayer *player)
     });
 }
 
+/// @brief 开始采集频谱；重复调用无副作用。
+/// @note 播放器或音频缓冲输出未就绪时发出 unavailable，界面继续用拟真动画。
 void AudioSpectrumAnalyzer::startCapture()
 {
     if (m_enabled)
@@ -86,6 +100,7 @@ void AudioSpectrumAnalyzer::startCapture()
     m_idleTimer->start();
 }
 
+/// @brief 停止采集并清空缓存；不会解除播放器绑定。
 void AudioSpectrumAnalyzer::stopCapture()
 {
     if (!m_enabled)
@@ -97,6 +112,8 @@ void AudioSpectrumAnalyzer::stopCapture()
     m_format = QAudioFormat();
 }
 
+/// @brief 音频格式变化时重置缓存与节流时钟。
+/// @param format 新的 PCM 格式（采样率/通道/样本类型）。
 void AudioSpectrumAnalyzer::resetAnalysis(const QAudioFormat &format)
 {
     m_format = format;
@@ -105,6 +122,10 @@ void AudioSpectrumAnalyzer::resetAnalysis(const QAudioFormat &format)
     m_frameClock.restart();
 }
 
+/// @brief 接收播放器解码后的 PCM，混成单声道并按 33ms 节流分析。
+/// @param buffer Qt 提供的音频缓冲；无效 buffer 表示流结束。
+/// @note 多声道取算术平均；调用 normalizedSampleValue 兼容 U8/S16/S32/F32。
+///       每 33ms 最多分析一次，避免高采样率下 UI 线程被 FFT 拖慢。
 void AudioSpectrumAnalyzer::onAudioBuffer(const QAudioBuffer &buffer)
 {
     if (!m_enabled)
@@ -155,6 +176,9 @@ void AudioSpectrumAnalyzer::onAudioBuffer(const QAudioBuffer &buffer)
     m_frameClock.restart();
 }
 
+/// @brief 播放器缓冲超过 150ms 没有新数据时，持续发送全零频段。
+/// @note 避免界面把上一帧能量冻结成“还在播放”的假象；全零向量在构造时
+///       预分配，空闲路径不产生新的堆分配。
 void AudioSpectrumAnalyzer::emitIdleLevels()
 {
     if (!m_enabled || m_lastDataClock.elapsed() < 150)
@@ -164,6 +188,9 @@ void AudioSpectrumAnalyzer::emitIdleLevels()
     emitLevels(m_silenceLevels);
 }
 
+/// @brief 对原始频段做 attack/release 平滑后发给界面。
+/// @param raw SpectrumMath::analyze() 返回的 0..1 原始能量。
+/// @note 起音系数 0.45、回落系数 0.16：鼓点响应快，但不会逐帧乱跳。
 void AudioSpectrumAnalyzer::emitLevels(const QVector<float> &raw)
 {
     if (m_smoothed.size() != raw.size())

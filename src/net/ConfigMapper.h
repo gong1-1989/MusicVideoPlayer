@@ -50,7 +50,8 @@ QUrl normalizeUrl(const QString &raw, const QUrl &base = QUrl());
 /// JSON 模板转义：引号、反斜杠、换行、制表符。
 QString jsonEscape(const QString &raw);
 
-/// 采集接口的 "名称$地址#名称$地址$$$备用源" 拆分，只取第一组播放源。
+/// `$$$` 前的第一组为剧集主线路；`$$$` 后的备用线路按同名剧集优先、
+/// 否则按同序号收集到 altUrls，不再只保留第一组。
 QVector<EpisodePart> parseEpisodes(const QString &raw);
 
 } // namespace ConfigMapper

@@ -1,3 +1,5 @@
+/// @file SecretStore.cpp
+/// @brief 搜索源凭据的 Windows DPAPI 加密与兼容读取实现。
 #include "util/SecretStore.h"
 
 #include <QByteArray>
@@ -13,9 +15,12 @@ Q_LOGGING_CATEGORY(lcSecret, "mvp.secret")
 
 namespace {
 
+/// 密文标记。前缀带版本号，便于后续升级算法时识别旧格式。
 const char kProtectedPrefix[] = "mvp-dpapi:v1:";
 
 #ifdef Q_OS_WIN
+/// @brief DPAPI 附加熵，限定密文只能由本应用同一 Windows 用户解开。
+/// @note 熵本身不是密钥；真正的用户密钥由 Windows 凭据管理器托管。
 DATA_BLOB entropyBlob()
 {
     static const QByteArray entropy = QByteArrayLiteral("MusicVideoPlayer/source-credential/v1");
@@ -30,6 +35,8 @@ DATA_BLOB entropyBlob()
 
 namespace SecretStore {
 
+/// @brief 当前平台是否支持凭据加密。
+/// @return Windows 返回 true；其他平台没有等价实现，返回 false。
 bool isAvailable()
 {
 #ifdef Q_OS_WIN
@@ -39,11 +46,17 @@ bool isAvailable()
 #endif
 }
 
+/// @brief 判断字符串是否为 SecretStore 生成的密文。
 bool isProtectedValue(const QString &value)
 {
     return value.startsWith(QLatin1String(kProtectedPrefix));
 }
 
+/// @brief 用 DPAPI 当前用户范围加密明文凭据。
+/// @param plainText 原始 Cookie/Authorization 等敏感值。
+/// @param label 日志中用于定位字段的短标签，不包含凭据内容。
+/// @return 带版本前缀的 Base64 密文；空输入、加密失败或非 Windows 返回空。
+/// @note 加密失败必须返回空而不是明文，调用方据此丢弃该字段，避免静默降级。
 QString protectForStorage(const QString &plainText, const QString &label)
 {
     if (plainText.isEmpty())
@@ -76,6 +89,12 @@ QString protectForStorage(const QString &plainText, const QString &label)
 #endif
 }
 
+/// @brief 读取并还原凭据值。
+/// @param storedValue sources.json 中保存的字符串，可能是密文或旧版明文。
+/// @param label 日志标签，不包含凭据内容。
+/// @return 解密后的明文；空输入、解密失败或非 Windows 返回空。
+/// @note 旧版明文仍允许读取一次，下一次保存会转成密文；换机器/换 Windows
+///       用户后旧密文解不开，按空值处理，绝不能把密文当 Cookie 发出去。
 QString revealStored(const QString &storedValue, const QString &label)
 {
     if (storedValue.isEmpty())

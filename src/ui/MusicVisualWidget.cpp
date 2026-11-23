@@ -1,3 +1,5 @@
+/// @file MusicVisualWidget.cpp
+/// @brief 音乐动感视图的绘制与频谱状态实现。
 #include "ui/MusicVisualWidget.h"
 
 #include "audio/AudioSpectrumAnalyzer.h"
@@ -23,8 +25,11 @@ Q_LOGGING_CATEGORY(lcMusicVisual, "mvp.ui.musicvisual")
 
 namespace {
 
+// 频谱柱数量固定为 46，AudioSpectrumAnalyzer 输出的频段数必须与它一致，
+// 否则绘制层按“无真实数据”回退拟真动画。
 constexpr int kBandCount = 46;
 
+/// @brief 返回指定透明度的颜色副本。
 QColor withAlpha(const QColor &color, int alpha)
 {
     QColor copy = color;
@@ -32,6 +37,7 @@ QColor withAlpha(const QColor &color, int alpha)
     return copy;
 }
 
+/// @brief 按 RGB 空间线性混合两色。
 QColor mixColors(const QColor &from, const QColor &to, qreal progress)
 {
     const qreal p = qBound(0.0, progress, 1.0);
@@ -53,6 +59,7 @@ QColor spectrumPaletteColor(qreal progress)
     return mixColors(stops[index], stops[index + 1], value - index);
 }
 
+/// @brief 生成来源徽标文本：直链/源 id/网络/本地。
 QString sourceLabel(const MediaItem &item)
 {
     if (item.sourceId == QLatin1String("link"))
@@ -62,6 +69,10 @@ QString sourceLabel(const MediaItem &item)
     return item.online ? QObject::tr("网络") : QObject::tr("本地");
 }
 
+/// @brief 从封面缩略图估算可用于光晕/下划线的强调色。
+/// @return 有效的彩色；封面为空或像素全是黑/白/灰时返回无效色。
+/// @note 跳过极暗、极亮和低饱和像素；结果过灰时提饱和度与亮度，
+///       避免强调色在深色背景上完全看不见。
 QColor accentFromCover(const QPixmap &cover)
 {
     if (cover.isNull())
@@ -96,6 +107,8 @@ QColor accentFromCover(const QPixmap &cover)
 
 } // namespace
 
+/// @brief 构造动感视图：建立 30fps 动画定时器与频谱分析器，并在父控件上安装过滤器。
+/// @param parent 舞台父控件；有父控件时铺满其矩形并跟随 resize。
 MusicVisualWidget::MusicVisualWidget(QWidget *parent)
     : QWidget(parent)
 {
@@ -133,12 +146,16 @@ MusicVisualWidget::MusicVisualWidget(QWidget *parent)
     }
 }
 
+/// @brief 析构时停止频谱采集，避免回调访问已销毁的控件。
 MusicVisualWidget::~MusicVisualWidget()
 {
     if (m_spectrum != nullptr)
         m_spectrum->stopCapture();
 }
 
+/// @brief 切换曲目并重置封面/频谱状态。
+/// @param item 当前条目；仅本地条目的 file/UNC 封面会被读取。
+/// @note 网络条目的封面地址不读本地文件，防止远程源借 posterUrl 探测磁盘。
 void MusicVisualWidget::setTrack(const MediaItem &item)
 {
     m_item = item;
@@ -158,6 +175,8 @@ void MusicVisualWidget::setTrack(const MediaItem &item)
     update();
 }
 
+/// @brief 设置来源徽标显示名（来自源配置的中文名称）。
+/// @note 只在文本变化时重绘，避免每帧无意义刷新。
 void MusicVisualWidget::setSourceDisplayName(const QString &name)
 {
     if (m_sourceDisplayName == name)
@@ -166,6 +185,9 @@ void MusicVisualWidget::setSourceDisplayName(const QString &name)
     update();
 }
 
+/// @brief 更新主题强调色。
+/// @param color 有效颜色；无效值忽略。
+/// @note 当前曲目没有封面主色时立即跟随主题；有封面主色时保留封面推导色。
 void MusicVisualWidget::setAccentColor(const QColor &color)
 {
     if (!color.isValid() || m_themeAccent == color)
@@ -177,6 +199,7 @@ void MusicVisualWidget::setAccentColor(const QColor &color)
     update();
 }
 
+/// @brief 设置界面基础字号（像素），并限制在 9..20 的可读范围。
 void MusicVisualWidget::setUiFontPx(int pixels)
 {
     const int bounded = qBound(9, pixels, 20);
@@ -186,6 +209,7 @@ void MusicVisualWidget::setUiFontPx(int pixels)
     update();
 }
 
+/// @brief 整轨复位：清空曲目、封面、频谱、歌词、动画相位并停止定时器/采集。
 void MusicVisualWidget::reset()
 {
     m_item = MediaItem();
@@ -207,6 +231,9 @@ void MusicVisualWidget::reset()
     update();
 }
 
+/// @brief 切换播放/暂停状态，并同步动画定时器与频谱采集。
+/// @note 暂停时保留最后一帧真实频谱并定格；只有从未拿到真实数据时
+///       才回退拟真动画，避免暂停后出现满屏假能量。
 void MusicVisualWidget::setPlaying(bool playing)
 {
     if (m_playing == playing)
@@ -229,6 +256,8 @@ void MusicVisualWidget::setPlaying(bool playing)
     update();
 }
 
+/// @brief 绑定用于采集频谱的播放器。
+/// @param player 当前 QMediaPlayer；为空时停止采集。
 void MusicVisualWidget::setMediaPlayer(QMediaPlayer *player)
 {
     if (m_spectrum == nullptr)
@@ -237,6 +266,7 @@ void MusicVisualWidget::setMediaPlayer(QMediaPlayer *player)
     updateCaptureState();
 }
 
+/// @brief 设置歌词行文本。
 void MusicVisualWidget::setLyrics(const QStringList &lines)
 {
     m_lyrics = lines;
@@ -244,6 +274,7 @@ void MusicVisualWidget::setLyrics(const QStringList &lines)
     update();
 }
 
+/// @brief 更新当前高亮歌词下标；-1 表示无高亮。
 void MusicVisualWidget::setLyricIndex(int index)
 {
     if (m_lyricIndex == index)
@@ -252,6 +283,7 @@ void MusicVisualWidget::setLyricIndex(int index)
     update();
 }
 
+/// @brief 清空歌词文本与高亮状态。
 void MusicVisualWidget::clearLyrics()
 {
     if (m_lyrics.isEmpty() && m_lyricIndex < 0)
@@ -261,6 +293,7 @@ void MusicVisualWidget::clearLyrics()
     update();
 }
 
+/// @brief 绘制完整舞台：背景、频谱、唱片、曲目信息，最后叠加歌词。
 void MusicVisualWidget::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)
@@ -278,6 +311,7 @@ void MusicVisualWidget::paintEvent(QPaintEvent *event)
     drawLyrics(painter, rect, basePx);
 }
 
+/// @brief 尺寸变化后丢弃按旧半径缓存的封面，下一帧重新缩放。
 void MusicVisualWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
@@ -286,6 +320,7 @@ void MusicVisualWidget::resizeEvent(QResizeEvent *event)
     update();
 }
 
+/// @brief 显示时按“播放中且可见”恢复动画与频谱采集。
 void MusicVisualWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
@@ -295,6 +330,7 @@ void MusicVisualWidget::showEvent(QShowEvent *event)
     updateCaptureState();
 }
 
+/// @brief 隐藏时停止动画定时器与频谱采集，避免后台空转。
 void MusicVisualWidget::hideEvent(QHideEvent *event)
 {
     QWidget::hideEvent(event);
@@ -304,6 +340,7 @@ void MusicVisualWidget::hideEvent(QHideEvent *event)
         m_spectrum->stopCapture();
 }
 
+/// @brief 按“播放中且可见”同步频谱采集开关。
 void MusicVisualWidget::updateCaptureState()
 {
     if (m_spectrum == nullptr)
@@ -317,6 +354,10 @@ void MusicVisualWidget::updateCaptureState()
     }
 }
 
+/// @brief 接收播放器 PCM 分析出的频段能量。
+/// @param levels 长度应为 kBandCount 的归一化能量。
+/// @note 只有正在播放时才接受数据；正常播放时由 33ms 定时器统一重绘，
+///       这里不额外 update()，避免双倍刷新。
 void MusicVisualWidget::setAudioSpectrum(const QVector<float> &levels)
 {
     if (!m_playing || levels.isEmpty())
@@ -326,6 +367,8 @@ void MusicVisualWidget::setAudioSpectrum(const QVector<float> &levels)
     // 正常播放时 33ms 定时器已在重绘，这里不额外 update()，避免双倍刷新。
 }
 
+/// @brief 按频段下标从调色板取色。
+/// @param bandIndex 0..kBandCount-1。
 QColor MusicVisualWidget::spectrumColor(int bandIndex) const
 {
     const qreal progress =
@@ -333,6 +376,7 @@ QColor MusicVisualWidget::spectrumColor(int bandIndex) const
     return spectrumPaletteColor(progress);
 }
 
+/// @brief 跟随父控件尺寸变化并保持在父控件最上层。
 bool MusicVisualWidget::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == parentWidget() && event->type() == QEvent::Resize) {
@@ -342,6 +386,8 @@ bool MusicVisualWidget::eventFilter(QObject *watched, QEvent *event)
     return QWidget::eventFilter(watched, event);
 }
 
+/// @brief 绘制深色极光背景与底部压暗层。
+/// @note 有真实频谱时，暖/冷光晕取低频/高频颜色，让背景随音乐变化。
 void MusicVisualWidget::drawBackground(QPainter &painter, const QRectF &rect)
 {
     painter.fillRect(rect, QColor(7, 9, 22));
@@ -381,6 +427,8 @@ void MusicVisualWidget::drawBackground(QPainter &painter, const QRectF &rect)
     painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 14, 14);
 }
 
+/// @brief 绘制 46 根频谱柱；有真实能量时按 dBFS 映射，否则用多正弦叠加的拟真动画。
+/// @note 窄窗口会压缩 gap 并保证 barWidth 至少 1 像素，避免负宽度。
 void MusicVisualWidget::drawSpectrum(QPainter &painter, const QRectF &rect)
 {
     const int count = kBandCount;
@@ -454,6 +502,9 @@ void MusicVisualWidget::drawSpectrum(QPainter &painter, const QRectF &rect)
     }
 }
 
+/// @brief 绘制右侧唱片/圆形封面。
+/// @note 窗口过小（宽 <420 或高 <220）时直接跳过，保证歌词与曲目信息的空间；
+///       有封面时按像素半径缓存缩放结果，避免每次重绘重新 SmoothScaled。
 void MusicVisualWidget::drawDisc(QPainter &painter, const QRectF &rect)
 {
     if (rect.width() < 420.0 || rect.height() < 220.0)
@@ -548,6 +599,10 @@ void MusicVisualWidget::drawDisc(QPainter &painter, const QRectF &rect)
     painter.drawPath(note);
 }
 
+/// @brief 绘制曲目、歌手与品质/来源徽标。
+/// @param basePx 设置页推入的基础字号；歌名比它大 4px 作强调。
+/// @note 字号统一以 basePx 为锚点，保证窗口放大时文字不会等比夸张，
+///       并与播放列表字号口径一致；条目无效（已删除/复位）时整块不画。
 void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect, int basePx)
 {
     // 删除当前条目后 reset() 会清空 m_item；此时不要继续画“未知曲目/未知歌手”，
@@ -558,8 +613,8 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect, int
     const qreal left = rect.left() + rect.width() * 0.075;
     const qreal maxWidth = qMax(120.0, rect.width() * (rect.width() < 620 ? 0.84 : 0.52));
     const qreal top = rect.top() + rect.height() * 0.16;
-    // 动感视图曾经按窗口高度算字号，窗口越大字越夸张；现在统一以设置里的
-    // 真实基础字号为锚点，只给歌名增加一档强调，其余文字与播放列表贴近。
+    // 字号以设置里的真实基础字号为锚点，只给歌名增加一档强调，其余文字
+    // 与播放列表口径一致，窗口放大时不会出现夸张的大字。
 
     QFont titleFont = font();
     titleFont.setPixelSize(basePx + 4);
@@ -613,6 +668,10 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect, int
     }
 }
 
+/// @brief 绘制居中歌词，当前行放大加粗并带光带/下划线。
+/// @param basePx 基础字号；当前行使用 basePx+4。
+/// @note 固定显示 5 行，按当前下标上下滚动；上下边缘透明度渐隐形成景深，
+///       文本过长时右侧省略。
 void MusicVisualWidget::drawLyrics(QPainter &painter, const QRectF &rect, int basePx)
 {
     if (m_lyrics.isEmpty())

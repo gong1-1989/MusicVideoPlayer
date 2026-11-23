@@ -1,3 +1,5 @@
+/// @file LyricsController.cpp
+/// @brief 歌词加载、缓存服务桥接与当前行高亮定位。
 #include "ui/LyricsController.h"
 
 #include "lyrics/LyricsService.h"
@@ -7,6 +9,9 @@
 
 Q_LOGGING_CATEGORY(lcLyricsUi, "mvp.lyrics.ui")
 
+/// @brief 构造控制器并连接 LyricsService 的加载结果。
+/// @param http 共享 HTTP 客户端，服务内部不拥有它。
+/// @param parent 父对象。
 LyricsController::LyricsController(HttpClient *http, QObject *parent)
     : QObject(parent)
     , m_service(new LyricsService(http, this))
@@ -30,6 +35,9 @@ LyricsController::LyricsController(HttpClient *http, QObject *parent)
     });
 }
 
+/// @brief 切换当前条目并加载对应歌词。
+/// @param item 当前播放条目；只有音乐且带 lyricUrl 时才发起加载。
+/// @note 远程条目的 file/UNC 歌词会被拒绝：远程源不能借歌词字段读取本地文件。
 void LyricsController::setCurrentItem(const MediaItem &item)
 {
     clear();
@@ -46,6 +54,9 @@ void LyricsController::setCurrentItem(const MediaItem &item)
     }
 }
 
+/// @brief 根据播放位置更新当前高亮行。
+/// @param positionMs 当前播放位置（毫秒）。
+/// @note 只在行下标变化时发信号，避免逐帧刷新界面；歌词未加载时只记录位置。
 void LyricsController::updatePosition(qint64 positionMs)
 {
     m_lastPosition = positionMs;
@@ -60,6 +71,8 @@ void LyricsController::updatePosition(qint64 positionMs)
     emit currentIndexChanged(index);
 }
 
+/// @brief 清空当前歌词与请求状态。
+/// @note 切换条目时必须取消旧请求，否则旧歌词回来会覆盖新条目。
 void LyricsController::clear()
 {
     // 切到无歌词条目或视频时必须取消旧请求，否则旧歌词回来会覆盖新条目。
@@ -70,6 +83,7 @@ void LyricsController::clear()
     emit cleared();
 }
 
+/// @brief 主题/字号变化后重新发出当前行下标，让视觉层重绘高亮。
 void LyricsController::refreshHighlight()
 {
     emit currentIndexChanged(m_index);

@@ -56,8 +56,8 @@ private:
     int m_nextDetail = 0;
     int m_activeDetails = 0;
     QVector<QVector<MediaItem>> m_detailBuckets;
-    /// abort() 只 abort 搜索主请求的历史遗留；详情请求也必须能取消，
-    /// 否则超时/关闭搜索窗口后它们仍在后台跑，并可能在新的搜索开始后回写旧结果。
+    /// 搜索主请求之外，详情请求也必须能取消：否则超时/关闭搜索窗口后
+    /// 它们仍在后台跑，并可能在新的搜索开始后回写旧结果。
     QSet<QNetworkReply *> m_detailReplies;
 };
 

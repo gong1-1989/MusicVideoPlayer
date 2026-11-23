@@ -1,3 +1,5 @@
+/// @file SourceConfig.cpp
+/// @brief 搜索源配置的 JSON 序列化、校验与敏感头处理实现。
 #include "net/SourceConfig.h"
 
 #include "util/HeaderPolicy.h"
@@ -10,6 +12,7 @@
 
 namespace {
 
+/// @brief 把请求头表转成 JSON 对象，跳过空键。
 QJsonObject headersToJson(const QHash<QString, QString> &headers)
 {
     QJsonObject object;
@@ -20,6 +23,7 @@ QJsonObject headersToJson(const QHash<QString, QString> &headers)
     return object;
 }
 
+/// @brief 把 JSON 对象转成请求头表，值统一转字符串。
 QHash<QString, QString> headersFromJson(const QJsonObject &object)
 {
     QHash<QString, QString> headers;
@@ -28,9 +32,10 @@ QHash<QString, QString> headersFromJson(const QJsonObject &object)
     return headers;
 }
 
-/// 配置里的请求头只允许表达“业务身份”（Referer/Origin/UA 等）。
-/// Host/Length 这类连接级头必须由网络层生成，原样透传会破坏重定向、分块传输，
-/// 甚至让两个请求共享错误的长度。
+/// @brief 判断是否为连接级、必须由网络层生成的请求头。
+/// @return true 表示配置里禁止透传。
+/// @note 配置请求头只表达“业务身份”（Referer/Origin/UA 等）；Host/Length
+///       原样透传会破坏重定向、分块传输，甚至让请求共享错误的长度。
 bool isForbiddenRequestHeader(const QString &name)
 {
     const QString lower = name.trimmed().toLower();
@@ -47,12 +52,18 @@ bool isForbiddenRequestHeader(const QString &name)
         || lower == QLatin1String("proxy-authenticate");
 }
 
+/// @brief 检测文本中是否含 CR/LF，防止请求头注入。
 bool hasHeaderInjection(const QString &text)
 {
     return text.contains(QLatin1Char('\r')) || text.contains(QLatin1Char('\n'));
 }
 
-/// 普通请求头明文写入，敏感头单独加密到 headersProtected。
+/// @brief 把请求头写到 JSON：普通头明文，敏感头用 DPAPI 加密到 headersProtected。
+/// @param headers 待序列化头表。
+/// @param sourceId 加密附加熵的一部分，绑定源 id。
+/// @param protectedHeaders 输出敏感头密文对象，可为空。
+/// @param exportPlainSecrets true 时按用户显式导出写明文。
+/// @return 明文头对象；无法加密的敏感头直接丢弃，不退回明文。
 QJsonObject requestHeadersToJson(const QHash<QString, QString> &headers,
                                  const QString &sourceId,
                                  QJsonObject *protectedHeaders,
@@ -85,6 +96,9 @@ QJsonObject requestHeadersToJson(const QHash<QString, QString> &headers,
 
 } // namespace
 
+/// @brief 判断配置是否足以发起搜索。
+/// @return 必填字段齐全且地址/详情地址为 http(s)、存在可用 streamUrl 字段。
+/// @note 规则与 validationError() 保持同口径，避免 isValid 通过但提示为空。
 bool SourceConfig::isValid() const
 {
     if (id.trimmed().isEmpty() || name.trimmed().isEmpty())
@@ -126,6 +140,7 @@ bool SourceConfig::isValid() const
     return true;
 }
 
+/// @brief 返回首个校验失败的中文原因；通过时返回空。
 QString SourceConfig::validationError() const
 {
     if (id.trimmed().isEmpty())
@@ -177,11 +192,13 @@ QString SourceConfig::validationError() const
     return QString();
 }
 
+/// @brief 媒体类型显示名（视频/音乐）。
 QString SourceConfig::typeLabel() const
 {
     return mediaType == MediaType::Video ? QObject::tr("视频") : QObject::tr("音乐");
 }
 
+/// @brief 源实现类型显示名（内置/外部解析器/配置）。
 QString SourceConfig::kindLabel() const
 {
     if (kind == QLatin1String("builtin"))
@@ -191,6 +208,10 @@ QString SourceConfig::kindLabel() const
     return QObject::tr("配置");
 }
 
+/// @brief 把源配置序列化为 sources.json 中的对象。
+/// @param config 待序列化配置。
+/// @param exportPlainSecrets true 时敏感头/Cookie 写明文（用户显式导出）。
+/// @return JSON 对象；敏感头默认写 headersProtected 密文。
 QJsonObject sourceConfigToJson(const SourceConfig &config, bool exportPlainSecrets)
 {
     QJsonObject object;
@@ -251,6 +272,10 @@ QJsonObject sourceConfigToJson(const SourceConfig &config, bool exportPlainSecre
     return object;
 }
 
+/// @brief 从 JSON 对象构造源配置。
+/// @param object sources.json 中的单个源对象。
+/// @param ok 输出配置是否通过 isValid()，可为空。
+/// @return 构造出的配置；缺失字段用默认值，非法头会被过滤。
 SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
 {
     SourceConfig config;

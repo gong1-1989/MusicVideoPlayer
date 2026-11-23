@@ -1,3 +1,5 @@
+/// @file PlaybackUiController.cpp
+/// @brief 播放控制条（进度、时间、播放/停止、模式、音量）与播放器的信号桥接。
 #include "ui/PlaybackUiController.h"
 
 #include "core/PlaylistModel.h"
@@ -17,6 +19,13 @@
 #include <QTimer>
 #include <QUrl>
 
+/// @brief 构造控制器：创建 180ms seek 防抖定时器并连接全部播放相关信号。
+/// @param player 播放控制核心。
+/// @param playlists 播放列表控制器，用于空列表时选中行。
+/// @param surface 视频画面，用于停止/切歌时清帧。
+/// @param lyrics 歌词控制器，跟随播放位置高亮。
+/// @param ui 控制条控件集合。
+/// @param parent 父对象。
 PlaybackUiController::PlaybackUiController(PlaybackController *player,
                                            PlaylistController *playlists,
                                            VideoSurface *surface, LyricsController *lyrics,
@@ -157,6 +166,7 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     refreshPlayButton(m_player->mediaPlayer()->playbackState());
 }
 
+/// @brief 播放项被移除后的界面归零：停 seek、进度归零、歌词清空。
 void PlaybackUiController::clear()
 {
     m_seekTarget = -1;
@@ -171,6 +181,9 @@ void PlaybackUiController::clear()
     m_lyrics->clear();
 }
 
+/// @brief 记录 seek 目标并启动 180ms 防抖，期间重复点击只覆盖目标。
+/// @param target 目标播放位置（毫秒）。
+/// @note HLS 条目立即显示“定位中”提示；真正 seek 在防抖到期后由 flushSeek() 下发。
 void PlaybackUiController::beginSeek(qint64 target)
 {
     if (!m_player->hasCurrentItem() || target < 0)
@@ -192,6 +205,9 @@ void PlaybackUiController::beginSeek(qint64 target)
     m_seekTimer->start();
 }
 
+/// @brief 防抖到期后真正下发 seek。
+/// @note 本地文件直接 seek；HLS 记录目标、序号并起 45 秒兜底计时器，
+///       防止播放器卡住不再发 positionChanged 时“定位中”永久停留。
 void PlaybackUiController::flushSeek()
 {
     const qint64 target = m_seekPendingTarget;
@@ -229,6 +245,7 @@ void PlaybackUiController::flushSeek()
     m_player->seek(target);
 }
 
+/// @brief 判断实际播放地址是否为 HLS；有 MP4 备选时不算 HLS。
 bool PlaybackUiController::isHlsItem() const
 {
     if (!m_player->hasCurrentItem())
@@ -238,6 +255,7 @@ bool PlaybackUiController::isHlsItem() const
     return playbackIsHls(m_player->currentItem());
 }
 
+/// @brief 播放按钮：无当前项时从活动列表的选中行起播，否则切换播放/暂停。
 void PlaybackUiController::playPressed()
 {
     if (!m_player->hasCurrentItem()) {
@@ -252,6 +270,7 @@ void PlaybackUiController::playPressed()
     m_player->togglePlayPause();
 }
 
+/// @brief 停止播放并清空 seek 状态、进度条和时间显示。
 void PlaybackUiController::stopPressed()
 {
     m_seekTarget = -1;
@@ -263,6 +282,7 @@ void PlaybackUiController::stopPressed()
     m_ui.time->setText(QStringLiteral("00:00 / 00:00"));
 }
 
+/// @brief 在“列表循环 → 单曲循环 → 随机”之间轮换播放模式。
 void PlaybackUiController::modePressed()
 {
     using Mode = PlaybackController::Mode;
@@ -281,6 +301,7 @@ void PlaybackUiController::modePressed()
     m_player->setMode(nextMode);
 }
 
+/// @brief 按当前播放模式刷新模式按钮图标与悬停文案。
 void PlaybackUiController::refreshModeButton()
 {
     QString iconName = QStringLiteral("mode-list");
@@ -301,6 +322,8 @@ void PlaybackUiController::refreshModeButton()
     UiIcons::apply(m_ui.mode, iconName, tooltip, 20);
 }
 
+/// @brief 播放状态变化时刷新主播放按钮的图标与提示。
+/// @param state 当前 QMediaPlayer 播放状态。
 void PlaybackUiController::refreshPlayButton(QMediaPlayer::PlaybackState state)
 {
     const bool playing = state == QMediaPlayer::PlayingState;
@@ -308,6 +331,8 @@ void PlaybackUiController::refreshPlayButton(QMediaPlayer::PlaybackState state)
                    playing ? tr("暂停") : tr("播放"), 26, QColor(255, 255, 255));
 }
 
+/// @brief 重新解析上一首/停止/下一首/模式按钮图标。
+/// @note 主题切换时调用，内置图标需按新强调色重绘。
 void PlaybackUiController::refreshIcons()
 {
     UiIcons::apply(m_ui.previous, QStringLiteral("prev"), tr("上一首 / 上一个视频"), 20);

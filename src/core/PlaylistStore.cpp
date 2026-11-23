@@ -1,3 +1,5 @@
+/// @file PlaylistStore.cpp
+/// @brief 播放列表主文件/快照的读写、损坏恢复与保存阻断实现。
 #include "core/PlaylistStore.h"
 #include "storage/StoragePaths.h"
 
@@ -22,6 +24,7 @@ const char kVideoKey[] = "video";
 constexpr qint64 kMaxPlaylistFileBytes = 32 * 1024 * 1024;
 constexpr int kMaxCorruptBackups = 5;
 
+/// @brief 按媒体类型返回 JSON 分区键（music/video）。
 QString keyFor(MediaType type)
 {
     return QString::fromLatin1(type == MediaType::Video ? kVideoKey : kMusicKey);
@@ -39,6 +42,8 @@ QString snapshotPath()
     return primaryPath() + QStringLiteral(".bak");
 }
 
+/// @brief 写文件：QSaveFile 原子替换，Windows 占用时最多重试 3 次。
+/// @return 写入并 commit 成功返回 true；失败返回 false 并记录日志。
 bool writeFile(const QString &path, const QByteArray &payload)
 {
     if (path.isEmpty())
@@ -74,8 +79,10 @@ bool writeFile(const QString &path, const QByteArray &payload)
     return false;
 }
 
-/// 损坏文件先备份；时间戳带毫秒并检查重名，避免连续两次 load 生成同名备份。
-/// 用 rename 而不是 copy：第二次 load 就看不到损坏文件，不会重复备份。
+/// @brief 把损坏文件改名备份，并只保留最近 5 份备份。
+/// @return 备份路径；rename 失败返回空。
+/// @note 用 rename 而非 copy：第二次 load 就看不到损坏文件，不会重复备份；
+///       时间戳带毫秒并查重名，避免连续两次生成同名备份。
 QString backupCorrupt(const QString &path)
 {
     const QString stamp =
@@ -100,7 +107,8 @@ QString backupCorrupt(const QString &path)
 }
 
 /// 读取结果必须区分“正常读取”“文件不存在”“读不了”“格式损坏”。
-/// 旧实现把后三者都当空列表，导致退出时可能用空模型覆盖原文件。
+/// 只有 Ok 可以正常加载；ReadError/TooLarge/Corrupt 都必须阻断保存，
+/// 否则退出时可能用空模型覆盖仍然可恢复的原文件。
 enum class ReadStatus
 {
     Ok,
@@ -118,6 +126,8 @@ struct ReadFileResult
     QString error;
 };
 
+/// @brief 解析指定媒体分区的条目数组。
+/// @note 类型以所在分区为准，避免手工改文件后音乐/视频串区。
 QVector<MediaItem> parsePartition(const QJsonObject &root, MediaType type)
 {
     const QJsonArray array = root.value(keyFor(type)).toArray();
@@ -136,6 +146,8 @@ QVector<MediaItem> parsePartition(const QJsonObject &root, MediaType type)
     return items;
 }
 
+/// @brief 读取并严格校验一个播放列表文件。
+/// @return 包含状态、两个分区条目和错误原因；只有 Ok 才带有效数据。
 ReadFileResult readPlaylistFile(const QString &path)
 {
     ReadFileResult result;
@@ -201,16 +213,22 @@ ReadFileResult readPlaylistFile(const QString &path)
 
 namespace PlaylistStore {
 
+/// @brief 返回主播放列表文件路径（Data/playlists.json）。
 QString filePath()
 {
     return primaryPath();
 }
 
+/// @brief 返回最近一次成功保存的完整快照路径（主文件 + .bak）。
 QString backupFilePath()
 {
     return snapshotPath();
 }
 
+/// @brief 加载音乐与视频两个分区，并在主文件异常时尝试快照恢复。
+/// @return 汇总结果：成功数据、是否缺失、是否损坏、是否阻断保存及提示文本。
+/// @note ReadError（占用/权限）与 TooLarge 直接阻断保存，不备份、不回退，
+///       避免把仍可能有效的用户列表移走或用旧快照覆盖。
 LoadResult loadAll()
 {
     LoadResult result;
@@ -295,12 +313,15 @@ LoadResult loadAll()
     return result;
 }
 
+/// @brief 只取指定媒体分区的条目。
 QVector<MediaItem> load(MediaType type)
 {
     const LoadResult result = loadAll();
     return type == MediaType::Video ? result.video : result.music;
 }
 
+/// @brief 原子写入主文件，成功后再刷新快照。
+/// @return 主文件写入成功返回 true；快照失败只记日志，不影响主文件结果。
 bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
 {
     QJsonObject root;

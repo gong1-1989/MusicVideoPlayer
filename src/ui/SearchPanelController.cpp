@@ -1,3 +1,5 @@
+/// @file SearchPanelController.cpp
+/// @brief 独立搜索窗的界面搭建、联想词、结果筛选分页与链接直达处理。
 #include "ui/SearchPanelController.h"
 
 #include "core/PlaylistModel.h"
@@ -403,6 +405,12 @@ QString pageTitle(const QString &html)
 
 } // namespace
 
+/// @brief 构造搜索面板控制器并搭建界面。
+/// @param coordinator 搜索协调器，聚合多个搜索源。
+/// @param registry 搜索源注册表，用于来源名与凭据。
+/// @param http 共享 HTTP 客户端，网页链接解析用。
+/// @param ui 搜索窗控件集合。
+/// @param parent 父对象。
 SearchPanelController::SearchPanelController(SearchCoordinator *coordinator,
                                              SourceRegistry *registry, HttpClient *http,
                                              const SearchPanelUi &ui,
@@ -419,6 +427,7 @@ SearchPanelController::SearchPanelController(SearchCoordinator *coordinator,
     setupDiscoveryFeatures();
 }
 
+/// @brief 初始化结果列表模型、委托、事件过滤和主题响应。
 void SearchPanelController::setupUi()
 {
     m_model = new PlaylistModel(this);
@@ -545,6 +554,10 @@ void SearchPanelController::setupUi()
     });
 }
 
+/// @brief 创建类型/来源/品质筛选栏，并接上联想词列表。
+/// @note 筛选栏挂在宿主容器的现有布局上，不写死布局类型和插入位置，
+///       避免布局调整后筛选栏丢失或跑到窗口底部；联想列表用普通子控件而非
+///       QCompleter 顶层 popup，防止独立窗口里 popup 抢焦点吞点击。
 void SearchPanelController::setupDiscoveryFeatures()
 {
     // 类型/来源/品质筛选：固定放在搜索框正下方的宿主容器里。
@@ -553,8 +566,8 @@ void SearchPanelController::setupDiscoveryFeatures()
     if (filterHost == nullptr)
         filterHost = m_ui.sidebar;
     if (filterHost != nullptr) {
-        // 宿主历史上是 QVBoxLayout，但主题/布局重构后可能是 QGrid/QHBox；
-        // 不再写死 qobject_cast<QVBoxLayout *>，否则换布局时筛选栏直接消失。
+        // 宿主容器的布局可能是 QVBoxLayout，也可能是 QGridLayout/QHBoxLayout，
+        // 因此只按 QLayout 基类能力处理，不写死具体布局类型。
         if (auto *layout = filterHost->layout(); layout != nullptr) {
             auto *filterBar = new QWidget(filterHost);
             filterBar->setObjectName(QStringLiteral("searchFilterBar"));
@@ -630,6 +643,7 @@ void SearchPanelController::setupDiscoveryFeatures()
     refreshSourceNames();
 }
 
+/// @brief 用“搜索历史 + 内置热词 + 当前结果标题”重建联想词库（最多 40 条）。
 void SearchPanelController::rebuildSuggestions()
 {
     QStringList words = AppSettings::searchHistory();
@@ -655,6 +669,8 @@ void SearchPanelController::rebuildSuggestions()
     updateSuggestions(false);
 }
 
+/// @brief 按当前输入前缀过滤联想词并显示，最多 8 条。
+/// @param showAll true 时即使输入为空也展示全部词（用于点击输入框展开历史）。
 void SearchPanelController::updateSuggestions(bool showAll)
 {
     if (m_ui.suggestList == nullptr || m_ui.edit == nullptr)
@@ -693,6 +709,7 @@ void SearchPanelController::updateSuggestions(bool showAll)
     m_ui.suggestList->raise();
 }
 
+/// @brief 把联想列表贴在搜索框下方，并按行数/可用高度限制其高度。
 void SearchPanelController::updateSuggestionGeometry()
 {
     if (m_ui.suggestList == nullptr || m_ui.edit == nullptr || m_ui.sidebar == nullptr)
@@ -715,12 +732,15 @@ void SearchPanelController::updateSuggestionGeometry()
     m_ui.suggestList->setGeometry(topLeft.x(), topLeft.y(), m_ui.edit->width(), height);
 }
 
+/// @brief 隐藏联想列表。
 void SearchPanelController::hideSuggestions()
 {
     if (m_ui.suggestList != nullptr)
         m_ui.suggestList->hide();
 }
 
+/// @brief 点击联想词：填词并立即发起搜索。
+/// @param item 被点击的联想词项。
 void SearchPanelController::applySuggestion(QListWidgetItem *item)
 {
     if (item == nullptr || m_ui.edit == nullptr)
@@ -736,6 +756,8 @@ void SearchPanelController::applySuggestion(QListWidgetItem *item)
     toggleSearch();
 }
 
+/// @brief 把关键词放到搜索历史最前并重建联想。
+/// @param keyword 用户实际搜索的关键词。
 void SearchPanelController::rememberKeyword(const QString &keyword)
 {
     QStringList history = AppSettings::searchHistory();
@@ -745,6 +767,8 @@ void SearchPanelController::rememberKeyword(const QString &keyword)
     rebuildSuggestions();
 }
 
+/// @brief 按类型/来源/品质过滤结果并重排分页。
+/// @param resetPage true 时回到第一页（筛选条件变化时用）。
 void SearchPanelController::applyFilters(bool resetPage)
 {
     if (m_typeFilter == nullptr || m_sourceFilter == nullptr || m_qualityFilter == nullptr) {
@@ -776,6 +800,9 @@ void SearchPanelController::applyFilters(bool resetPage)
     applyPage();
 }
 
+/// @brief 若输入是 http(s) 地址，按直链或网页解析处理。
+/// @param text 搜索框内容。
+/// @return true 表示已按链接处理，不再走关键词搜索。
 bool SearchPanelController::tryHandlePastedLink(const QString &text)
 {
     if (!looksLikeHttpUrl(text))
@@ -790,6 +817,8 @@ bool SearchPanelController::tryHandlePastedLink(const QString &text)
     return true;
 }
 
+/// @brief 把音视频直链直接变成一条可播放结果（扩展名决定音乐/影视）。
+/// @param url 直链地址。
 void SearchPanelController::handleDirectMediaLink(const QUrl &url)
 {
     const QString suffix = url.path().section(QLatin1Char('.'), -1).toLower();
@@ -819,6 +848,9 @@ void SearchPanelController::handleDirectMediaLink(const QUrl &url)
                            .arg(audio ? tr("音乐") : tr("影视"), item.title));
 }
 
+/// @brief 拉取网页并从中提取可播放的音视频地址，生成一条结果。
+/// @param url 网页地址。
+/// @note 用序号 m_linkParseSerial 丢弃过期回调；响应体受 NetLimits::kHtmlBytes 限制。
 void SearchPanelController::handleWebPageLink(const QUrl &url)
 {
     if (m_http == nullptr) {
@@ -899,6 +931,8 @@ void SearchPanelController::handleWebPageLink(const QUrl &url)
         NetLimits::kHtmlBytes);
 }
 
+/// @brief 按搜索进行中/空闲切换搜索与翻页按钮的图标和提示。
+/// @param busy 当前是否有搜索在途。
 void SearchPanelController::applyButtonIcons(bool busy)
 {
     // 搜索键有渐变底色，图标必须强制白色，不能跟随主题前景色。
@@ -909,6 +943,7 @@ void SearchPanelController::applyButtonIcons(bool busy)
     UiIcons::apply(m_ui.nextButton, QStringLiteral("page-next"), tr("下一页"), 18);
 }
 
+/// @brief 搜索按钮/回车入口：忙时取消，否则按链接或关键词发起搜索。
 void SearchPanelController::toggleSearch()
 {
     // 从点击搜索/回车开始，联想层就不再参与，直到用户重新编辑关键词。
@@ -936,6 +971,7 @@ void SearchPanelController::toggleSearch()
     m_coordinator->search(keyword, AppSettings::searchLimit());
 }
 
+/// @brief 取消进行中的聚合搜索。
 void SearchPanelController::cancelSearch()
 {
     if (!m_coordinator->isBusy())
@@ -944,6 +980,8 @@ void SearchPanelController::cancelSearch()
     emit statusMessage(tr("搜索已取消"));
 }
 
+/// @brief 用源注册表刷新“来源”筛选下拉和结果委托里的源名显示。
+/// @note 当前选中的源被删除时退回“全部”，并重新过滤一次列表。
 void SearchPanelController::refreshSourceNames()
 {
     QHash<QString, QString> names;
@@ -974,6 +1012,8 @@ void SearchPanelController::refreshSourceNames()
         applyFilters(false);
 }
 
+/// @brief 折叠或展开整个搜索结果区（标题、列表、分页）。
+/// @param visible true 展开并重算每页条数。
 void SearchPanelController::setAreaVisible(bool visible)
 {
     m_ui.titleLabel->setVisible(visible);
@@ -983,6 +1023,7 @@ void SearchPanelController::setAreaVisible(bool visible)
         schedulePageSizeRefresh();
 }
 
+/// @brief 统一处理搜索框、侧栏和结果视口的事件：联想展开/收起、尺寸变化重算分页。
 bool SearchPanelController::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == m_ui.sidebar
@@ -1018,6 +1059,7 @@ bool SearchPanelController::eventFilter(QObject *watched, QEvent *event)
     return QObject::eventFilter(watched, event);
 }
 
+/// @brief 把连续的尺寸变化合并到下一拍，只重算一次每页条数。
 void SearchPanelController::schedulePageSizeRefresh()
 {
     // 视图显示/窗口拖动会连续触发 resize，合并到下一拍只算一次。
@@ -1029,6 +1071,7 @@ void SearchPanelController::schedulePageSizeRefresh()
     });
 }
 
+/// @brief 按结果视口高度和行高重算每页条数，并保持当前首条所在页。
 void SearchPanelController::refreshPageSize()
 {
     if (m_results.isEmpty() || !m_ui.list->isVisible())
@@ -1051,6 +1094,8 @@ void SearchPanelController::refreshPageSize()
     applyPage();
 }
 
+/// @brief 计算过滤后结果的总页数。
+/// @return 页数，无结果时为 0。
 int SearchPanelController::pageCount() const
 {
     if (m_visibleResults.isEmpty() || m_pageSize <= 0)
@@ -1058,6 +1103,8 @@ int SearchPanelController::pageCount() const
     return (m_visibleResults.size() + m_pageSize - 1) / m_pageSize;
 }
 
+/// @brief 接收一次搜索的原始结果：去重、展开结果区、刷新联想并回到第一页。
+/// @param items 各源返回的原始结果，可能含重复条目。
 void SearchPanelController::showResults(const QVector<MediaItem> &items)
 {
     // 页数、标题和分页切片必须基于去重后的结果；PlaylistModel::setItems()
@@ -1073,6 +1120,7 @@ void SearchPanelController::showResults(const QVector<MediaItem> &items)
     schedulePageSizeRefresh();
 }
 
+/// @brief 按当前页号把过滤结果切片送入模型，并更新标题、页号和翻页按钮状态。
 void SearchPanelController::applyPage()
 {
     const int pages = pageCount();
@@ -1111,6 +1159,8 @@ void SearchPanelController::applyPage()
     m_ui.nextButton->setEnabled(m_page + 1 < pages);
 }
 
+/// @brief 结果列表右键菜单：播放、加入对应类型列表、下载。
+/// @param pos 视口内点击位置。
 void SearchPanelController::handleContextMenu(const QPoint &pos)
 {
     const QModelIndex index = m_ui.list->indexAt(pos);
@@ -1145,6 +1195,8 @@ void SearchPanelController::handleContextMenu(const QPoint &pos)
     }
 }
 
+/// @brief 双击/回车激活结果项时请求播放。
+/// @param index 被激活的模型索引。
 void SearchPanelController::handleActivated(const QModelIndex &index)
 {
     if (!index.isValid())

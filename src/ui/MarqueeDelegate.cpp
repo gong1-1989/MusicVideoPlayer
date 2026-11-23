@@ -1,3 +1,5 @@
+/// @file MarqueeDelegate.cpp
+/// @brief 列表行文字跑马灯委托实现。
 #include "ui/MarqueeDelegate.h"
 
 #include <QApplication>
@@ -10,6 +12,10 @@
 #include <QStyle>
 #include <QStyleOptionViewItem>
 
+/// @brief 构造委托并启动 40ms 推进定时器。
+/// @param view 目标列表视图，必须非空；委托不拥有它。
+/// @note 关闭横向滚动条、开启鼠标跟踪，并在 viewport 上安装过滤器
+///       以感知悬停行和显示/隐藏状态。
 MarqueeDelegate::MarqueeDelegate(QListView *view)
     : QStyledItemDelegate(view)
     , m_view(view)
@@ -26,6 +32,7 @@ MarqueeDelegate::MarqueeDelegate(QListView *view)
     m_view->viewport()->installEventFilter(this);
 }
 
+/// @brief 跟踪悬停行并在列表隐藏时停表，避免后台空转。
 bool MarqueeDelegate::eventFilter(QObject *object, QEvent *event)
 {
     if (object == m_view->viewport()) {
@@ -46,6 +53,9 @@ bool MarqueeDelegate::eventFilter(QObject *object, QEvent *event)
     return QStyledItemDelegate::eventFilter(object, event);
 }
 
+/// @brief 绘制列表行；只有悬停行或当前行且文本超宽时才走跑马灯。
+/// @note 未滚动的情况完全交给基类/QSS，保证选中色与主题一致；
+///       滚动时背景仍由样式绘制，文字按相位横向偏移并双份拼接实现无缝循环。
 void MarqueeDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option,
                             const QModelIndex &index) const
 {
@@ -93,6 +103,8 @@ void MarqueeDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     painter->restore();
 }
 
+/// @brief 推进滚动相位并只重绘需要滚动的那一行。
+/// @note 文本放得下时不推进、不重绘；相位超过 100000 归零，避免整数无限增长。
 void MarqueeDelegate::advance()
 {
     const int row = m_hoveredRow >= 0 ? m_hoveredRow : m_view->currentIndex().row();

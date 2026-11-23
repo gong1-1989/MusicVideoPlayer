@@ -1,3 +1,5 @@
+/// @file UiIcons.cpp
+/// @brief 播放控制图标的内置绘制与外部图标覆盖实现。
 #include "ui/UiIcons.h"
 
 #include "storage/StoragePaths.h"
@@ -24,6 +26,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
+/// @brief 把初始化列表拼成 QPolygonF，便于描述折线顶点。
 QPolygonF makePolyline(std::initializer_list<QPointF> points)
 {
     QPolygonF polygon;
@@ -32,6 +35,7 @@ QPolygonF makePolyline(std::initializer_list<QPointF> points)
     return polygon;
 }
 
+/// @brief 外部图标允许的文件后缀，按优先级从高到低排列。
 QStringList iconSuffixes()
 {
     return {QStringLiteral("svg"), QStringLiteral("png"), QStringLiteral("ico"),
@@ -39,6 +43,7 @@ QStringList iconSuffixes()
             QStringLiteral("bmp")};
 }
 
+/// @brief 把配置中的相对路径解析到程序目录，绝对路径原样返回。
 QString resolveRelativeToApp(const QString &path)
 {
     if (path.isEmpty())
@@ -48,6 +53,8 @@ QString resolveRelativeToApp(const QString &path)
                              : QDir(QCoreApplication::applicationDirPath()).filePath(path);
 }
 
+/// @brief 在指定目录中按后缀优先级查找同名图标文件。
+/// @return 找到时返回绝对路径，否则返回空字符串。
 QString findFileInDir(const QString &dir, const QString &name)
 {
     for (const QString &suffix : iconSuffixes()) {
@@ -58,6 +65,10 @@ QString findFileInDir(const QString &dir, const QString &name)
     return {};
 }
 
+/// @brief 读取 Data/ui-icons.json 中为指定图标配置的路径。
+/// @return 配置存在且文件真实存在时返回解析后的绝对路径；否则返回空。
+/// @note JSON 损坏、字段为空或指向不存在的文件都按“未配置”处理，不阻断
+///       内置图标兜底。
 QString configuredPath(const QString &name)
 {
     QFile file(UiIcons::configPath());
@@ -76,6 +87,7 @@ QString configuredPath(const QString &name)
     return QFileInfo::exists(resolved) ? resolved : QString();
 }
 
+/// @brief 按“显式配置 > 程序目录 icons/ > Data/icons/”的顺序查找外部图标。
 QString externalIconPath(const QString &name)
 {
     // 明确配置优先；随后允许按文件名直接覆盖，方便用户不改 JSON 也能换图标。
@@ -93,6 +105,9 @@ QString externalIconPath(const QString &name)
     return {};
 }
 
+/// @brief 创建透明画布并配置统一画笔。
+/// @return 新建的 QPainter，调用方负责 delete。
+/// @note 内置图标固定用 4.8 像素圆头画笔，缩放后仍保持柔和边缘。
 QPainter *beginIcon(QPixmap *pixmap, const QColor &color)
 {
     pixmap->fill(Qt::transparent);
@@ -107,6 +122,9 @@ QPainter *beginIcon(QPixmap *pixmap, const QColor &color)
     return painter;
 }
 
+/// @brief 在折线末端绘制实心箭头，用于循环/随机模式图标。
+/// @param tip 箭头尖端坐标。
+/// @param direction 箭头指向的方向向量，内部会归一化。
 void drawArrowHead(QPainter *painter, const QPointF &tip, const QPointF &direction)
 {
     const QPointF unit = direction / std::hypot(direction.x(), direction.y());
@@ -117,6 +135,13 @@ void drawArrowHead(QPainter *painter, const QPointF &tip, const QPointF &directi
     painter->drawPolygon(head);
 }
 
+/// @brief 按名称绘制内置图标。
+/// @param name 图标名称，必须与按钮调用处传入的稳定字符串一致。
+/// @param color 线条与填充颜色，通常来自当前主题强调色。
+/// @param pixelSize 输出位图边长（像素）。
+/// @return 透明背景的图标位图；未知名称绘制圆点兜底，避免空按钮。
+/// @note 所有图形坐标都按 64x64 设计，再按 pixelSize/64 等比缩放，
+///       因此新增图标时必须使用同一坐标系。
 QPixmap builtinPixmap(const QString &name, const QColor &color, int pixelSize)
 {
     QPixmap pixmap(pixelSize, pixelSize);
@@ -246,16 +271,24 @@ QPixmap builtinPixmap(const QString &name, const QColor &color, int pixelSize)
 
 namespace UiIcons {
 
+/// @brief 返回程序目录下的外部图标目录。
+/// @note 仅用于查找与文档说明，不保证目录存在，也不会自动创建。
 QString externalIconDir()
 {
     return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("icons"));
 }
 
+/// @brief 返回图标映射配置文件路径（Data/ui-icons.json）。
 QString configPath()
 {
     return StoragePaths::dataFile(QStringLiteral("ui-icons.json"));
 }
 
+/// @brief 取得指定名称的图标。
+/// @param name 图标名称，例如 "play"、"settings"。
+/// @param color 内置图标的绘制颜色。
+/// @param pixelSize 内置位图边长，外部图标由 QIcon 自行缩放。
+/// @return 优先返回外部自定义图标；加载失败时回落到内置绘制图标。
 QIcon iconFor(const QString &name, const QColor &color, int pixelSize)
 {
     const QString external = externalIconPath(name);
@@ -267,6 +300,12 @@ QIcon iconFor(const QString &name, const QColor &color, int pixelSize)
     return QIcon(builtinPixmap(name, color, pixelSize));
 }
 
+/// @brief 把按钮改为纯图标样式，并补齐提示与无障碍信息。
+/// @param button 目标按钮；空指针直接忽略。
+/// @param name 图标名称。
+/// @param tooltip 悬停提示，同时作为 accessibleName。
+/// @param iconSize 图标显示边长（像素）。
+/// @param color 内置图标颜色；无效时依次回落到主题强调色和按钮文字色。
 void apply(QAbstractButton *button, const QString &name, const QString &tooltip,
            int iconSize, const QColor &color)
 {

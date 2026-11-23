@@ -1,10 +1,14 @@
+/// @file PlaylistModel.cpp
+/// @brief 播放列表模型的行数据、判重与局部刷新实现。
 #include "core/PlaylistModel.h"
 
+/// @brief 构造空列表模型。
 PlaylistModel::PlaylistModel(QObject *parent)
     : QAbstractListModel(parent)
 {
 }
 
+/// @brief 返回顶层行数；有效父索引下没有子行。
 int PlaylistModel::rowCount(const QModelIndex &parent) const
 {
     if (parent.isValid())
@@ -12,6 +16,8 @@ int PlaylistModel::rowCount(const QModelIndex &parent) const
     return m_items.size();
 }
 
+/// @brief 按角色返回行数据。
+/// @note DisplayRole 统一加 “[本地]/[网络]/[临时]” 前缀；网络视频再加播放符号。
 QVariant PlaylistModel::data(const QModelIndex &index, int role) const
 {
     if (!index.isValid() || index.row() < 0 || index.row() >= m_items.size())
@@ -74,6 +80,9 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
     }
 }
 
+/// @brief 追加一条有效且未重复的条目。
+/// @return 真正插入返回 true；无效或已存在返回 false。
+/// @note 判重按 mediaIdentity，而不是 URL：签名直链每次搜索都会变。
 bool PlaylistModel::addItem(const MediaItem &item)
 {
     // 同一条内容只保留一条：直链地址可能每次搜索都变（B站签名），
@@ -87,6 +96,9 @@ bool PlaylistModel::addItem(const MediaItem &item)
     return true;
 }
 
+/// @brief 用新搜索结果刷新同一行，但保留用户本地状态与播放进度。
+/// @return 字段确有变化返回 true；identity 不同或无变化返回 false。
+/// @note 已下载条目不会被改回在线；positionMs 永远保留。
 bool PlaylistModel::refreshItem(int row, const MediaItem &item)
 {
     if (row < 0 || row >= m_items.size() || !item.isValid())
@@ -165,6 +177,9 @@ bool PlaylistModel::refreshItem(int row, const MediaItem &item)
     return true;
 }
 
+/// @brief 更新视频条目的播放进度与时长。
+/// @return 确有变化返回 true；非视频行/越界返回 false。
+/// @note 进度是本地状态，不参与排序和模型重置。
 bool PlaylistModel::updatePlaybackPosition(int row, qint64 positionMs, qint64 durationMs)
 {
     if (row < 0 || row >= m_items.size())
@@ -191,6 +206,7 @@ bool PlaylistModel::updatePlaybackPosition(int row, qint64 positionMs, qint64 du
     return true;
 }
 
+/// @brief 删除指定行。
 bool PlaylistModel::removeRow(int row)
 {
     if (row < 0 || row >= m_items.size())
@@ -202,6 +218,7 @@ bool PlaylistModel::removeRow(int row)
     return true;
 }
 
+/// @brief 重置模型并清空全部行。
 void PlaylistModel::clear()
 {
     if (m_items.isEmpty())
@@ -211,6 +228,7 @@ void PlaylistModel::clear()
     endResetModel();
 }
 
+/// @brief 整表载入并去重（旧版本落盘数据可能已有重复条目）。
 void PlaylistModel::setItems(const QVector<MediaItem> &items)
 {
     beginResetModel();
@@ -219,6 +237,7 @@ void PlaylistModel::setItems(const QVector<MediaItem> &items)
     endResetModel();
 }
 
+/// @brief 返回指定行的条目副本；越界返回空条目。
 MediaItem PlaylistModel::itemAt(int row) const
 {
     if (row < 0 || row >= m_items.size())
@@ -226,6 +245,9 @@ MediaItem PlaylistModel::itemAt(int row) const
     return m_items.at(row);
 }
 
+/// @brief 用同 identity 的新条目替换整行。
+/// @return 更新成功返回 true；越界/无效/与其它行重复返回 false。
+/// @note 只改行数据，不重排、不重置模型，选中状态不受影响。
 bool PlaylistModel::updateItem(int row, const MediaItem &item)
 {
     if (row < 0 || row >= m_items.size() || !item.isValid())
@@ -244,6 +266,8 @@ bool PlaylistModel::updateItem(int row, const MediaItem &item)
     return true;
 }
 
+/// @brief 按 mediaIdentity 查找行号。
+/// @return 命中行号；不存在返回 -1。
 int PlaylistModel::indexOf(const MediaItem &item) const
 {
     const QString identity = mediaIdentity(item);

@@ -1,3 +1,5 @@
+/// @file ConfigMapper.cpp
+/// @brief 配置驱动搜索源的 JSON 映射纯函数实现。
 #include "net/ConfigMapper.h"
 
 #include <QJsonArray>
@@ -15,6 +17,8 @@ constexpr int kMaxRuleDepth = 64;
 
 namespace ConfigMapper {
 
+/// @brief 把 JSON 布尔/数字/字符串统一转成 double。
+/// @return 无法转换或类型不支持时返回 0.0。
 double toNumber(const QJsonValue &value)
 {
     if (value.isDouble())
@@ -26,6 +30,11 @@ double toNumber(const QJsonValue &value)
     return 0.0;
 }
 
+/// @brief 按 a.b[0].c 形式从 JSON 取值。
+/// @param root 根节点。
+/// @param path 路径表达式；空路径返回根节点。
+/// @return 命中值；对象/数组结构不符或下标越界返回 Undefined。
+/// @note 只支持点号与数字下标，不支持通配符/负下标，避免配置规则过于任意。
 QJsonValue valueAtPath(const QJsonValue &root, const QString &path)
 {
     if (path.trimmed().isEmpty())
@@ -69,6 +78,10 @@ QJsonValue valueAtPath(const QJsonValue &root, const QString &path)
     return current;
 }
 
+/// @brief 把 {name} 占位符替换为 vars 中的值。
+/// @param text 模板文本。
+/// @param vars 变量名到值的映射。
+/// @return 替换后的文本；未知占位符保持原样。
 QString renderTemplate(QString text, const QHash<QString, QString> &vars)
 {
     for (auto it = vars.cbegin(); it != vars.cend(); ++it) {
@@ -77,6 +90,12 @@ QString renderTemplate(QString text, const QHash<QString, QString> &vars)
     return text;
 }
 
+/// @brief 递归匹配过滤规则。
+/// @param item 当前待匹配的结果节点。
+/// @param rule 规则对象：any/all 组合或 {path,op,value} 叶子。
+/// @param depth 当前递归深度，超过 kMaxRuleDepth 按不匹配处理。
+/// @return 规则为空或结构不支持时返回 false；all 要求全部子规则通过，
+///         any 要求至少一条通过。
 bool ruleMatchesAtDepth(const QJsonValue &item, const QJsonObject &rule, int depth)
 {
     if (rule.isEmpty())
@@ -145,11 +164,18 @@ bool ruleMatchesAtDepth(const QJsonValue &item, const QJsonObject &rule, int dep
     return false;
 }
 
+/// @brief 从根节点开始匹配过滤规则。
 bool ruleMatches(const QJsonValue &item, const QJsonObject &rule)
 {
     return ruleMatchesAtDepth(item, rule, 0);
 }
 
+/// @brief 按字段配置从节点取值。
+/// @param node 单条结果节点。
+/// @param fields 字段名到“JSON 路径或 @模板”的映射。
+/// @param key 要读取的字段名。
+/// @param vars 模板变量。
+/// @return 取到的字符串；字段未配置、路径不存在或模板为空时返回空。
 QString mapString(const QJsonValue &node, const QHash<QString, QString> &fields,
                   const QString &key, const QHash<QString, QString> &vars)
 {
@@ -161,6 +187,7 @@ QString mapString(const QJsonValue &node, const QHash<QString, QString> &fields,
     return valueAtPath(node, spec).toVariant().toString();
 }
 
+/// @brief 清理接口文本：去 HTML 标签、解码常见实体并压缩空白。
 QString cleanText(const QString &raw)
 {
     QString text = raw;
@@ -174,6 +201,7 @@ QString cleanText(const QString &raw)
     return text.simplified();
 }
 
+/// @brief 年份归一：只接受 1888..2999 的四位数字，否则保留原文本。
 QString normalizeYear(const QString &raw)
 {
     const QString text = cleanText(raw);
@@ -185,6 +213,10 @@ QString normalizeYear(const QString &raw)
     return text;
 }
 
+/// @brief 归一化远程数据里的媒体地址。
+/// @param raw 原始地址，可以是协议相对地址或站点相对路径。
+/// @param base 用于解析相对路径的站点/接口地址。
+/// @return 仅 http/https 的绝对地址；其他协议（file/UNC/smb 等）返回空。
 QUrl normalizeUrl(const QString &raw, const QUrl &base)
 {
     const QString text = raw.trimmed();
@@ -203,6 +235,7 @@ QUrl normalizeUrl(const QString &raw, const QUrl &base)
     return url;
 }
 
+/// @brief 转义 JSON 模板中的引号、反斜杠、换行和制表符。
 QString jsonEscape(const QString &raw)
 {
     QString text = raw;
@@ -214,6 +247,11 @@ QString jsonEscape(const QString &raw)
     return text;
 }
 
+/// @brief 拆分采集接口的 “名称$地址#名称$地址$$$备用线路” 文本。
+/// @param raw 原始剧集字段。
+/// @return 主线路剧集列表；每个 EpisodePart 的 altUrls 保存备用地址。
+/// @note `$$$` 第一组是主线路，后面的组按“同名剧集优先、否则同序号”归并，
+///       避免多 CDN/多清晰度线路被截断丢失。
 QVector<EpisodePart> parseEpisodes(const QString &raw)
 {
     QVector<EpisodePart> parts;
@@ -222,8 +260,7 @@ QVector<EpisodePart> parseEpisodes(const QString &raw)
         return parts;
 
     // `$$$` 是采集接口的多线路分隔符：第一组是主线路，后面是备用线路。
-    // 以前直接截断会丢掉 mp4 备用线路；现在按“同名剧集优先、否则同序号”
-    // 归到对应 EpisodePart，播放时再决定主/备。
+    // 备用线路按“同名剧集优先、否则同序号”归到对应 EpisodePart，播放时再决定主/备。
     const QStringList sources = body.split(QStringLiteral("$$$"), Qt::SkipEmptyParts);
     for (int sourceIndex = 0; sourceIndex < sources.size(); ++sourceIndex) {
         const QStringList groups = sources.at(sourceIndex).split(QLatin1Char('#'), Qt::SkipEmptyParts);

@@ -1,3 +1,6 @@
+/// @file test_core_logic.cpp
+/// @brief 核心纯逻辑测试：歌词解析、频谱数学、媒体身份/缓存、网址映射、
+///        搜索源校验、播放列表模型与下载任务状态机。
 #include "lyrics/LrcParser.h"
 #include "audio/SpectrumMath.h"
 #include "cache/MediaCache.h"

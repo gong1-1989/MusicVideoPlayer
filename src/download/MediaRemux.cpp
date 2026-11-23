@@ -1,3 +1,5 @@
+/// @file MediaRemux.cpp
+/// @brief 调用随程序安装的 FFmpeg 做无损转封装（-c copy）。
 #include "download/MediaRemux.h"
 
 #include <QCoreApplication>
@@ -14,11 +16,16 @@
 #  include <windows.h>
 #endif
 
+/// @brief 构造转码器；真正启动进程发生在 remuxToMp4()。
 MediaRemux::MediaRemux(QObject *parent)
     : QObject(parent)
 {
 }
 
+/// @brief 定位可用的 ffmpeg 可执行文件。
+/// @return 环境变量 MVP_FFMPEG_PATH 优先，其次程序目录常见布局，最后 PATH；
+///         都没有时返回空字符串。
+/// @note 只检查可执行权限，不验证版本；测试可通过环境变量注入自建 FFmpeg。
 QString MediaRemux::ffmpegExecutable()
 {
     const QString override = qEnvironmentVariable("MVP_FFMPEG_PATH");
@@ -40,10 +47,12 @@ QString MediaRemux::ffmpegExecutable()
     return QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
 }
 
+/// @brief 终止正在运行的 FFmpeg，并异步删除 .mvpremux 临时文件。
+/// @note 取消路径不能同步等待进程退出：Windows 上删除被占用的输出文件会
+///       阻塞 UI。这里断开 finished 回调后 kill，由进程退出信号负责删除临时
+///       文件；调用方不会收到 finished。
 void MediaRemux::cancel()
 {
-    // Windows 上 FFmpeg 还持有输出文件时删除会失败。过去这里 kill 后同步等 3 秒，
-    // 取消/删除下载时整条 UI 会卡住；现在改成等进程真正退出后异步删临时文件。
     if (m_process != nullptr) {
         QProcess *process = m_process;
         m_process = nullptr;
@@ -66,16 +75,24 @@ void MediaRemux::cancel()
     m_tempPath.clear();
 }
 
+/// @brief 当前环境是否找得到 FFmpeg。
 bool MediaRemux::isAvailable()
 {
     return !ffmpegExecutable().isEmpty();
 }
 
+/// @brief 单输入转封装：把已合并的 TS/分片产物转成 MP4。
 void MediaRemux::remuxToMp4(const QString &inputPath, const QString &outputPath)
 {
     remuxToMp4(inputPath, QString(), outputPath);
 }
 
+/// @brief 执行 FFmpeg 无损转封装。
+/// @param videoPath 输入视频文件（通常是 HLS 合并后的 TS）。
+/// @param audioPath 独立音轨路径；为空时只处理视频输入自带的音轨。
+/// @param outputPath 最终 MP4 路径；实际先写同目录 `.mvpremux`。
+/// @note 使用 `-c copy` 不重新编码；成功后仅在目标不存在时改名，绝不覆盖
+///       已有同名 MP4。10 分钟未结束会标记超时并 kill 进程。
 void MediaRemux::remuxToMp4(const QString &videoPath, const QString &audioPath,
                             const QString &outputPath)
 {

@@ -1,3 +1,5 @@
+/// @file ThemeManager.cpp
+/// @brief 主题元数据、QSS 加载与字号缩放实现。
 #include "ui/ThemeManager.h"
 
 #include "ui/WindowChrome.h"
@@ -10,12 +12,16 @@
 
 Q_LOGGING_CATEGORY(lcTheme, "mvp.ui.theme")
 
+/// @brief 返回进程级单例。
+/// @note 主题是全局状态，所有窗口共用同一份当前主题。
 ThemeManager &ThemeManager::instance()
 {
     static ThemeManager manager;
     return manager;
 }
 
+/// @brief 构造内置主题表。
+/// @note QSS 只负责静态样式；fadeColor/accentColor/stageBorder 供自绘控件取色。
 ThemeManager::ThemeManager()
 {
     m_themes = {
@@ -29,6 +35,7 @@ ThemeManager::ThemeManager()
     m_currentId = m_themes.isEmpty() ? QString() : m_themes.first().id;
 }
 
+/// @brief 按 id 查找主题；未知 id 回落到第一个内置主题。
 ThemeInfo ThemeManager::find(const QString &id) const
 {
     for (const ThemeInfo &theme : m_themes) {
@@ -38,11 +45,16 @@ ThemeInfo ThemeManager::find(const QString &id) const
     return m_themes.isEmpty() ? ThemeInfo{} : m_themes.first();
 }
 
+/// @brief 返回当前生效主题的元数据。
 ThemeInfo ThemeManager::current() const
 {
     return find(m_currentId);
 }
 
+/// @brief 加载指定主题的 QSS，按当前字号缩放后应用到 QApplication。
+/// @return 样式文件缺失或读取失败返回 false，并保留当前样式。
+/// @note 只有成功读到 QSS 才更新 m_currentId 并发出 themeChanged，避免
+///       界面切到半成品主题。
 bool ThemeManager::apply(const QString &id)
 {
     const ThemeInfo theme = find(id);
@@ -65,6 +77,11 @@ bool ThemeManager::apply(const QString &id)
     return true;
 }
 
+/// @brief 按基础字号缩放 QSS 中所有 font-size: Npx。
+/// @param qss 原始样式表。
+/// @param basePx 用户选择的界面基础字号，内部夹到 9..20。
+/// @return 调整后的样式表；basePx 为 13 时原样返回。
+/// @note 采用相对差值而不是统一替换，保留正文/辅助文字之间的层级差。
 QString ThemeManager::scaledStyleSheet(const QString &qss, int basePx)
 {
     const int bounded = qBound(9, basePx, 20);
@@ -90,11 +107,15 @@ QString ThemeManager::scaledStyleSheet(const QString &qss, int basePx)
     return scaled;
 }
 
+/// @brief 按 AppSettings 中保存的主题 id 应用主题。
 bool ThemeManager::applySaved()
 {
     return apply(AppSettings::themeId());
 }
 
+/// @brief 给窗口原生标题栏套用当前主题的明暗与配色。
+/// @param window 目标窗口；内部按 fadeColor 亮度判断深/浅色。
+/// @note 仅在 Windows 生效，其他平台由 WindowChrome 空实现。
 void ThemeManager::applyWindowChrome(QWidget *window) const
 {
     const ThemeInfo theme = current();

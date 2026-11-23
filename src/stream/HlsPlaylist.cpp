@@ -1,3 +1,5 @@
+/// @file HlsPlaylist.cpp
+/// @brief HLS 播放列表解析、分片时间轴定位与代理地址重写。
 #include "stream/HlsPlaylist.h"
 #include "net/NetLimits.h"
 
@@ -20,6 +22,12 @@ QString decodePlaylist(const QByteArray &body)
 }
 } // namespace
 
+/// @brief 解析媒体播放列表，建立分片地址与起始时间轴。
+/// @param body 播放列表原文。
+/// @param playlistUrl 播放列表 URL，用于解析相对地址和 BASE。
+/// @return 解析成功返回 Info；无分片、分片超限或全为非 HTTP(S) 资源时返回空。
+/// @note 只有带 EXTINF 的行才被当作分片；master 列表的变体地址会被跳过。
+///       BYTERANGE 与非 HTTP(S) 分片会关闭预取，避免重复下载或越权访问。
 QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
                                                     const QUrl &playlistUrl)
 {
@@ -102,6 +110,10 @@ QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
     return info;
 }
 
+/// @brief 二分查找给定播放位置所在的分片下标。
+/// @param info 已解析的播放列表。
+/// @param positionMs 播放位置（毫秒）。
+/// @return 分片下标；无分片时返回 -1，越界时夹到首/尾分片。
 int HlsPlaylist::segmentIndexAt(const Info &info, qint64 positionMs)
 {
     if (info.starts.isEmpty())
@@ -123,6 +135,11 @@ int HlsPlaylist::segmentIndexAt(const Info &info, qint64 positionMs)
     return low;
 }
 
+/// @brief 判断主列表与媒体列表是否属于同一预取作用域。
+/// @param a 第一个 URL。
+/// @param b 第二个 URL。
+/// @return 同协议、同主机、同端口且目录相同（或仅多一级常见码率/音轨子目录）时为 true。
+/// @note 只允许父目录 + 一级变体子目录的形态，防止把另一部片的索引当成当前片分片。
 bool HlsPlaylist::sameScope(const QUrl &a, const QUrl &b)
 {
     if (a.scheme().compare(b.scheme(), Qt::CaseInsensitive) != 0)
@@ -173,6 +190,13 @@ bool HlsPlaylist::sameScope(const QUrl &a, const QUrl &b)
     return variantDir.match(component).hasMatch();
 }
 
+/// @brief 把播放列表中的分片、KEY、MAP、MEDIA 等 URI 全部改写为本地代理地址。
+/// @param body 原始播放列表。
+/// @param playlistUrl 播放列表 URL，用于解析相对地址。
+/// @param proxyFor 将远端绝对 URL 转成本地代理目录 URL 的回调。
+/// @param error 失败原因输出，可为空。
+/// @return 改写后的播放列表；遇到非 HTTP(S) 资源或代理建立失败时返回空。
+/// @note 保留原换行风格；同一 URL 只建立一次代理并复用；引号形式的 URI 会连引号一起替换。
 QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
                                 const ProxyResolver &proxyFor, QString *error)
 {
@@ -229,8 +253,8 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
         return value;
     };
 
-    // HLS 属性的 URI 可以是带引号的，也可以是不带引号的。旧实现只匹配
-    // URI="..."，恶意播放列表只要写 URI=file:///... 就能绕过代理。
+    // URI 属性既可能带引号也可能不带引号，两种写法都要识别并改写；
+    // 仅匹配带引号的形式会让 URI=file:///... 绕过代理。
     static const QRegularExpression uriAttribute(
         QStringLiteral("URI=(?:\"([^\"]*)\"|([^,\\s]*))"));
     for (QString &line : lines) {

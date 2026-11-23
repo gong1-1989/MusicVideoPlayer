@@ -1,3 +1,5 @@
+/// @file SettingsDialog.cpp
+/// @brief 系统设置页的控件绑定、草稿提交与保存流程实现。
 #include "ui/SettingsDialog.h"
 
 #include "net/SourceRegistry.h"
@@ -28,6 +30,10 @@
 
 Q_LOGGING_CATEGORY(lcSettings, "mvp.settings")
 
+/// @brief 构造设置页：初始化卡片样式、按屏幕尺寸设限、绑定并载入当前值。
+/// @param registry 源注册表，可为空；为空时源管理入口禁用。
+/// @param http 共享 HTTP 客户端，源管理窗口试搜用。
+/// @param parent 父窗口。
 SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidget *parent)
     : QDialog(parent)
     , ui(new Ui::SettingsDialog)
@@ -79,17 +85,21 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
     ThemeManager::instance().applyWindowChrome(this);
 }
 
+/// @brief 销毁 UI；子窗口由 Qt 父子关系回收。
 SettingsDialog::~SettingsDialog()
 {
     delete ui;
 }
 
+/// @brief 窗口尺寸变化后重新评估单列/双列布局。
 void SettingsDialog::resizeEvent(QResizeEvent *event)
 {
     QDialog::resizeEvent(event);
     updateColumnLayout();
 }
 
+/// @brief 根据字号和窗口宽度决定左右双列或上下单列。
+/// @note 大字号/窄窗口下双列最小宽度会超出滚动区，必须改成单列才能滚到全部设置。
 void SettingsDialog::updateColumnLayout()
 {
     if (m_columns == nullptr)
@@ -114,6 +124,7 @@ void SettingsDialog::updateColumnLayout()
     m_columns->invalidate();
 }
 
+/// @brief 绑定所有设置控件与按钮信号。
 void SettingsDialog::bindUi()
 {
     m_theme = ui->combo_theme;
@@ -211,6 +222,8 @@ void SettingsDialog::bindUi()
     connect(ui->btn_save, &QPushButton::clicked, this, &SettingsDialog::accept);
 }
 
+/// @brief 把当前配置载入控件。
+/// @note 遇到不在预设列表里的历史值会临时追加“当前配置”项，避免保存时被静默改掉。
 void SettingsDialog::loadValues()
 {    const int themeIndex = m_theme->findData(AppSettings::themeId());
     if (themeIndex >= 0)
@@ -271,6 +284,7 @@ void SettingsDialog::loadValues()
     refreshSourcesLabel();
 }
 
+/// @brief 刷新“已启用 x 个源（共 y 个）”标签和悬停说明。
 void SettingsDialog::refreshSourcesLabel()
 {
     if (m_sourcesLabel == nullptr)
@@ -293,6 +307,7 @@ void SettingsDialog::refreshSourcesLabel()
         tr("源管理里的“保存”只改本页草稿；点本页“保存”才写入 sources.json，点“取消”会丢弃。"));
 }
 
+/// @brief 打开源管理窗口，只接收草稿，不立即写盘。
 void SettingsDialog::openSourceManager()
 {
     if (m_registry == nullptr)
@@ -309,6 +324,7 @@ void SettingsDialog::openSourceManager()
     }
 }
 
+/// @brief 打开快捷键设置窗口，只接收草稿绑定。
 void SettingsDialog::openShortcutSettings()
 {
     // 和搜索源一样只改本页草稿；系统设置页“保存”才真正写 QSettings，
@@ -322,10 +338,13 @@ void SettingsDialog::openShortcutSettings()
     }
 }
 
+/// @brief 确认保存：先创建/校验下载目录，再提交源配置、设置与快捷键。
+/// @note 下载目录是唯一可能失败的外部副作用，必须先校验，避免先写源/音量后
+///       目录失败导致无法整体回滚；源配置写失败则停留在本页。
 void SettingsDialog::accept()
 {
     // 先校验唯一可能失败的外部副作用（下载目录），再提交源配置和设置。
-    // 旧实现先写源/音量再 mkpath，目录失败时已写内容无法回滚。
+    // 目录失败时不会留下已写一半的源/音量设置。
     QString downloadDir = m_downloadDir->text().trimmed();
     if (downloadDir.isEmpty())
         downloadDir = AppSettings::downloadDir();

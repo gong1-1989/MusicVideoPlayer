@@ -1,3 +1,5 @@
+/// @file SpectrumMath.cpp
+/// @brief 单声道 PCM → 对数频段能量的纯计算实现。
 #include "audio/SpectrumMath.h"
 
 #include <QtMath>
@@ -11,7 +13,11 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kMinDb = -70.0;
 constexpr double kMaxDb = 0.0;
 
-/// 原地基 2 FFT。只用于 2048 点的小窗口，不引入额外 DSP 依赖。
+/// @brief 原地基 2 FFT（Cooley-Tukey，输入长度必须是 2 的幂）。
+/// @param re 实部数组，原地修改。
+/// @param im 虚部数组，原地修改。
+/// @note 只用于 2048 点的小窗口，不引入额外 DSP 依赖。先做位反转，
+///       再逐级蝴蝶运算；结果未归一化，幅度缩放由 analyze() 负责。
 void fft(QVector<double> &re, QVector<double> &im)
 {
     const int n = re.size();
@@ -58,6 +64,13 @@ void fft(QVector<double> &re, QVector<double> &im)
 
 namespace SpectrumMath {
 
+/// @brief 把单声道 PCM 转成 bandCount 个对数频段的归一化能量。
+/// @param samples 单声道采样，取值约 -1..1；长于 kFftSize 时只分析最后一段。
+/// @param sampleRate 采样率（Hz）。
+/// @param bandCount 输出频段数，<=0 返回空。
+/// @return 每个频段 0..1 的能量；静音接近 0，满幅正弦接近 1。
+/// @note 频段按 40Hz..min(16kHz, 0.95*Nyquist) 对数分布；每个频段取峰值，
+///       再经 dBFS 压缩到 0..1。低频段窄于一个 bin 时退化为最近 bin。
 QVector<float> analyze(const QVector<float> &samples, int sampleRate, int bandCount)
 {
     if (bandCount <= 0)

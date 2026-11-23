@@ -1,3 +1,5 @@
+/// @file PanelOverlayController.cpp
+/// @brief 侧栏与底部控制条的贴边浮层/常显布局切换实现。
 #include "ui/PanelOverlayController.h"
 
 #include "settings/AppSettings.h"
@@ -11,6 +13,9 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+/// @brief 构造浮层控制器并启动 120ms 贴边检测定时器。
+/// @param ui 主窗控件集合，所有指针必须非空。
+/// @param parent 父对象。
 PanelOverlayController::PanelOverlayController(const PanelOverlayUi &ui, QObject *parent)
     : QObject(parent)
     , m_ui(ui)
@@ -28,6 +33,8 @@ PanelOverlayController::PanelOverlayController(const PanelOverlayUi &ui, QObject
     m_edgeTimer->start();
 }
 
+/// @brief 按当前设置切换侧栏/控制条的浮层或常显状态，并同步贴边检测。
+/// @note 收起时控件脱离布局、贴边计算；常显时回布局占位。
 void PanelOverlayController::applyVisibility()
 {
     m_sidebarAutoHide = AppSettings::sidebarAutoHide();
@@ -60,12 +67,15 @@ void PanelOverlayController::applyVisibility()
         m_ui.transport->raise();
 }
 
+/// @brief 重新计算侧栏和控制条的浮层几何。
 void PanelOverlayController::reposition()
 {
     positionSidebarOverlay();
     positionControlOverlay();
 }
 
+/// @brief 全屏等场景临时关闭/恢复贴边检测。
+/// @param enabled false 时停表；true 时按当前设置重建浮层状态。
 void PanelOverlayController::setEdgeDetectionEnabled(bool enabled)
 {
     if (m_edgeDetectionEnabled == enabled)
@@ -79,6 +89,8 @@ void PanelOverlayController::setEdgeDetectionEnabled(bool enabled)
         applyVisibility();
 }
 
+/// @brief 每 120ms 检测鼠标是否贴到左边缘/底边，显示或收起浮层。
+/// @note 窗口最小化/隐藏时直接返回，避免后台空转；鼠标在控制条范围或底边内时保持显示。
 void PanelOverlayController::updateEdgePanels()
 {
     if (!m_edgeDetectionEnabled)
@@ -129,6 +141,8 @@ void PanelOverlayController::updateEdgePanels()
     }
 }
 
+/// @brief 侧栏在“浮层”和“布局占位”之间切换。
+/// @param floating true 脱离布局并挂到 centralWidget；false 插回根布局最左。
 void PanelOverlayController::setSidebarFloating(bool floating)
 {
     if (floating == m_sidebarFloating)
@@ -157,6 +171,8 @@ void PanelOverlayController::setSidebarFloating(bool floating)
     positionSidebarOverlay();
 }
 
+/// @brief 底部控制条在“浮层”和“布局占位”之间切换。
+/// @param floating true 挂到 centralWidget 并贴舞台底边；false 回中心布局舞台下方。
 void PanelOverlayController::setControlsFloating(bool floating)
 {
     if (floating == m_controlsFloating)
@@ -174,6 +190,8 @@ void PanelOverlayController::setControlsFloating(bool floating)
     }
 }
 
+/// @brief 浮层模式下把侧栏贴到 centralWidget 左上，四周留 16px。
+/// @note 宽度取侧栏最小宽度，窗口更窄时才等比缩到可用宽度。
 void PanelOverlayController::positionSidebarOverlay()
 {
     if (!m_sidebarFloating)
@@ -187,6 +205,9 @@ void PanelOverlayController::positionSidebarOverlay()
                               qMax(0, m_ui.centralWidget->height() - margin * 2));
 }
 
+/// @brief 浮层模式下把控制条贴在舞台底部，左右各留 8px。
+/// @note 高度由 sizeHint 决定，仅限制在 112..舞台高度之间，防止小窗口盖满画面；
+///       同时记录 m_controlsRect 供贴边检测判断鼠标是否仍在控制条上。
 void PanelOverlayController::positionControlOverlay()
 {
     if (!m_controlsFloating)

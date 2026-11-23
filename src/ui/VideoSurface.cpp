@@ -1,3 +1,5 @@
+/// @file VideoSurface.cpp
+/// @brief 原生视频控件承载与圆角黑底实现。
 #include "ui/VideoSurface.h"
 
 #include <QEvent>
@@ -9,6 +11,9 @@
 #include <QVideoSink>
 #include <QVideoWidget>
 
+/// @brief 构造视频舞台并创建内嵌 QVideoWidget。
+/// @note 1px 边距给圆角外框留出绘制空间；视频按比例显示，黑边由 QVideoWidget 补齐；
+///       初始隐藏，收到首帧后才显示原生视频窗。
 VideoSurface::VideoSurface(QWidget *parent)
     : QWidget(parent)
 {
@@ -36,22 +41,28 @@ VideoSurface::VideoSurface(QWidget *parent)
             &VideoSurface::onFrame);
 }
 
+/// @brief 返回内嵌视频控件的 sink，供播放器设置输出目标。
 QVideoSink *VideoSurface::sink() const
 {
     return m_videoWidget != nullptr ? m_videoWidget->videoSink() : nullptr;
 }
 
+/// @brief 返回内嵌原生视频控件，供全屏控制器隐藏/迁移。
 QWidget *VideoSurface::videoWidget() const
 {
     return m_videoWidget;
 }
 
+/// @brief 设置舞台圆角半径。
+/// @param radius 像素半径；负值按 0 处理。
 void VideoSurface::setCornerRadius(qreal radius)
 {
     m_radius = qMax(0.0, radius);
     update();
 }
 
+/// @brief 清空当前帧并阻止后续帧显示。
+/// @note 直接隐藏原生视频窗，避免最后一帧残留在舞台上。
 void VideoSurface::clearFrame()
 {
     m_framesBlocked = true;
@@ -61,6 +72,9 @@ void VideoSurface::clearFrame()
     update();
 }
 
+/// @brief 恢复帧显示。
+/// @note 暂停中切回时播放器不会立刻送新帧；若之前已有有效帧且窗口未最小化，
+///       主动显示原生视频窗，避免只有声音、舞台黑屏。
 void VideoSurface::resumeFrames()
 {
     m_framesBlocked = false;
@@ -72,6 +86,7 @@ void VideoSurface::resumeFrames()
     }
 }
 
+/// @brief 收到视频帧时记录“已有有效帧”，并在窗口可见时显示原生视频窗。
 void VideoSurface::onFrame(const QVideoFrame &frame)
 {
     if (m_framesBlocked)
@@ -85,6 +100,7 @@ void VideoSurface::onFrame(const QVideoFrame &frame)
         m_videoWidget->show();
 }
 
+/// @brief 窗口最小化时隐藏原生视频窗，恢复时在未阻止帧的情况下重新显示。
 void VideoSurface::changeEvent(QEvent *event)
 {
     QWidget::changeEvent(event);
@@ -93,18 +109,20 @@ void VideoSurface::changeEvent(QEvent *event)
         return;
 
     if (window() != nullptr && window()->isMinimized()) {
-        // 最小化时原生视频窗口不再参与合成，后台只解码不送显
+        // 最小化时原生视频窗口不参与合成，后台只解码不送显
         m_videoWidget->hide();
     } else if (!m_framesBlocked) {
         m_videoWidget->show();
     }
 }
 
+/// @brief 默认尺寸提示，保证没有视频时舞台也有合理最小面积。
 QSize VideoSurface::sizeHint() const
 {
     return QSize(640, 360);
 }
 
+/// @brief 绘制圆角黑底与外框；视频本身由原生 QVideoWidget 显示。
 void VideoSurface::paintEvent(QPaintEvent *event)
 {
     Q_UNUSED(event)

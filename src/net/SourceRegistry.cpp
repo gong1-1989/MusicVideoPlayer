@@ -1,3 +1,5 @@
+/// @file SourceRegistry.cpp
+/// @brief 搜索源配置的加载、校验、内置保护与持久化实现。
 #include "net/SourceRegistry.h"
 #include "storage/StoragePaths.h"
 #include "util/HeaderPolicy.h"
@@ -183,8 +185,9 @@ const char *kSeedSources = R"JSON(
 ]
 )JSON";
 
-/// 预置源解析一次后复用：load() 会在逐条校验和补入缺失内置源时多次
-/// 访问同一份 JSON，避免重复构造 QJsonDocument 和解析 8 个配置对象。
+/// @brief 返回解析后的预置源列表（只解析一次）。
+/// @note load() 在逐条校验和补入缺失内置源时会多次访问同一份 JSON，
+///       静态缓存避免重复构造 QJsonDocument。
 const QVector<SourceConfig> &seedSources()
 {
     static const QVector<SourceConfig> configs = [] {
@@ -204,13 +207,18 @@ const QVector<SourceConfig> &seedSources()
     return configs;
 }
 
+/// @brief 返回源配置文件所在目录（程序目录下的 Data/）。
 QString primaryDir()
 {
     return StoragePaths::dataDir();
 }
 
-/// 内置源只允许用户改 enabled；实现、地址、请求头等必须始终以预置配置为准。
-/// upsert/replaceAll/load 共用这套逻辑，避免只有 load 做保护、别的入口能绕过。
+/// @brief 恢复内置源被外部配置改写过的字段。
+/// @param input 待校验配置。
+/// @param changed 输出是否发生了修正，可为空。
+/// @return 内置 id 只保留用户选择的 enabled，其余字段以预置配置为准；
+///         非预置源强制清除 builtin 标记。
+/// @note upsert/replaceAll/load 共用这套逻辑，避免只有 load 做保护、别的入口能绕过。
 SourceConfig protectBuiltinConfig(const SourceConfig &input, bool *changed)
 {
     SourceConfig config = input;
@@ -244,7 +252,10 @@ SourceConfig protectBuiltinConfig(const SourceConfig &input, bool *changed)
     return protectedSeed;
 }
 
-/// 损坏的源配置先改名备份，绝不能直接补种子覆盖用户原文件。
+/// @brief 把损坏的 sources.json 改名备份。
+/// @param path 原文件路径。
+/// @return 备份文件路径；原文件不存在或连续复制失败时返回空。
+/// @note 绝不直接覆盖用户原文件；同一秒内多次损坏时追加序号防撞名。
 QString backupCorruptFile(const QString &path)
 {
     if (!QFile::exists(path))
@@ -269,11 +280,14 @@ QString backupCorruptFile(const QString &path)
 
 } // namespace
 
+/// @brief 构造注册表；此时尚未加载磁盘配置。
 SourceRegistry::SourceRegistry(QObject *parent)
     : QObject(parent)
 {
 }
 
+/// @brief 返回当前实际使用的配置文件路径。
+/// @return 上次成功读写的路径；从未加载/保存时回退程序目录下的 sources.json。
 QString SourceRegistry::storagePath() const
 {
     if (!m_storagePath.isEmpty())
@@ -281,6 +295,10 @@ QString SourceRegistry::storagePath() const
     return QDir(primaryDir()).filePath(QStringLiteral("sources.json"));
 }
 
+/// @brief 从磁盘加载源配置。
+/// @return 读取并校验成功返回 true；文件不可读/损坏且无法备份时返回 false。
+/// @note 文件不存在或内容损坏时会补入预置源并尝试写盘；不可读（占用/权限）
+///       只报错不备份、不覆盖，避免一次临时占用丢配置。
 bool SourceRegistry::load()
 {
     m_sources.clear();
@@ -376,7 +394,7 @@ bool SourceRegistry::load()
         // 单个源写坏不影响其它源：坏源标记停用并保留，交给界面修复
         bool ok = false;
         SourceConfig config = sourceConfigFromJson(object, &ok);
-        // 已下线的内置实现（历史版 B 站源）：旧配置里残留的条目直接剔除并回写文件
+        // 已下线的 bilibili 内置源：旧配置里残留的条目直接剔除并回写文件
         if (config.id.startsWith(QLatin1String("bilibili"))
             || config.provider.startsWith(QLatin1String("bilibili"))) {
             qCInfo(lcRegistry) << "移除已下线源：" << config.id << config.name;
@@ -432,6 +450,8 @@ bool SourceRegistry::load()
     return true;
 }
 
+/// @brief 把当前源列表原子写入 sources.json。
+/// @return 写入并 commit 成功返回 true；失败时保留旧文件并记录 m_lastError。
 bool SourceRegistry::save()
 {
     m_lastError.clear();
@@ -479,6 +499,7 @@ bool SourceRegistry::save()
     return false;
 }
 
+/// @brief 返回启用且配置有效的源，供搜索协调器使用。
 QVector<SourceConfig> SourceRegistry::enabledSources() const
 {
     QVector<SourceConfig> result;
@@ -489,6 +510,8 @@ QVector<SourceConfig> SourceRegistry::enabledSources() const
     return result;
 }
 
+/// @brief 按 id 查找源配置。
+/// @return 命中副本；不存在时返回空配置（id 为空）。
 SourceConfig SourceRegistry::sourceById(const QString &id) const
 {
     for (const SourceConfig &config : m_sources) {
@@ -498,6 +521,11 @@ SourceConfig SourceRegistry::sourceById(const QString &id) const
     return SourceConfig();
 }
 
+/// @brief 为播放条目补回该源的内存凭据与受信源站。
+/// @param item 待播放条目，通常来自播放列表或搜索结果。
+/// @return 补全后的副本；源 id 不存在/为空时原样返回。
+/// @note 敏感头只在内存中恢复，不回写磁盘；没有可信源站时 fail-closed，
+///       剥离 Referer/Origin 等敏感头。
 MediaItem SourceRegistry::mediaItemWithCredentials(const MediaItem &item) const
 {
     if (item.sourceId.isEmpty())
@@ -541,6 +569,10 @@ MediaItem SourceRegistry::mediaItemWithCredentials(const MediaItem &item) const
     return result;
 }
 
+/// @brief 新增或替换一条源配置。
+/// @param config 待保存配置；id 为空会拒绝。
+/// @return 保存成功返回 true；失败时回滚内存列表并保留 m_lastError。
+/// @note 与 load 共用内置保护：内置源只接受 enabled 变化，非预置源不能自称 builtin。
 bool SourceRegistry::upsert(const SourceConfig &config)
 {
     if (config.id.trimmed().isEmpty()) {
@@ -580,6 +612,8 @@ bool SourceRegistry::upsert(const SourceConfig &config)
     return true;
 }
 
+/// @brief 删除指定源。
+/// @return 删除并保存成功返回 true；内置源、找不到或写盘失败返回 false。
 bool SourceRegistry::remove(const QString &id)
 {
     for (int i = 0; i < m_sources.size(); ++i) {
@@ -601,6 +635,8 @@ bool SourceRegistry::remove(const QString &id)
     return false;
 }
 
+/// @brief 设置指定源的启用状态。
+/// @return 状态未变或保存成功返回 true；源不存在/写盘失败返回 false。
 bool SourceRegistry::setEnabled(const QString &id, bool enabled)
 {
     for (SourceConfig &config : m_sources) {
@@ -620,6 +656,10 @@ bool SourceRegistry::setEnabled(const QString &id, bool enabled)
     return false;
 }
 
+/// @brief 整表替换源配置。
+/// @param sources 新列表；空 id/重复 id 会整表拒绝。
+/// @return 全部校验并保存成功返回 true；失败时回滚旧列表。
+/// @note 处理与单条保存一致，并自动补回被漏掉的内置源，防止绕过“内置源不可删除”。
 bool SourceRegistry::replaceAll(const QVector<SourceConfig> &sources)
 {
     // 整表提交也要做与单条保存相同的校验，否则空 id/重复 id 会直接落盘，
@@ -668,6 +708,7 @@ bool SourceRegistry::replaceAll(const QVector<SourceConfig> &sources)
     return true;
 }
 
+/// @brief 返回启用且有效的源数量。
 int SourceRegistry::enabledCount() const
 {
     int count = 0;

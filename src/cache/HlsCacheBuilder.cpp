@@ -1,3 +1,8 @@
+/// @file HlsCacheBuilder.cpp
+/// @brief 播放中 HLS 影视后台整段缓存的编排实现。
+/// @details 状态机顺序为：主列表 → 等待播放器选码率 → 视频/音频媒体列表 →
+///          并行下载轨道 → FFmpeg 转封装 → 写入缓存元数据。每次 start/cancel/
+///          失败都会递增 generation，用于丢弃迟到的网络/下载回调。
 #include "cache/HlsCacheBuilder.h"
 
 #include "cache/MediaCache.h"
@@ -25,6 +30,7 @@ Q_LOGGING_CATEGORY(lcHlsCache, "mvp.hls.cache")
 
 namespace {
 
+/// @brief 生成用于日志的变体描述：分辨率 / 码率 / 音频组。
 QString variantLabel(const HlsCacheManifest::Variant &variant)
 {
     QStringList parts;
@@ -37,6 +43,7 @@ QString variantLabel(const HlsCacheManifest::Variant &variant)
     return parts.join(QStringLiteral(" / "));
 }
 
+/// @brief 描述单条轨道的下载方式，便于日志区分整段 Range 与分片合并。
 QString trackSourceLabel(bool direct)
 {
     return direct ? QStringLiteral("单文件 BYTERANGE → MP4 Range")
@@ -45,6 +52,9 @@ QString trackSourceLabel(bool direct)
 
 } // namespace
 
+/// @brief 构造 HLS 后台缓存器。
+/// @param http 共享 HTTP 客户端，不拥有；为空时 start() 直接失败。
+/// @param parent 父对象，缓存器与子任务都挂在它下面。
 HlsCacheBuilder::HlsCacheBuilder(HttpClient *http, QObject *parent)
     : QObject(parent)
     , m_http(http)
@@ -54,17 +64,26 @@ HlsCacheBuilder::HlsCacheBuilder(HttpClient *http, QObject *parent)
     connect(m_variantTimer, &QTimer::timeout, this, &HlsCacheBuilder::onVariantTick);
 }
 
+/// @brief 析构时中止所有网络请求、下载与转码，避免子任务回调访问已销毁对象。
 HlsCacheBuilder::~HlsCacheBuilder()
 {
     cancel();
 }
 
+/// @brief 设置播放器当前实际打开的视频/音频播放列表查询函数。
+/// @param video 返回当前视频轨 URL 的回调。
+/// @param audio 返回当前音频轨 URL 的回调。
+/// @note 用于让后台缓存跟随用户实际选中的码率，而不是盲选最高码率。
 void HlsCacheBuilder::setPlaybackTrackResolvers(UrlResolver video, UrlResolver audio)
 {
     m_videoResolver = std::move(video);
     m_audioResolver = std::move(audio);
 }
 
+/// @brief 开始为指定在线 HLS 影视条目构建完整缓存。
+/// @param item 当前播放条目，必须是在线视频且是 HLS。
+/// @return 已启动返回 true；非 HLS、已有完整缓存或清理旧缓存失败返回 false。
+/// @note 已有完整缓存时直接跳过，避免重复占用磁盘和带宽。
 bool HlsCacheBuilder::start(const MediaItem &item)
 {
     cancel();
@@ -132,6 +151,11 @@ bool HlsCacheBuilder::start(const MediaItem &item)
     return true;
 }
 
+/// @brief 拉取一个播放列表文本，并保证回调只执行一次。
+/// @param url 播放列表地址。
+/// @param callback 结果回调，参数为正文、最终 URL、错误文本。
+/// @note 同一时刻只保留一个播放列表请求；新请求会中止旧请求。generation
+///       不匹配或对象已销毁时，迟到的响应会被直接丢弃。
 void HlsCacheBuilder::fetchPlaylist(const QUrl &url, const PlaylistCallback &callback)
 {
     if (!m_active || m_http == nullptr || !url.isValid())
@@ -200,6 +224,9 @@ void HlsCacheBuilder::fetchPlaylist(const QUrl &url, const PlaylistCallback &cal
         NetLimits::kPlaylistBytes, m_originUrl);
 }
 
+/// @brief 处理主播放列表响应。
+/// @note parseMaster 成功且有变体时进入选码率阶段；若确实识别为主列表但
+///       没有可用码率，必须直接失败，不能退回去当媒体列表解析。
 void HlsCacheBuilder::onMasterReady(const QByteArray &body, const QUrl &finalUrl,
                                     const QString &error)
 {
@@ -251,6 +278,7 @@ void HlsCacheBuilder::onMasterReady(const QByteArray &body, const QUrl &finalUrl
     startDownloads();
 }
 
+/// @brief 进入码率选择阶段；没有播放器 URL 回调时直接退回第一个变体。
 void HlsCacheBuilder::beginVariantSelection()
 {
     if (!m_active || m_stage != Stage::WaitingVariant)
@@ -267,6 +295,9 @@ void HlsCacheBuilder::beginVariantSelection()
     m_variantTimer->start();
 }
 
+/// @brief 每 250ms 检查播放器实际打开的变体是否稳定。
+/// @note 同一个变体连续稳定 2 秒后开始缓存；8 秒内曾稳定过则采用；10 秒
+///       仍无法识别时回退主列表第一个变体，避免后台缓存永远不开始。
 void HlsCacheBuilder::onVariantTick()
 {
     if (!m_active || m_stage != Stage::WaitingVariant) {
@@ -305,6 +336,8 @@ void HlsCacheBuilder::onVariantTick()
     }
 }
 
+/// @brief 查指定视频变体关联的音频组 id。
+/// @return 找到匹配变体时返回 audioGroup；未知 URL 返回空。
 QString HlsCacheBuilder::audioGroupForVariant(const QUrl &videoUrl) const
 {
     if (!videoUrl.isValid())
@@ -316,6 +349,9 @@ QString HlsCacheBuilder::audioGroupForVariant(const QUrl &videoUrl) const
     return QString();
 }
 
+/// @brief 确定要缓存的视频变体及其独立音轨 URL。
+/// @param videoUrl 播放器当前打开的视频播放列表；无效时选第一个变体。
+/// @param audioGroup 优先匹配的音频组 id；为空时按播放器音频轨/变体标签推断。
 void HlsCacheBuilder::selectVariant(const QUrl &videoUrl, const QString &audioGroup)
 {
     if (!m_active || m_master.variants.isEmpty())
@@ -386,6 +422,7 @@ void HlsCacheBuilder::selectVariant(const QUrl &videoUrl, const QString &audioGr
     });
 }
 
+/// @brief 解析视频媒体列表；有独立音轨时继续拉音频列表，否则直接开始下载。
 void HlsCacheBuilder::onVideoPlaylistReady(const QByteArray &body, const QUrl &finalUrl,
                                            const QString &error)
 {
@@ -426,6 +463,7 @@ void HlsCacheBuilder::onVideoPlaylistReady(const QByteArray &body, const QUrl &f
     startDownloads();
 }
 
+/// @brief 解析独立音轨媒体列表，成功后启动视频/音轨并行下载。
 void HlsCacheBuilder::onAudioPlaylistReady(const QByteArray &body, const QUrl &finalUrl,
                                            const QString &error)
 {
@@ -456,6 +494,9 @@ void HlsCacheBuilder::onAudioPlaylistReady(const QByteArray &body, const QUrl &f
     startDownloads();
 }
 
+/// @brief 清理旧轨道临时文件并启动下载。
+/// @note 视频轨和独立音轨并行下载；没有音轨时直接把 audioDone 置为 true，
+///       让 maybeRemux() 只等待视频轨。
 void HlsCacheBuilder::startDownloads()
 {
     if (!m_active)
@@ -503,6 +544,11 @@ void HlsCacheBuilder::startDownloads()
     }
 }
 
+/// @brief 为单条轨道创建 DownloadTask 并连接进度/完成/失败信号。
+/// @param video true 表示视频轨，false 表示独立音轨。
+/// @param source 轨道源地址（媒体列表或单文件 BYTERANGE 地址）。
+/// @param targetPath 下载目标路径。
+/// @return 任务启动成功返回 true；失败时已走 finishFailed()。
 bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &targetPath)
 {
     DownloadTask *task = DownloadTask::start(m_http, source, targetPath, m_item.headers, this);
@@ -541,6 +587,8 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
     return true;
 }
 
+/// @brief 记录单条轨道的下载进度并触发总体进度汇总。
+/// @param total 总字节数；<=0 表示服务器未给出总长，百分比按未知处理。
 void HlsCacheBuilder::onTrackProgress(bool video, qint64 received, qint64 total)
 {
     if (!m_active)
@@ -563,6 +611,9 @@ void HlsCacheBuilder::onTrackProgress(bool video, qint64 received, qint64 total)
     emitProgress();
 }
 
+/// @brief 汇总双轨进度并按节流频率发出 progressChanged。
+/// @note 双轨总长都已知时按字节加权；否则退回百分比平均。0、100 和首个
+///       进度会强制发出，其余最多每 500ms 一次，避免刷爆状态栏。
 void HlsCacheBuilder::emitProgress()
 {
     int percent = -1;
@@ -602,6 +653,7 @@ void HlsCacheBuilder::emitProgress()
     emit progressChanged(m_item, percent, detail);
 }
 
+/// @brief 单条轨道下载完成：更新状态、发出进度并尝试进入转封装。
 void HlsCacheBuilder::onTrackFinished(bool video, const QString &path)
 {
     if (!m_active)
@@ -625,6 +677,7 @@ void HlsCacheBuilder::onTrackFinished(bool video, const QString &path)
     maybeRemux();
 }
 
+/// @brief 任一轨道失败都会终止整次后台缓存，避免留下半套轨道。
 void HlsCacheBuilder::onTrackFailed(bool video, const QString &message)
 {
     if (!m_active)
@@ -633,6 +686,9 @@ void HlsCacheBuilder::onTrackFailed(bool video, const QString &message)
                        : tr("音轨缓存失败：%1").arg(message));
 }
 
+/// @brief 两条轨道都完成后启动 FFmpeg 无损转封装。
+/// @note 输出先写 .mvpremux 临时文件，成功后由 MediaRemux 改名为正文；
+///       进入 Remuxing 后不再接受下载进度更新。
 void HlsCacheBuilder::maybeRemux()
 {
     if (!m_active || m_stage != Stage::Downloading)
@@ -661,6 +717,10 @@ void HlsCacheBuilder::maybeRemux()
     m_remux->remuxToMp4(m_videoPath, m_hasAudio ? m_audioPath : QString(), m_bodyPath);
 }
 
+/// @brief 处理转封装结果：写入旁车元数据、清理轨道临时文件并发出完成信号。
+/// @param outputPath MediaRemux 产出的无后缀正文路径。
+/// @note 取消后迟到的成功结果必须删除，否则会留下无归属 MP4；元数据写入
+///       失败也会删除正文，避免出现“文件在但缓存索引不认识”的半成品。
 void HlsCacheBuilder::onRemuxFinished(bool success, const QString &outputPath,
                                       const QString &error)
 {
@@ -714,6 +774,9 @@ void HlsCacheBuilder::onRemuxFinished(bool success, const QString &outputPath,
     emit completed(item, cachePath);
 }
 
+/// @brief 中止当前缓存流程，清理未完成的轨道与临时文件。
+/// @note 已完成正文不在 m_bodyPath 上，因此 cancel 不会误删完整缓存；
+///       递增 generation 可让所有在途回调失效。
 void HlsCacheBuilder::cancel()
 {
     m_active = false;
@@ -730,6 +793,8 @@ void HlsCacheBuilder::cancel()
     m_audioPath.clear();
 }
 
+/// @brief 取消当前缓存并删除该条目的所有缓存（含已完成正文）。
+/// @note 用于删除播放列表条目；先复制 MediaItem，再 cancel() 清空成员。
 void HlsCacheBuilder::cancelAndRemove()
 {
     const MediaItem item = m_item;
@@ -738,6 +803,8 @@ void HlsCacheBuilder::cancelAndRemove()
         MediaCache::removeForItem(item);
 }
 
+/// @brief 中止当前播放列表请求并释放 reply。
+/// @note 先清空 QPointer 再 abort，避免 finished 回调再次进入清理流程。
 void HlsCacheBuilder::abortPlaylistFetch()
 {
     if (m_playlistReply == nullptr)
@@ -748,6 +815,9 @@ void HlsCacheBuilder::abortPlaylistFetch()
     reply->deleteLater();
 }
 
+/// @brief 取消视频/音轨下载任务与转码器。
+/// @note 先断开信号再 cancel，防止取消过程中触发 onTrackFailed 走重复失败
+///       流程；MediaRemux 即使 cancel() 后也要 deleteLater()，释放进程对象。
 void HlsCacheBuilder::cancelTasks()
 {
     if (m_videoTask != nullptr) {
@@ -773,6 +843,7 @@ void HlsCacheBuilder::cancelTasks()
     }
 }
 
+/// @brief 删除视频/音轨的中间文件，包括合并产物、转码产物和续传临时文件。
 void HlsCacheBuilder::cleanupTrackFiles()
 {
     const QString videoBase = m_bodyPath + QStringLiteral(".video");
@@ -793,6 +864,9 @@ void HlsCacheBuilder::cleanupTrackFiles()
     }
 }
 
+/// @brief 清理当前构建留下的半成品。
+/// @param removeBody true 时连同正文和旁车 JSON 一起删除；失败路径使用。
+/// @note 只尝试删除空目录，目录里还有用户其他缓存时 rmdir 失败可忽略。
 void HlsCacheBuilder::cleanupPartial(bool removeBody)
 {
     cleanupTrackFiles();
@@ -811,6 +885,8 @@ void HlsCacheBuilder::cleanupPartial(bool removeBody)
     }
 }
 
+/// @brief 统一失败收尾：停止计时器/请求/任务，删除半成品并发出 failed。
+/// @param message 面向用户的失败原因。
 void HlsCacheBuilder::finishFailed(const QString &message)
 {
     if (!m_active)

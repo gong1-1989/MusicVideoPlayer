@@ -1,3 +1,5 @@
+/// @file ConfigSearchProvider.cpp
+/// @brief 配置驱动搜索源的请求、解析与二次详情实现。
 #include "net/ConfigSearchProvider.h"
 
 #include "net/ConfigMapper.h"
@@ -21,6 +23,8 @@ using namespace ConfigMapper;
 
 namespace {
 
+/// @brief 归一化主线路与备用线路并去重。
+/// @return 有效的 http/https 绝对地址列表；顺序保留配置顺序。
 QStringList collectNormalizedUrls(const QString &primary, const QStringList &alternatives,
                                   const QUrl &base)
 {
@@ -37,7 +41,10 @@ QStringList collectNormalizedUrls(const QString &primary, const QStringList &alt
     return result;
 }
 
-/// 同一集的多条线路里优先 mp4/flv；没有直链时才用 HLS。
+/// @brief 选择同一集的首选播放地址。
+/// @param candidates 归一化后的主/备用线路。
+/// @param remaining 输出其余线路，供播放失败时切换。
+/// @return 优先第一个 mp4/flv 等普通直链；否则返回首条候选；空列表返回空 URL。
 QUrl choosePlaybackUrl(const QStringList &candidates, QStringList *remaining)
 {
     if (remaining != nullptr)
@@ -63,6 +70,10 @@ QUrl choosePlaybackUrl(const QStringList &candidates, QStringList *remaining)
 
 } // namespace
 
+/// @brief 构造配置驱动搜索源。
+/// @param config 源配置，内部按值保存；不再回读磁盘。
+/// @param http 共享 HTTP 客户端，可为空。
+/// @param parent 父对象。
 ConfigSearchProvider::ConfigSearchProvider(const SourceConfig &config, HttpClient *http,
                                            QObject *parent)
     : SearchProviderBase(parent)
@@ -71,6 +82,10 @@ ConfigSearchProvider::ConfigSearchProvider(const SourceConfig &config, HttpClien
 {
 }
 
+/// @brief 发起一次搜索。
+/// @param keyword 用户关键词，按 URL 组件编码后填入模板。
+/// @param limit 期望条数；<=0 时默认 20。
+/// @note 每个 provider 一次只跑一个搜索；新的 search 会重置详情槽位和计时。
 void ConfigSearchProvider::search(const QString &keyword, int limit)
 {
     m_keyword = keyword;
@@ -135,6 +150,9 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
             &ConfigSearchProvider::onReplyFinished);
 }
 
+/// @brief 中止本次搜索及其所有在途详情请求。
+/// @note 详情阶段最多 3 路并发；只中止主请求会让详情继续跑完并回写旧结果，
+///       因此这里把所有详情回复一起 abort/deleteLater，并清空槽位状态。
 void ConfigSearchProvider::abort()
 {
     m_done = true;
@@ -144,8 +162,8 @@ void ConfigSearchProvider::abort()
         reply->abort();
         reply->deleteLater();
     }
-    // 详情阶段最多 3 路并发，旧实现只中止 m_reply，详情请求会继续跑完。
-    // 取消/超时后必须把它们一起中止并从集合移除，避免后台占用连接。
+    // 详情阶段最多 3 路并发；取消/超时后必须把它们一起中止并从集合移除，
+    // 否则会继续占用连接、甚至在新搜索开始后回写旧结果。
     const QSet<QNetworkReply *> details = m_detailReplies;
     m_detailReplies.clear();
     for (QNetworkReply *reply : details) {
@@ -158,6 +176,8 @@ void ConfigSearchProvider::abort()
     m_detailBuckets.clear();
 }
 
+/// @brief 处理搜索主请求完成：校验响应、定位结果数组并组装基础条目。
+/// @note 没有直链且配置了二次解析时，把条目暂存到 pending 列表并进入详情阶段。
 void ConfigSearchProvider::onReplyFinished()
 {
     if (m_done)
@@ -320,6 +340,10 @@ void ConfigSearchProvider::onReplyFinished()
     launchDetails();
 }
 
+/// @brief 把一个基础条目和 stream 字段展开为可播放结果。
+/// @param base 结果字段已填好的模板条目。
+/// @param stream 直链字段原文，可能用 `$$$` 分隔多条线路。
+/// @return 剧集模式按集拆分；单集模式返回一条；无有效地址时返回空并计入 filtered。
 QVector<MediaItem> ConfigSearchProvider::buildItems(const MediaItem &base, const QString &stream)
 {
     QVector<MediaItem> items;
@@ -369,6 +393,9 @@ QVector<MediaItem> ConfigSearchProvider::buildItems(const MediaItem &base, const
     return items;
 }
 
+/// @brief 按最多 3 路并发发起详情请求。
+/// @note 模板变量按 URL 组件编码且保留斜杠，避免 id 中的 &/# 拆断 query；
+///       详情地址必须是 http/https。
 void ConfigSearchProvider::launchDetails()
 {
     constexpr int kDetailConcurrency = 3;
@@ -430,6 +457,11 @@ void ConfigSearchProvider::launchDetails()
         finishSearch();
 }
 
+/// @brief 处理单条详情响应，把解析出的直链展开到对应索引槽。
+/// @param reply 已完成的详情回复；为空表示请求未发出。
+/// @param index 该条目在搜索命中列表中的原始下标。
+/// @param elapsedMs 本次详情请求耗时，仅用于日志。
+/// @note 无论成功失败都会继续补位下一批详情，最终由 finishSearch 统一收口。
 void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index, qint64 elapsedMs)
 {
     if (reply != nullptr)
@@ -506,6 +538,8 @@ void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index, qin
     launchDetails();
 }
 
+/// @brief 收口一次搜索：按索引合并详情槽并发出 finished。
+/// @note 只发一次；合并后立即清空内部状态，避免结果被下一次搜索复用。
 void ConfigSearchProvider::finishSearch()
 {
     if (m_done)

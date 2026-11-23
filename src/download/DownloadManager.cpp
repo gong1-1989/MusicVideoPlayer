@@ -890,8 +890,8 @@ void DownloadManager::startJob(const QString &id)
     if (task == nullptr) {
         job.status = DownloadJob::Status::Failed;
         job.message = tr("无法启动下载任务");
-        // 以前这里只改内存状态，界面会一直停在“正在下载”，重启前也无法
-        // 把失败原因落盘；补一次保存与通知。
+        // 任务启动失败时也要把 Failed 状态落盘并通知界面，否则会一直停在
+        // “正在下载”，重启前也看不到失败原因。
         scheduleSave();
         scheduleNotify();
         emit statusMessage(job.message);

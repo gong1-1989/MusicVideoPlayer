@@ -1,3 +1,6 @@
+/// @file test_integration.cpp
+/// @brief 跨模块集成测试：本地 HTTP 服务、HLS 播放列表改写、流代理、下载、
+///        缓存、歌词与搜索源的真实交互（不依赖外网，除非用例显式联网）。
 #include "cache/HlsCacheBuilder.h"
 #include "cache/LyricsCache.h"
 #include "cache/MediaCache.h"

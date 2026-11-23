@@ -164,6 +164,10 @@ PlaybackController::PlaybackController(QObject *parent)
             });
 }
 
+/// @brief 析构时异步关闭流转代理线程。
+/// @note 不使用 BlockingQueuedConnection 从 GUI 线程等待代理线程：代理卡在网络
+///       回调或析构里时会无限阻塞退出流程。这里把 shutdown 和 quit 投递到代理
+///       线程自己的事件循环，最多等 3 秒。
 PlaybackController::~PlaybackController()
 {
     m_proxyReady = false;
@@ -175,9 +179,9 @@ PlaybackController::~PlaybackController()
         return;
     }
 
-    // 旧实现用 BlockingQueuedConnection 从 GUI 线程等代理线程；代理一旦卡在
-    // 网络回调或析构里，退出流程会无限等待。这里改为把 shutdown 和 quit
-    // 投递到代理线程自己的事件循环，最多等 3 秒。
+    // 不能从 GUI 线程同步等待代理线程：代理一旦卡在网络回调或析构里，
+    // 退出流程会无限等待。因此把 shutdown 和 quit 投递到代理线程自己的
+    // 事件循环，最多等 3 秒。
     //
     // 超时后不再调用 QThread::terminate()：强制终止可能发生在互斥锁、网络
     // 回调或 deleteLater 中间，轻则泄漏，重则崩溃。线程还在跑时也不能让

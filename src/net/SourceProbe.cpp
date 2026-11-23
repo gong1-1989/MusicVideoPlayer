@@ -698,8 +698,8 @@ bool isWrapperArray(const QJsonArray &array)
 }
 
 /// 在 JSON 里找最像“条目列表”的数组，并生成带数组索引的路径（如 `[0].list`）。
-/// 以前遇到数组就返回，根为 `[{"list":[...]}]` 时只看到外层 1 条；
-/// 现在只对明确的包装层继续向下扫描，索引路径可直接交给 ConfigMapper::valueAtPath。
+/// 根为 `[{"list":[...]}]` 这类包装层时继续向下扫描，避免只把外层 1 条当结果；
+/// 索引路径可直接交给 ConfigMapper::valueAtPath。
 void scanArrays(const QJsonValue &node, const QString &path, int depth, int *bestScore,
                 QJsonArray *best, QString *bestPath, int *budget)
 {

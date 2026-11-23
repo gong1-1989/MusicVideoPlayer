@@ -1,3 +1,5 @@
+/// @file main.cpp
+/// @brief 程序入口：日志落盘与轮转、单实例锁与激活、主题、启动页和主窗口。
 #include "ui/MainWindow.h"
 #include "ui/ThemeManager.h"
 
@@ -46,6 +48,9 @@ constexpr qint64 kFlushBytes = 64LL * 1024;
 
 /// 日志只保留当前文件 + 一个 .1 备份，避免长期运行把磁盘写满。
 /// 轮转失败时保持原文件继续追加，不因为日志问题影响主流程。
+/// @brief 轮转日志：当前文件改名为 .1，旧 .1 先移到 .old 再清理。
+/// @param path 当前日志路径。
+/// @return 轮转成功返回 true；备份改名失败时保持原文件可继续追加。
 bool rotateLog(const QString &path)
 {
     const QString backup = path + QStringLiteral(".1");
@@ -66,6 +71,12 @@ bool rotateLog(const QString &path)
     return true;
 }
 
+/// @brief 全局 Qt 消息处理器：格式化后写入程序目录 log/，并同步输出到 stderr。
+/// @param type 消息级别。
+/// @param context 源码文件与行号上下文。
+/// @param message 消息正文。
+/// @note 格式化在锁外完成；WARN 及以上立即 flush，INFO/DEBUG 按 250ms 或 64KB 批量落盘；
+///       文件达到 8MB 后轮转，保留一个 .1 备份。日志目录不可写时每 5 秒才重试一次。
 void messageHandler(QtMsgType type, const QMessageLogContext &context, const QString &message)
 {
     const char *level = "INFO";
@@ -111,7 +122,7 @@ void messageHandler(QtMsgType type, const QMessageLogContext &context, const QSt
             if (now - g_lastOpenAttemptMs >= 5000) {
                 g_lastOpenAttemptMs = now;
 
-                // 日志只放程序目录下的 log/，不再回退用户 AppData
+                // 日志统一放在程序目录下的 log/，便于便携部署与现场取证
                 const QString appDir = QCoreApplication::applicationDirPath();
                 const QString localDir = QDir(appDir).filePath(QStringLiteral("log"));
                 QDir().mkpath(localDir);
@@ -181,6 +192,7 @@ void messageHandler(QtMsgType type, const QMessageLogContext &context, const QSt
 }
 
 /// 退出前把 INFO/DEBUG 缓冲落盘；句柄是静态的、进程退出时不会被析构。
+/// @brief 退出前把 INFO/DEBUG 缓冲落盘（静态句柄不会在进程退出时自动析构）。
 void flushLogFile()
 {
     QMutexLocker locker(&g_logMutex);
@@ -191,6 +203,8 @@ void flushLogFile()
 }
 
 /// 同一 Data 目录只允许一个写者；不同便携目录/测试目录互不干扰。
+/// @brief 生成本地激活服务名：同一 Data 目录对应同一服务名。
+/// @return 形如 MusicVideoPlayer-activate-<16 位十六进制摘要> 的服务名。
 QString activationServerName()
 {
     const QByteArray digest =
@@ -200,6 +214,8 @@ QString activationServerName()
     return QStringLiteral("MusicVideoPlayer-activate-") + QString::fromLatin1(digest);
 }
 
+/// @brief 通过本地套接字唤醒已运行实例，最多重试 4 次、每次 500ms。
+/// @return 成功发送 "activate" 返回 true。
 bool notifyRunningInstance()
 {
     QLocalSocket socket;
@@ -222,6 +238,9 @@ bool notifyRunningInstance()
 
 /// 启动页：中间是应用图标，下面带名称、加载提示和一条流动进度光带。
 /// 用代码绘制而不是额外图片，主题/版本变化时只需改这一处。
+/// @brief 绘制启动页位图。
+/// @param phase 动画帧序号，控制加载点数量与光带位置。
+/// @return 560×320 的启动页位图。
 QPixmap splashPixmap(int phase)
 {
     const int width = 560;
@@ -303,6 +322,9 @@ QPixmap splashPixmap(int phase)
 
 } // namespace
 
+/// @brief 程序入口：初始化应用元信息、数据目录、单实例锁、日志、主题、激活服务、
+///        启动页与主窗口，最后进入事件循环。
+/// @return 进程退出码；数据目录创建失败返回 1，检测到已有实例返回 0。
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);

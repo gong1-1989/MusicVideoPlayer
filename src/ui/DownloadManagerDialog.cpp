@@ -1,3 +1,5 @@
+/// @file DownloadManagerDialog.cpp
+/// @brief 下载管理器窗口的数据绑定、分组展示与任务操作实现。
 #include "ui/DownloadManagerDialog.h"
 #include "ui_DownloadManagerDialog.h"
 
@@ -22,6 +24,9 @@
 
 namespace {
 
+/// @brief 把字节数格式化为便于阅读的 KB/MB/GB。
+/// @param bytes 字节数；非正数表示未知。
+/// @return "—"、KB、MB 或 GB 文本。
 QString humanSize(qint64 bytes)
 {
     if (bytes <= 0)
@@ -34,6 +39,7 @@ QString humanSize(qint64 bytes)
     return QStringLiteral("%1 GB").arg(mb / 1024.0, 0, 'f', 2);
 }
 
+/// @brief 生成“已下载 / 总大小”文本；总大小未知时只显示已下载量。
 QString sizeText(const DownloadJob &job)
 {
     if (job.bytesTotal > 0)
@@ -44,6 +50,9 @@ QString sizeText(const DownloadJob &job)
 
 } // namespace
 
+/// @brief 构建下载管理器窗口并连接 DownloadManager 的变更信号。
+/// @param manager 下载管理器，窗口不拥有它；为空时只展示空界面。
+/// @param parent 父窗口。
 DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *parent)
     : QDialog(parent)
     , m_manager(manager)
@@ -117,6 +126,10 @@ DownloadManagerDialog::~DownloadManagerDialog()
     delete ui;
 }
 
+/// @brief 按当前明暗主题重设树表头样式。
+/// @note 部分 Windows/Qt 组合下，带祖先选择器的 QSS 无法稳定作用到
+///       QHeaderView 的背景，会出现灰白底配白字；这里同时设置样式表和
+///       QPalette，保证任何主题下都有足够对比度。
 void DownloadManagerDialog::applyHeaderStyle()
 {
     if (m_tree == nullptr || m_tree->header() == nullptr)
@@ -154,6 +167,7 @@ void DownloadManagerDialog::applyHeaderStyle()
     header->setHighlightSections(false);
 }
 
+/// @brief 每次显示时重新套用原生标题栏配色。
 void DownloadManagerDialog::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
@@ -161,6 +175,7 @@ void DownloadManagerDialog::showEvent(QShowEvent *event)
     ThemeManager::instance().applyWindowChrome(this);
 }
 
+/// @brief 在窗口底部显示一条过程提示；空文本会隐藏提示行。
 void DownloadManagerDialog::setStatusMessage(const QString &text)
 {
     if (m_statusLabel == nullptr)
@@ -170,6 +185,9 @@ void DownloadManagerDialog::setStatusMessage(const QString &text)
     m_statusLabel->setVisible(!text.isEmpty());
 }
 
+/// @brief 依据 DownloadManager 的当前任务快照重建整棵树。
+/// @note 重建前保存选中任务 id，重建后按 id 恢复选中，避免下载进度刷新
+///       导致用户选中的行被清掉。任务按“未完成 / 已完成”分组展示。
 void DownloadManagerDialog::rebuild()
 {
     if (m_manager == nullptr)
@@ -250,6 +268,9 @@ void DownloadManagerDialog::rebuild()
     updateButtons();
 }
 
+/// @brief 按当前选中任务的状态启用/禁用操作按钮。
+/// @note 打开文件要求任务已完成且最终文件仍存在；重试只对失败/暂停任务开放；
+///       “清空已完成”只在至少存在一条完成记录时可用。
 void DownloadManagerDialog::updateButtons()
 {
     const DownloadJob *job = selectedJob();
@@ -274,6 +295,9 @@ void DownloadManagerDialog::updateButtons()
     m_clearCompleted->setEnabled(hasCompleted);
 }
 
+/// @brief 取当前选中行对应的任务。
+/// @return 任务指针指向 DownloadManager 内部快照，仅在本次调用期间有效；
+///         选中分组行或记录已消失时返回 nullptr。
 const DownloadJob *DownloadManagerDialog::selectedJob() const
 {
     const QTreeWidgetItem *item = m_tree->currentItem();
@@ -289,6 +313,7 @@ const DownloadJob *DownloadManagerDialog::selectedJob() const
     return nullptr;
 }
 
+/// @brief 用系统默认播放器打开选中的已完成文件。
 void DownloadManagerDialog::openSelectedFile()
 {
     const DownloadJob *job = selectedJob();
@@ -302,6 +327,7 @@ void DownloadManagerDialog::openSelectedFile()
     QDesktopServices::openUrl(QUrl::fromLocalFile(job->filePath));
 }
 
+/// @brief 在资源管理器中打开选中文件所在目录。
 void DownloadManagerDialog::openSelectedFolder()
 {
     const DownloadJob *job = selectedJob();
@@ -311,6 +337,9 @@ void DownloadManagerDialog::openSelectedFolder()
         QUrl::fromLocalFile(QFileInfo(job->filePath).absolutePath()));
 }
 
+/// @brief 重试选中的失败/暂停任务。
+/// @note 快照型 HLS 任务（无 ENDLIST）必须先征得用户同意：结果可能不完整，
+///       且不跨启动续传；用户拒绝时不做任何操作。
 void DownloadManagerDialog::retrySelected()
 {
     const DownloadJob *job = selectedJob();
@@ -335,6 +364,9 @@ void DownloadManagerDialog::retrySelected()
     rebuild();
 }
 
+/// @brief 移除选中的下载记录。
+/// @note 已完成任务只移除记录、不删磁盘文件；未完成任务会同时删除已下载
+///       部分和 .mvpdownload 临时文件，因此必须二次确认。
 void DownloadManagerDialog::removeSelected()
 {
     const DownloadJob *job = selectedJob();
@@ -352,12 +384,13 @@ void DownloadManagerDialog::removeSelected()
     }
 
     m_selectedId.clear();
-    // 确认框会跑嵌套事件循环，期间后台任务可能完成并让 m_jobs 重新分配；
+    // 确认框会跑嵌套事件循环，期间 DownloadManager 可能刷新任务列表，
     // 上面保存的 job 指针已经失效，后续只能使用提前复制的 id。
     m_manager->removeJob(id);
     rebuild();
 }
 
+/// @brief 清空全部已完成记录，不删除磁盘文件。
 void DownloadManagerDialog::clearCompleted()
 {
     if (m_manager == nullptr)

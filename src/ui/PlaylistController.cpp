@@ -1,3 +1,5 @@
+/// @file PlaylistController.cpp
+/// @brief 音乐/视频两个播放列表的恢复、保存、导入、增删与右键菜单。
 #include "ui/PlaylistController.h"
 
 #include "cache/MediaCache.h"
@@ -166,6 +168,10 @@ QListView *PlaylistController::activeView() const
     return m_ui.tabs->currentIndex() == 1 ? m_ui.videoView : m_ui.musicView;
 }
 
+/// @brief 从 Data/playlists.json 恢复两个列表，并按需迁移旧版 QSettings 数据。
+/// @note 读取被冻结（storageBlocked）时不迁移、不回写，只提示用户修复原文件；
+///       成功从备份恢复的内容会标记为未保存，退出前写回主文件。
+///       恢复后会去重，去重结果变化时立即回写，避免下次启动又“变多”。
 void PlaylistController::restore()
 {
     const PlaylistStore::LoadResult loadResult = PlaylistStore::loadAll();
@@ -248,6 +254,7 @@ void PlaylistController::restore()
     }
 }
 
+/// @brief 300ms 防抖保存，用 generation 丢弃过期回调；读取冻结时直接跳过。
 void PlaylistController::scheduleSave()
 {
     if (m_storageBlocked)
@@ -261,6 +268,8 @@ void PlaylistController::scheduleSave()
     });
 }
 
+/// @brief 立即把两个列表写入 Data/playlists.json。
+/// @return 成功返回 true；读取被冻结或写盘失败返回 false，并保留 dirty 标记供重试。
 bool PlaylistController::save()
 {
     // 任何同步保存都让排队中的防抖保存失效。
@@ -284,6 +293,8 @@ bool PlaylistController::save()
     return false;
 }
 
+/// @brief 用户主动保存（右键“保存列表”）：无修改时直接提示，不重复写盘。
+/// @return 列表已是最新或写入成功返回 true。
 bool PlaylistController::saveNow()
 {
     if (m_storageBlocked)
@@ -299,6 +310,8 @@ bool PlaylistController::saveNow()
     return false;
 }
 
+/// @brief 保存失败后的重试入口；读取被冻结时仍拒绝写盘。
+/// @return 无修改或重试成功返回 true。
 bool PlaylistController::retrySave()
 {
     if (!m_dirty)
@@ -318,6 +331,7 @@ bool PlaylistController::retrySave()
     return true;
 }
 
+/// @brief 更新未保存标记并刷新页签标题上的 "*"。
 void PlaylistController::setDirty(bool dirty)
 {
     if (m_dirty == dirty)
@@ -422,6 +436,11 @@ void PlaylistController::addSearchItem(const MediaItem &item, MediaType type)
                                                     : tr("已加入视频列表"));
 }
 
+/// @brief 逐个导入本地文件；专用/加密格式统一拦截并汇总提示。
+/// @param type 目标列表类型，决定条目归入音乐或影视。
+/// @param files 待导入的本地路径列表。
+/// @note 标题去掉扩展名；同目录同名 .lrc 自动作为本地歌词；同名条目由模型去重。
+///       被拦下的格式按客户端分组提示，并阻止整批静默失败。
 void PlaylistController::addLocalFiles(MediaType type, const QStringList &files)
 {
     PlaylistModel *model = modelFor(type);
@@ -571,6 +590,8 @@ bool PlaylistController::promotePreviewRow(MediaType type, int row)
     return true;
 }
 
+/// @brief 弹出本地文件选择框并导入。
+/// @param type 目标列表类型。
 void PlaylistController::chooseLocalFiles(MediaType type)
 {
     QWidget *parent = m_ui.tabs != nullptr ? m_ui.tabs->window() : nullptr;
@@ -585,6 +606,10 @@ void PlaylistController::chooseLocalFiles(MediaType type)
     addLocalFiles(type, files);
 }
 
+/// @brief 生成打开文件对话框的过滤器字符串。
+/// @param type 目标列表类型。
+/// @return 音乐只列常见音频后缀；影视先列常见视频后缀，再单列一组
+///         “播放器专用格式”，让用户能看到文件，但导入时仍会被拦截提示。
 QString PlaylistController::localFileDialogFilter(MediaType type)
 {
     if (type == MediaType::Music) {
@@ -619,6 +644,9 @@ void PlaylistController::bindView(QListView *view, PlaylistModel *model, MediaTy
     });
 }
 
+/// @brief 停止播放后清理条目的歌词缓存与播放缓存，文件被占用时重试。
+/// @param item 被删除的媒体条目。
+/// @param attempt 重试序号；达到 9 时共尝试 0..9 十次（约 4.5 秒）后放弃。
 void PlaylistController::removeCacheAfterPlayback(const MediaItem &item, int attempt)
 {
     // 歌词和播放缓存同属一个条目：删除列表条目后两者都没有再命中的可能。
@@ -628,8 +656,7 @@ void PlaylistController::removeCacheAfterPlayback(const MediaItem &item, int att
 
     if (MediaCache::removeForItem(item))
         return;
-    // attempt 从 0 开始，>=9 时共尝试 0..9 十次（约 4.5 秒），
-    // 旧条件 >=10 实际会试 11 次，与注释“最多 5 秒”不符。
+    // attempt 从 0 开始，>=9 时共尝试 0..9 十次（约 4.5 秒），避免无限重试。
     if (attempt >= 9) {
         qCWarning(lcPlaylist) << "播放缓存删除失败，文件句柄可能仍被占用：" << item.title;
         return;
@@ -641,6 +668,9 @@ void PlaylistController::removeCacheAfterPlayback(const MediaItem &item, int att
     });
 }
 
+/// @brief 移除指定行：先释放播放器与缓存句柄，再删条目和缓存并落盘。
+/// @param type 列表类型。
+/// @param row 行号；越界时直接返回。
 void PlaylistController::removeRow(MediaType type, int row)
 {
     PlaylistModel *model = modelFor(type);
@@ -675,6 +705,10 @@ void PlaylistController::removeRow(MediaType type, int row)
     }
 }
 
+/// @brief 清空整个列表，并同步释放句柄、删除全部条目缓存。
+/// @param type 列表类型。
+/// @note 正在播放的列表必须先停播并清空 source，再解除模型绑定，
+///       否则 QMediaPlayer 持有缓存文件句柄会导致后续删除失败。
 void PlaylistController::clearPlaylist(MediaType type)
 {
     PlaylistModel *model = modelFor(type);
@@ -710,6 +744,11 @@ void PlaylistController::clearPlaylist(MediaType type)
         emit statusMessage(tr("已清空列表"));
 }
 
+/// @brief 弹出列表右键菜单：重试保存、播放、试听转正式、删除、清空、导入本地文件。
+/// @param type 列表类型。
+/// @param view 触发菜单的视图。
+/// @param model 该视图对应的模型。
+/// @param pos 视口内点击位置。
 void PlaylistController::showContextMenu(MediaType type, QListView *view, PlaylistModel *model,
                                          const QPoint &pos)
 {
@@ -828,6 +867,7 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     }
 }
 
+/// @brief 播放指定列表的指定行。
 void PlaylistController::playRow(MediaType type, int row)
 {
     m_player->setPlaylist(modelFor(type));

@@ -1,3 +1,5 @@
+/// @file FullscreenController.cpp
+/// @brief 全屏窗口、控制条浮层与光标自动隐藏实现。
 #include "ui/FullscreenController.h"
 
 #include "ui/PanelOverlayController.h"
@@ -22,6 +24,14 @@
 #include <windows.h>
 #endif
 
+/// @brief 构造全屏控制器。
+/// @param surface 主窗视频舞台，用于切回视频 sink。
+/// @param player 当前播放器。
+/// @param transport 控制条控件，会在全屏时重挂到全屏窗口。
+/// @param centerLayout 控制条原布局，退出时按原状态挂回。
+/// @param panels 贴边浮层控制器。
+/// @param stageCornerRadius 全屏前舞台圆角，退出时恢复。
+/// @param parent 父对象。
 FullscreenController::FullscreenController(VideoSurface *surface, QMediaPlayer *player,
                                            QWidget *transport, QVBoxLayout *centerLayout,
                                            PanelOverlayController *panels,
@@ -62,6 +72,7 @@ FullscreenController::~FullscreenController()
         exitFullScreen();
 }
 
+/// @brief 在全屏/窗口模式间切换。
 void FullscreenController::toggle()
 {
     if (m_window != nullptr)
@@ -70,6 +81,8 @@ void FullscreenController::toggle()
         enterFullScreen();
 }
 
+/// @brief 进入全屏：新建全屏窗和视频控件，切换播放器视频输出并搬移控制条。
+/// @note 不搬运主窗 QVideoWidget，避免 Windows 原生子窗重挂后丢失呈现目标。
 void FullscreenController::enterFullScreen()
 {
     if (m_window != nullptr)
@@ -161,6 +174,7 @@ void FullscreenController::enterFullScreen()
     });
 }
 
+/// @brief 退出全屏：先把视频输出切回主舞台，再恢复控制条与浮层并销毁全屏窗。
 void FullscreenController::exitFullScreen()
 {
     if (m_window == nullptr)
@@ -208,6 +222,7 @@ void FullscreenController::exitFullScreen()
     window->deleteLater();
 }
 
+/// @brief 按全屏窗口尺寸把控制条居中放在底部，并限制最大宽度/高度。
 void FullscreenController::updateControlGeometry()
 {
     if (m_window == nullptr)
@@ -223,6 +238,7 @@ void FullscreenController::updateControlGeometry()
     m_transport->raise();
 }
 
+/// @brief 显示控制条与光标，并重新开始 2.6 秒隐藏计时。
 void FullscreenController::showControls()
 {
     if (m_window == nullptr)
@@ -235,6 +251,7 @@ void FullscreenController::showControls()
     scheduleHideControls();
 }
 
+/// @brief 重新开始控制条自动隐藏计时。
 void FullscreenController::scheduleHideControls()
 {
     if (m_window == nullptr)
@@ -242,6 +259,8 @@ void FullscreenController::scheduleHideControls()
     m_hideTimer->start();
 }
 
+/// @brief 自动隐藏控制条与光标。
+/// @note 鼠标按住（拖动进度/音量）时顺延隐藏；停在控制条上不算持续操作。
 void FullscreenController::hideControls()
 {
     if (m_window == nullptr || m_transport == nullptr)
@@ -261,6 +280,10 @@ void FullscreenController::hideControls()
     qInfo() << "全屏控制条已隐藏，光标隐藏状态：" << m_cursorOverrideActive;
 }
 
+/// @brief 统一隐藏/恢复全屏光标。
+/// @param hidden true 隐藏；false 恢复箭头。
+/// @note 同时处理 Qt 控件光标、应用级 override cursor 和 Win32 显示计数，
+///       以覆盖原生视频子窗的 WM_SETCURSOR 复原行为。
 void FullscreenController::setCursorHidden(bool hidden)
 {
     if (m_window == nullptr)
@@ -323,6 +346,7 @@ void FullscreenController::setCursorHidden(bool hidden)
 }
 
 #ifdef Q_OS_WIN
+/// @brief Windows 原生事件兜底：处理原生子窗吞掉的鼠标移动与光标复原。
 bool FullscreenController::nativeEventFilter(const QByteArray &eventType, void *message,
                                              qintptr *result)
 {
@@ -361,6 +385,9 @@ bool FullscreenController::nativeEventFilter(const QByteArray &eventType, void *
 }
 #endif
 
+/// @brief 监听窗口/舞台/视频控件/控制条的鼠标与按键事件。
+/// @note 鼠标真实位移才恢复光标并重新计时；靠近底边 90px 唤出控制条；
+///       Esc 与关闭事件都走统一退出流程。
 bool FullscreenController::eventFilter(QObject *watched, QEvent *event){
     // 任何真实的鼠标活动都先恢复光标；空闲计时结束后再一起隐藏。
     if (m_window != nullptr) {

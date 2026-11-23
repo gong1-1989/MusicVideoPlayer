@@ -1,3 +1,5 @@
+/// @file HlsCacheManifest.cpp
+/// @brief HLS 缓存清单的最小解析实现。
 #include "cache/HlsCacheManifest.h"
 
 #include "media/MediaItem.h"
@@ -7,6 +9,8 @@
 
 namespace {
 
+// 属性正则只匹配缓存需要的字段，不做完整 HLS 语法校验；解析失败由调用方
+// 通过空结果/错误文本处理。
 const QRegularExpression kBandwidth(QStringLiteral("\\bBANDWIDTH\\s*=\\s*(\\d+)"));
 const QRegularExpression kAudioGroup(QStringLiteral("\\bAUDIO\\s*=\\s*\"([^\"]*)\""));
 const QRegularExpression kResolution(QStringLiteral("\\bRESOLUTION\\s*=\\s*([^,\\s]+)"));
@@ -18,6 +22,7 @@ const QRegularExpression kDefault(QStringLiteral("\\bDEFAULT\\s*=\\s*YES"),
 const QRegularExpression kUri(
     QStringLiteral("\\bURI\\s*=\\s*(?:\"([^\"]*)\"|([^,\\s]*))"));
 
+/// @brief 从标签行提取 URI 属性，兼容带引号和不带引号两种写法。
 QString uriAttribute(const QString &line)
 {
     const QRegularExpressionMatch match = kUri.match(line);
@@ -27,6 +32,7 @@ QString uriAttribute(const QString &line)
                                        : match.captured(1).trimmed();
 }
 
+/// @brief 返回正则第一个捕获组的去空白文本。
 QString capture(const QRegularExpression &re, const QString &line)
 {
     const QRegularExpressionMatch match = re.match(line);
@@ -37,6 +43,13 @@ QString capture(const QRegularExpression &re, const QString &line)
 
 namespace HlsCacheManifest {
 
+/// @brief 解析主播放列表。
+/// @param body 响应正文（UTF-8）。
+/// @param baseUrl 主列表最终地址，用于解析相对 URI。
+/// @param out 解析结果；函数开始时会清空。
+/// @param error 失败原因，可为空。
+/// @return 成功解析出至少一个变体返回 true；正文不是主列表返回 false。
+/// @note 同时收集 AUDIO 组；没有 URI 的音频组（内嵌音轨）不会进入列表。
 bool parseMaster(const QByteArray &body, const QUrl &baseUrl, Master *out, QString *error)
 {
     if (out == nullptr)
@@ -103,6 +116,14 @@ bool parseMaster(const QByteArray &body, const QUrl &baseUrl, Master *out, QStri
     return true;
 }
 
+/// @brief 解析媒体播放列表。
+/// @param body 响应正文（UTF-8）。
+/// @param baseUrl 媒体列表最终地址，用于解析相对分片。
+/// @param out 解析结果；函数开始时会清空。
+/// @param error 失败原因，可为空。
+/// @return 解析出至少一个分片返回 true；不是媒体列表返回 false。
+/// @note 只有 #EXTINF 之后的行才视为分片；所有分片同 URL 且都带
+///       EXT-X-BYTERANGE 时标记 singleFile，调用方可整段 Range 下载。
 bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *out,
                      QString *error)
 {
@@ -177,6 +198,9 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
     return true;
 }
 
+/// @brief 判断两个 URL 是否指向同一资源。
+/// @note 忽略会轮换的签名查询参数，但保留 id/seq 等稳定参数；协议和 host
+///       比较时统一小写。用于识别多个 BYTERANGE 分片是否属于同一整段文件。
 bool sameUrlIgnoringQuery(const QUrl &a, const QUrl &b)
 {
     if (!a.isValid() || !b.isValid())

@@ -1,3 +1,5 @@
+/// @file SourceProbeDialog.cpp
+/// @brief 网站源探测窗口的交互、结果展示与自定义路径管理。
 #include "ui/SourceProbeDialog.h"
 
 #include "net/HttpClient.h"
@@ -21,6 +23,7 @@
 
 namespace {
 
+/// @brief 把 SourceConfig 的字段键翻译成探测结果里的中文名称。
 QString fieldLabelFor(const QString &key)
 {
     if (key == QLatin1String("id"))
@@ -50,6 +53,7 @@ QString fieldLabelFor(const QString &key)
     return key;
 }
 
+/// 探测结果字段的展示顺序：先标题/作者/播放地址，再补充元数据。
 const QStringList kFieldOrder = {
     QStringLiteral("title"),      QStringLiteral("artist"),
     QStringLiteral("streamUrl"),  QStringLiteral("posterUrl"),
@@ -60,6 +64,12 @@ const QStringList kFieldOrder = {
 
 } // namespace
 
+/// @brief 构建探测窗口。
+/// @param http 共享 HTTP 客户端，探测期间不拥有它。
+/// @param type 初始媒体类型，作为探测提示；最终以探测结果为准。
+/// @param initialUrl 预填的站点地址，非空时打开即开始探测。
+/// @param titleText 窗口标题，区分“从网站添加”和“一键更新”。
+/// @param parent 父窗口。
 SourceProbeDialog::SourceProbeDialog(HttpClient *http, MediaType type, const QString &initialUrl,
                                      const QString &titleText, QWidget *parent)
     : QDialog(parent)
@@ -93,6 +103,9 @@ SourceProbeDialog::~SourceProbeDialog()
     delete ui;
 }
 
+/// @brief 首次显示后按当前屏幕可用区重新居中并夹紧边界。
+/// @note 构造时按父窗口位置居中，窄屏/大字体下窗口可能超出屏幕顶部，
+///       导致标题栏和底部按钮不可达；这里延迟到 showEvent 再做一次修正。
 void SourceProbeDialog::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
@@ -114,6 +127,8 @@ void SourceProbeDialog::showEvent(QShowEvent *event)
     });
 }
 
+/// @brief 把 .ui 里的控件指针缓存到成员，并连接所有交互信号。
+/// @note 必须在 setupUi() 之后调用；成员指针为空时后续逻辑全部无法工作。
 void SourceProbeDialog::bindUi()
 {
     m_url = ui->edit_url;
@@ -151,6 +166,9 @@ void SourceProbeDialog::bindUi()
     reloadPathList();
 }
 
+/// @brief 校验网址并发起一次新的探测。
+/// @note 探测期间禁止再次触发；网址缺少协议时自动补 https://，但只接受
+///       http/https。每次探测都重建 Prober，避免旧请求的回调混入新结果。
 void SourceProbeDialog::startProbe()
 {
     if (m_busy)
@@ -195,16 +213,19 @@ void SourceProbeDialog::startProbe()
     m_prober->start(url, currentType(), customPaths(), true);
 }
 
+/// @brief 返回下拉框当前选择的媒体类型。
 MediaType SourceProbeDialog::currentType() const
 {
     return m_type->currentIndex() == 1 ? MediaType::Music : MediaType::Video;
 }
 
+/// @brief 读取当前类型对应的用户自定义探测路径。
 QStringList SourceProbeDialog::customPaths() const
 {
     return AppSettings::probePaths(currentType());
 }
 
+/// @brief 重建当前类型的路径列表：内置路径只读，自定义路径可删除。
 void SourceProbeDialog::reloadPathList()
 {
     if (m_paths == nullptr)
@@ -240,6 +261,9 @@ void SourceProbeDialog::reloadPathList()
     m_paths->clearSelection();
 }
 
+/// @brief 添加一条自定义探测路径并落盘。
+/// @note 未写 {keyword} 时自动补 ?wd={keyword}/&wd={keyword}，否则探测只能
+///       拿到静态列表，无法验证关键词搜索能力。
 void SourceProbeDialog::addCustomPath()
 {
     const QString raw = m_customPath->text().trimmed();
@@ -266,6 +290,8 @@ void SourceProbeDialog::addCustomPath()
     reloadPathList();
 }
 
+/// @brief 删除选中的自定义路径；内置路径不可删除。
+/// @note 按列表项保存的类型标记定位所属列表，避免用户切换类型后误删另一类路径。
 void SourceProbeDialog::removeCustomPath()
 {
     QListWidgetItem *item = m_paths->currentItem();
@@ -289,6 +315,10 @@ void SourceProbeDialog::removeCustomPath()
     reloadPathList();
 }
 
+/// @brief 展示探测结果，并按识别到的媒体类型/站点类型调整界面。
+/// @param result 探测器返回的完整结果，包含尝试记录、配置与样例。
+/// @note 探测结果优先于用户选择：类型不一致时自动切换下拉框；失败时
+///       只展示原因并禁用保存，绝不返回半成品配置。
 void SourceProbeDialog::onProbeFinished(const SourceProbe::Result &result)
 {
     m_busy = false;
@@ -368,6 +398,7 @@ void SourceProbeDialog::onProbeFinished(const SourceProbe::Result &result)
     m_btnSave->setEnabled(true);
 }
 
+/// @brief 关闭窗口时取消仍在进行的探测，避免回调投递到已关闭的界面。
 void SourceProbeDialog::closeEvent(QCloseEvent *event)
 {
     if (m_prober != nullptr)

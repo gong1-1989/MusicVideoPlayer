@@ -1,3 +1,5 @@
+/// @file AppShortcuts.cpp
+/// @brief 快捷键动作表、默认绑定、持久化与冲突检测实现。
 #include "settings/AppShortcuts.h"
 
 #include "settings/AppSettings.h"
@@ -6,6 +8,8 @@
 
 namespace {
 
+/// 全局动作表。id 是写入 QSettings 的稳定键，禁止随界面文案变化而改名；
+/// label 只用于设置页和冲突提示，toggle 仅表达该动作是否为开关语义。
 const AppShortcuts::Action kActions[] = {
     {QStringLiteral("playPause"), QStringLiteral("播放 / 暂停（切换）"),
      QStringLiteral("Space"), true},
@@ -41,11 +45,16 @@ const QVector<AppShortcuts::Action> kActionList = [] {
 
 namespace AppShortcuts {
 
+/// @brief 返回完整的快捷键动作表。
+/// @return 进程生命周期内不变的只读列表。
 const QVector<Action> &actions()
 {
     return kActionList;
 }
 
+/// @brief 按稳定动作 id 查找动作定义。
+/// @param id 动作表中的稳定键，例如 "playPause"。
+/// @return 命中时返回动作指针；未知 id 返回 nullptr。
 const Action *findAction(const QString &id)
 {
     for (const Action &action : kActionList) {
@@ -55,6 +64,10 @@ const Action *findAction(const QString &id)
     return nullptr;
 }
 
+/// @brief 把用户输入的快捷键文本规范化为可持久化的 PortableText。
+/// @param text 用户输入的文本，例如 "Ctrl+S" 或 "Space"。
+/// @return 规范化后的文本；空输入或 Qt 无法解析时返回空字符串。
+/// @note 使用 PortableText 而不是 NativeText，避免不同平台落盘格式不一致。
 QString normalizeSequence(const QString &text)
 {
     const QString trimmed = text.trimmed();
@@ -67,6 +80,8 @@ QString normalizeSequence(const QString &text)
     return sequence.toString(QKeySequence::PortableText);
 }
 
+/// @brief 生成动作表的完整默认绑定。
+/// @return 动作 id 到规范化快捷键的映射；默认值为空的动作也会保留空值。
 QHash<QString, QString> defaultBindings()
 {
     QHash<QString, QString> bindings;
@@ -75,6 +90,10 @@ QHash<QString, QString> defaultBindings()
     return bindings;
 }
 
+/// @brief 读取当前生效的绑定，缺失配置回落到动作表默认值。
+/// @return 动作 id 到快捷键的映射。
+/// @note 用户显式清空的快捷键会保存为空字符串，因此不能用“是否为空”判断
+///       是否需要回落；这里只按 AppSettings::hasShortcut() 判断是否已配置。
 QHash<QString, QString> currentBindings()
 {
     QHash<QString, QString> bindings;
@@ -87,6 +106,9 @@ QHash<QString, QString> currentBindings()
     return bindings;
 }
 
+/// @brief 把绑定写回设置，只处理动作表中已知的 id。
+/// @param bindings 待保存的动作 id 到快捷键映射。
+/// @note 未知 id 会被忽略，防止旧版本或手工编辑的残留键在升级后继续生效。
 void storeBindings(const QHash<QString, QString> &bindings)
 {
     for (const Action &action : kActionList) {
@@ -96,6 +118,11 @@ void storeBindings(const QHash<QString, QString> &bindings)
     }
 }
 
+/// @brief 检测同一快捷键被多个动作占用的情况。
+/// @param bindings 待检测的动作 id 到快捷键映射。
+/// @return 每个冲突按键对应一条记录；空快捷键不参与冲突。
+/// @note 同一动作重复出现不会产生冲突；结果按 QHash 迭代顺序排列，调用方
+///       只应把它用于提示，不应依赖固定顺序。
 QVector<Conflict> conflicts(const QHash<QString, QString> &bindings)
 {
     QHash<QString, QStringList> owners;
@@ -122,6 +149,9 @@ QVector<Conflict> conflicts(const QHash<QString, QString> &bindings)
     return result;
 }
 
+/// @brief 把冲突列表整理成可直接展示的中文多行文本。
+/// @param conflicts conflicts() 返回的冲突记录。
+/// @return 每行形如 "Ctrl+S：保存播放列表、打开搜索发现"；无冲突时返回空字符串。
 QString conflictMessage(const QVector<Conflict> &conflicts)
 {
     QStringList lines;
