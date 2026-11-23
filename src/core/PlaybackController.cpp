@@ -18,6 +18,14 @@ Q_LOGGING_CATEGORY(lcPlayer, "mvp.player")
 namespace {
 /// 恢复进度的成功容差：seek 落点与目标相差 1.5 秒内即视为到位。
 constexpr qint64 kResumeToleranceMs = 1500;
+
+/// 恢复是否已到位：允许 seek 落点略早于目标，但一旦越过目标就算完成。
+/// positionChanged 与 applyPendingResume 必须共用同一判定，否则一处已宣告成功、
+/// 另一处还在轮询，同一次恢复会被处理两遍。
+bool resumeTargetReached(qint64 position, qint64 target)
+{
+    return position + kResumeToleranceMs >= target;
+}
 }
 
 PlaybackController::PlaybackController(QObject *parent)
@@ -78,11 +86,11 @@ PlaybackController::PlaybackController(QObject *parent)
         if (m_pendingResumeMs > 0 && m_mediaReady && m_sourcePlayRequested
             && m_resumeAttemptCount > 0) {
             const qint64 target = m_pendingResumeMs;
-            if (qAbs(position - target) <= kResumeToleranceMs) {
+            if (resumeTargetReached(position, target)) {
                 qCInfo(lcPlayer) << "视频进度已恢复" << currentItem().displayName()
                                  << position;
                 clearPendingResume();
-            } else if (position + kResumeToleranceMs < target) {
+            } else {
                 schedulePendingResume(500);
             }
         }
@@ -694,7 +702,7 @@ void PlaybackController::applyPendingResume()
     // 之后才成立。setSource() 阶段播放器可能上报旧 source 的位置，若提前
     // 判定恢复成功，新 source 会从 0 播放并覆盖真实进度。
     const qint64 position = m_player->position();
-    if (m_resumeAttemptCount > 0 && position + kResumeToleranceMs >= target) {
+    if (m_resumeAttemptCount > 0 && resumeTargetReached(position, target)) {
         qCInfo(lcPlayer) << "视频进度已恢复" << item.displayName() << position;
         clearPendingResume();
         return;

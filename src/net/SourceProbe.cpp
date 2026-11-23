@@ -651,25 +651,53 @@ MediaType detectType(const QVector<FieldSample> &samples, const StreamPick &stre
     return fallback;
 }
 
-void scanArrays(const QJsonValue &node, const QString &path, int depth, QJsonArray *best,
-                QString *bestPath)
+/// 数组能否当“条目列表”的候选：首元素必须是对象，且至少有一个标量字段。
+/// 只有嵌套列表的对象（如 `[{"list":[...]}]`）属于包装层，不能当成结果数组。
+int itemFieldCount(const QJsonArray &array)
+{
+    if (array.isEmpty() || !array.first().isObject())
+        return 0;
+    int count = 0;
+    const QJsonObject first = array.first().toObject();
+    for (auto it = first.constBegin(); it != first.constEnd(); ++it) {
+        if (!it.value().isArray() && !it.value().isObject())
+            ++count;
+    }
+    return count;
+}
+
+/// 在 JSON 里找最像“条目列表”的数组，并生成带数组索引的路径（如 `[0].list`）。
+/// 以前遇到数组就返回，根为 `[{"list":[...]}]` 时只看到外层 1 条；
+/// 现在继续向下扫描，索引路径可直接交给 ConfigMapper::valueAtPath。
+void scanArrays(const QJsonValue &node, const QString &path, int depth, int *bestScore,
+                QJsonArray *best, QString *bestPath)
 {
     if (depth > 6)
         return;
     if (node.isArray()) {
         const QJsonArray array = node.toArray();
-        if (!array.isEmpty() && array.first().isObject() && array.size() > best->size()) {
+        const int fields = itemFieldCount(array);
+        // 条目数优先；条目数相同时字段更丰富的一层更像真实结果列表。
+        const int score = fields > 0 ? array.size() * 32 + qMin(fields, 31) : -1;
+        if (score > *bestScore) {
+            *bestScore = score;
             *best = array;
             *bestPath = path;
         }
-        // 结果数组内部一般没有更值钱的数组，不再往里钻
+        // 只向下钻有限个元素：根数组可能是上千条数据，全扫会放大探测耗时。
+        const int scanCount = qMin(array.size(), 16);
+        for (int i = 0; i < scanCount; ++i) {
+            const QString child = path + QLatin1Char('[') + QString::number(i)
+                                  + QLatin1Char(']');
+            scanArrays(array.at(i), child, depth + 1, bestScore, best, bestPath);
+        }
         return;
     }
     if (node.isObject()) {
         const QJsonObject object = node.toObject();
         for (auto it = object.constBegin(); it != object.constEnd(); ++it) {
             const QString child = path.isEmpty() ? it.key() : path + QLatin1Char('.') + it.key();
-            scanArrays(it.value(), child, depth + 1, best, bestPath);
+            scanArrays(it.value(), child, depth + 1, bestScore, best, bestPath);
         }
     }
 }
@@ -1150,7 +1178,8 @@ void Prober::probeNextCandidate()
 
         QJsonArray items;
         QString itemsPath;
-        scanArrays(root, QString(), 0, &items, &itemsPath);
+        int itemsScore = -1;
+        scanArrays(root, QString(), 0, &itemsScore, &items, &itemsPath);
         if (items.isEmpty()) {
             ++m_jsonNoItems;
             recordAttempt(probeUrl, status, tr("JSON 里没有结果数组"));

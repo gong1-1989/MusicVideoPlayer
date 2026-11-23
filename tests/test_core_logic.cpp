@@ -761,6 +761,7 @@ private slots:
     void sourceProbeWebFallbackForMaccmsSite();
     void sourceProbeMusicDoesNotBecomeWebVideo();
     void sourceProbeThirdKeywordValidation();
+    void sourceProbeNestedArrayItemsPath();
     void sourceProbeAutoCoversBothTypeCandidates();
     void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
@@ -1691,6 +1692,53 @@ void CoreLogicTest::sourceProbeThirdKeywordValidation()
     QCOMPARE(result.validationPasses, 3);
     QVERIFY(result.validationNote.contains(QStringLiteral("三轮")));
     QVERIFY(result.sampleCount > 0);
+}
+
+void CoreLogicTest::sourceProbeNestedArrayItemsPath()
+{
+    // 根是 `[{"list":[...]}]` 的接口：外层数组只有 1 条包装对象，
+    // 真正的 2 条结果在 `[0].list` 里。旧扫描遇到数组就返回，
+    // 会把外层 1 条当结果数组，字段全空后探测失败。
+    ProbeSiteServer server([](const QString &target, QByteArray &body,
+                              QByteArray &contentType, int &status) {
+        const QString decoded = QUrl::fromPercentEncoding(target.toUtf8());
+        if (target.contains(QStringLiteral("provide/vod"))) {
+            QString title = QStringLiteral("嵌套数组片");
+            if (decoded.contains(QStringLiteral("wd=电影")))
+                title = QStringLiteral("嵌套数组电影");
+            else if (decoded.contains(QStringLiteral("wd=庆余年")))
+                title = QStringLiteral("嵌套数组庆余年");
+            status = 200;
+            contentType = QByteArrayLiteral("application/json");
+            body = QByteArrayLiteral("[{\"list\":[")
+                   + QByteArrayLiteral("{\"vod_name\":\"") + title.toUtf8()
+                   + QByteArrayLiteral("\",\"vod_play_url\":\"第1集$https://example.com/a.m3u8\"},")
+                   + QByteArrayLiteral("{\"vod_name\":\"") + title.toUtf8()
+                   + QByteArrayLiteral(" 第二集\",\"vod_play_url\":\"第2集$https://example.com/b.m3u8\"}")
+                   + QByteArrayLiteral("]}]");
+            return;
+        }
+        status = 404;
+        contentType = QByteArrayLiteral("text/html");
+        body = QByteArrayLiteral("not found");
+    });
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    qRegisterMetaType<SourceProbe::Result>("SourceProbe::Result");
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+    prober.start(QUrl(server.baseUrl()), MediaType::Video, {}, false);
+    QVERIFY2(finished.wait(15000), "嵌套数组探查在 15 秒内没有返回");
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    QVERIFY2(result.ok, qPrintable(QStringLiteral("嵌套数组探测失败：") + result.error));
+    QCOMPARE(result.siteKind, SourceProbe::SiteKind::JsonConfig);
+    QCOMPARE(result.config.itemsPath, QStringLiteral("[0].list"));
+    QCOMPARE(result.sampleCount, 2);
+    QVERIFY(!result.sampleTitles.isEmpty());
 }
 
 void CoreLogicTest::sourceProbeAutoCoversBothTypeCandidates()
