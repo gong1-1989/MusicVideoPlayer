@@ -1,3 +1,5 @@
+/// @file SourceProbe.cpp
+/// @brief 搜索源探查器：抓首页候选入口、按规则识别接口/网页型源，并试搜验真。
 #include "net/SourceProbe.h"
 
 #include "net/ConfigSearchProvider.h"
@@ -794,12 +796,14 @@ QStringList defaultPaths(MediaType mediaType)
             QStringLiteral("/ajax/search?keyword={keyword}&limit={limit}")};
 }
 
+/// @brief 构造探查器，探查过程复用调用方的 HTTP 客户端。
 Prober::Prober(HttpClient *http, QObject *parent)
     : QObject(parent)
     , m_http(http)
 {
 }
 
+/// @brief 释放探查器并中止在途请求。
 Prober::~Prober()
 {
     m_finished = true;
@@ -812,6 +816,11 @@ Prober::~Prober()
     }
 }
 
+/// @brief 开始探查指定站点。
+/// @param site 站点入口。
+/// @param hintType 期望的媒体类型（未知时由探查结果推断）。
+/// @param extraPaths 额外的候选路径。
+/// @note 全程受请求预算约束，超预算按失败收尾，避免单站点拖死界面。
 void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extraPaths,
                    bool autoDetect)
 {
@@ -868,6 +877,7 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     fetchHome();
 }
 
+/// @brief 取消探查并释放在途请求。
 void Prober::cancel()
 {
     m_finished = true;
@@ -888,6 +898,7 @@ void Prober::cancel()
     }
 }
 
+/// @brief 是否还有剩余请求预算。
 bool Prober::budgetLeft() const
 {
     // 自动识别要试两种类型的候选，音乐接口也比影视多，给的时间略多
@@ -895,6 +906,7 @@ bool Prober::budgetLeft() const
     return m_clock.elapsed() < budget;
 }
 
+/// @brief 记录一次候选请求结果，供最终失败诊断使用。
 void Prober::recordAttempt(const QString &url, int status, const QString &note)
 {
     Attempt attempt;
@@ -906,6 +918,7 @@ void Prober::recordAttempt(const QString &url, int status, const QString &note)
                     << HttpClient::redactUrl(QUrl(url));
 }
 
+/// @brief 抓取首页并从链接/脚本中收集候选搜索入口。
 void Prober::fetchHome()
 {
     QHash<QString, QString> headers;
@@ -1070,6 +1083,7 @@ void Prober::fetchHome()
     }, NetLimits::kHtmlBytes);
 }
 
+/// @brief 按顺序探查下一个候选入口，命中则进入试搜验证。
 void Prober::probeNextCandidate()
 {
     if (m_finished)
@@ -1356,6 +1370,7 @@ void Prober::probeNextCandidate()
     });
 }
 
+/// @brief 用示例关键词试搜，确认生成的源能真正返回条目。
 void Prober::validate(const SourceConfig &config, const QString &keyword)
 {
     if (!config.urlTemplate.contains(QLatin1String("{keyword}"))) {
@@ -1367,6 +1382,7 @@ void Prober::validate(const SourceConfig &config, const QString &keyword)
     startValidation(config, keyword, 1);
 }
 
+/// @brief 第 pass 轮验证：失败则按诊断结果调整字段后再试。
 void Prober::startValidation(const SourceConfig &config, const QString &keyword, int pass)
 {
     qCInfo(lcProbe) << "校验配置" << config.id << config.name << "第" << pass << "轮";
@@ -1462,6 +1478,7 @@ void Prober::startValidation(const SourceConfig &config, const QString &keyword,
     provider->search(keyword, 10);
 }
 
+/// @brief 接口型探查全部失败时，回退尝试网页型影视源。
 void Prober::tryWebFallback()
 {
     if (m_finished || m_webFallbackTried)
@@ -1552,6 +1569,7 @@ void Prober::tryWebFallback()
     provider->search(tr("电影"), 3);
 }
 
+/// @brief 接受网页型源并携带试搜样本返回。
 void Prober::acceptWebConfig(const SourceConfig &config, const QVector<MediaItem> &items)
 {
     Result result = m_result;
@@ -1576,6 +1594,7 @@ void Prober::acceptWebConfig(const SourceConfig &config, const QVector<MediaItem
     done(result);
 }
 
+/// @brief 接受接口型源并返回验证通过的样本。
 void Prober::acceptConfig(const SourceConfig &config, const QVector<MediaItem> &items)
 {
     Result result = m_result;
@@ -1601,6 +1620,7 @@ void Prober::acceptConfig(const SourceConfig &config, const QVector<MediaItem> &
     done(result);
 }
 
+/// @brief 汇总失败原因，优先给出最能指导用户修改的提示。
 QString Prober::diagnoseFailure() const
 {
     const bool music = (m_type == MediaType::Music);
@@ -1668,6 +1688,7 @@ QString Prober::diagnoseFailure() const
         : tr("没有找到可用的接口地址，这个网站可能不是标准 JSON 接口，需要手动配置");
 }
 
+/// @brief 探查失败收尾：中止在途请求并发出带诊断的失败结果。
 void Prober::fail(const QString &error)
 {
     Result result = m_result;
@@ -1687,6 +1708,7 @@ void Prober::fail(const QString &error)
     done(result);
 }
 
+/// @brief 探查结束：只发出一次结果并延迟删除自身。
 void Prober::done(const Result &result)
 {
     if (m_finished)
