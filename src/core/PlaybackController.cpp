@@ -615,7 +615,7 @@ void PlaybackController::saveCurrentVideoPosition()
     // 此时必须保留用户原来的进度，不能用片头位置把它覆盖掉。
     if (m_pendingResumeMs > 0
         && mediaIdentity(item) == m_pendingResumeIdentity
-        && position + 1500 < m_pendingResumeMs) {
+        && position + kResumeToleranceMs < m_pendingResumeMs) {
         position = m_pendingResumeMs;
     }
     if (position <= 0)
@@ -624,6 +624,10 @@ void PlaybackController::saveCurrentVideoPosition()
     // 播放器可能还没上报时长；优先沿用条目里已知的时长，避免把有效 duration
     // 当 0 写入（某些源要等整段缓存完成才给 duration）。
     const qint64 duration = qMax(m_player->duration(), item.durationMs);
+    // 两条来源都还没有时长时，position 可能是片头解码前的中间值；此时写入
+    // 会把用户原有进度覆盖成不可信位置，等下一次有时长再保存。
+    if (duration <= 0)
+        return;
 
     // 片头 3 秒内视为没看；片尾 3 秒内清掉旧进度，下次从头播放。
     const qint64 savedPosition =
@@ -690,7 +694,7 @@ void PlaybackController::applyPendingResume()
     // 之后才成立。setSource() 阶段播放器可能上报旧 source 的位置，若提前
     // 判定恢复成功，新 source 会从 0 播放并覆盖真实进度。
     const qint64 position = m_player->position();
-    if (m_resumeAttemptCount > 0 && position + 1500 >= target) {
+    if (m_resumeAttemptCount > 0 && position + kResumeToleranceMs >= target) {
         qCInfo(lcPlayer) << "视频进度已恢复" << item.displayName() << position;
         clearPendingResume();
         return;
