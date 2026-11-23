@@ -75,6 +75,8 @@ private:
     void playRow(MediaType type, int row);
     /// 把搜索结果试听行提升为永久条目并立即写回列表
     bool promotePreviewRow(MediaType type, int row);
+    /// 进度写回是高频事件：合并到 300ms 后一次落盘，退出时由窗口再同步 flush。
+    void scheduleSave();
     void setDirty(bool dirty);
     void refreshTabTitles();
     /// 删除条目时同步清理其播放缓存。正在播放的文件可能仍被播放器占用，
@@ -91,6 +93,8 @@ private:
     bool m_dirty = false;
     /// 读取失败且无法备份原文件：保存被冻结，避免空模型覆盖
     bool m_storageBlocked = false;
+    /// 递增后让更早排队的防抖保存失效，避免一次操作重复写盘。
+    int m_saveGeneration = 0;
 };
 
 #endif // PLAYLISTCONTROLLER_H

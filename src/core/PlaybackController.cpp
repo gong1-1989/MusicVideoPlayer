@@ -15,6 +15,11 @@
 
 Q_LOGGING_CATEGORY(lcPlayer, "mvp.player")
 
+namespace {
+/// 恢复进度的成功容差：seek 落点与目标相差 1.5 秒内即视为到位。
+constexpr qint64 kResumeToleranceMs = 1500;
+}
+
 PlaybackController::PlaybackController(QObject *parent)
     : QObject(parent)
     , m_player(new QMediaPlayer(this))
@@ -73,11 +78,11 @@ PlaybackController::PlaybackController(QObject *parent)
         if (m_pendingResumeMs > 0 && m_mediaReady && m_sourcePlayRequested
             && m_resumeAttemptCount > 0) {
             const qint64 target = m_pendingResumeMs;
-            if (qAbs(position - target) <= 1500) {
+            if (qAbs(position - target) <= kResumeToleranceMs) {
                 qCInfo(lcPlayer) << "视频进度已恢复" << currentItem().displayName()
                                  << position;
                 clearPendingResume();
-            } else if (position + 1500 < target) {
+            } else if (position + kResumeToleranceMs < target) {
                 schedulePendingResume(500);
             }
         }
@@ -276,6 +281,9 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     if (!item.isValid()) {
         emit errorOccurred(tr("媒体地址无效"));
         m_row = row;
+        // 只 stop 会把上一条 source 留在播放器里；清空媒体，避免错误条目
+        // 仍显示为“当前加载源”，也防止后续 signals 继续带着旧时长。
+        m_player->setSource(QUrl());
         if (++m_consecutiveErrors < rowCount())
             QTimer::singleShot(0, this, &PlaybackController::next);
         else
@@ -365,8 +373,16 @@ void PlaybackController::stop()
     // 关闭窗口、按停止都会走这里；必须在 QMediaPlayer 清零前读出最后位置。
     saveCurrentVideoPosition();
     clearPendingResume();
+    // 停止后旧 source 的延迟定位目标必须清掉，否则下一次加载会先跳到旧位置。
+    m_deferredSeekMs = -1;
     m_consecutiveErrors = 0;
     m_player->stop();
+}
+
+void PlaybackController::persistCurrentPosition()
+{
+    // 只写模型，不动播放器状态；退出流程在保存列表前调用。
+    saveCurrentVideoPosition();
 }
 
 void PlaybackController::next()
@@ -424,7 +440,7 @@ void PlaybackController::seek(qint64 ms)
     }
 
     // 用户手动拖到别处时，放弃尚未确认的续播任务，避免 seekableChanged 等信号再把位置拉回去。
-    if (m_pendingResumeMs > 0 && qAbs(ms - m_pendingResumeMs) > 1500)
+    if (m_pendingResumeMs > 0 && qAbs(ms - m_pendingResumeMs) > kResumeToleranceMs)
         clearPendingResume();
 
     // 预取窗口由 StreamProxy 统一管理（目标片起 target..target+9，4 片并发、
@@ -554,10 +570,17 @@ void PlaybackController::onMediaStatusChanged(QMediaPlayer::MediaStatus status)
             qCWarning(lcPlayer) << "提前结束，疑似源被截断" << finishedItem.displayName()
                                 << "位置" << endPosition << "总时长" << expectedDuration
                                 << "第" << m_earlyEndRecoveries << "次续播";
+            const QString finishedIdentity = mediaIdentity(finishedItem);
+            const int finishedRow = m_row;
             m_player->setPosition(qMax<qint64>(0, endPosition - 2000));
-            QTimer::singleShot(300, this, [this] {
-                if (hasCurrentItem())
-                    m_player->play();
+            QTimer::singleShot(300, this, [this, finishedRow, finishedIdentity] {
+                // 300ms 内用户可能已切歌/删行；必须确认仍是同一条条目才继续播放，
+                // 只检查 hasCurrentItem 会把新歌当旧歌重播。
+                if (!hasCurrentItem() || m_row != finishedRow)
+                    return;
+                if (mediaIdentity(currentItem()) != finishedIdentity)
+                    return;
+                m_player->play();
             });
         } else {
             qCWarning(lcPlayer) << "多次原地续播仍提前结束，停止并保留当前曲目";
@@ -598,7 +621,9 @@ void PlaybackController::saveCurrentVideoPosition()
     if (position <= 0)
         return;
 
-    const qint64 duration = m_player->duration();
+    // 播放器可能还没上报时长；优先沿用条目里已知的时长，避免把有效 duration
+    // 当 0 写入（某些源要等整段缓存完成才给 duration）。
+    const qint64 duration = qMax(m_player->duration(), item.durationMs);
 
     // 片头 3 秒内视为没看；片尾 3 秒内清掉旧进度，下次从头播放。
     const qint64 savedPosition =
@@ -645,7 +670,7 @@ void PlaybackController::applyPendingResume()
     }
 
     qint64 target = m_pendingResumeMs;
-    const qint64 duration = m_player->duration();
+    const qint64 duration = qMax(m_player->duration(), item.durationMs);
     if (duration > 0 && target > duration - 1000)
         target = qMax<qint64>(0, duration - 1000);
 

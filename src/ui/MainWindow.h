@@ -48,6 +48,7 @@ public:
 protected:
     void closeEvent(QCloseEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void showEvent(QShowEvent *event) override;
 
 private slots:
@@ -62,7 +63,7 @@ private:
     void rebuildShortcuts();
     void executeShortcutAction(const QString &actionId);
     void updateShortcutTooltips();
-    void playSearchItem(const MediaItem &item);
+    bool playSearchItem(const MediaItem &item);
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     void clearPlaybackUi();
     /// 音量按钮改成右侧竖排悬浮条：滑块仍复用 ui->slider_volume，设置持久化不断链
@@ -94,6 +95,8 @@ private:
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
     QFrame *m_volumePopup = nullptr;
+    /// Qt::Popup 被按钮点击自动关闭后，clicked 会紧接着触发；用它避免刚关又重开。
+    qint64 m_volumePopupHideMs = 0;
     QLabel *m_volumeLabel = nullptr;
     MusicVisualWidget *m_musicVisual = nullptr;
     HlsCacheBuilder *m_hlsCache = nullptr;

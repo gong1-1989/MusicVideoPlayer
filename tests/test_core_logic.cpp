@@ -1346,13 +1346,19 @@ void CoreLogicTest::sourceConfigNormalizesTimeout()
     bool ok = false;
     const SourceConfig config = sourceConfigFromJson(object, &ok);
     QVERIFY(ok);
-    QCOMPARE(config.timeoutMs, 0);
+    QCOMPARE(config.timeoutMs, 1000);
+    // 负值仍表示自动预算
+    QJsonObject negative = object;
+    negative.insert(QStringLiteral("timeoutMs"), -5);
+    const SourceConfig autoConfig = sourceConfigFromJson(negative, &ok);
+    QVERIFY(ok);
+    QCOMPARE(autoConfig.timeoutMs, 0);
     // 缺失 timeoutMs 也按自动预算，不能偷偷回落到 8 秒
     QJsonObject absent = object;
     absent.remove(QStringLiteral("timeoutMs"));
-    const SourceConfig autoConfig = sourceConfigFromJson(absent, &ok);
+    const SourceConfig absentConfig = sourceConfigFromJson(absent, &ok);
     QVERIFY(ok);
-    QCOMPARE(autoConfig.timeoutMs, 0);
+    QCOMPARE(absentConfig.timeoutMs, 0);
 }
 
 void CoreLogicTest::sourceProbeLiveVideoSearch()

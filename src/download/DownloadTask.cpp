@@ -1,5 +1,6 @@
 #include "download/DownloadTask.h"
 
+#include "core/FileNameUtils.h"
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
@@ -97,41 +98,11 @@ DownloadTask *DownloadTask::start(HttpClient *http,
 
 QString DownloadTask::sanitizeFileName(const QString &name, const QString &suffix)
 {
-    QString base = name;
-    base.replace(QRegularExpression(QStringLiteral(R"([\\/:*?"<>|\x00-\x1F])")),
-                 QStringLiteral("_"));
-    base = base.simplified();
-    while (!base.isEmpty()
-           && (base.endsWith(QLatin1Char('.')) || base.endsWith(QLatin1Char(' ')))) {
-        base.chop(1);
-    }
-    if (base.isEmpty())
-        base = QStringLiteral("download");
-
-    static const QStringList reserved = {
-        QStringLiteral("CON"),  QStringLiteral("PRN"), QStringLiteral("AUX"),
-        QStringLiteral("NUL"),  QStringLiteral("COM1"), QStringLiteral("COM2"),
-        QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"),
-        QStringLiteral("COM6"), QStringLiteral("COM7"), QStringLiteral("COM8"),
-        QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
-        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),
-        QStringLiteral("LPT6"), QStringLiteral("LPT7"), QStringLiteral("LPT8"),
-        QStringLiteral("LPT9"),
-    };
-    if (reserved.contains(base, Qt::CaseInsensitive))
-        base.prepend(QLatin1Char('_'));
-
     const QString tail = QStringLiteral(".") + suffix;
     // 长度限制必须把扩展名算进去，否则 120 字符的主名再加后缀仍会超限。
     const int maxBase = qMax(1, 120 - tail.size());
-    if (base.size() > maxBase)
-        base.truncate(maxBase);
-    while (!base.isEmpty()
-           && (base.endsWith(QLatin1Char('.')) || base.endsWith(QLatin1Char(' ')))) {
-        base.chop(1);
-    }
-    if (base.isEmpty())
-        base = QStringLiteral("download");
+    QString base = FileNameUtils::sanitizeComponent(name, QStringLiteral("download"),
+                                                     maxBase);
     if (!base.endsWith(tail, Qt::CaseInsensitive))
         base += tail;
     return base;

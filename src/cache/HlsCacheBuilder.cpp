@@ -110,6 +110,10 @@ bool HlsCacheBuilder::start(const MediaItem &item)
     m_audioDone = false;
     m_videoPct = -1;
     m_audioPct = -1;
+    m_videoReceived = 0;
+    m_videoTotal = 0;
+    m_audioReceived = 0;
+    m_audioTotal = 0;
     m_lastOverallPct = -1;
     m_lastProgressMs = 0;
 
@@ -208,7 +212,6 @@ void HlsCacheBuilder::onMasterReady(const QByteArray &body, const QUrl &finalUrl
             return;
         }
         m_master = master;
-        m_masterUrl = finalUrl;
         m_stage = Stage::WaitingVariant;
         beginVariantSelection();
         return;
@@ -460,30 +463,36 @@ void HlsCacheBuilder::startDownloads()
     m_audioDone = false;
     m_videoPct = -1;
     m_audioPct = -1;
+    m_videoReceived = 0;
+    m_videoTotal = 0;
+    m_audioReceived = 0;
+    m_audioTotal = 0;
     m_lastOverallPct = -1;
 
     if (m_videoSource.isEmpty()) {
         finishFailed(tr("没有找到可下载的视频地址"));
         return;
     }
-    startTrack(true, m_videoSource, m_videoPath);
+    if (!startTrack(true, m_videoSource, m_videoPath))
+        return;
     if (m_hasAudio) {
         if (m_audioSource.isEmpty()) {
             finishFailed(tr("没有找到可下载的音轨地址"));
             return;
         }
-        startTrack(false, m_audioSource, m_audioPath);
+        if (!startTrack(false, m_audioSource, m_audioPath))
+            return;
     } else {
         m_audioDone = true;
     }
 }
 
-void HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &targetPath)
+bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &targetPath)
 {
     DownloadTask *task = DownloadTask::start(m_http, source, targetPath, m_item.headers, this);
     if (task == nullptr) {
         finishFailed(video ? tr("无法启动视频缓存任务") : tr("无法启动音轨缓存任务"));
-        return;
+        return false;
     }
     if (video) {
         m_videoTask = task;
@@ -513,6 +522,7 @@ void HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
             [this, video](const QString &path) { onTrackFinished(video, path); });
     connect(task, &DownloadTask::failed, this,
             [this, video](const QString &message) { onTrackFailed(video, message); });
+    return true;
 }
 
 void HlsCacheBuilder::onTrackProgress(bool video, qint64 received, qint64 total)
@@ -525,10 +535,15 @@ void HlsCacheBuilder::onTrackProgress(bool video, qint64 received, qint64 total)
         const qint64 clamped = std::clamp<qint64>(received, 0, total);
         percent = int((clamped * 100) / total);
     }
-    if (video)
+    if (video) {
         m_videoPct = percent;
-    else
+        m_videoReceived = qMax<qint64>(0, received);
+        m_videoTotal = qMax<qint64>(0, total);
+    } else {
         m_audioPct = percent;
+        m_audioReceived = qMax<qint64>(0, received);
+        m_audioTotal = qMax<qint64>(0, total);
+    }
     emitProgress();
 }
 
@@ -537,10 +552,18 @@ void HlsCacheBuilder::emitProgress()
     int percent = -1;
     if (m_hasAudio) {
         if (m_videoPct >= 0 || m_audioPct >= 0) {
-            // 另一条轨还没报进度时按 0 计，避免视频先到 100 就显示“完成”。
-            const int video = m_videoPct >= 0 ? m_videoPct : 0;
-            const int audio = m_audioPct >= 0 ? m_audioPct : 0;
-            percent = (video + audio) / 2;
+            // 两条轨都已知总长时按字节加权；音轨通常只有几十 MB，
+            // 与几百 MB 的视频轨简单算术平均会让总进度长期停在 50% 附近。
+            if (m_videoTotal > 0 && m_audioTotal > 0) {
+                const qint64 done = std::clamp<qint64>(m_videoReceived, 0, m_videoTotal)
+                                    + std::clamp<qint64>(m_audioReceived, 0, m_audioTotal);
+                percent = int((done * 100) / (m_videoTotal + m_audioTotal));
+            } else {
+                // 任一轨总长未知时退回百分比平均，另一条轨按 0 计。
+                const int video = m_videoPct >= 0 ? m_videoPct : 0;
+                const int audio = m_audioPct >= 0 ? m_audioPct : 0;
+                percent = (video + audio) / 2;
+            }
         }
     } else {
         percent = m_videoPct;
@@ -572,11 +595,15 @@ void HlsCacheBuilder::onTrackFinished(bool video, const QString &path)
         m_videoPath = path;
         m_videoDone = true;
         m_videoPct = 100;
+        if (m_videoTotal > 0)
+            m_videoReceived = m_videoTotal;
     } else {
         m_audioTask = nullptr;
         m_audioPath = path;
         m_audioDone = true;
         m_audioPct = 100;
+        if (m_audioTotal > 0)
+            m_audioReceived = m_audioTotal;
     }
     emitProgress();
     maybeRemux();
@@ -719,6 +746,9 @@ void HlsCacheBuilder::cancelTasks()
         m_remux = nullptr;
         remux->disconnect(this);
         remux->cancel();
+        // cancel 只终止 ffmpeg 进程；对象本身仍挂在 this 下并可能持有进程/管道，
+        // 必须 deleteLater，否则反复取消会累积未释放的转码器。
+        remux->deleteLater();
     }
 }
 

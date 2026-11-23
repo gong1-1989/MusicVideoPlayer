@@ -62,7 +62,6 @@ private:
     QPushButton *m_btnProbe = nullptr;
     QLabel *m_status = nullptr;
 
-    QGroupBox *m_resultGroup = nullptr;
     QLabel *m_nameLabel = nullptr;
     QLabel *m_interfaceLabel = nullptr;
     QLabel *m_pathLabel = nullptr;

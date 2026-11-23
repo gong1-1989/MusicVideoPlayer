@@ -289,13 +289,6 @@ void setShortcut(const QString &actionId, const QString &sequence)
     settings().setValue(QLatin1String(kShortcutPrefix) + actionId, sequence);
 }
 
-void removeShortcut(const QString &actionId)
-{
-    if (actionId.isEmpty())
-        return;
-    settings().remove(QLatin1String(kShortcutPrefix) + actionId);
-}
-
 QString lastDir()
 {
     return settings()

@@ -42,7 +42,6 @@ QString directoryForItem(const MediaItem &item);
 /// 条目对应的缓存正文路径；正文不带后缀。
 QString filePathForItem(const MediaItem &item);
 QString metaPathForFile(const QString &cachePath);
-QString extensionForUrl(const QUrl &url, const QByteArray &contentType = QByteArray());
 
 /// 删除条目自己的缓存（音乐删正文与 JSON，影视删整个文件夹）；
 /// 不存在视为成功。Windows 上文件被播放器占用时会失败，调用方可延迟重试。

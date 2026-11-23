@@ -121,7 +121,6 @@ void SourceProbeDialog::bindUi()
     m_btnProbe = ui->btn_probe;
     m_status = ui->label_status;
 
-    m_resultGroup = ui->group_result;
     m_nameLabel = ui->label_name;
     m_interfaceLabel = ui->label_interface;
     m_pathLabel = ui->label_path;

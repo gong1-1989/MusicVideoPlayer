@@ -263,8 +263,13 @@ SourceConfig sourceConfigFromJson(const QJsonObject &object, bool *ok)
     // 未填写或过小的值都视为“自动”，由 SearchCoordinator 按源类型/条数分配；
     // 旧配置里残留的 100ms 不能继续把请求瞬间掐断。
     config.timeoutMs = object.value(QStringLiteral("timeoutMs")).toInt(0);
-    if (config.timeoutMs < 1000)
+    if (config.timeoutMs > 0 && config.timeoutMs < 1000) {
+        // 用户显式填了 1-999ms 时不能悄悄变成“自动”（0）；按最小可用的
+        // 1 秒处理，至少保证请求有机会完成。
+        config.timeoutMs = 1000;
+    } else if (config.timeoutMs < 0) {
         config.timeoutMs = 0;
+    }
     config.method = object.value(QStringLiteral("method")).toString(QStringLiteral("GET")).toUpper();
     config.urlTemplate = object.value(QStringLiteral("url")).toString();
     config.bodyTemplate = object.value(QStringLiteral("body")).toString();

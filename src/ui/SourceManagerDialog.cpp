@@ -31,7 +31,9 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QSpinBox>
+#include <QSignalBlocker>
 #include <QUrl>
+#include <QUrlQuery>
 
 namespace {
 
@@ -60,6 +62,37 @@ QHash<QString, QString> textToHeaders(const QString &text)
             headers.insert(key, value);
     }
     return headers;
+}
+
+bool urlHasSecretQuery(const QString &urlText)
+{
+    const QUrl url(urlText);
+    if (!url.isValid())
+        return false;
+    static const QStringList secretKeys = {
+        QStringLiteral("api_key"), QStringLiteral("apikey"), QStringLiteral("key"),
+        QStringLiteral("token"), QStringLiteral("access_token"), QStringLiteral("auth"),
+        QStringLiteral("authorization"), QStringLiteral("password"), QStringLiteral("passwd"),
+        QStringLiteral("secret"), QStringLiteral("sign"), QStringLiteral("signature")};
+    const QUrlQuery query(url);
+    for (const auto &item : query.queryItems(QUrl::FullyDecoded)) {
+        if (secretKeys.contains(item.first.toLower()))
+            return true;
+    }
+    return false;
+}
+
+QString skipIfSyntaxError(const QString &text)
+{
+    if (text.trimmed().isEmpty())
+        return QString();
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(text.toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError)
+        return QObject::tr("过滤规则不是有效 JSON：%1").arg(error.errorString());
+    if (!document.isObject())
+        return QObject::tr("过滤规则必须是 JSON 对象，例如 {\"name\":\"广告\"}");
+    return QString();
 }
 
 QString makeUniqueId(const QString &seed, const QVector<SourceConfig> &existing)
@@ -608,9 +641,24 @@ SourceConfig SourceManagerDialog::readForm() const
     config.mediaType = m_type->currentData().toString() == QLatin1String("video")
                            ? MediaType::Video
                            : MediaType::Music;
+    const bool wasBuiltin = config.builtin;
     const bool wasExternal = config.kind == QLatin1String("external");
     config.kind = m_kind->currentData().toString();
-    config.provider = m_provider->currentData().toString();
+    // provider 只属于内置实现。配置型/外部解析器写 provider=maccms_web
+    // 会让后续重建 provider 时走错分支。
+    config.provider = config.kind == QLatin1String("builtin")
+                          ? m_provider->currentData().toString()
+                          : QString();
+    // 内置源不能通过改 kind 变成普通配置：SourceRegistry 会拒绝，
+    // UI 先把类型锁回 builtin，避免表单显示与保存结果不一致。
+    if (wasBuiltin && config.kind != QLatin1String("builtin")) {
+        config.kind = QStringLiteral("builtin");
+        if (m_kind->findData(config.kind) >= 0) {
+            QSignalBlocker blocker(m_kind);
+            m_kind->setCurrentIndex(m_kind->findData(config.kind));
+        }
+    }
+    config.builtin = config.kind == QLatin1String("builtin") && wasBuiltin;
     if (config.kind == QLatin1String("builtin")
         && config.provider == QLatin1String("maccms_web")) {
         config.mediaType = MediaType::Video;
@@ -866,14 +914,14 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
     ui->btn_refresh->setEnabled(false);
     m_testList->addItem(tr("正在体检 %1 …").arg(base));
 
-    const int row = m_currentRow;
+    const QString probeId = draft.id;
     QHash<QString, QString> headers = draft.headers;
     // 体检以当前填写的域名为准：草稿里可能残留旧域名的 Referer，不覆盖会直接 403
     headers.insert(QStringLiteral("Referer"), base);
 
     QPointer<SourceManagerDialog> self(this);
     m_http->fetch(root, QByteArray(), headers,
-                  [self, draft, row, base, keyword](QNetworkReply *reply) {
+                  [self, draft, probeId, base, keyword](QNetworkReply *reply) {
         if (self.isNull())
             return;
 
@@ -900,16 +948,14 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
         }
 
         // 用候选地址跑一次小样本搜索；成功才算体检通过
-        SourceConfig probe;
-        if (row >= 0 && row < self->m_drafts.size())
-            probe = self->m_drafts.at(row);
-        else
-            probe = draft;
+        // 体检结果只对应发起时的 draft；用户中途改了表单不能拿新配置去试，
+        // 否则会把“旧地址通过”记到新地址头上。
+        SourceConfig probe = draft;
         probe.urlTemplate = currentBase;
 
         auto *provider = createSearchProvider(probe, self->m_http, self);
         connect(provider, &SearchProviderBase::finished, self,
-                [self, provider, probe, row, base, currentBase, notes, keyword](
+                [self, provider, probe, probeId, base, currentBase, notes, keyword](
                     const QString &, const QVector<MediaItem> &items, int filtered,
                     const QString &error) {
                     if (self.isNull())
@@ -917,6 +963,15 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
                     provider->deleteLater();
                     self->m_probeBusy = false;
                     self->ui->btn_refresh->setEnabled(true);
+
+                    // 异步过程中列表可能重排/增删；按 id 找回当前行，不能再用旧行号。
+                    int index = -1;
+                    for (int i = 0; i < self->m_drafts.size(); ++i) {
+                        if (self->m_drafts.at(i).id == probeId) {
+                            index = i;
+                            break;
+                        }
+                    }
 
                     QStringList lines = notes;
                     if (!error.isEmpty() && items.isEmpty()) {
@@ -938,16 +993,24 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
                     const bool redirected = currentBase != base;
                     if (healthy) {
                         self->m_healthIssues.remove(probe.id);
-                        if (redirected && row >= 0 && row < self->m_drafts.size()) {
+                        const bool sameConfig =
+                            index >= 0 && index < self->m_drafts.size()
+                            && self->m_drafts.at(index).urlTemplate == base;
+                        if (redirected && sameConfig) {
                             // 跳转后的地址验真通过，写回草稿（点“保存”才落盘）
-                            self->m_drafts[row].urlTemplate = currentBase;
+                            self->m_drafts[index].urlTemplate = currentBase;
                             // 域名已变，旧 Referer 必须覆盖；否则会带着旧站点的头去请求新站
-                            self->m_drafts[row].headers.insert(QStringLiteral("Referer"),
-                                                               currentBase);
-                            self->m_siteUrl->setText(currentBase);
-                            self->m_url->setText(currentBase);
+                            self->m_drafts[index].headers.insert(QStringLiteral("Referer"),
+                                                                currentBase);
+                            if (index == self->m_currentRow) {
+                                self->m_siteUrl->setText(currentBase);
+                                self->m_url->setText(currentBase);
+                            }
                             lines.append(self->tr("地址已更新为 %1（保存后生效）").arg(currentBase));
-                        } else if (!redirected) {
+                        } else if (redirected) {
+                            lines.append(self->tr("配置在体检期间已修改，跳转地址 %1 未写回。")
+                                             .arg(currentBase));
+                        } else {
                             lines.append(self->tr("站点地址仍然有效。"));
                         }
                     } else {
@@ -964,7 +1027,7 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
                         if (!healthy && i == lines.size() - 1)
                             item->setForeground(QColor(QStringLiteral("#ff6b81")));
                     }
-                    self->reloadList(row >= 0 ? row : self->m_currentRow);
+                    self->reloadList(index >= 0 ? index : self->m_currentRow);
                 });
         provider->search(keyword, 3);
     }, NetLimits::kHtmlBytes);
@@ -1003,7 +1066,15 @@ void SourceManagerDialog::onTest()
 {
     if (m_currentRow < 0)
         return;
+    // 按钮禁用挡不住回车/脚本重复触发；在途时直接忽略第二次请求。
+    if (m_testBusy)
+        return;
 
+    const QString skipError = skipIfSyntaxError(m_skipIf->toPlainText());
+    if (!skipError.isEmpty()) {
+        QMessageBox::warning(this, tr("过滤规则有误"), skipError);
+        return;
+    }
     const SourceConfig draft = readForm();
     if (!draft.isValid()) {
         QMessageBox::warning(this, tr("配置不完整"),
@@ -1028,6 +1099,7 @@ void SourceManagerDialog::onTest()
         if (choice != QMessageBox::Yes)
             return;
     }
+    m_testBusy = true;
     m_testList->clear();
     m_testList->addItem(tr("正在搜索“%1”…").arg(keyword));
     m_btnTest->setEnabled(false);
@@ -1036,6 +1108,7 @@ void SourceManagerDialog::onTest()
     connect(provider, &SearchProviderBase::finished, this,
             [this, provider](const QString &, const QVector<MediaItem> &items, int filtered,
                              const QString &error) {
+                m_testBusy = false;
                 m_testList->clear();
                 if (!error.isEmpty()) {
                     m_testList->addItem(tr("失败：%1").arg(error));
@@ -1070,6 +1143,25 @@ void SourceManagerDialog::onImport()
         QMessageBox::warning(this, tr("导入失败"), error);
         return;
     }
+
+    // 导入文件可能带重复 id；先去重（后者覆盖前者），否则“新增 N 个”会把
+    // 同一个 id 重复计数，覆盖统计也会虚高。
+    QVector<SourceConfig> deduped;
+    int duplicateImports = 0;
+    for (const SourceConfig &config : std::as_const(imported)) {
+        bool replaced = false;
+        for (SourceConfig &existing : deduped) {
+            if (existing.id == config.id) {
+                existing = config;
+                replaced = true;
+                ++duplicateImports;
+                break;
+            }
+        }
+        if (!replaced)
+            deduped.append(config);
+    }
+    imported = deduped;
 
     // 外部解析器会在本机执行命令；导入时把完整命令行摆给用户看，默认不继续。
     QStringList externalLines;
@@ -1130,6 +1222,9 @@ void SourceManagerDialog::onImport()
     }
     reloadList(0);
     QString detail = tr("新增/更新 %1 个源，覆盖同名 %2 个。").arg(imported.size()).arg(replaced);
+    if (duplicateImports > 0)
+        detail += tr("\n\n导入文件中有 %1 个重复 id，已按后出现的配置合并。")
+                      .arg(duplicateImports);
     if (protectedSkipped > 0)
         detail += tr("\n\n其中 %1 个内置源 ID 已保留原配置，导入文件不能覆盖内置源。")
                       .arg(protectedSkipped);
@@ -1156,13 +1251,20 @@ void SourceManagerDialog::onExport()
                 break;
             }
         }
+        if (!hasSecrets
+            && (urlHasSecretQuery(config.urlTemplate)
+                || urlHasSecretQuery(config.detailUrlTemplate))) {
+            // 有些源的凭据直接放在搜索/详情 URL 的 query 里，导出同样是明文。
+            hasSecrets = true;
+        }
         if (hasSecrets)
             break;
     }
     if (hasSecrets) {
         const QMessageBox::StandardButton choice = QMessageBox::warning(
             this, tr("导出文件包含明文凭据"),
-            tr("为了让配置能在另一台机器导入，Cookie/Authorization 等敏感头会以明文写入。"
+            tr("为了让配置能在另一台机器导入，Cookie/Authorization 等敏感头"
+               "或 URL 里的 api_key/token 会以明文写入。"
                "\n\n请只保存到你信任的位置，并在用完后删除。是否继续？"),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (choice != QMessageBox::Yes)
@@ -1180,6 +1282,12 @@ void SourceManagerDialog::onExport()
 
 bool SourceManagerDialog::saveAll()
 {
+    // 手写过滤 JSON 有语法错误时不能静默丢掉这一段；先拦下并指明问题。
+    const QString skipError = skipIfSyntaxError(m_skipIf->toPlainText());
+    if (!skipError.isEmpty()) {
+        QMessageBox::warning(this, tr("过滤规则有误"), skipError);
+        return false;
+    }
     commitFormToDraft();
     if (m_registry == nullptr)
         return false;

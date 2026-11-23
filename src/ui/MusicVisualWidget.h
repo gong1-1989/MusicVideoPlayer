@@ -27,6 +27,10 @@ public:
     ~MusicVisualWidget() override;
 
     void setTrack(const MediaItem &item);
+    /// 来源徽标显示源配置里的名称，而不是内部 sourceId。
+    void setSourceDisplayName(const QString &name);
+    /// 主题强调色；有封面时会用封面主色覆盖，复位时回落到这里。
+    void setAccentColor(const QColor &color);
     /// 删除当前播放条目后整轨复位：曲目文案、封面、频谱、歌词和动画状态一起清空
     void reset();
     void setPlaying(bool playing);
@@ -49,11 +53,12 @@ private:
     QColor spectrumColor(int bandIndex) const;
     void drawBackground(QPainter &painter, const QRectF &rect);
     void drawSpectrum(QPainter &painter, const QRectF &rect);
-    void drawTrackInfo(QPainter &painter, const QRectF &rect);
+    void drawTrackInfo(QPainter &painter, const QRectF &rect, int basePx);
     void drawDisc(QPainter &painter, const QRectF &rect);
-    void drawLyrics(QPainter &painter, const QRectF &rect);
+    void drawLyrics(QPainter &painter, const QRectF &rect, int basePx);
 
     MediaItem m_item;
+    QString m_sourceDisplayName;
     QPixmap m_cover;
     /// 按当前圆盘半径预处理好的封面；暂停/静止时不必每帧重新 SmoothScaled。
     QPixmap m_coverScaled;
@@ -64,6 +69,7 @@ private:
     int m_audioSpectrumAge = 1000;
     /// 歌词强调色；没有真实频谱时也用于唱片外圈光晕的默认冷色。
     QColor m_accent{96, 132, 255};
+    QColor m_themeAccent{96, 132, 255};
     QStringList m_lyrics;
     int m_lyricIndex = -1;
     qreal m_phase = 0.0;

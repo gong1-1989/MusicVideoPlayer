@@ -71,7 +71,6 @@ void setDownloadDir(const QString &dir);
 QString shortcut(const QString &actionId);
 bool hasShortcut(const QString &actionId);
 void setShortcut(const QString &actionId, const QString &sequence);
-void removeShortcut(const QString &actionId);
 
 // ---------------------------------------------------------------- 路径
 QString lastDir();

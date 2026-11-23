@@ -85,6 +85,8 @@ private:
     int m_currentRow = -1;
     bool m_updating = false;
     bool m_probeBusy = false;
+    /// 试搜请求在途标记：按钮禁用之外还要防回车/重复点击造成多个 provider 抢写列表。
+    bool m_testBusy = false;
     /// 站点体检失败的原因（按源 id 存），列表里据此标红并做悬停提示；
     /// 只反映本次运行期的检查结果，不写进 sources.json
     QHash<QString, QString> m_healthIssues;

@@ -24,6 +24,8 @@
 
 #include <QAbstractItemView>
 #include <QCloseEvent>
+#include <QDateTime>
+#include <QEvent>
 #include <QCoreApplication>
 #include <QFontMetrics>
 #include <QFrame>
@@ -125,13 +127,15 @@ MainWindow::MainWindow(QWidget *parent)
             m_searchWindow, &SearchWindow::setStatusMessage);
     connect(m_searchPanel, &SearchPanelController::mediaActivated, this,
             [this](const MediaItem &item) {
+                // 地址无效时不要先把搜索窗藏掉：用户还需要在原结果里重试。
+                if (!playSearchItem(item))
+                    return;
                 if (m_searchWindow != nullptr)
                     m_searchWindow->hide();
                 // 搜索窗作为独立顶层窗口关闭后，主动把焦点还给主窗，
                 // 避免用户下一次点击侧栏搜索按钮时第一下只起到激活窗口的作用。
                 raise();
                 activateWindow();
-                playSearchItem(item);
             });
     connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
             this, &MainWindow::addSearchItemToPlaylist);
@@ -162,13 +166,8 @@ MainWindow::MainWindow(QWidget *parent)
             });
     connect(m_playlists, &PlaylistController::downloadRequested, this,
             [this](const MediaItem &item) { m_downloads->download(item); });
-    // 视频进度一旦写回模型就立刻落盘：停止、切音乐、切视频、退出都会经过
-    // PlaybackController::saveCurrentVideoPosition()，不能只在退出时保存。
-    connect(m_player, &PlaybackController::currentItemPositionUpdated, m_playlists,
-            [this](int) {
-                if (!m_playlists->save())
-                    qCWarning(lcWindow) << "视频进度写入播放列表失败，等待下次保存重试";
-            });
+    // 视频进度落盘由 PlaylistController 统一防抖处理，这里不再重复连接，
+    // 否则一次停止会整份保存两次。
     connect(m_player, &PlaybackController::currentItemChanged, this,
             [this](const MediaItem &item, int) {
                 if (!m_pendingSearchPlayIdentity.isEmpty()
@@ -238,11 +237,18 @@ MainWindow::MainWindow(QWidget *parent)
     m_musicVisual->hide();
     // 频谱直接取播放器解码后的 PCM，只分析本播放器自身音频。
     m_musicVisual->setMediaPlayer(m_player->mediaPlayer());
+    m_musicVisual->setAccentColor(ThemeManager::instance().current().accentColor);
     connect(m_player, &PlaybackController::currentItemChanged, this,
             [this](const MediaItem &item, int) {
                 const bool music = item.isValid() && item.type == MediaType::Music;
                 if (music) {
                     m_musicVisual->setTrack(item);
+                    QString sourceName;
+                    if (!item.sourceId.isEmpty() && item.sourceId != QLatin1String("link")) {
+                        const SourceConfig config = m_registry->sourceById(item.sourceId);
+                        sourceName = config.name;
+                    }
+                    m_musicVisual->setSourceDisplayName(sourceName);
                     ui->videoWidget->hide();
                     m_musicVisual->setGeometry(ui->videoStage->rect());
                     m_musicVisual->show();
@@ -303,6 +309,9 @@ MainWindow::MainWindow(QWidget *parent)
                 QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
                 QTimer::singleShot(0, this, &MainWindow::updateAdaptiveMetrics);
                 m_lyrics->refreshHighlight();
+                if (m_musicVisual != nullptr)
+                    m_musicVisual->setAccentColor(
+                        ThemeManager::instance().current().accentColor);
                 updateShortcutTooltips();
             });
 
@@ -381,8 +390,13 @@ void MainWindow::setupConnections()
 
 void MainWindow::rebuildShortcuts()
 {
-    for (QShortcut *shortcut : m_shortcuts)
-        delete shortcut;
+    for (QShortcut *shortcut : m_shortcuts) {
+        // rebuild 可能由设置页信号在快捷键派发期间触发；同步 delete 正在
+        // 派发的 QShortcut 会悬空。先断开再延迟删除，立即停用旧绑定。
+        shortcut->setEnabled(false);
+        shortcut->disconnect();
+        shortcut->deleteLater();
+    }
     m_shortcuts.clear();
 
     const QHash<QString, QString> bindings = AppShortcuts::currentBindings();
@@ -450,7 +464,8 @@ void MainWindow::updateShortcutTooltips()
 {
     const QHash<QString, QString> bindings = AppShortcuts::currentBindings();
     auto withKey = [&bindings](const QString &label, const QString &actionId) {
-        const QString key = bindings.value(actionId);
+        // 用户保存时可能带空格/大小写差异；提示必须显示实际注册的规范化序列。
+        const QString key = AppShortcuts::normalizeSequence(bindings.value(actionId));
         return key.isEmpty() ? label : QStringLiteral("%1 (%2)").arg(label, key);
     };
 
@@ -477,10 +492,12 @@ void MainWindow::showSearchWindow(){
         QRect available = screen() != nullptr ? screen()->availableGeometry()
                                               : QRect(frame.center(), QSize(1, 1));
         QPoint topLeft = frame.center() - QPoint(size.width() / 2, size.height() / 2);
-        topLeft.setX(qBound(available.left(), topLeft.x(),
-                            available.right() - size.width()));
-        topLeft.setY(qBound(available.top(), topLeft.y(),
-                            available.bottom() - size.height()));
+        // 搜索窗比可用区域还大时，right()-width 会小于 left()，qBound 会触发
+        // 上界小于下界的断言；先把上界抬到至少 left/top。
+        const int maxX = qMax(available.left(), available.right() - size.width() + 1);
+        const int maxY = qMax(available.top(), available.bottom() - size.height() + 1);
+        topLeft.setX(qBound(available.left(), topLeft.x(), maxX));
+        topLeft.setY(qBound(available.top(), topLeft.y(), maxY));
         m_searchWindow->move(topLeft);
         m_searchWindow->setProperty("placed", true);
     }
@@ -514,6 +531,11 @@ void MainWindow::closeEvent(QCloseEvent *event)
         }
         // 真正暂停下载放到播放列表保存成功之后，避免保存失败取消退出时下载已被停掉。
     }
+
+    // 保存前先把播放器的最后位置写回模型（不停止播放）。
+    // 旧顺序是“先 save 再 stop”，stop 里才写位置，最后几秒进度会丢。
+    if (m_player != nullptr)
+        m_player->persistCurrentPosition();
 
     // 先确认播放列表真的落盘，再停止播放/退全屏/暂停下载。
     // 否则用户在保存失败对话框里点“取消退出”后，窗口还在但播放已停、下载已暂停。
@@ -657,7 +679,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
     // 侧栏、控制条都是浮层、不跟布局走，窗口尺寸一变要自己贴回原位
-    m_panels->reposition();
+    if (m_panels != nullptr)
+        m_panels->reposition();
     QTimer::singleShot(0, this, &MainWindow::updateControlBarCentering);
 }
 
@@ -711,7 +734,7 @@ void MainWindow::on_btn_fullscreen_clicked()
     m_fullscreen->toggle();
 }
 
-void MainWindow::playSearchItem(const MediaItem &item)
+bool MainWindow::playSearchItem(const MediaItem &item)
 {
     MediaItem playable = item;
     // 搜索源理论上都填了 online，但外部解析器/手工直链偶尔会漏；
@@ -720,11 +743,14 @@ void MainWindow::playSearchItem(const MediaItem &item)
     if (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
         playable.online = true;
 
-    if (!playable.isValid() || playable.url.isRelative()) {
+    // 搜索结果只能播放网络地址：file/data/ftp 等协议既不该由远程源返回，
+    // 也会绕过代理的请求头与缓存边界。
+    if (!playable.isValid() || playable.url.isRelative()
+        || scheme != QLatin1String("http") && scheme != QLatin1String("https")) {
         ui->label_status->setText(tr("搜索结果缺少可播放地址，换一个来源或重新搜索试试"));
         qCWarning(lcWindow) << "搜索结果地址无效" << playable.title
                             << playable.url.toString();
-        return;
+        return false;
     }
 
     m_pendingSearchPlayIdentity = mediaIdentity(playable);
@@ -732,6 +758,7 @@ void MainWindow::playSearchItem(const MediaItem &item)
                      << (playable.online ? "网络" : "本地")
                      << HttpClient::redactUrl(playable.url);
     m_playlists->playItem(playable);
+    return true;
 }
 
 void MainWindow::addSearchItemToPlaylist(const MediaItem &item, MediaType type)
@@ -801,7 +828,16 @@ void MainWindow::setupVolumePopup()
 
     // 点击按钮在按钮上方弹出；点击外部由 Qt::Popup 自动关闭。
     connect(ui->btn_volume, &QPushButton::clicked, this, &MainWindow::showVolumePopup);
+    if (m_volumePopup != nullptr)
+        m_volumePopup->installEventFilter(this);
     m_volumePopup->hide();
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_volumePopup && event->type() == QEvent::Hide)
+        m_volumePopupHideMs = QDateTime::currentMSecsSinceEpoch();
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::showVolumePopup()
@@ -812,6 +848,10 @@ void MainWindow::showVolumePopup()
         m_volumePopup->hide();
         return;
     }
+    // 点击按钮本身时 Qt::Popup 会先因“点外部”自动隐藏，随后 clicked 又到这里。
+    // 250ms 内视为同一次点击，不重新弹出。
+    if (QDateTime::currentMSecsSinceEpoch() - m_volumePopupHideMs < 250)
+        return;
 
     m_volumePopup->adjustSize();
     const QPoint buttonTop = ui->btn_volume->mapToGlobal(QPoint(0, 0));

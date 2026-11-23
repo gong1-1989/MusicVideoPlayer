@@ -94,11 +94,11 @@ PlaylistController::PlaylistController(PlaybackController *player, const Playlis
     bindView(m_ui.musicView, m_musicModel, MediaType::Music);
     bindView(m_ui.videoView, m_videoModel, MediaType::Video);
 
-    // 视频进度已经写进列表条目，播放器切换/停止时立即把整份列表落盘。
-    // 搜索结果等临时模型不归本控制器管理，不能顺手写入用户播放列表。
+    // 视频进度已经写进列表条目；停止/切歌/退出会触发，但连续切歌时
+    // 没必要每首都整份落盘，合并到 300ms 后保存一次。退出路径仍同步 save()。
     connect(m_player, &PlaybackController::currentItemPositionUpdated, this, [this](int) {
         if (m_player->playlist() == m_musicModel || m_player->playlist() == m_videoModel)
-            save();
+            scheduleSave();
     });
 }
 
@@ -174,10 +174,19 @@ void PlaylistController::restore()
     }
 
     // 提示数量必须和模型实际显示的一致；旧列表里的重复条目先按同一规则去掉。
+    const int loadedCount = music.size() + video.size();
     music = dedupeMediaItems(music);
     video = dedupeMediaItems(video);
+    const bool dedupeChanged = music.size() + video.size() != loadedCount;
     m_musicModel->setItems(music);
     m_videoModel->setItems(video);
+    if (dedupeChanged && !m_storageBlocked) {
+        // 去重后的列表要立即回写；否则磁盘里仍留着重复项，下次启动又会“变多”。
+        if (PlaylistStore::saveAll(persistentItems(music), persistentItems(video)))
+            setDirty(false);
+        else
+            setDirty(true);
+    }
 
     if (!m_storageBlocked && (!music.isEmpty() || !video.isEmpty())) {
         emit statusMessage(tr("已恢复上次的播放列表：音乐 %1 首，视频 %2 个")
@@ -186,8 +195,23 @@ void PlaylistController::restore()
     }
 }
 
+void PlaylistController::scheduleSave()
+{
+    if (m_storageBlocked)
+        return;
+    const int generation = ++m_saveGeneration;
+    QTimer::singleShot(300, this, [this, generation] {
+        if (generation != m_saveGeneration)
+            return;
+        if (!save())
+            qCWarning(lcPlaylist) << "视频进度写入播放列表失败，等待下次保存重试";
+    });
+}
+
 bool PlaylistController::save()
 {
+    // 任何同步保存都让排队中的防抖保存失效。
+    ++m_saveGeneration;
     if (m_storageBlocked) {
         qCWarning(lcPlaylist) << "播放列表读取失败且无法备份，拒绝保存";
         emit statusMessage(tr("播放列表读取失败且无法备份，已禁止保存以避免覆盖原文件；请检查 Data/playlists.json 后重启"));
@@ -381,11 +405,18 @@ void PlaylistController::addLocalFiles(MediaType type, const QStringList &files)
 
 bool PlaylistController::updateDownloadedItem(const MediaItem &source, const QString &localPath)
 {
-    if (localPath.isEmpty() || !QFileInfo::exists(localPath))
+    if (localPath.isEmpty())
         return false;
+    const QFileInfo info(localPath);
+    // 只判断 exists 会把 0 字节的半成品/占位文件当成下载成功，随后播放必失败。
+    if (!info.exists() || info.size() <= 0) {
+        qCWarning(lcPlaylist) << "下载结果不是可用文件" << localPath
+                              << (info.exists() ? info.size() : -1);
+        return false;
+    }
 
     const QString identity = mediaIdentity(source);
-    const QUrl localUrl = QUrl::fromLocalFile(QFileInfo(localPath).absoluteFilePath());
+    const QUrl localUrl = QUrl::fromLocalFile(info.absoluteFilePath());
     bool changed = false;
 
     // 下载时的条目类型可能和实际加入的列表不同（例如把视频加入音乐列表）。
@@ -487,7 +518,9 @@ void PlaylistController::removeCacheAfterPlayback(const MediaItem &item, int att
 
     if (MediaCache::removeForItem(item))
         return;
-    if (attempt >= 10) {
+    // attempt 从 0 开始，>=9 时共尝试 0..9 十次（约 4.5 秒），
+    // 旧条件 >=10 实际会试 11 次，与注释“最多 5 秒”不符。
+    if (attempt >= 9) {
         qCWarning(lcPlaylist) << "播放缓存删除失败，文件句柄可能仍被占用：" << item.title;
         return;
     }
@@ -591,7 +624,8 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
             menu.addSeparator();
         }
         // 下载入口只对“还没有本地副本”的条目出现：网络直链和试听条目。
-        if (selectedItem.online || selectedItem.previewOnly) {
+        // 本地试听条目已经有文件，只应“保存到播放列表”，不应再下载。
+        if (selectedItem.online) {
             downloadAction = menu.addAction(tr("下载到本地…"));
             menu.addSeparator();
         }
@@ -611,14 +645,39 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     if (chosen == nullptr)
         return;
 
+    // menu.exec 会开嵌套事件循环，期间下载完成、自动刷新等都可能改动模型；
+    // 原先缓存的 index/selectedItem 可能已指向别的条目或越界，必须按身份重新定位。
+    auto rowForSelection = [model, &selectedItem]() -> int {
+        if (!selectedItem.isValid())
+            return -1;
+        const QString identity = mediaIdentity(selectedItem);
+        for (int row = 0; row < model->rowCount(); ++row) {
+            if (mediaIdentity(model->itemAt(row)) == identity)
+                return row;
+        }
+        return -1;
+    };
+
     if (chosen == downloadAction) {
         emit downloadRequested(selectedItem);
     } else if (chosen == playAction) {
-        playRow(type, index.row());
+        const int row = rowForSelection();
+        if (row >= 0)
+            playRow(type, row);
+        else
+            emit statusMessage(tr("该条目已从列表移除"));
     } else if (chosen == savePreviewAction) {
-        promotePreviewRow(type, index.row());
+        const int row = rowForSelection();
+        if (row >= 0)
+            promotePreviewRow(type, row);
+        else
+            emit statusMessage(tr("该条目已从列表移除"));
     } else if (chosen == removeAction) {
-        removeRow(type, index.row());
+        const int row = rowForSelection();
+        if (row >= 0)
+            removeRow(type, row);
+        else
+            emit statusMessage(tr("该条目已从列表移除"));
     } else if (chosen == clearAction) {
         clearPlaylist(type);
     } else if (chosen == addLocalAction) {

@@ -18,6 +18,7 @@
 #include <QEvent>
 #include <QFocusEvent>
 #include <QFontMetrics>
+#include <QBoxLayout>
 #include <QGridLayout>
 #include <QHash>
 #include <QHBoxLayout>
@@ -61,7 +62,12 @@ public:
         , m_view(view)
     {
         m_timer.setInterval(40);
-        QObject::connect(&m_timer, &QTimer::timeout, view->viewport(), [this] { advance(); });
+        // 用 delegate 自己做 context：delegate 是 view 的子对象，view 销毁时
+        // 这个连接会随 delegate 一起断开，不会留下捕获 this 的悬空回调。
+        QObject::connect(&m_timer, &QTimer::timeout, this, [this] {
+            if (m_view != nullptr)
+                advance();
+        });
         // 40ms 计时只为悬停标题滚动服务；没有悬停/没有溢出时不应该常驻空转。
         m_timer.stop();
 
@@ -246,7 +252,28 @@ private:
         const QString artist = index.data(PlaylistModel::ArtistRole).toString();
         const QString text = artist.isEmpty() ? title
                                               : title + QStringLiteral(" - ") + artist;
-        if (metrics.horizontalAdvance(text) <= rect.width() - 180) {
+        // 与 paint() 保持同一套可用宽度：两行布局时来源在下一行，
+        // 标题几乎占满整行；单行布局才给右侧来源留位置。
+        const QRect inner = rect.adjusted(4, 2, -4, -2);
+        const int iconWidth = 22;
+        const int gap = 6;
+        const int textLeft = inner.left() + iconWidth + gap;
+        const int titleAreaWidth = qMax(0, inner.right() - textLeft + 1);
+        const int lineHeight = metrics.height();
+        const bool twoLine = inner.height() >= lineHeight * 2 + 4;
+        int available = titleAreaWidth;
+        if (!twoLine) {
+            const QString source = m_sourceNames.value(
+                index.data(PlaylistModel::SourceRole).toString(), tr("本地"));
+            const QString quality = index.data(PlaylistModel::QualityRole).toString();
+            const QString sourceText =
+                quality.isEmpty() ? source : quality + QStringLiteral(" · ") + source;
+            const int sourceWidth =
+                qBound(48, metrics.horizontalAdvance(sourceText) + 10,
+                       qMax(48, inner.width() / 2));
+            available = qMax(0, inner.width() - iconWidth - gap - sourceWidth - gap);
+        }
+        if (metrics.horizontalAdvance(text) <= available) {
             // 没有溢出就没有滚动需求，停掉计时器，避免列表静止时持续唤醒事件循环。
             m_timer.stop();
             return;
@@ -287,6 +314,42 @@ bool looksLikeHttpUrl(const QString &text)
            && !url.host().isEmpty();
 }
 
+QString decodeAttributeEntities(const QString &raw)
+{
+    QString text = raw;
+    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+    text.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
+    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    // 网页里的播放地址常写成 &#x2F; 这种数字实体；不还原会让 QUrl 解析出坏路径。
+    static const QRegularExpression numeric(
+        QStringLiteral("&#(?:[xX]([0-9a-fA-F]{1,6})|([0-9]{1,7}));"));
+    QString result;
+    int last = 0;
+    QRegularExpressionMatchIterator it = numeric.globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        bool ok = false;
+        const uint code = match.captured(1).isEmpty()
+                              ? match.captured(2).toUInt(&ok, 10)
+                              : match.captured(1).toUInt(&ok, 16);
+        const bool valid = ok && code > 0 && code <= 0x10FFFF
+                           && !(code >= 0xD800 && code <= 0xDFFF);
+        result += text.mid(last, match.capturedStart() - last);
+        if (valid) {
+            const char32_t point = static_cast<char32_t>(code);
+            result += QString::fromUcs4(&point, 1);
+        } else {
+            result += match.captured(0);
+        }
+        last = match.capturedEnd();
+    }
+    result += text.mid(last);
+    return result;
+}
+
 QString directMediaTitle(const QUrl &url)
 {
     QString name = QUrl::fromPercentEncoding(url.fileName().toUtf8());
@@ -316,11 +379,15 @@ QString extractPageMediaUrl(const QString &html, const QUrl &base)
         const QRegularExpressionMatch match = re.match(html);
         if (!match.hasMatch())
             continue;
-        const QString candidate = match.captured(1)
+        const QString candidate = decodeAttributeEntities(match.captured(1))
                                       .replace(QStringLiteral("\\/"), QStringLiteral("/"))
                                       .replace(QStringLiteral("\\u0026"), QStringLiteral("&"));
         const QUrl resolved = base.resolved(QUrl(candidate));
-        if (resolved.isValid() && !resolved.host().isEmpty())
+        // 只接受 http/https：网页里可能混入 javascript:/ftp:/data: 地址。
+        if (resolved.isValid()
+            && (resolved.scheme() == QLatin1String("http")
+                || resolved.scheme() == QLatin1String("https"))
+            && !resolved.host().isEmpty())
             return resolved.toString();
     }
     return QString();
@@ -433,9 +500,11 @@ void SearchPanelController::setupUi()
             [this](const QVector<MediaItem> &items, int filtered, const QStringList &failed) {
                 showResults(items);
 
+                // showResults 已按 URL 去重，状态栏统计必须用去重后的 m_results；
+                // 否则“共 N 条”会比列表实际条数多。
                 int musicCount = 0;
                 int videoCount = 0;
-                for (const MediaItem &item : items) {
+                for (const MediaItem &item : std::as_const(m_results)) {
                     if (item.type == MediaType::Video)
                         ++videoCount;
                     else
@@ -443,7 +512,7 @@ void SearchPanelController::setupUi()
                 }
 
                 QString text;
-                if (items.isEmpty()) {
+                if (m_results.isEmpty()) {
                     text = filtered > 0
                                ? tr("未搜索到可播放结果（已过滤 %1 条）").arg(filtered)
                                : tr("未搜索到结果");
@@ -484,8 +553,9 @@ void SearchPanelController::setupDiscoveryFeatures()
     if (filterHost == nullptr)
         filterHost = m_ui.sidebar;
     if (filterHost != nullptr) {
-        if (auto *layout = qobject_cast<QVBoxLayout *>(filterHost->layout());
-            layout != nullptr) {
+        // 宿主历史上是 QVBoxLayout，但主题/布局重构后可能是 QGrid/QHBox；
+        // 不再写死 qobject_cast<QVBoxLayout *>，否则换布局时筛选栏直接消失。
+        if (auto *layout = filterHost->layout(); layout != nullptr) {
             auto *filterBar = new QWidget(filterHost);
             filterBar->setObjectName(QStringLiteral("searchFilterBar"));
             auto *filterLayout = new QGridLayout(filterBar);
@@ -521,10 +591,14 @@ void SearchPanelController::setupDiscoveryFeatures()
             filterLayout->addWidget(m_sourceFilter, 1, 0, 1, 2);
             filterLayout->setColumnStretch(0, 1);
             filterLayout->setColumnStretch(1, 1);
-            if (m_ui.filterHost != nullptr)
+            if (m_ui.filterHost != nullptr) {
                 layout->addWidget(filterBar);
-            else
-                layout->insertWidget(3, filterBar);
+            } else if (auto *box = qobject_cast<QBoxLayout *>(layout)) {
+                // 只有线性布局能按索引插入；QLayout 基类没有 insertWidget。
+                box->insertWidget(qMin(3, box->count()), filterBar);
+            } else {
+                layout->addWidget(filterBar);
+            }
 
             connect(m_typeFilter, &QComboBox::currentIndexChanged, this,
                     [this] { applyFilters(); });
@@ -632,6 +706,12 @@ void SearchPanelController::updateSuggestionGeometry()
     int height = m_ui.suggestList->count() * rowHeight + 12;
     height = qMin(height, 8 * rowHeight + 12);
     height = qMin(height, m_ui.sidebar->height() - topLeft.y() - 8);
+    // 搜索框贴近窗口底部时可用高度可能为负；负高度会让列表反向绘制/闪一下。
+    height = qMax(0, height);
+    if (height <= 0) {
+        hideSuggestions();
+        return;
+    }
     m_ui.suggestList->setGeometry(topLeft.x(), topLeft.y(), m_ui.edit->width(), height);
 }
 
@@ -757,17 +837,19 @@ void SearchPanelController::handleWebPageLink(const QUrl &url)
                 emit self->statusMessage(tr("网页打开失败，检查链接是否可访问"));
                 return;
             }
+            if (!HttpClient::isHttpSuccess(reply)) {
+                const QString error = HttpClient::describeError(reply);
+                reply->deleteLater();
+                emit self->statusMessage(tr("网页打开失败：%1").arg(error));
+                return;
+            }
             bool exceeded = false;
             const QByteArray body = HttpClient::readAllLimited(reply,
                                                                NetLimits::kHtmlBytes,
                                                                &exceeded);
+            reply->deleteLater();
             if (exceeded) {
                 emit self->statusMessage(tr("网页内容过大，未继续解析"));
-                return;
-            }
-            if (!HttpClient::isHttpSuccess(reply)) {
-                emit self->statusMessage(
-                    tr("网页打开失败：%1").arg(HttpClient::describeError(reply)));
                 return;
             }
 
@@ -874,6 +956,10 @@ void SearchPanelController::refreshSourceNames()
     m_sourceFilter->addItem(tr("直链/网页"), QStringLiteral("link"));
     const int restored = m_sourceFilter->findData(previous);
     m_sourceFilter->setCurrentIndex(restored >= 0 ? restored : 0);
+    // 当前筛选的源被删除后，下拉会退回“全部”；此时必须重新过滤，
+    // 否则列表仍停在只显示已删除源结果的状态。
+    if (!previous.isEmpty() && restored < 0)
+        applyFilters(false);
 }
 
 void SearchPanelController::setAreaVisible(bool visible)
@@ -1027,6 +1113,8 @@ void SearchPanelController::handleContextMenu(const QPoint &pos)
     QAction *playAction = menu.addAction(tr("播放"));
     QAction *addMusicAction = menu.addAction(tr("加入音乐列表"));
     QAction *addVideoAction = menu.addAction(tr("加入视频列表"));
+    // 类型与目标列表必须匹配：视频条目不能加进音乐列表，反之亦然。
+    addMusicAction->setEnabled(item.type == MediaType::Music);
     addVideoAction->setEnabled(item.type == MediaType::Video);
     QAction *downloadAction = menu.addAction(tr("下载"));
 

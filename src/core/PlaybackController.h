@@ -47,6 +47,10 @@ public:
     void previous();
     void seek(qint64 ms);
 
+    /// 不停止播放，只把当前视频进度写回播放列表模型。
+    /// 退出前先调用它再保存，避免“先保存、后 stop”导致最后几秒进度丢失。
+    void persistCurrentPosition();
+
     /// 列表里删掉了一行后调用：正在播的那首被删则停下，删的是前面的行则下标前移
     void onPlaylistRowRemoved(int row);
 
@@ -126,7 +130,7 @@ private:
     /// 待恢复的视频位置；-1 表示没有待恢复任务
     qint64 m_pendingResumeMs = -1;
     QString m_pendingResumeIdentity;
-    /// 恢复任务从发起到现在的尝试次数，仅用于日志，不再作为失败上限
+    /// 已下发 seek 的次数；用于区分“新 source 尚未定位”与“已请求过定位”。
     int m_resumeAttemptCount = 0;
     /// 等待播放器真正可 seek 的定时器；不能用固定次数，否则 HLS/代理源
     /// 在 seekable 变 true 之前就会把次数耗尽。

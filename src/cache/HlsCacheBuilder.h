@@ -81,7 +81,7 @@ private:
     void onAudioPlaylistReady(const QByteArray &body, const QUrl &finalUrl,
                               const QString &error);
     void startDownloads();
-    void startTrack(bool video, const QUrl &source, const QString &targetPath);
+    bool startTrack(bool video, const QUrl &source, const QString &targetPath);
     void onTrackProgress(bool video, qint64 received, qint64 total);
     void onTrackFinished(bool video, const QString &path);
     void onTrackFailed(bool video, const QString &message);
@@ -107,7 +107,6 @@ private:
 
     QUrl m_sourceUrl;
     QUrl m_originUrl;
-    QUrl m_masterUrl;
     QUrl m_videoPlaylistUrl;
     QUrl m_audioPlaylistUrl;
     QUrl m_videoSource;
@@ -133,6 +132,11 @@ private:
     bool m_audioDone = false;
     int m_videoPct = -1;
     int m_audioPct = -1;
+    /// 双轨总进度按字节加权，避免短视频轨先下完就把整体拉到 50% 的假象。
+    qint64 m_videoReceived = 0;
+    qint64 m_videoTotal = 0;
+    qint64 m_audioReceived = 0;
+    qint64 m_audioTotal = 0;
     int m_lastOverallPct = -1;
     qint64 m_lastProgressMs = 0;
 

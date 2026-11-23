@@ -62,6 +62,38 @@ QString sourceLabel(const MediaItem &item)
     return item.online ? QObject::tr("网络") : QObject::tr("本地");
 }
 
+QColor accentFromCover(const QPixmap &cover)
+{
+    if (cover.isNull())
+        return QColor();
+    const QImage image = cover.toImage().scaled(24, 24, Qt::IgnoreAspectRatio,
+                                               Qt::SmoothTransformation);
+    if (image.isNull())
+        return QColor();
+    qint64 r = 0, g = 0, b = 0, count = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            // 跳过纯黑/纯白和几乎无彩度的像素，否则平均出来总是灰。
+            if (pixel.lightness() < 24 || pixel.lightness() > 244)
+                continue;
+            if (pixel.saturation() < 40)
+                continue;
+            r += pixel.red();
+            g += pixel.green();
+            b += pixel.blue();
+            ++count;
+        }
+    }
+    if (count == 0)
+        return QColor();
+    QColor color(int(r / count), int(g / count), int(b / count));
+    // 封面主色可能偏暗或偏灰，提到适合做光晕/下划线的饱和度与亮度。
+    if (color.saturation() < 110)
+        color.setHsl(color.hslHue(), 150, qBound(120, color.lightness(), 205));
+    return color;
+}
+
 } // namespace
 
 MusicVisualWidget::MusicVisualWidget(QWidget *parent)
@@ -109,6 +141,7 @@ MusicVisualWidget::~MusicVisualWidget()
 void MusicVisualWidget::setTrack(const MediaItem &item)
 {
     m_item = item;
+    m_sourceDisplayName.clear();
     m_cover = QPixmap();
     m_coverScaled = QPixmap();
     m_coverScaledRadius = 0;
@@ -119,15 +152,38 @@ void MusicVisualWidget::setTrack(const MediaItem &item)
         if (!loaded.isNull())
             m_cover = loaded;
     }
+    const QColor coverAccent = accentFromCover(m_cover);
+    m_accent = coverAccent.isValid() ? coverAccent : m_themeAccent;
+    update();
+}
+
+void MusicVisualWidget::setSourceDisplayName(const QString &name)
+{
+    if (m_sourceDisplayName == name)
+        return;
+    m_sourceDisplayName = name;
+    update();
+}
+
+void MusicVisualWidget::setAccentColor(const QColor &color)
+{
+    if (!color.isValid() || m_themeAccent == color)
+        return;
+    m_themeAccent = color;
+    // 没有封面主色时（例如网络条目或本地无封面音乐）立即跟随主题。
+    if (!accentFromCover(m_cover).isValid())
+        m_accent = color;
     update();
 }
 
 void MusicVisualWidget::reset()
 {
     m_item = MediaItem();
+    m_sourceDisplayName.clear();
     m_cover = QPixmap();
     m_coverScaled = QPixmap();
     m_coverScaledRadius = 0;
+    m_accent = m_themeAccent;
     m_audioSpectrum.clear();
     m_audioSpectrumAge = 1000;
     m_lyrics.clear();
@@ -202,12 +258,14 @@ void MusicVisualWidget::paintEvent(QPaintEvent *event)
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
     const QRectF rect = QRectF(this->rect());
+    // 每帧重绘只读一次设置；原先 drawTrackInfo/drawLyrics 各建一个 QSettings。
+    const int basePx = qBound(9, AppSettings::uiFontSizePx(), 20);
     drawBackground(painter, rect);
     drawSpectrum(painter, rect);
     drawDisc(painter, rect);
-    drawTrackInfo(painter, rect);
+    drawTrackInfo(painter, rect, basePx);
     // 歌词最后绘制，压在频谱之上保证可读
-    drawLyrics(painter, rect);
+    drawLyrics(painter, rect, basePx);
 }
 
 void MusicVisualWidget::resizeEvent(QResizeEvent *event)
@@ -317,9 +375,14 @@ void MusicVisualWidget::drawSpectrum(QPainter &painter, const QRectF &rect)
 {
     const int count = kBandCount;
     const bool live = m_audioSpectrum.size() == count && m_audioSpectrumAge <= 300;
-    const qreal gap = qMax(2.0, rect.width() / 620.0);
     const qreal totalWidth = rect.width() * 0.86;
-    const qreal barWidth = (totalWidth - gap * (count - 1)) / count;
+    if (totalWidth <= 0 || rect.height() <= 0)
+        return;
+    // 极窄窗口下固定 gap 会吃掉全部宽度，barWidth 变负导致圆角/光晕反向绘制。
+    qreal gap = qMax(2.0, rect.width() / 620.0);
+    if (gap * (count - 1) > totalWidth * 0.6)
+        gap = totalWidth * 0.4 / qMax(1, count - 1);
+    const qreal barWidth = qMax(1.0, (totalWidth - gap * (count - 1)) / count);
     const qreal baseY = rect.height() * 0.88;
     const qreal maxHeight = rect.height() * ((m_playing || live) ? 0.20 : 0.07);
 
@@ -475,7 +538,7 @@ void MusicVisualWidget::drawDisc(QPainter &painter, const QRectF &rect)
     painter.drawPath(note);
 }
 
-void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
+void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect, int basePx)
 {
     // 删除当前条目后 reset() 会清空 m_item；此时不要继续画“未知曲目/未知歌手”，
     // 否则用户仍会看到一张写着占位文案的动感视图，误以为没有复位。
@@ -487,7 +550,6 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
     const qreal top = rect.top() + rect.height() * 0.16;
     // 动感视图曾经按窗口高度算字号，窗口越大字越夸张；现在统一以设置里的
     // 真实基础字号为锚点，只给歌名增加一档强调，其余文字与播放列表贴近。
-    const int basePx = qBound(9, AppSettings::uiFontSizePx(), 20);
 
     QFont titleFont = font();
     titleFont.setPixelSize(basePx + 4);
@@ -517,7 +579,7 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
     QStringList tags;
     if (!m_item.quality.isEmpty())
         tags.append(m_item.quality);
-    tags.append(sourceLabel(m_item));
+    tags.append(m_sourceDisplayName.isEmpty() ? sourceLabel(m_item) : m_sourceDisplayName);
     if (!m_playing)
         tags.append(tr("已暂停"));
 
@@ -541,7 +603,7 @@ void MusicVisualWidget::drawTrackInfo(QPainter &painter, const QRectF &rect)
     }
 }
 
-void MusicVisualWidget::drawLyrics(QPainter &painter, const QRectF &rect)
+void MusicVisualWidget::drawLyrics(QPainter &painter, const QRectF &rect, int basePx)
 {
     if (m_lyrics.isEmpty())
         return;
@@ -562,7 +624,6 @@ void MusicVisualWidget::drawLyrics(QPainter &painter, const QRectF &rect)
 
     const qreal rowHeight = height / visible;
     const qreal centerY = top + height / 2.0;
-    const int basePx = qBound(9, AppSettings::uiFontSizePx(), 20);
 
     QFont lyricFont = font();
     lyricFont.setPixelSize(basePx);

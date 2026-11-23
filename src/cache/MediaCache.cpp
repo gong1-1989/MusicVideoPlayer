@@ -1,4 +1,5 @@
 #include "cache/MediaCache.h"
+#include "core/FileNameUtils.h"
 
 #include "storage/StoragePaths.h"
 
@@ -68,40 +69,8 @@ QString safeExtensionFromUrl(const QUrl &url, const QByteArray &contentType = QB
 
 QString safeEntryName(const QString &raw, MediaType type)
 {
-    QString name;
-    const QString invalid = QStringLiteral("<>:\"/\\|?*");
-    for (const QChar ch : raw) {
-        if (ch.category() == QChar::Other_Control || invalid.contains(ch))
-            name.append(QLatin1Char('_'));
-        else if (ch == QLatin1Char('\n') || ch == QLatin1Char('\r') || ch == QLatin1Char('\t'))
-            name.append(QLatin1Char(' '));
-        else
-            name.append(ch);
-    }
-    name = name.simplified();
-    while (!name.isEmpty()
-           && (name.endsWith(QLatin1Char('.')) || name.endsWith(QLatin1Char(' ')))) {
-        name.chop(1);
-    }
-    // 文件名过长会在 Windows 上触发 MAX_PATH；给同目录的 .json 留足空间。
-    if (name.size() > 120)
-        name.truncate(120);
-    if (name.isEmpty())
-        name = type == MediaType::Video ? QStringLiteral("影视") : QStringLiteral("音乐");
-    // Windows 不允许直接用这些名字做文件/目录名。
-    static const QStringList reserved = {
-        QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),
-        QStringLiteral("NUL"),  QStringLiteral("COM1"), QStringLiteral("COM2"),
-        QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"),
-        QStringLiteral("COM6"), QStringLiteral("COM7"), QStringLiteral("COM8"),
-        QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
-        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),
-        QStringLiteral("LPT6"), QStringLiteral("LPT7"), QStringLiteral("LPT8"),
-        QStringLiteral("LPT9"),
-    };
-    if (reserved.contains(name, Qt::CaseInsensitive))
-        name.prepend(QLatin1Char('_'));
-    return name;
+    return FileNameUtils::sanitizeComponent(
+        raw, type == MediaType::Video ? QStringLiteral("影视") : QStringLiteral("音乐"), 120);
 }
 
 QString identityDigest(const MediaItem &item, int length)
@@ -330,11 +299,6 @@ QString metaPathForFile(const QString &cachePath)
 {
     // 正文故意不带后缀，真实格式写在紧邻的 `<正文>.json` 里。
     return cachePath + QStringLiteral(".json");
-}
-
-QString extensionForUrl(const QUrl &url, const QByteArray &contentType)
-{
-    return safeExtensionFromUrl(url, contentType);
 }
 
 bool removeForItem(const MediaItem &item)
