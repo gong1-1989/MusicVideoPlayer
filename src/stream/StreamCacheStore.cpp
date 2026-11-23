@@ -1,5 +1,11 @@
+/// @file StreamCacheStore.cpp
+/// @brief 流转缓存条目占用统计：实际字节与预留额度取较大者，避免并发占位突破配额。
 #include "stream/StreamCacheStore.h"
 
+/// @brief 计算单条缓存的配额占用。
+/// @param entry 缓存条目。
+/// @return 已缓存字节（含分片）与 reservedBytes 中的较大值。
+/// @note 在途响应即使还没收到数据，也按登记的 total 预留，防止多个占位同时超配额。
 qint64 StreamCacheStore::bytes(const Entry &entry)
 {
     qint64 stored = entry.diskBacked ? entry.dataSize : entry.data.size();
