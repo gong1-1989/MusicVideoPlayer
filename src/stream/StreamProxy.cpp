@@ -1,3 +1,5 @@
+/// @file StreamProxy.cpp
+/// @brief 本地流转服务实现：令牌化上游地址、Range 分片缓存、HLS 播放列表改写与拖动预取。
 #include "stream/StreamProxy.h"
 #include "cache/MediaCache.h"
 #include "stream/HlsSeekWindow.h"
@@ -314,6 +316,7 @@ void StreamProxy::persistCacheState(CacheEntry &entry)
                            entry.contentType, entry.total, entry.complete);
 }
 
+/// @brief 静默中止响应：先断开本代理回调再 abort，避免同步 finished 造成重入。
 void StreamProxy::abortReplySilently(QNetworkReply *reply)
 {
     if (reply == nullptr)
@@ -326,6 +329,8 @@ void StreamProxy::abortReplySilently(QNetworkReply *reply)
     reply->deleteLater();
 }
 
+/// @brief 停止监听并释放全部在途请求、缓存句柄与令牌。
+/// @note 退出/切换播放前调用；清理顺序要先断开回调，避免析构期间改容器。
 void StreamProxy::shutdown()
 {
     m_listening.store(false);
@@ -350,6 +355,8 @@ void StreamProxy::shutdown()
     m_lastPlaylistKey.clear();
 }
 
+/// @brief 在 127.0.0.1 的随机端口启动服务（幂等）。
+/// @return 已监听或启动成功返回 true。
 bool StreamProxy::start()
 {
     if (m_server->isListening()) {
@@ -367,11 +374,18 @@ bool StreamProxy::start()
     return true;
 }
 
+/// @brief 返回服务是否已就绪。
 bool StreamProxy::isListening() const
 {
     return m_listening.load();
 }
 
+/// @brief 为上游地址登记令牌并生成本地播放地址。
+/// @param upstream 真实上游地址。
+/// @param headers 需要一并复用的源站请求头（Cookie/Referer 等）。
+/// @param cachePath 该媒体在线缓存的落盘路径，空表示不落盘。
+/// @param cacheIdentity 缓存身份，用于区分同名不同源的内容。
+/// @return 本地代理地址；服务启动失败时返回空 QUrl。
 QUrl StreamProxy::proxyUrlFor(const QUrl &upstream, const QHash<QString, QString> &headers,
                               const QString &cachePath, const QString &cacheIdentity)
 {
@@ -381,6 +395,8 @@ QUrl StreamProxy::proxyUrlFor(const QUrl &upstream, const QHash<QString, QString
                                 cacheIdentity);
 }
 
+/// @brief 接收新连接：按请求头累积到 `\r\n\r\n` 后交给 handleClient。
+/// @note 头超过 16 KB 直接 400；请求体不关心，读到即丢。
 void StreamProxy::onNewConnection()
 {
     while (m_server->hasPendingConnections()) {
@@ -413,6 +429,11 @@ void StreamProxy::onNewConnection()
     }
 }
 
+/// @brief 处理一次客户端请求：解析令牌、还原上游地址、校验作用域，再走缓存或回源。
+/// @param client 已建立连接的客户端 socket。
+/// @param payload 完整请求（含请求行与头）。
+/// @note 子路径只允许在同一 scheme/host/port 且不越出令牌登记目录，防止令牌被
+///       用来访问任意地址或复带凭据。m3u8 会忽略 Range，保证能拿到全文建索引。
 void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
 {
     const Request request = parseRequest(payload);
@@ -550,6 +571,13 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
                          cacheIdentity);
 }
 
+/// @brief 回源单路请求：按需建缓存、复用磁盘完整文件，并把响应透传给客户端。
+/// @param hasRange 客户端是否要求字节范围。
+/// @param cacheKey 地址+鉴权头的缓存键。
+/// @param cachePath 整段落盘路径，空表示只做内存缓存。
+/// @param cacheIdentity 缓存身份，用于校验磁盘文件归属。
+/// @note 单文件 fMP4 HLS（EXT-X-BYTERANGE 指向同一个 mp4）不建整段内存缓存，
+///       避免几十 MB 的大文件与后台缓存抢带宽。
 void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                                        const QHash<QString, QString> &headers,
                                        const Request &request, bool hasRange,
@@ -853,6 +881,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
     });
 }
 
+/// @brief 判断地址是否 HLS 分片（扩展名或清单索引已知）。
 bool StreamProxy::isHlsSegmentUrl(const QUrl &url) const
 {
     const QString path = url.path().toLower();
@@ -871,6 +900,7 @@ bool StreamProxy::isHlsSegmentUrl(const QUrl &url) const
     return false;
 }
 
+/// @brief 判断是否为“同一 URL 多段 BYTERANGE”的单文件 fMP4 分片。
 bool StreamProxy::isSingleFileHlsSegment(const QUrl &url) const
 {
     int sameUrlCount = 0;
@@ -885,6 +915,8 @@ bool StreamProxy::isSingleFileHlsSegment(const QUrl &url) const
     return false;
 }
 
+/// @brief 对已知 HLS 分片的整段请求尝试多连接 Range 预取。
+/// @return 已接管并异步下载返回 true；源站不支持时返回 false，由调用方回退单路透传。
 bool StreamProxy::tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream,
                                         const QHash<QString, QString> &headers,
                                         const Request &request, bool hasRange,
@@ -1196,6 +1228,7 @@ QString StreamProxy::cacheKeyFor(const QUrl &upstream,
     return StreamTokenRegistry::cacheKeyFor(upstream, headers);
 }
 
+/// @brief 记住播放列表的分片顺序与码率信息，供拖动预取定位。
 void StreamProxy::rememberPlaylist(const QByteArray &body, const QUrl &playlistUrl,
                                    const QHash<QString, QString> &headers)
 {
@@ -1246,6 +1279,8 @@ void StreamProxy::rememberPlaylist(const QByteArray &body, const QUrl &playlistU
     }
 }
 
+/// @brief 按播放列表地址查已记住的分片信息。
+/// @return 命中返回指针；未记住返回 nullptr。
 const StreamProxy::PlaylistInfo *StreamProxy::playlistFor(
     const QUrl &playlistUrl, const QHash<QString, QString> &headers) const
 {
@@ -1265,6 +1300,7 @@ const StreamProxy::PlaylistInfo *StreamProxy::playlistFor(
     return nullptr;
 }
 
+/// @brief 针对一次拖动，从目标时间点起排队预取后续分片。
 void StreamProxy::prefetchForSeek(const QUrl &playlistUrl,
                                   const QHash<QString, QString> &headers, qint64 targetMs)
 {
@@ -1310,6 +1346,7 @@ void StreamProxy::prefetchForSeek(const QUrl &playlistUrl,
     });
 }
 
+/// @brief 按当前播放位置续排预取（正常播放时滚动窗口）。
 void StreamProxy::prefetchForPosition(const QUrl &playlistUrl,
                                       const QHash<QString, QString> &headers, qint64 positionMs)
 {
@@ -1353,6 +1390,7 @@ void StreamProxy::prefetchForPosition(const QUrl &playlistUrl,
         enqueuePrefetch(playlistUrl, headers, first, last, m_prefetchGeneration);
 }
 
+/// @brief 把预取任务入队，并在空闲时启动。
 void StreamProxy::enqueuePrefetch(const QUrl &playlistUrl,
                                   const QHash<QString, QString> &headers,
                                   int firstIndex, int lastIndex, qint64 generation)
@@ -1393,6 +1431,7 @@ void StreamProxy::enqueuePrefetch(const QUrl &playlistUrl,
     startNextPrefetch();
 }
 
+/// @brief 取出下一个预取任务并执行；队列空或已有任务在途时直接返回。
 void StreamProxy::startNextPrefetch()
 {
     if (m_prefetchActive >= m_prefetchConcurrency)
@@ -1639,6 +1678,7 @@ void StreamProxy::finishPrefetch(const QString &cacheKey, QNetworkReply *reply,
     startNextPrefetch();
 }
 
+/// @brief 取消全部预取任务与在途预取请求。
 void StreamProxy::cancelPrefetch()
 {
     ++m_prefetchGeneration;
@@ -1788,6 +1828,7 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
         finish();
 }
 
+/// @brief 改写播放列表，把分片地址换成同一令牌下的相对路径。
 QByteArray StreamProxy::rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
                                         const QHash<QString, QString> &headers, QString *error)
 {
@@ -1844,6 +1885,8 @@ void StreamProxy::flushUpstream(QTcpSocket *client, QNetworkReply *reply, const 
         client->write(chunk);
 }
 
+/// @brief 从缓存（内存或磁盘）响应客户端 Range 请求。
+/// @return 已接管并响应返回 true；缓存不足需回源时返回 false。
 bool StreamProxy::serveFromCache(QTcpSocket *client, const QSharedPointer<CacheEntry> &entry,
                                  const QString &cacheKey, const QString &rangeHeader,
                                  bool hasRange)
@@ -1950,6 +1993,7 @@ bool StreamProxy::serveFromCache(QTcpSocket *client, const QSharedPointer<CacheE
     return true;
 }
 
+/// @brief 把缓存中已就绪的字节推给等待中的客户端。
 void StreamProxy::pumpCache(const QString &key, const QSharedPointer<CacheEntry> &entry)
 {
     if (entry.isNull() || key.isEmpty())
@@ -2041,6 +2085,7 @@ void StreamProxy::pumpCache(const QString &key, const QSharedPointer<CacheEntry>
     }
 }
 
+/// @brief 把上游新收到的字节写入缓存并唤醒客户端。
 void StreamProxy::readIntoCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
                                 QNetworkReply *reply)
 {
@@ -2077,6 +2122,7 @@ void StreamProxy::readIntoCache(const QString &key, const QSharedPointer<CacheEn
     pumpCache(key, entry);
 }
 
+/// @brief 上游结束后的收尾：标记完成、落盘状态并释放订阅者。
 void StreamProxy::finishCache(const QString &key, const QSharedPointer<CacheEntry> &entry,
                               QNetworkReply *reply, const QUrl &upstream,
                               const QHash<QString, QString> &headers)
@@ -2271,6 +2317,11 @@ void StreamProxy::resumeCacheUpstream(const QString &key,
     });
 }
 
+/// @brief 判断缓存容量是否还能容纳新数据，必要时先按 LRU 清理。
+/// @param bytes 需要的字节数。
+/// @param keepKey 正在使用的缓存键，清理时不能删除。
+/// @param diskBacked 数据是否直接落盘（不计内存上限）。
+/// @return 清理后仍无空间返回 false。
 bool StreamProxy::cacheHasRoom(qint64 bytes, const QString &keepKey, bool diskBacked)
 {
     // 先回收空闲/失败条目，再判断配额。整段落盘缓存写的是用户可见的磁盘文件，
@@ -2290,6 +2341,7 @@ bool StreamProxy::cacheHasRoom(qint64 bytes, const QString &keepKey, bool diskBa
     return memoryBytes + need <= kMaxCacheTotalBytes;
 }
 
+/// @brief 按最久未使用顺序淘汰缓存，保留 keepKey。
 void StreamProxy::pruneCache(const QString &keepKey)
 {
     if (m_cache.isEmpty())
@@ -2351,6 +2403,7 @@ void StreamProxy::pruneCache(const QString &keepKey)
     }
 }
 
+/// @brief 返回当前缓存条目数、内存/磁盘占用等统计。
 StreamProxy::CacheStats StreamProxy::cacheStats() const
 {
     CacheStats stats;
@@ -2362,18 +2415,21 @@ StreamProxy::CacheStats StreamProxy::cacheStats() const
     return stats;
 }
 
+/// @brief 返回最近一次播放使用的影视播放列表地址。
 QUrl StreamProxy::lastPlaybackVideoPlaylist() const
 {
     QMutexLocker locker(&m_playbackPlaylistMutex);
     return m_lastPlaybackVideoPlaylist;
 }
 
+/// @brief 返回最近一次播放使用的音乐播放列表地址。
 QUrl StreamProxy::lastPlaybackAudioPlaylist() const
 {
     QMutexLocker locker(&m_playbackPlaylistMutex);
     return m_lastPlaybackAudioPlaylist;
 }
 
+/// @brief 释放指定路径的磁盘缓存占用（删除缓存文件并移除元数据）。
 void StreamProxy::releaseCacheFile(const QString &path)
 {
     if (path.isEmpty())
@@ -2394,6 +2450,7 @@ void StreamProxy::releaseCacheFile(const QString &path)
     }
 }
 
+/// @brief 丢弃单条缓存：中止在途请求、关闭文件并移除条目。
 void StreamProxy::dropCacheEntry(const QString &key)
 {
     const QSharedPointer<CacheEntry> entry = m_cache.take(key);
@@ -2439,6 +2496,7 @@ void StreamProxy::dropCacheEntry(const QString &key)
     }
 }
 
+/// @brief 构造缓存响应头（Content-Range/Accept-Ranges 等）。
 QByteArray StreamProxy::buildCacheHead(const CacheEntry &entry, int status, qint64 start,
                                        qint64 end) const
 {
@@ -2468,6 +2526,7 @@ QByteArray StreamProxy::buildCacheHead(const CacheEntry &entry, int status, qint
     return head;
 }
 
+/// @brief 构造回源响应的头部，补齐 Range 与连接策略所需字段。
 QByteArray StreamProxy::buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const
 {
     if (status <= 0)
@@ -2502,6 +2561,7 @@ QByteArray StreamProxy::buildResponseHead(QNetworkReply *reply, const QUrl &upst
     return head;
 }
 
+/// @brief 向客户端回一个简单的 HTTP 错误响应并关闭连接。
 void StreamProxy::replyError(QTcpSocket *client, int status, const QString &reason)
 {
     const QByteArray body = reason.toUtf8();
@@ -2513,6 +2573,7 @@ void StreamProxy::replyError(QTcpSocket *client, int status, const QString &reas
     client->disconnectFromHost();
 }
 
+/// @brief 解析请求行与常用头部（Range/方法/路径）。
 StreamProxy::Request StreamProxy::parseRequest(const QByteArray &payload)
 {
     Request request;
@@ -2545,6 +2606,7 @@ StreamProxy::Request StreamProxy::parseRequest(const QByteArray &payload)
     return request;
 }
 
+/// @brief 按 URL 后缀推断 Content-Type，未知时回退 octet-stream。
 QByteArray StreamProxy::guessContentType(const QUrl &upstream)
 {
     static const QHash<QString, QByteArray> types{
