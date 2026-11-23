@@ -1,10 +1,13 @@
 #include "cache/HlsCacheBuilder.h"
 #include "cache/LyricsCache.h"
 #include "cache/MediaCache.h"
+#include "core/PlaybackController.h"
+#include "core/PlaylistModel.h"
 #include "download/DownloadManager.h"
 #include "download/DownloadTask.h"
 #include "download/MediaRemux.h"
 #include "lyrics/LyricsService.h"
+#include "media/MediaItem.h"
 #include "net/ConfigSearchProvider.h"
 #include "net/ExternalSearchProvider.h"
 #include "net/HttpClient.h"
@@ -247,6 +250,7 @@ private slots:
     void responseLimitOnHttpErrorKeepsStatus();
     void requestLogsRedactQuerySecrets();
     void downloadLimitSettingClampsAndPersists();
+    void videoPositionRestoredAfterSwitch();
 
 private:
     QTemporaryDir m_tempDir;
@@ -1824,6 +1828,70 @@ void IntegrationTest::downloadLimitSettingClampsAndPersists()
     AppSettings::setDownloadLimitMb(0);
     QCOMPARE(AppSettings::downloadLimitMb(), 512);
     AppSettings::setDownloadLimitMb(original);
+}
+
+void IntegrationTest::videoPositionRestoredAfterSwitch()
+{
+    if (!MediaRemux::isAvailable())
+        QSKIP("未找到 ffmpeg，跳过视频进度恢复测试");
+
+    const QString mediaPath = m_tempDir.filePath(QStringLiteral("resume-source.mp4"));
+    QFile::remove(mediaPath);
+    QProcess generator;
+    generator.start(MediaRemux::ffmpegExecutable(),
+                     {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                      QStringLiteral("-loglevel"), QStringLiteral("error"),
+                      QStringLiteral("-f"), QStringLiteral("lavfi"),
+                      QStringLiteral("-i"), QStringLiteral("testsrc=size=160x90:rate=25"),
+                      QStringLiteral("-f"), QStringLiteral("lavfi"),
+                      QStringLiteral("-i"), QStringLiteral("sine=frequency=440"),
+                      QStringLiteral("-t"), QStringLiteral("20"),
+                      QStringLiteral("-c:v"), QStringLiteral("mpeg4"),
+                      QStringLiteral("-q:v"), QStringLiteral("5"),
+                      QStringLiteral("-c:a"), QStringLiteral("aac"),
+                      QStringLiteral("-b:a"), QStringLiteral("64k"),
+                      QStringLiteral("-movflags"), QStringLiteral("+faststart"),
+                      QStringLiteral("-f"), QStringLiteral("mp4"), mediaPath});
+    QVERIFY(generator.waitForFinished(30000));
+    QCOMPARE(generator.exitCode(), 0);
+
+    PlaylistModel playlist;
+    MediaItem first;
+    first.type = MediaType::Video;
+    first.title = QStringLiteral("resume-a");
+    first.url = QUrl::fromLocalFile(mediaPath);
+    first.online = false;
+    MediaItem second = first;
+    second.title = QStringLiteral("resume-b");
+    playlist.addItem(first);
+    playlist.addItem(second);
+
+    PlaybackController player;
+    player.setPlaylist(&playlist);
+    player.playRow(0);
+
+    // 等第一条真正播过 3 秒，确保保存的不是“片头忽略”区间。
+    QElapsedTimer timer;
+    timer.start();
+    while (player.position() < 3000 && timer.elapsed() < 12000)
+        QTest::qWait(100);
+    if (player.position() < 3000)
+        QSKIP("当前环境没有可用的多媒体后端，跳过视频进度恢复测试");
+    const qint64 savedPosition = player.position();
+
+    // 切到第二条再切回第一条，模拟用户手动换集。
+    player.playRow(1);
+    QTest::qWait(800);
+    player.playRow(0);
+    timer.restart();
+    while (player.position() + 1500 < savedPosition && timer.elapsed() < 12000)
+        QTest::qWait(100);
+
+    QVERIFY2(player.position() + 1500 >= savedPosition,
+             qPrintable(QStringLiteral("切回后位置 %1，保存位置 %2")
+                            .arg(player.position())
+                            .arg(savedPosition)));
+    player.stop();
 }
 
 QTEST_GUILESS_MAIN(IntegrationTest)

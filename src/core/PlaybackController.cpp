@@ -45,6 +45,13 @@ PlaybackController::PlaybackController(QObject *parent)
     setVolumePercent(60);
     updateLoops();
 
+    // 恢复进度不能按“调用次数”限次：Load/Buffered、seekableChanged 和
+    // positionChanged 都会触发，HLS/代理源真正可 seek 之前就可能把次数用完。
+    // 改为单次定时器轮询，直到位置确认到达或 15 秒超时。
+    m_resumeTimer = new QTimer(this);
+    m_resumeTimer->setSingleShot(true);
+    connect(m_resumeTimer, &QTimer::timeout, this, &PlaybackController::applyPendingResume);
+
     connect(m_player, &QMediaPlayer::positionChanged,
             this, &PlaybackController::positionChanged);
     connect(m_player, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
@@ -58,17 +65,16 @@ PlaybackController::PlaybackController(QObject *parent)
             m_consecutiveErrors = 0;
         }
         // 加载完成时立刻 setPosition 可能被随后的 play() 重置回 0；
-        // 这里以播放器真实上报的位置为准，确认到达目标前保留待恢复任务并限次重试。
+        // 这里以播放器真实上报的位置为准，确认到达目标前保留待恢复任务，
+        // 并在时间窗内轮询，不能因为几次过早的 setPosition 就放弃。
         if (m_pendingResumeMs > 0) {
             const qint64 target = m_pendingResumeMs;
             if (qAbs(position - target) <= 1500) {
                 qCInfo(lcPlayer) << "视频进度已恢复" << currentItem().displayName()
                                  << position;
-                m_pendingResumeMs = -1;
-                m_pendingResumeIdentity.clear();
-                m_resumeRetryCount = 0;
-            } else if (position + 500 < target && m_resumeRetryCount < 4) {
-                QTimer::singleShot(200, this, &PlaybackController::applyPendingResume);
+                clearPendingResume();
+            } else if (position + 1500 < target) {
+                schedulePendingResume(500);
             }
         }
 
@@ -214,8 +220,7 @@ void PlaybackController::setPlaylist(PlaylistModel *playlist)
 
     // 从视频列表切到音乐/搜索列表时，先把当前视频位置落盘再换模型。
     saveCurrentVideoPosition();
-    m_pendingResumeMs = -1;
-    m_pendingResumeIdentity.clear();
+    clearPendingResume();
 
     m_playlist = playlist;
     m_row = -1;
@@ -251,8 +256,7 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
 
     // 切换视频（含自动下一集）前保存正在播放的那一条；音乐会被存储层忽略。
     saveCurrentVideoPosition();
-    m_pendingResumeMs = -1;
-    m_pendingResumeIdentity.clear();
+    clearPendingResume();
     // 新一轮播放从“尚未出声”开始；只有真正走到可播位置才会翻转，
     // 这样启动失败可以跳过，中途网络/解码错误不会冒充“播完了”。
     m_playAttemptStarted = false;
@@ -287,7 +291,8 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     if (item.type == MediaType::Video && item.positionMs > 0) {
         m_pendingResumeMs = item.positionMs;
         m_pendingResumeIdentity = mediaIdentity(item);
-        m_resumeRetryCount = 0;
+        m_resumeAttemptCount = 0;
+        m_resumeClock.start();
         qCInfo(lcPlayer) << "准备恢复视频进度" << item.displayName() << item.positionMs;
     }
 
@@ -351,8 +356,7 @@ void PlaybackController::stop()
 {
     // 关闭窗口、按停止都会走这里；必须在 QMediaPlayer 清零前读出最后位置。
     saveCurrentVideoPosition();
-    m_pendingResumeMs = -1;
-    m_pendingResumeIdentity.clear();
+    clearPendingResume();
     m_consecutiveErrors = 0;
     m_player->stop();
 }
@@ -412,11 +416,8 @@ void PlaybackController::seek(qint64 ms)
     }
 
     // 用户手动拖到别处时，放弃尚未确认的续播任务，避免 seekableChanged 等信号再把位置拉回去。
-    if (m_pendingResumeMs > 0 && qAbs(ms - m_pendingResumeMs) > 1500) {
-        m_pendingResumeMs = -1;
-        m_pendingResumeIdentity.clear();
-        m_resumeRetryCount = 0;
-    }
+    if (m_pendingResumeMs > 0 && qAbs(ms - m_pendingResumeMs) > 1500)
+        clearPendingResume();
 
     // 预取窗口由 StreamProxy 统一管理（目标片起 target..target+9，4 片并发、
     // 每片 4 路 Range）；UI 只负责把“定位中”讲清楚，不在这里重复调度。
@@ -484,9 +485,7 @@ void PlaybackController::onPlaylistRowRemoved(int row)
     if (m_row == row) {
         // 条目已经从模型里移除，进度属于被删条目，随条目一起丢弃；
         // 不能再读当前播放器位置写进后面那条，否则会把进度串到下一集。
-        m_pendingResumeMs = -1;
-        m_pendingResumeIdentity.clear();
-        m_resumeRetryCount = 0;
+        clearPendingResume();
         m_player->stop();
         m_player->setSource(QUrl());
         m_row = -1;
@@ -598,6 +597,26 @@ void PlaybackController::saveCurrentVideoPosition()
     }
 }
 
+void PlaybackController::clearPendingResume()
+{
+    m_pendingResumeMs = -1;
+    m_pendingResumeIdentity.clear();
+    m_resumeAttemptCount = 0;
+    if (m_resumeTimer != nullptr)
+        m_resumeTimer->stop();
+    m_resumeClock.invalidate();
+}
+
+void PlaybackController::schedulePendingResume(int delayMs)
+{
+    if (m_pendingResumeMs <= 0 || m_resumeTimer == nullptr)
+        return;
+    // positionChanged 在片头阶段可能每几十毫秒来一次；只允许一个在途定时器，
+    // 否则每次 start() 都会把触发时间往后推，永远等不到执行。
+    if (!m_resumeTimer->isActive())
+        m_resumeTimer->start(delayMs);
+}
+
 void PlaybackController::applyPendingResume()
 {
     if (m_pendingResumeMs <= 0 || !hasCurrentItem())
@@ -606,22 +625,50 @@ void PlaybackController::applyPendingResume()
     const MediaItem item = currentItem();
     if (item.type != MediaType::Video
         || mediaIdentity(item) != m_pendingResumeIdentity) {
-        m_pendingResumeMs = -1;
-        m_pendingResumeIdentity.clear();
-        m_resumeRetryCount = 0;
+        clearPendingResume();
         return;
     }
 
-    const qint64 target = m_pendingResumeMs;
-    if (m_resumeRetryCount >= 4)
-        return;
-    ++m_resumeRetryCount;
+    qint64 target = m_pendingResumeMs;
+    const qint64 duration = m_player->duration();
+    if (duration > 0 && target > duration - 1000)
+        target = qMax<qint64>(0, duration - 1000);
 
-    // 这里只发起定位，不清除待恢复任务；由 positionChanged 确认真正到达目标。
-    // 播放器在 LoadedMedia 阶段可能接受 setPosition 但在 play() 启动时又重置为 0。
+    // 位置已经接近或越过目标，不再反复 seek；片头阶段 1.5 秒的误差
+    // 对用户无感，继续纠正反而会打断刚起来的播放。
+    const qint64 position = m_player->position();
+    if (position + 1500 >= target) {
+        qCInfo(lcPlayer) << "视频进度已恢复" << item.displayName() << position;
+        clearPendingResume();
+        return;
+    }
+
+    if (m_resumeClock.isValid() && m_resumeClock.elapsed() > 15000) {
+        qCWarning(lcPlayer) << "视频进度恢复超时，放弃并从头播放"
+                            << item.displayName() << "目标" << target
+                            << "当前" << position;
+        clearPendingResume();
+        return;
+    }
+
+    // 新媒体首片未就绪时 setPosition 会被丢弃，还会干扰 StreamProxy 的预取；
+    // 这里只等待 Loaded/Buffered，不提前下发定位。
+    if (!m_mediaReady) {
+        schedulePendingResume(500);
+        return;
+    }
+    if (!m_player->isSeekable() && m_player->mediaStatus() != QMediaPlayer::BufferedMedia) {
+        schedulePendingResume(500);
+        return;
+    }
+
+    ++m_resumeAttemptCount;
     qCInfo(lcPlayer) << "请求恢复视频进度" << item.displayName() << target
-                     << "第" << m_resumeRetryCount << "次";
+                     << "第" << m_resumeAttemptCount << "次";
     seek(target);
+    // 不在 seek() 里清任务：由 positionChanged 确认真正到达目标；
+    // 若播放器再次把位置重置回 0，定时器会继续在 15 秒窗口内纠正。
+    schedulePendingResume(1000);
 }
 
 qint64 PlaybackController::position() const

@@ -4,6 +4,7 @@
 #include "core/PlaylistModel.h"
 #include "media/MediaItem.h"
 
+#include <QElapsedTimer>
 #include <QMediaPlayer>
 #include <QObject>
 #include <QPointer>
@@ -13,6 +14,7 @@
 
 class QAudioOutput;
 class QThread;
+class QTimer;
 class StreamProxy;
 
 /// 播放状态机：持有 QMediaPlayer，负责"上一首/下一首/循环模式/媒体结束"，
@@ -95,6 +97,8 @@ private:
     void saveCurrentVideoPosition();
     /// 新媒体加载完成后恢复上次保存的位置，只对同一视频生效。
     void applyPendingResume();
+    void clearPendingResume();
+    void schedulePendingResume(int delayMs);
 
     QMediaPlayer *m_player;
     QAudioOutput *m_audio;
@@ -122,8 +126,12 @@ private:
     /// 待恢复的视频位置；-1 表示没有待恢复任务
     qint64 m_pendingResumeMs = -1;
     QString m_pendingResumeIdentity;
-    /// 已尝试 setPosition 的次数；播放器过早调用会丢弃定位，需在播放启动后限次重试
-    int m_resumeRetryCount = 0;
+    /// 恢复任务从发起到现在的尝试次数，仅用于日志，不再作为失败上限
+    int m_resumeAttemptCount = 0;
+    /// 等待播放器真正可 seek 的定时器；不能用固定次数，否则 HLS/代理源
+    /// 在 seekable 变 true 之前就会把次数耗尽。
+    QTimer *m_resumeTimer = nullptr;
+    QElapsedTimer m_resumeClock;
     /// 媒体是否已经加载到可定位状态。未就绪时只记最后一次目标，
     /// 避免源站还在拉首片时连续 setPosition 打断预取连接。
     bool m_mediaReady = false;
