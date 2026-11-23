@@ -869,8 +869,12 @@ void SourceManagerDialog::onRefreshSelected()
         return;
 
     const SourceConfig probed = dialog.probedConfig();
-    if (!probed.isValid())
+    if (!probed.isValid()) {
+        QMessageBox::warning(this, tr("一键更新失败"),
+                             tr("探测结果不完整，未覆盖原来的字段映射。\n\n"
+                                "请确认站点仍可访问，或改用“配置源”手工填写字段映射。"));
         return;
+    }
 
     // 保留身份与开关状态，只替换探测出来的部分
     SourceConfig merged = draft;
