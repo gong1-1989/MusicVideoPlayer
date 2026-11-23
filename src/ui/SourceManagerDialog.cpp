@@ -1187,7 +1187,7 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
                     self->reloadList(index >= 0 ? index : self->m_currentRow);
                 });
         provider->search(keyword, 3);
-    }, NetLimits::kHtmlBytes);
+    }, NetLimits::kHtmlBytes, HeaderPolicy::originOnly(root));
 }
 
 /// @brief 复制当前源为一条新草稿。

@@ -795,6 +795,7 @@ private slots:
     void playlistSnifferRecognizesBody();
     void downloadRejectsHtmlDisguisedAsOctetStream();
     void downloadUsesContentRangeEndWhenTotalUnknown();
+    void downloadResumesMidFileWithoutMagicFalsePositive();
     void downloadHlsVerifiesSegmentsAndMapRange();
     void configMapperReadsNestedPaths();
     void configMapperBoolRulesDoNotMixWithNumbers();
@@ -2136,6 +2137,11 @@ void CoreLogicTest::headerPolicyMatchesCompactedNames()
     QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("apiKey")));
     QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("X_API_KEY")));
     QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("access-key")));
+    // 下划线/驼峰变体压掉分隔符后仍应命中；这些头跨 host 时同样可能带凭据。
+    QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("X_AUTH")));
+    QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("X_AUTH_KEY")));
+    QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("X_ACCESS_KEY")));
+    QVERIFY(HeaderPolicy::isSensitiveHeader(QStringLiteral("authKey")));
     QVERIFY(!HeaderPolicy::isSensitiveHeader(QStringLiteral("User-Agent")));
     QVERIFY(!HeaderPolicy::isSensitiveHeader(QStringLiteral("Accept")));
 
@@ -2143,12 +2149,16 @@ void CoreLogicTest::headerPolicyMatchesCompactedNames()
     headers.insert(QStringLiteral("X-APIKEY"), QStringLiteral("secret-1"));
     headers.insert(QStringLiteral("apiKey"), QStringLiteral("secret-2"));
     headers.insert(QStringLiteral("X_API_KEY"), QStringLiteral("secret-3"));
+    headers.insert(QStringLiteral("X_AUTH_KEY"), QStringLiteral("secret-4"));
+    headers.insert(QStringLiteral("X_ACCESS_KEY"), QStringLiteral("secret-5"));
     headers.insert(QStringLiteral("User-Agent"), QStringLiteral("MVP"));
     const QHash<QString, QString> safe =
         HeaderPolicy::withoutSensitiveHeaders(headers);
     QVERIFY(!safe.contains(QStringLiteral("X-APIKEY")));
     QVERIFY(!safe.contains(QStringLiteral("apiKey")));
     QVERIFY(!safe.contains(QStringLiteral("X_API_KEY")));
+    QVERIFY(!safe.contains(QStringLiteral("X_AUTH_KEY")));
+    QVERIFY(!safe.contains(QStringLiteral("X_ACCESS_KEY")));
     QCOMPARE(safe.value(QStringLiteral("User-Agent")), QStringLiteral("MVP"));
 }
 
@@ -2287,6 +2297,45 @@ void CoreLogicTest::downloadUsesContentRangeEndWhenTotalUnknown()
     QCOMPARE(succeeded.count(), 0);
     QCOMPARE(failed.count(), 1);
     QVERIFY(!QFile::exists(target));
+}
+
+void CoreLogicTest::downloadResumesMidFileWithoutMagicFalsePositive()
+{
+    // octet-stream + 无媒体后缀的续传：首块是文件中段，不是文件头。
+    // 不能拿它做魔数校验，否则合法续传会被误判成网页并删掉半成品。
+    ProbeSiteServer server([](const QString &, QByteArray &body, QByteArray &contentType,
+                              int &status) {
+        status = 206;
+        contentType = QByteArrayLiteral("application/octet-stream");
+        body = QByteArrayLiteral("abcde");
+    });
+    server.m_extraHeaders = QByteArrayLiteral("Content-Range: bytes 5-9/10\r\n");
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString target = dir.filePath(QStringLiteral("clip.bin"));
+    QFile partial(target + QStringLiteral(".mvpdownload"));
+    QVERIFY(partial.open(QIODevice::WriteOnly));
+    QCOMPARE(partial.write(QByteArrayLiteral("PREFX")), qint64(5));
+    partial.close();
+
+    HttpClient http;
+    const QUrl url(QStringLiteral("http://127.0.0.1:%1/clip")
+                       .arg(server.serverPort()));
+    DownloadTask *task = DownloadTask::start(&http, url, target);
+    QVERIFY(task != nullptr);
+    task->setResumeState(5, 0);
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 8000);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(succeeded.count(), 1);
+
+    QFile file(target);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArrayLiteral("PREFXabcde"));
 }
 
 void CoreLogicTest::configMapperReadsNestedPaths()
@@ -3623,14 +3672,20 @@ void CoreLogicTest::streamTokensExpireByIdleClock()
 {
     StreamTokenRegistry tokens;
     const QUrl upstream(QStringLiteral("https://cdn.test/b/seg2.ts"));
-    tokens.registerFor(upstream, {}, 4567);
+    tokens.registerFor(upstream, {}, 4567, {}, {},
+                       QUrl(QStringLiteral("https://source.test/")));
+    QCOMPARE(tokens.size(), 1);
+    QCOMPARE(tokens.mappingSize(), 1);
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     tokens.pruneAt(now + 3600 * 1000);
     QCOMPARE(tokens.size(), 1);
+    QCOMPARE(tokens.mappingSize(), 1);
 
     tokens.pruneAt(now + 2 * 3600 * 1000 + 1000);
     QCOMPARE(tokens.size(), 0);
+    // 反向映射键带 sourceOrigin，过期清理必须一并删除，不能只删 token 表。
+    QCOMPARE(tokens.mappingSize(), 0);
 }
 
 void CoreLogicTest::streamTokensKeepFreshTokensBeyondCapacity()

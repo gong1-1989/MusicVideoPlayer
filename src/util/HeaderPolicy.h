@@ -30,12 +30,20 @@ inline bool isSensitiveHeader(const QString &name)
         || compact == QLatin1String("xapikey")
         || compact == QLatin1String("apikey")
         || compact == QLatin1String("accesskey")
+        // 下划线/驼峰写法压掉分隔符后与短横线写法同形；X_AUTH、X_AUTH_KEY、
+        // X_ACCESS_KEY 等不能因为分隔符不同就漏裁剪。
+        || compact == QLatin1String("xauth")
+        || compact == QLatin1String("xauthkey")
+        || compact == QLatin1String("xaccesskey")
+        || compact == QLatin1String("authkey")
         || lower.contains(QLatin1String("token"))
         || lower.contains(QLatin1String("secret"))
         || lower.contains(QLatin1String("session"))
         || lower.contains(QLatin1String("credential"))
         || lower.endsWith(QLatin1String("-key"))
-        || lower.endsWith(QLatin1String("-auth"));
+        || lower.endsWith(QLatin1String("_key"))
+        || lower.endsWith(QLatin1String("-auth"))
+        || lower.endsWith(QLatin1String("_auth"));
 }
 
 inline QHash<QString, QString> withoutSensitiveHeaders(const QHash<QString, QString> &headers)

@@ -75,6 +75,8 @@ private:
     void finish(const QString &error);
 
     QUrl siteUrl(const QString &relative) const;
+    /// 站点请求的可信源站；详情/播放页的绝对 URL 必须按它做内网校验。
+    QUrl sourceOrigin() const;
     QHash<QString, QString> requestHeaders() const;
     QHash<QString, QString> mediaHeaders() const;
     void requestHtml(const QUrl &url, const std::function<void(bool, const QString &)> &callback);

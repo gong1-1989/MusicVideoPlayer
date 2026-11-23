@@ -142,6 +142,9 @@ private:
 
     qint64 m_bytesWritten = 0;
     qint64 m_expectedBytes = -1;
+    /// 本次响应新写入的字节数；续传时 m_bytesWritten 含旧文件，不能用它判断
+    /// “服务器这次是否真的返回了内容”。
+    qint64 m_sessionBytesWritten = 0;
     qint64 m_segmentBytes = 0;
     qint64 m_segmentExpected = -1;
     qint64 m_maxBytes = NetLimits::kDownloadBytes;

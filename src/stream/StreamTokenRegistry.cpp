@@ -81,6 +81,7 @@ QUrl StreamTokenRegistry::registerFor(const QUrl &upstream,
     entry.headers = HeaderPolicy::sanitizedForTarget(upstream, headers);
     entry.lastUsedMs = QDateTime::currentMSecsSinceEpoch();
     entry.cacheKey = cacheKey;
+    entry.registrationKey = key;
     entry.cachePath = cachePath;
     entry.cacheIdentity = cacheIdentity;
     entry.sourceOrigin = sourceOrigin;
@@ -119,8 +120,9 @@ void StreamTokenRegistry::pruneAt(qint64 nowMs)
     const qint64 expireBefore = nowMs - kIdleExpireMs;
     for (auto it = m_tokens.begin(); it != m_tokens.end();) {
         if (it->lastUsedMs > 0 && it->lastUsedMs < expireBefore) {
-            if (m_tokenByKey.value(it->cacheKey) == it.key())
-                m_tokenByKey.remove(it->cacheKey);
+            if (!it->registrationKey.isEmpty()
+                && m_tokenByKey.value(it->registrationKey) == it.key())
+                m_tokenByKey.remove(it->registrationKey);
             it = m_tokens.erase(it);
         } else {
             ++it;
@@ -146,8 +148,9 @@ void StreamTokenRegistry::pruneAt(qint64 nowMs)
         for (int i = 0; i < removeCount && i < byAge.size(); ++i) {
             const QString token = byAge.at(i).second;
             const auto it = m_tokens.constFind(token);
-            if (it != m_tokens.cend() && m_tokenByKey.value(it->cacheKey) == token)
-                m_tokenByKey.remove(it->cacheKey);
+            if (it != m_tokens.cend() && !it->registrationKey.isEmpty()
+                && m_tokenByKey.value(it->registrationKey) == token)
+                m_tokenByKey.remove(it->registrationKey);
             m_tokens.remove(token);
         }
     }

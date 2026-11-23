@@ -928,7 +928,7 @@ void SearchPanelController::handleWebPageLink(const QUrl &url)
             emit self->statusMessage(tr("已从网页解析到播放地址：%1，双击播放")
                                          .arg(item.title));
         },
-        NetLimits::kHtmlBytes);
+        NetLimits::kHtmlBytes, HeaderPolicy::originOnly(url));
 }
 
 /// @brief 按搜索进行中/空闲切换搜索与翻页按钮的图标和提示。

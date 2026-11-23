@@ -18,6 +18,9 @@ public:
         QHash<QString, QString> headers;
         qint64 lastUsedMs = 0;
         QString cacheKey;
+        /// 反向映射表的完整键（地址+头+源站）；删除 token 时必须按它清理，
+        /// 不能只用基础 cacheKey，否则带源站的复合键会残留。
+        QString registrationKey;
         /// 该条目对应的整段磁盘缓存路径；HLS 播放列表/分片为空。
         QString cachePath;
         /// 条目身份，写入缓存旁车 JSON，用于重启后确认文件归属。
@@ -28,6 +31,8 @@ public:
 
     void clear();
     int size() const { return m_tokens.size(); }
+    /// 反向映射表大小；仅供测试/诊断确认过期 token 的键也同步清理。
+    int mappingSize() const { return m_tokenByKey.size(); }
 
     /// 地址 + 鉴权头的稳定键；缓存和 token 复用都必须用同一套规则。
     static QString cacheKeyFor(const QUrl &upstream, const QHash<QString, QString> &headers);

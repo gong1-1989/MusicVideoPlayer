@@ -445,6 +445,14 @@ QUrl MaccmsWebProvider::siteUrl(const QString &relative) const
     return QUrl(m_root + path);
 }
 
+/// @brief 返回站点请求的可信源站。
+/// @note 这里必须是配置的站点根，不能用详情页/播放页地址反推；否则远程页面
+///       返回的本机地址会把自己当成可信源站。
+QUrl MaccmsWebProvider::sourceOrigin() const
+{
+    return HeaderPolicy::originOnly(QUrl(m_root));
+}
+
 /// @brief 请求一页 HTML，限长后交给回调。
 void MaccmsWebProvider::requestHtml(
     const QUrl &url, const std::function<void(bool, const QString &)> &callback)
@@ -499,7 +507,7 @@ void MaccmsWebProvider::requestHtml(
                       }
                       reply->deleteLater();
                       callback(true, decodeHtml(raw));
-                  }, NetLimits::kHtmlBytes);
+                  }, NetLimits::kHtmlBytes, sourceOrigin());
 }
 
 /// @brief 拉取站点首页，确认站点存活并记录基础地址。
@@ -527,7 +535,7 @@ void MaccmsWebProvider::fetchRoot()
                           reply->deleteLater();
                       }
                       self->trySuggest();
-                  }, NetLimits::kHtmlBytes);
+                  }, NetLimits::kHtmlBytes, sourceOrigin());
 }
 
 /// @brief 尝试站点联想接口，拿到更准确的标题后再搜索。
@@ -613,7 +621,7 @@ void MaccmsWebProvider::trySuggest()
                       self->m_nextCursor = 0;
                       self->m_active = 0;
                       self->startWorkers();
-                  });
+                  }, NetLimits::kJsonBytes, sourceOrigin());
 }
 
 /// @brief 按指定策略请求搜索页。
@@ -679,7 +687,7 @@ void MaccmsWebProvider::trySearch(int strategy)
         QNetworkReply *reply =
             m_http->postForm(siteUrl(QStringLiteral("index.php?m=vod-search")),
                              QByteArray("wd=") + m_keywordEncoded.toUtf8(), requestHeaders(),
-                             NetLimits::kHtmlBytes);
+                             NetLimits::kHtmlBytes, sourceOrigin());
         if (reply == nullptr) {
             fail(tr("请求未发出"));
             break;
@@ -711,7 +719,7 @@ void MaccmsWebProvider::trySearch(int strategy)
         QNetworkReply *reply = m_http->postForm(
             siteUrl(QStringLiteral("e/search/index.php")),
             QByteArray("show=title&tempid=1&keyboard=") + m_keywordEncoded.toUtf8(),
-            requestHeaders(), NetLimits::kHtmlBytes);
+            requestHeaders(), NetLimits::kHtmlBytes, sourceOrigin());
         if (reply == nullptr) {
             fail(tr("请求未发出"));
             break;

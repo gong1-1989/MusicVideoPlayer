@@ -285,6 +285,10 @@ void DownloadTask::startDirectRequest()
     if (m_done)
         return;
 
+    // 每次直链请求单独计数；续传时 m_bytesWritten 是旧文件长度，
+    // 不能用它判断本次响应有没有正文。
+    m_sessionBytesWritten = 0;
+
     QByteArray range;
     if (m_bytesWritten > 0)
         range = QStringLiteral("bytes=%1-").arg(m_bytesWritten).toUtf8();
@@ -444,7 +448,7 @@ void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
     // 空 Content-Type、text/plain 或 application/octet-stream 都不能无条件
     // 放行：不少站点把 HTML 错误页/JSON 错误包成 octet-stream，首块写入前
     // 仍用文件头魔数确认，避免把网页错误页存成媒体文件。
-    m_verifyMediaMagic = contentType.isEmpty()
+    const bool verifyByContentType = contentType.isEmpty()
         || contentType.startsWith(QLatin1String("text/plain"))
         || contentType.startsWith(QLatin1String("application/octet-stream"));
 
@@ -492,6 +496,10 @@ void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
                               ? length.toLongLong()
                               : -1;
     }
+
+    // 只有从文件头开始写时才做魔数校验。续传收到的首块是文件中段，
+    // 不能拿它当文件头；否则无媒体后缀的合法续传会被误判成网页。
+    m_verifyMediaMagic = m_bytesWritten == 0 && verifyByContentType;
 
     connect(reply, &QNetworkReply::readyRead, this, [this, reply] {
         if (!m_done)
@@ -1102,8 +1110,9 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
     if (m_done)
         return;
 
-    // 没有总长时至少要有实际内容；空响应不能当成“未知长度的完整文件”提交。
-    if (m_bytesWritten <= 0) {
+    // 没有总长时至少要有本次响应真正返回的内容；续传旧文件再长，
+    // 也不能把“服务器这次返回 0 字节”当成完整文件提交。
+    if (m_sessionBytesWritten <= 0) {
         fail(tr("下载响应为空"), true);
         return;
     }
@@ -1161,6 +1170,8 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
         return;
     }
     m_bytesWritten += payload.size();
+    if (!m_isHls)
+        m_sessionBytesWritten += payload.size();
     m_segmentBytes += payload.size();
 
     if (m_isHls) {

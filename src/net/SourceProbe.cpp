@@ -1095,7 +1095,7 @@ void Prober::fetchHome()
         }
 
         probeNextCandidate();
-    }, NetLimits::kHtmlBytes);
+    }, NetLimits::kHtmlBytes, m_origin);
 }
 
 /// @brief 按顺序探查下一个候选入口，命中则进入试搜验证。
@@ -1144,7 +1144,8 @@ void Prober::probeNextCandidate()
     QHash<QString, QString> headers;
     headers.insert(QStringLiteral("Referer"), m_origin.toString() + QLatin1Char('/'));
 
-    QNetworkReply *reply = m_http->get(QUrl(probeUrl), QByteArray(), headers);
+    QNetworkReply *reply =
+        m_http->get(QUrl(probeUrl), QByteArray(), headers, NetLimits::kJsonBytes, m_origin);
     if (reply == nullptr) {
         recordAttempt(probeUrl, 0, tr("请求未发出"));
         probeNextCandidate();
