@@ -744,9 +744,14 @@ void SourceManagerDialog::updateActions()
 {
     const bool hasSelection = m_currentRow >= 0 && m_currentRow < m_drafts.size();
     const bool builtin = hasSelection && m_drafts.at(m_currentRow).builtin;
+    // 试搜和站点体检共用右侧结果区；任一在途时都必须禁用发起入口，
+    // 否则用户可以在体检过程中再点试搜，两个回调互相覆盖结果列表。
+    const bool busy = m_testBusy || m_probeBusy;
     m_btnRemove->setEnabled(hasSelection && !builtin);
     m_btnDuplicate->setEnabled(hasSelection);
-    m_btnTest->setEnabled(hasSelection);
+    m_btnTest->setEnabled(hasSelection && !busy);
+    if (ui->btn_refresh != nullptr)
+        ui->btn_refresh->setEnabled(hasSelection && !busy);
 }
 
 void SourceManagerDialog::onAdd()
@@ -913,7 +918,8 @@ void SourceManagerDialog::onRefreshSelected()
 
 void SourceManagerDialog::verifyProtectedSource(const SourceConfig &draft)
 {
-    if (m_testBusy) {
+    // 试搜和站点体检都会写同一块结果区；两种请求必须互斥。
+    if (m_testBusy || m_probeBusy) {
         QMessageBox::information(this, tr("正在验证"),
                                  tr("上一次试搜或更新检查还没结束，请稍等。"));
         return;
@@ -932,11 +938,12 @@ void SourceManagerDialog::verifyProtectedSource(const SourceConfig &draft)
     m_testList->clear();
     m_testList->addItem(tr("正在验证预置源“%1”…").arg(draft.name));
     m_btnTest->setEnabled(false);
+    updateActions();
 
     SearchProviderBase *provider = createSearchProvider(draft, m_http, this);
     if (provider == nullptr) {
         m_testBusy = false;
-        m_btnTest->setEnabled(true);
+        updateActions();
         m_testList->clear();
         m_testList->addItem(tr("失败：无法创建搜索器"));
         QMessageBox::warning(this, tr("更新检查失败"), tr("无法创建这个源的搜索器。"));
@@ -947,7 +954,7 @@ void SourceManagerDialog::verifyProtectedSource(const SourceConfig &draft)
             [this, provider, draft, keyword](const QString &, const QVector<MediaItem> &items,
                                             int filtered, const QString &error) {
                 m_testBusy = false;
-                m_btnTest->setEnabled(true);
+                updateActions();
                 m_testList->clear();
                 if (!error.isEmpty()) {
                     m_testList->addItem(tr("失败：%1").arg(error));
@@ -983,7 +990,8 @@ void SourceManagerDialog::verifyProtectedSource(const SourceConfig &draft)
 
 void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QString &previousUrl)
 {
-    if (m_probeBusy)
+    // 与试搜共用结果列表：试搜在途时不允许再发起站点体检。
+    if (m_probeBusy || m_testBusy)
         return;
 
     QString base = previousUrl.trimmed();
@@ -1007,6 +1015,8 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
 
     m_probeBusy = true;
     ui->btn_refresh->setEnabled(false);
+    updateActions();
+    m_testList->clear();
     m_testList->addItem(tr("正在体检 %1 …").arg(base));
 
     const QString probeId = draft.id;
@@ -1049,6 +1059,13 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
         probe.urlTemplate = currentBase;
 
         auto *provider = createSearchProvider(probe, self->m_http, self);
+        if (provider == nullptr) {
+            self->m_probeBusy = false;
+            self->updateActions();
+            self->m_testList->clear();
+            self->m_testList->addItem(self->tr("失败：无法创建搜索器"));
+            return;
+        }
         connect(provider, &SearchProviderBase::finished, self,
                 [self, provider, probe, probeId, base, currentBase, notes, keyword](
                     const QString &, const QVector<MediaItem> &items, int filtered,
@@ -1057,7 +1074,7 @@ void SourceManagerDialog::refreshWebSource(const SourceConfig &draft, const QStr
                         return;
                     provider->deleteLater();
                     self->m_probeBusy = false;
-                    self->ui->btn_refresh->setEnabled(true);
+                    self->updateActions();
 
                     // 异步过程中列表可能重排/增删；按 id 找回当前行，不能再用旧行号。
                     int index = -1;
@@ -1162,7 +1179,8 @@ void SourceManagerDialog::onTest()
     if (m_currentRow < 0)
         return;
     // 按钮禁用挡不住回车/脚本重复触发；在途时直接忽略第二次请求。
-    if (m_testBusy)
+    // 站点体检也会写同一块结果区，必须一起互斥。
+    if (m_testBusy || m_probeBusy)
         return;
 
     const QString skipError = skipIfSyntaxError(m_skipIf->toPlainText());
@@ -1198,8 +1216,16 @@ void SourceManagerDialog::onTest()
     m_testList->clear();
     m_testList->addItem(tr("正在搜索“%1”…").arg(keyword));
     m_btnTest->setEnabled(false);
+    updateActions();
 
     auto *provider = createSearchProvider(draft, m_http, this);
+    if (provider == nullptr) {
+        m_testBusy = false;
+        updateActions();
+        m_testList->clear();
+        m_testList->addItem(tr("失败：无法创建搜索器"));
+        return;
+    }
     connect(provider, &SearchProviderBase::finished, this,
             [this, provider](const QString &, const QVector<MediaItem> &items, int filtered,
                              const QString &error) {
@@ -1219,7 +1245,7 @@ void SourceManagerDialog::onTest()
                     if (filtered > 0)
                         m_testList->addItem(tr("另有 %1 条被过滤规则跳过").arg(filtered));
                 }
-                m_btnTest->setEnabled(true);
+                updateActions();
                 provider->deleteLater();
             });
     provider->search(keyword, 20);

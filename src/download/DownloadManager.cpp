@@ -402,7 +402,9 @@ bool DownloadManager::removeJob(const QString &id)
         QStringList leftovers = {job.partialPath()};
         // HLS 已完成合并、正在转 MP4 时，TS 是当前任务自己产出的最终文件；
         // 其他状态下最终文件不归本任务，不能碰。
-        if (removingRemux)
+        // 转码失败后 m_remuxes 里已经没有该任务，但仍要看 committed：
+        // 否则用户删除失败记录后，任务自己产出的 TS 会永久留在下载目录。
+        if (removingRemux || (job.hls && job.committed))
             leftovers.append(job.filePath);
         if (!remuxTempPath.isEmpty())
             leftovers.append(remuxTempPath);
@@ -531,12 +533,19 @@ void DownloadManager::load()
             // 快照列表可能在两次启动之间变化，旧的 HLS 分片序号不能续传。
             // 不自动恢复，保留失败记录让用户重新下载或移除。
             job.status = DownloadJob::Status::Failed;
-            job.committed = false;
-            job.message = tr("快照任务在退出时中断，不自动续传；请重新下载");
+            // 已经合并出 TS、只是转码阶段退出的记录必须保留 committed，
+            // 否则这颗 TS 既不能被重试接着转码，也会在用户移除记录后
+            // 永久留在下载目录；未合并完成的记录 committed 本来就是 false。
+            job.message = job.committed
+                ? tr("快照分片已合并，转码被中断；可重试继续转码，或移除记录")
+                : tr("快照任务在退出时中断，不自动续传；请重新下载");
             changedInLoad = true;
         } else if (job.status == DownloadJob::Status::Downloading) {
             job.status = DownloadJob::Status::Paused;
             job.message = tr("上次退出时暂停，正在自动续传");
+            // 修正后的状态要落盘，否则下次启动仍读到 Downloading，重复做一次
+            // “正在下载→暂停”的修正，状态文件长期与实际运行状态不一致。
+            changedInLoad = true;
         }
         loaded.append(job);
     }
@@ -588,6 +597,9 @@ void DownloadManager::load()
                 job.filePath = reserved;
                 job.bytesReceived = 0;
                 job.segmentIndex = 0;
+                // committed 是针对旧路径的提交标记；目标已改名，不能继续
+                // 把新路径当成自己产出过文件。
+                job.committed = false;
                 job.message = tr("状态文件路径冲突，已重新分配目标文件");
             }
             break;
@@ -773,6 +785,12 @@ void DownloadManager::startJob(const QString &id)
         return;
     }
 
+    // 走到这里说明 committed 记录对不上磁盘文件：文件被删、被改大小，或
+    // 同名文件已被用户替换。接下来要重新下载/截断写目标路径，旧的提交标记
+    // 已经失效；必须清掉，否则这次失败后用户“移除记录”会删掉不属于本任务
+    // 的同名文件。
+    job.committed = false;
+
     const QString partial(job.partialPath());
     if (job.snapshot) {
         // 快照任务每次重试都从头下载：列表没有 ENDLIST，分片序号跨次启动
@@ -811,6 +829,11 @@ void DownloadManager::startJob(const QString &id)
     if (task == nullptr) {
         job.status = DownloadJob::Status::Failed;
         job.message = tr("无法启动下载任务");
+        // 以前这里只改内存状态，界面会一直停在“正在下载”，重启前也无法
+        // 把失败原因落盘；补一次保存与通知。
+        scheduleSave();
+        scheduleNotify();
+        emit statusMessage(job.message);
         return;
     }
     task->setMaxBytes(job.maxBytes > 0 ? job.maxBytes : NetLimits::kDownloadBytes);
@@ -839,10 +862,12 @@ void DownloadManager::startJob(const QString &id)
                 if (i < 0)
                     return;
                 DownloadJob &j = m_jobs[i];
+                // 这里只会发生在普通链接被识别成 HLS 后改后缀。下载任务
+                // 已经把旧半成品连同字节一起改到新路径，续传点和分片序号
+                // 仍然有效；此处清零会让进程在下一分片检查点前崩溃时丢掉进度。
+                // 真正的“换名从头下载”由 startJob 的冲突分支显式清零。
                 j.filePath = path;
                 j.hls = hls;
-                j.bytesReceived = 0;
-                j.segmentIndex = 0;
                 scheduleSave();
                 scheduleNotify();
             });
@@ -983,6 +1008,13 @@ void DownloadManager::startRemux(const QString &id)
                   tr("下载完成（TS）：没有找到随程序安装的 FFmpeg"));
         return;
     }
+    // 失败记录重试时源 TS 可能已被用户手动删掉；不再拉起 FFmpeg 空跑，
+    // 直接给出可理解的失败原因。
+    if (!QFileInfo::exists(job.filePath)) {
+        finishJob(id, job.filePath, false,
+                  tr("无法继续转 MP4：源 TS 文件已不存在"));
+        return;
+    }
 
     const QFileInfo tsInfo(job.filePath);
     const QString output =
@@ -992,6 +1024,13 @@ void DownloadManager::startRemux(const QString &id)
         finishJob(id, job.filePath, true, tr("下载完成（TS）：无法分配 MP4 输出文件名"));
         return;
     }
+    // 从失败记录重试时，retryJob 只把状态置为“等待重试”；转码可能持续数分钟，
+    // 必须切到“转码中”并落盘通知，否则下载管理器会一直停在等待状态。
+    job.status = DownloadJob::Status::Downloading;
+    job.message = job.snapshot ? tr("正在无损转成 MP4（当前分片快照）")
+                               : tr("正在无损转成 MP4");
+    scheduleSave();
+    scheduleNotify();
     m_remuxOutputs.insert(id, output);
     auto *remux = new MediaRemux(this);
     m_remuxes.insert(id, remux);

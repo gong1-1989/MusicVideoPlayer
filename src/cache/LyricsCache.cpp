@@ -110,7 +110,13 @@ bool writeMeta(const QString &path, const MediaItem &item, const QByteArray &pay
     QSaveFile file(path + QStringLiteral(".json"));
     if (!file.open(QIODevice::WriteOnly))
         return false;
-    file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
+    const QByteArray payloadBytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    if (file.write(payloadBytes) != payloadBytes.size()) {
+        // 和播放缓存旁车一样：短写时不能 commit 截断的 JSON，否则下次
+        // 读不出 identity，已写入的歌词正文会变成无法回收的孤儿。
+        file.cancelWriting();
+        return false;
+    }
     return file.commit();
 }
 
@@ -163,18 +169,20 @@ bool store(const MediaItem &item, const QByteArray &payload)
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly))
         return false;
-    file.write(payload);
+    if (file.write(payload) != payload.size()) {
+        file.cancelWriting();
+        return false;
+    }
     if (!file.commit())
         return false;
 
     if (!writeMeta(path, item, payload)) {
         // 正文已写、旁车失败会留下“有正文无 JSON”的孤儿；直接回收，下次重试。
-        // 如果该路径原本就有同身份的旧 JSON，也必须一并删掉，否则下一次
-        // writablePath() 会把它当成可用槽位，load() 却打不开正文。
+        // 该路径原来的正文已被 QSaveFile 原子替换，旧 JSON 无论属于谁都已经
+        // 失效，必须一并删掉；否则下一次 writablePath() 会把它当可用槽位，
+        // load() 却打不开正文。
         QFile::remove(path);
-        QString storedIdentity;
-        if (readMetaIdentity(path, &storedIdentity) && storedIdentity == lyricIdentity(item))
-            QFile::remove(path + QStringLiteral(".json"));
+        QFile::remove(path + QStringLiteral(".json"));
         return false;
     }
     return true;

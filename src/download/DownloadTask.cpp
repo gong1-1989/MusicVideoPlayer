@@ -1095,6 +1095,10 @@ bool DownloadTask::switchToHlsFile()
                                                   : QStringLiteral("ts");
     if (m_filePath.endsWith(QLatin1Char('.') + desiredSuffix, Qt::CaseInsensitive)) {
         m_isHls = true;
+        // 目标后缀本来就匹配时不会走下面的改名分支；但调用方仍需要知道
+        // “这个任务已经确认是 HLS”，否则 job.hls 可能一直为 false，
+        // 成功后不会触发 TS→MP4 转封装。路径未变，管理器不应重置续传点。
+        emit targetPathChanged(m_filePath, true);
         return true;
     }
 

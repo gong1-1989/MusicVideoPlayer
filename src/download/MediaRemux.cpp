@@ -190,6 +190,10 @@ void MediaRemux::remuxToMp4(const QString &videoPath, const QString &audioPath,
     QTimer::singleShot(10 * 60 * 1000, this, [this] {
         if (m_process == nullptr)
             return;
+        // 进程已经结束但 finished 信号还没排队处理时，不能再标“超时”并 kill；
+        // 否则一次正常完成的转码会在 10 分钟边界被误判为失败、删掉有效输出。
+        if (m_process->state() == QProcess::NotRunning)
+            return;
         m_timedOut = true;
         m_process->kill();
     });

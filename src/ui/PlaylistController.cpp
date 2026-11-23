@@ -663,7 +663,19 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     };
 
     if (chosen == downloadAction) {
-        emit downloadRequested(selectedItem);
+        // 菜单打开期间下载可能已完成，把该条目改成在线→本地；不能再用
+        // 菜单打开前缓存的 selectedItem 按旧网络地址重复下载。
+        const int row = rowForSelection();
+        if (row < 0) {
+            emit statusMessage(tr("该条目已从列表移除"));
+        } else {
+            const MediaItem current = model->itemAt(row);
+            if (!current.online) {
+                emit statusMessage(tr("该条目已经是本地文件，无需再次下载"));
+            } else {
+                emit downloadRequested(current);
+            }
+        }
     } else if (chosen == playAction) {
         const int row = rowForSelection();
         if (row >= 0)

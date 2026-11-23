@@ -459,10 +459,14 @@ void HlsCacheBuilder::startDownloads()
     m_audioPath = m_bodyPath + QStringLiteral(".audio");
     QFile::remove(m_videoPath);
     QFile::remove(m_videoPath + QStringLiteral(".ts"));
+    QFile::remove(m_videoPath + QStringLiteral(".mp4"));
     QFile::remove(m_videoPath + QStringLiteral(".mvpdownload"));
+    QFile::remove(m_videoPath + QStringLiteral(".mp4.mvpdownload"));
     QFile::remove(m_audioPath);
     QFile::remove(m_audioPath + QStringLiteral(".ts"));
+    QFile::remove(m_audioPath + QStringLiteral(".mp4"));
     QFile::remove(m_audioPath + QStringLiteral(".mvpdownload"));
+    QFile::remove(m_audioPath + QStringLiteral(".mp4.mvpdownload"));
 
     m_stage = Stage::Downloading;
     m_videoDone = false;
@@ -763,12 +767,16 @@ void HlsCacheBuilder::cleanupTrackFiles()
     const QString videoBase = m_bodyPath + QStringLiteral(".video");
     const QString audioBase = m_bodyPath + QStringLiteral(".audio");
     for (const QString &path : { m_videoPath, videoBase, videoBase + QStringLiteral(".ts"),
-                                 videoBase + QStringLiteral(".mvpdownload") }) {
+                                 videoBase + QStringLiteral(".mp4"),
+                                 videoBase + QStringLiteral(".mvpdownload"),
+                                 videoBase + QStringLiteral(".mp4.mvpdownload") }) {
         if (!path.isEmpty())
             QFile::remove(path);
     }
     for (const QString &path : { m_audioPath, audioBase, audioBase + QStringLiteral(".ts"),
-                                 audioBase + QStringLiteral(".mvpdownload") }) {
+                                 audioBase + QStringLiteral(".mp4"),
+                                 audioBase + QStringLiteral(".mvpdownload"),
+                                 audioBase + QStringLiteral(".mp4.mvpdownload") }) {
         if (!path.isEmpty())
             QFile::remove(path);
     }

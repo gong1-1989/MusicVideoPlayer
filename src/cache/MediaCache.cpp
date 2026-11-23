@@ -446,8 +446,15 @@ bool writeState(const QString &cachePath, const QString &identity, const QUrl &u
     QSaveFile file(metaPathForFile(cachePath));
     if (!file.open(QIODevice::WriteOnly))
         return false;
-    if (file.write(QJsonDocument(object).toJson(QJsonDocument::Compact)) < 0)
+    const QByteArray payload = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    const qint64 written = file.write(payload);
+    if (written != payload.size()) {
+        // 磁盘满/配额不足时 QSaveFile 允许短写；不 cancel 就直接 commit
+        // 会把截断的 JSON 当成新旁车提交，下一次 readState 失败后会丢掉
+        // 已下好的缓存归属（正文还在，但程序再也找不到它）。
+        file.cancelWriting();
         return false;
+    }
     return file.commit();
 }
 
