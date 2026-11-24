@@ -2555,6 +2555,14 @@ void IntegrationTest::searchTimeoutAbortsProvider()
     SourceRegistry registry;
     QVERIFY(registry.load());
     QVERIFY(registry.replaceAll({makeSource(server.url(QStringLiteral("/search?q={keyword}")), 1000)}));
+    // replaceAll 会补回缺失的内置源，而内置源默认启用；本用例要验证
+    // “单源 1 秒超时”是唯一出口，必须停用真实网络源，否则 searchFinished
+    // 会被网易云等公网请求拖到数秒后，超时断言就失去意义。
+    for (const SourceConfig &source : registry.sources()) {
+        if (source.id != QStringLiteral("local_test") && source.enabled)
+            QVERIFY(registry.setEnabled(source.id, false));
+    }
+    QCOMPARE(registry.enabledSources().size(), 1);
 
     HttpClient http;
     SearchCoordinator coordinator(&registry, &http);
