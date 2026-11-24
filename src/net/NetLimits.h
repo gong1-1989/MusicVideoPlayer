@@ -11,6 +11,9 @@ inline constexpr qint64 kHtmlBytes = 4LL * 1024 * 1024;
 inline constexpr qint64 kPlaylistBytes = 4LL * 1024 * 1024;
 inline constexpr int kPlaylistSegments = 10000;
 inline constexpr qint64 kDownloadBytes = 8LL * 1024 * 1024 * 1024;
+/// AES-128 HLS 分片必须先整段收齐才能验填充；给单分片一个内存上限，
+/// 避免异常列表用超大分片把进程内存吃满。常见的 4K 长分片仍低于此值。
+inline constexpr qint64 kEncryptedSegmentBytes = 256LL * 1024 * 1024;
 } // namespace NetLimits
 
 #endif // NETLIMITS_H

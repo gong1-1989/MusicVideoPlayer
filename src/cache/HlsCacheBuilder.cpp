@@ -128,6 +128,7 @@ bool HlsCacheBuilder::start(const MediaItem &item)
     m_audioPlaylistUrl = QUrl();
     m_videoSource = QUrl();
     m_audioSource = QUrl();
+    m_masterBaseUrl = QUrl();
     m_videoDirect = false;
     m_audioDirect = false;
     m_hasAudio = false;
@@ -245,6 +246,7 @@ void HlsCacheBuilder::onMasterReady(const QByteArray &body, const QUrl &finalUrl
             return;
         }
         m_master = master;
+        m_masterBaseUrl = finalUrl;
         m_stage = Stage::WaitingVariant;
         beginVariantSelection();
         return;
@@ -443,6 +445,13 @@ void HlsCacheBuilder::onVideoPlaylistReady(const QByteArray &body, const QUrl &f
         finishFailed(tr("视频播放列表没有结束标记，可能是直播流，未生成不完整缓存"));
         return;
     }
+    if (m_master.encrypted) {
+        // SESSION-KEY 只写在主列表；子列表看起来是“全 BYTERANGE 同 URL”，
+        // 但每个 Range 仍是独立密文，不能走整段 MP4 Range 直下。
+        track.encrypted = true;
+        track.singleFile = false;
+        track.singleFileUrl = QUrl();
+    }
     m_videoTrack = track;
     m_videoDirect = track.singleFile;
     m_videoSource = track.singleFile ? track.singleFileUrl : finalUrl;
@@ -483,6 +492,11 @@ void HlsCacheBuilder::onAudioPlaylistReady(const QByteArray &body, const QUrl &f
     if (!track.hasEndList && !track.isVod) {
         finishFailed(tr("音轨播放列表没有结束标记，未生成不完整缓存"));
         return;
+    }
+    if (m_master.encrypted) {
+        track.encrypted = true;
+        track.singleFile = false;
+        track.singleFileUrl = QUrl();
     }
     m_audioTrack = track;
     m_audioDirect = track.singleFile;
@@ -567,6 +581,8 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
     task->setMaxBytes(std::numeric_limits<qint64>::max());
     task->setAllowIncompletePlaylist(false);
     task->setOriginUrl(m_originUrl);
+    for (const QString &line : std::as_const(m_master.sessionKeyLines))
+        task->setHlsSessionKey(line, m_masterBaseUrl);
     connect(task, &DownloadTask::targetPathChanged, this,
             [this, video](const QString &path, bool) {
                 if (!m_active)

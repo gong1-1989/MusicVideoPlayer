@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QList>
 #include <QString>
+#include <QStringList>
 #include <QUrl>
 
 /// HLS 缓存用的最小清单解析。
@@ -34,6 +35,9 @@ struct Master
 {
     QList<Variant> variants;
     QList<AudioRendition> audioRenditions;
+    /// 主列表的 SESSION-KEY 原始行；子列表不重复写 KEY 时要靠它解密。
+    QStringList sessionKeyLines;
+    bool encrypted = false;
 };
 
 /// 解析主播放列表。正文没有 #EXT-X-STREAM-INF 时返回 false（不是主列表）。
@@ -46,6 +50,8 @@ struct MediaTrack
     bool hasEndList = false;
     bool isVod = false;
     int segmentCount = 0;
+    /// 媒体列表里出现非 NONE 的 EXT-X-KEY/SESSION-KEY。
+    bool encrypted = false;
     /// 所有分片都指向同一个 URL，且每个分片都有 EXT-X-BYTERANGE。
     /// 此时整个媒体文件本身就是可直接 Range 下载的 MP4。
     bool singleFile = false;

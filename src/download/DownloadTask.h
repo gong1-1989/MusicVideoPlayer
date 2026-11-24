@@ -19,7 +19,8 @@ class QNetworkReply;
 
 /// 单个下载任务：先写 `.mvpdownload` 临时文件，完成后改名到最终路径。
 /// 普通地址支持 HTTP Range 续传；m3u8 会解析播放列表、顺序拉取分片并合并，
-/// 重启时从已完成分片继续。加密 HLS（AES-128/SAMPLE-AES）明确失败。
+/// 重启时从已完成分片继续。AES-128 HLS 会自动抓取 KEY URI 并解密后落盘；
+/// SAMPLE-AES 等其它加密方式仍明确失败，避免把密文写成损坏文件。
 class DownloadTask : public QObject
 {
     Q_OBJECT
@@ -44,6 +45,9 @@ public:
 
     /// 源站地址只用于裁剪 Cookie/Authorization 的作用域，不是流地址本身。
     void setOriginUrl(const QUrl &origin);
+    /// 主列表的 SESSION-KEY 需要传递给只拿到子列表的缓存任务；line 是原始
+    /// `#EXT-X-SESSION-KEY`，baseUrl 是主列表最终地址，用于解析相对密钥地址。
+    void setHlsSessionKey(const QString &line, const QUrl &baseUrl);
     /// 无 #EXT-X-ENDLIST 时是否允许按当前分片下载。默认只放行服务器显式声明
     /// PLAYLIST-TYPE:VOD 的列表；这里用于用户确认后的“强制下载当前分片”。
     void setAllowIncompletePlaylist(bool allow);
@@ -93,10 +97,21 @@ private:
                  const QHash<QString, QString> &headers,
                  QObject *parent);
 
+    struct HlsKey
+    {
+        bool enabled = false;
+        QString method;
+        QUrl url;
+        QByteArray iv;
+        /// 非空表示该段使用了当前不支持的加密方式（如 SAMPLE-AES）。
+        QString unsupported;
+    };
+
     struct Segment
     {
         QUrl url;
         QByteArray range;
+        HlsKey key;
     };
 
     void startRequest();
@@ -108,9 +123,15 @@ private:
     void onPlaylistFinished(QNetworkReply *reply);
     void startPlaylistFetch(const QUrl &url, int hop);
     void startNextSegment();
+    void startSegmentRequest(const Segment &segment);
     void onSegmentFinished(QNetworkReply *reply);
     void onDirectFinished(QNetworkReply *reply);
     void writeReplyData(QNetworkReply *reply);
+    bool writeDecryptedSegment(const Segment &segment);
+    void fetchSegmentKey(const Segment &segment, const std::function<void()> &ready);
+    void onSegmentKeyFinished(QNetworkReply *reply, const Segment &segment,
+                              const QString &cacheKey, const std::function<void()> &ready);
+    void clearKeyMaterial();
     bool openTargetFile();
     void resetTargetFile();
     void commitFile();
@@ -137,6 +158,7 @@ private:
     QString m_filePath;
     QHash<QString, QString> m_headers;
     QPointer<QNetworkReply> m_reply;
+    QPointer<QNetworkReply> m_keyReply;
     QFile *m_file = nullptr;
     bool m_done = false;
 
@@ -147,6 +169,13 @@ private:
     qint64 m_sessionBytesWritten = 0;
     qint64 m_segmentBytes = 0;
     qint64 m_segmentExpected = -1;
+    /// 加密分片必须整段收齐才能验 PKCS#7 填充，收完前只放内存、不写盘。
+    QByteArray m_segmentCipher;
+    /// 当前分片的明文密钥；只在单个分片生命周期内保留。
+    QByteArray m_currentKey;
+    QHash<QString, QByteArray> m_keyCache;
+    HlsKey m_sessionKey;
+    Segment m_currentSegment;
     qint64 m_maxBytes = NetLimits::kDownloadBytes;
     qint64 m_resumeBytes = 0;
     qint64 m_lastCheckpointMs = 0;

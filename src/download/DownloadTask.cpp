@@ -6,6 +6,7 @@
 #include "media/MediaItem.h"
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
+#include "util/Aes128Cbc.h"
 #include "util/HeaderPolicy.h"
 #include "util/NetworkAddressPolicy.h"
 #include "util/PlaylistSniffer.h"
@@ -32,6 +33,11 @@ const QRegularExpression kUriAttribute(QStringLiteral("URI\\s*=\\s*\"([^\"]*)\""
 const QRegularExpression kUriAttributeBare(QStringLiteral("URI\\s*=\\s*([^,\\s]+)"));
 const QRegularExpression kByteRangeAttribute(QStringLiteral("BYTERANGE=\"([^\"]*)\""));
 const QRegularExpression kBandwidth(QStringLiteral("BANDWIDTH=(\\d+)"));
+const QRegularExpression kMethod(QStringLiteral("METHOD=([^,\\s]+)"));
+const QRegularExpression kKeyFormat(
+    QStringLiteral("KEYFORMAT=(?:\"([^\"]*)\"|([^,\\s]*))"));
+const QRegularExpression kIv(QStringLiteral("IV=(0[xX][0-9A-Fa-f]+|[0-9A-Fa-f]+)"));
+const QRegularExpression kMediaSequence(QStringLiteral("MEDIA-SEQUENCE=([^,\\s]+)"));
 const QRegularExpression kContentRange(QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)"),
                                        QRegularExpression::CaseInsensitiveOption);
 const QRegularExpression kRequestRange(QStringLiteral("^bytes=(\\d+)-(\\d+)$"),
@@ -60,6 +66,119 @@ QUrl resolveUrl(const QUrl &base, const QString &raw)
     if (uri.isEmpty())
         return QUrl();
     return base.resolved(QUrl(uri));
+}
+
+/// @brief HLS KEY 行的解析结果，供媒体列表和 SESSION-KEY 共用。
+struct ParsedKeyLine
+{
+    enum class Kind {
+        None,       ///< METHOD=NONE，后面的分片恢复明文。
+        Supported,  ///< identity AES-128，可自动取 key 解密。
+        Unsupported ///< SAMPLE-AES 或非 identity KEYFORMAT。
+    };
+
+    Kind kind = Kind::None;
+    QString method;
+    QUrl url;
+    QByteArray iv;
+    QString error;
+};
+
+/// @brief 取 KEYFORMAT 的引号/裸值；未写时返回空，按 identity 处理。
+QString keyFormatAttribute(const QString &line)
+{
+    const QRegularExpressionMatch match = kKeyFormat.match(line);
+    if (!match.hasMatch())
+        return QString();
+    return match.captured(1).isEmpty() ? match.captured(2).trimmed()
+                                       : match.captured(1).trimmed();
+}
+
+/// @brief 解析 16 字节 IV；支持 0x 前缀和裸 32 位十六进制。
+bool parseKeyIv(const QString &value, QByteArray *iv, QString *error)
+{
+    QString hex = value.trimmed();
+    if (hex.startsWith(QLatin1String("0x"), Qt::CaseInsensitive))
+        hex = hex.mid(2);
+    if (hex.size() != 32
+        || !QRegularExpression(QStringLiteral("^[0-9A-Fa-f]{32}$")).match(hex).hasMatch()) {
+        if (error != nullptr)
+            *error = QObject::tr("EXT-X-KEY 的 IV 不是 16 字节十六进制");
+        return false;
+    }
+    const QByteArray parsed = QByteArray::fromHex(hex.toLatin1());
+    if (parsed.size() != 16) {
+        if (error != nullptr)
+            *error = QObject::tr("EXT-X-KEY 的 IV 解析失败");
+        return false;
+    }
+    *iv = parsed;
+    return true;
+}
+
+/// @brief 没有 IV 属性时按 HLS 规范用媒体序号生成 128 位 IV。
+QByteArray defaultIvForSequence(qint64 sequence)
+{
+    QByteArray iv(16, '\0');
+    quint64 value = sequence < 0 ? 0 : static_cast<quint64>(sequence);
+    for (int i = 15; i >= 0 && value > 0; --i) {
+        iv[i] = static_cast<char>(value & 0xFF);
+        value >>= 8;
+    }
+    return iv;
+}
+
+/// @brief 解析一条 #EXT-X-KEY 或 #EXT-X-SESSION-KEY。
+/// @note 只接受 HTTP(S) 的 identity AES-128；file/UNC/data 等地址直接失败，
+///       防止播放列表把密钥请求引到本机或局域网。
+ParsedKeyLine parseKeyLine(const QString &line, const QUrl &base)
+{
+    ParsedKeyLine result;
+    const QRegularExpressionMatch methodMatch = kMethod.match(line);
+    if (!methodMatch.hasMatch() || methodMatch.captured(1).trimmed().isEmpty()) {
+        result.error = QObject::tr("EXT-X-KEY 缺少 METHOD");
+        return result;
+    }
+    result.method = methodMatch.captured(1).trimmed().toUpper();
+    if (result.method == QLatin1String("NONE")) {
+        result.kind = ParsedKeyLine::Kind::None;
+        return result;
+    }
+    if (result.method != QLatin1String("AES-128")) {
+        result.kind = ParsedKeyLine::Kind::Unsupported;
+        return result;
+    }
+
+    const QString keyFormat = keyFormatAttribute(line);
+    if (!keyFormat.isEmpty()
+        && keyFormat.compare(QLatin1String("identity"), Qt::CaseInsensitive) != 0) {
+        result.kind = ParsedKeyLine::Kind::Unsupported;
+        result.method = QStringLiteral("%1/%2").arg(result.method, keyFormat);
+        return result;
+    }
+
+    const QString uri = uriAttribute(line);
+    if (uri.isEmpty()) {
+        result.error = QObject::tr("AES-128 的 EXT-X-KEY 缺少 URI");
+        return result;
+    }
+    result.url = resolveUrl(base, uri);
+    if (!isHttpUrl(result.url)) {
+        result.error = QObject::tr("EXT-X-KEY 的 URI 不是 HTTP(S)：%1").arg(uri.left(160));
+        return result;
+    }
+
+    const QRegularExpressionMatch ivMatch = kIv.match(line);
+    if (ivMatch.hasMatch() && !parseKeyIv(ivMatch.captured(1), &result.iv, &result.error))
+        return result;
+
+    result.kind = ParsedKeyLine::Kind::Supported;
+    return result;
+}
+
+QString keyCacheKey(const QUrl &url)
+{
+    return url.toString(QUrl::FullyEncoded);
 }
 
 } // namespace
@@ -229,6 +348,33 @@ void DownloadTask::setOriginUrl(const QUrl &origin)
 {
     if (origin.isValid() && !origin.host().isEmpty())
         m_originUrl = origin;
+}
+
+/// @brief 接收 HlsCacheBuilder 从主列表提取的 SESSION-KEY。
+/// @note 缓存任务只拿子列表地址，子列表若省略 KEY 就会把密文当明文；
+///       这里复用与 parsePlaylist 相同的解析，保证两条路径一致。
+void DownloadTask::setHlsSessionKey(const QString &line, const QUrl &baseUrl)
+{
+    if (line.trimmed().isEmpty())
+        return;
+    const ParsedKeyLine parsed = parseKeyLine(line.trimmed(), baseUrl);
+    if (!parsed.error.isEmpty()) {
+        m_sessionKey = HlsKey();
+        m_sessionKey.unsupported = parsed.error;
+        return;
+    }
+    if (parsed.kind == ParsedKeyLine::Kind::Supported) {
+        if (!m_sessionKey.enabled) {
+            m_sessionKey.enabled = true;
+            m_sessionKey.method = parsed.method;
+            m_sessionKey.url = parsed.url;
+            m_sessionKey.iv = parsed.iv;
+            m_sessionKey.unsupported.clear();
+        }
+    } else if (parsed.kind == ParsedKeyLine::Kind::Unsupported
+               && !m_sessionKey.enabled && m_sessionKey.unsupported.isEmpty()) {
+        m_sessionKey.unsupported = parsed.method;
+    }
 }
 
 /// @brief 允许用户确认后按当前分片下载无 ENDLIST 的列表。
@@ -661,8 +807,9 @@ void DownloadTask::startPlaylistFetch(const QUrl &url, int hop)
 /// @param isMaster 输出是否为主列表。
 /// @param error 输出失败原因。
 /// @return 解析成功且已填充分片/子列表时返回 true。
-/// @note 主列表按 BANDWIDTH 选最高码率；媒体列表拒绝加密 KEY，支持 BYTERANGE、
-///       EXT-X-MAP 与 EXT-X-BASE，并限制分片总数。无 ENDLIST 时需用户确认快照下载。
+/// @note 主列表按 BANDWIDTH 选最高码率；媒体列表支持 identity AES-128 的
+///       EXT-X-KEY/SESSION-KEY（自动取密钥、按序号或显式 IV 解密），支持
+///       BYTERANGE、EXT-X-MAP 与 EXT-X-BASE，并限制分片总数。无 ENDLIST 时需用户确认快照下载。
 bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QUrl *variantUrl,
                                 bool *isMaster, QString *error)
 {
@@ -680,19 +827,30 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     // master playlist：选码率最高的 variant；#EXT-X-STREAM-INF 的下一行才是地址。
     if (text.contains(QLatin1String("#EXT-X-STREAM-INF"))) {
         // 主列表里的 SESSION-KEY 会作用到所有子列表，子列表可能不再重复写 KEY。
-        const QRegularExpression methodRe(QStringLiteral("METHOD=([^,\\s]+)"));
-        for (const QString &line : lines) {
-            if (!line.trimmed().startsWith(QLatin1String("#EXT-X-SESSION-KEY")))
+        // 优先使用 identity AES-128；遇到 SAMPLE-AES 等其它方式先记录，等真正
+        // 有分片使用它时再明确失败，避免误伤子列表自己声明 AES-128 的情况。
+        m_sessionKey = HlsKey();
+        for (const QString &rawLine : lines) {
+            const QString line = rawLine.trimmed();
+            if (!line.startsWith(QLatin1String("#EXT-X-SESSION-KEY")))
                 continue;
-            const QRegularExpressionMatch match = methodRe.match(line);
-            const QString method = match.hasMatch() ? match.captured(1) : QString();
-            if (!method.isEmpty()
-                && method.compare(QLatin1String("NONE"), Qt::CaseInsensitive) != 0) {
+            const ParsedKeyLine parsed = parseKeyLine(line, baseUrl);
+            if (!parsed.error.isEmpty()) {
                 if (error != nullptr)
-                    *error = tr("该播放列表使用了 %1 加密，当前版本暂不支持解密下载；"
-                                "已取消，未生成损坏文件。")
-                                 .arg(method);
+                    *error = parsed.error;
                 return false;
+            }
+            if (parsed.kind == ParsedKeyLine::Kind::Supported) {
+                if (!m_sessionKey.enabled) {
+                    m_sessionKey.enabled = true;
+                    m_sessionKey.method = parsed.method;
+                    m_sessionKey.url = parsed.url;
+                    m_sessionKey.iv = parsed.iv;
+                    m_sessionKey.unsupported.clear();
+                }
+            } else if (parsed.kind == ParsedKeyLine::Kind::Unsupported
+                       && !m_sessionKey.enabled && m_sessionKey.unsupported.isEmpty()) {
+                m_sessionKey.unsupported = parsed.method;
             }
         }
 
@@ -739,11 +897,15 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     m_segments.clear();
     m_nextRangeOffset = 0;
     m_fragmentedMp4 = false;
+    m_segmentCipher.clear();
 
     QUrl mediaBase = baseUrl;
     bool hasEndList = false;
     QString playlistType;
     QByteArray pendingRange;
+    qint64 mediaSequence = 0;
+    HlsKey currentKey = m_sessionKey;
+    bool hasMediaSegment = false;
     for (QString line : lines) {
         line = line.trimmed();
         if (line.isEmpty())
@@ -776,33 +938,45 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
                 line.mid(QStringLiteral("#EXT-X-PLAYLIST-TYPE:").size()).trimmed().toUpper();
             continue;
         }
-        if (line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))) {
-            const QRegularExpression methodRe(QStringLiteral("METHOD=([^,\\s]+)"));
-            const QRegularExpressionMatch match = methodRe.match(line);
-            const QString method = match.hasMatch() ? match.captured(1) : QString();
-            if (method.compare(QLatin1String("NONE"), Qt::CaseInsensitive) != 0
-                && !method.isEmpty()) {
+        if (line.startsWith(QLatin1String("#EXT-X-MEDIA-SEQUENCE:"))) {
+            const QString value =
+                line.mid(QStringLiteral("#EXT-X-MEDIA-SEQUENCE:").size()).trimmed();
+            bool ok = false;
+            const qint64 parsed = value.toLongLong(&ok);
+            if (!ok || parsed < 0) {
                 if (error != nullptr)
-                    *error = tr("该播放列表使用了 %1 加密，当前版本暂不支持解密下载；"
-                                "已取消，未生成损坏文件。")
-                                 .arg(method);
+                    *error = tr("EXT-X-MEDIA-SEQUENCE 无效：%1").arg(value);
                 return false;
             }
+            // 规范要求该标签出现在第一个分片之前；后续重复值不能回改序号，
+            // 否则同一份列表可能算出不同的默认 IV。
+            if (!hasMediaSegment)
+                mediaSequence = parsed;
             continue;
         }
-
-        if (line.startsWith(QLatin1String("#EXT-X-KEY"))) {
-            const QRegularExpression methodRe(QStringLiteral("METHOD=([^,\\s]+)"));
-            const QRegularExpressionMatch match = methodRe.match(line);
-            const QString method = match.hasMatch() ? match.captured(1) : QString();
-            if (method.compare(QLatin1String("NONE"), Qt::CaseInsensitive) != 0
-                && !method.isEmpty()) {
-                if (error != nullptr) {
-                    *error = tr("该播放列表使用了 %1 加密，当前版本暂不支持解密下载；"
-                                "已取消，未生成损坏文件。")
-                                 .arg(method);
-                }
+        if (line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))
+            || line.startsWith(QLatin1String("#EXT-X-KEY"))) {
+            const ParsedKeyLine parsed = parseKeyLine(line, mediaBase);
+            if (!parsed.error.isEmpty()) {
+                if (error != nullptr)
+                    *error = parsed.error;
                 return false;
+            }
+            if (parsed.kind == ParsedKeyLine::Kind::None) {
+                currentKey = HlsKey();
+            } else if (parsed.kind == ParsedKeyLine::Kind::Supported) {
+                currentKey.enabled = true;
+                currentKey.method = parsed.method;
+                currentKey.url = parsed.url;
+                currentKey.iv = parsed.iv;
+                currentKey.unsupported.clear();
+            } else {
+                // 多个 KEYFORMAT 并存时 identity AES-128 优先；只有当前段
+                // 没有可用 identity key 时才把不支持的方式留到分片处报错。
+                if (!currentKey.enabled) {
+                    currentKey = HlsKey();
+                    currentKey.unsupported = parsed.method;
+                }
             }
             continue;
         }
@@ -878,7 +1052,12 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
                 }
                 // EXT-X-MAP 也是独立请求，不能绕过总分片上限。
                 m_fragmentedMp4 = true;
-                m_segments.append({mapUrl, mapRange});
+                Segment mapSegment;
+                mapSegment.url = mapUrl;
+                mapSegment.range = mapRange;
+                // fMP4 的 init 段通常是明文；即使它带 BYTERANGE，也不能套用
+                // 后续媒体分片的 AES key，否则 moov 会被错误解密。
+                m_segments.append(mapSegment);
             }
             continue;
         }
@@ -897,6 +1076,21 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         segment.url = segmentUrl;
         segment.range = pendingRange;
         pendingRange.clear();
+        if (!currentKey.unsupported.isEmpty()) {
+            if (error != nullptr) {
+                *error = tr("该播放列表使用了 %1 加密，当前版本仅支持 AES-128 解密；"
+                             "已取消，未生成损坏文件。")
+                             .arg(currentKey.unsupported);
+            }
+            return false;
+        }
+        segment.key = currentKey;
+        if (segment.key.enabled && segment.key.iv.isEmpty())
+            segment.key.iv = defaultIvForSequence(mediaSequence);
+        // 媒体序号按每个媒体分片递增；EXT-X-MAP 不计入序号，默认 IV 才能
+        // 与服务器端加密时使用的 sequence number 对齐。
+        ++mediaSequence;
+        hasMediaSegment = true;
         if (segmentUrl.path().endsWith(QLatin1String(".m4s"), Qt::CaseInsensitive)
             || segmentUrl.path().endsWith(QLatin1String(".m4f"), Qt::CaseInsensitive)) {
             m_fragmentedMp4 = true;
@@ -954,6 +1148,16 @@ QString DownloadTask::computePlaylistFingerprint() const
         hash.addData("|");
         hash.addData(segment.range);
         hash.addData("|");
+        if (segment.key.enabled) {
+            hash.addData(segment.key.method.toUtf8());
+            hash.addData("|");
+            hash.addData(keyCacheKey(segment.key.url).toUtf8());
+            hash.addData("|");
+            hash.addData(segment.key.iv.toHex());
+        } else {
+            hash.addData("clear");
+        }
+        hash.addData("|");
     }
     return QString::fromLatin1(hash.result().toHex());
 }
@@ -977,6 +1181,36 @@ void DownloadTask::startNextSegment()
         fail(tr("分片地址指向本机或内网，已拒绝下载"), true);
         return;
     }
+
+    m_segmentCipher.clear();
+    m_currentKey.clear();
+    if (!segment.key.enabled) {
+        startSegmentRequest(segment);
+        return;
+    }
+
+    const QString cacheKey = keyCacheKey(segment.key.url);
+    const auto cached = m_keyCache.constFind(cacheKey);
+    if (cached != m_keyCache.constEnd()) {
+        m_currentKey = cached.value();
+        startSegmentRequest(segment);
+        return;
+    }
+
+    // KEY 请求和分片请求必须串行：分片收完才解密，而同一段列表可能
+    // 在多个分片间切换 KEY URI。先取 key，再发分片，避免并发写当前状态。
+    QPointer<DownloadTask> self(this);
+    fetchSegmentKey(segment, [self, segment] {
+        if (!self.isNull() && !self->m_done)
+            self->startSegmentRequest(segment);
+    });
+}
+
+/// @brief 发起单个分片请求；加密分片在正文收完后统一解密。
+/// @param segment 已解析且 key 已就绪的分片。
+void DownloadTask::startSegmentRequest(const Segment &segment)
+{
+    m_currentSegment = segment;
     m_segmentBytes = 0;
     m_segmentExpected = expectedRangeBytes(segment.range);
     QPointer<DownloadTask> self(this);
@@ -1057,7 +1291,88 @@ void DownloadTask::startNextSegment()
     }, m_originUrl);
 }
 
-/// @brief 单个分片完成：校验长度、推进序号并记录分片边界检查点。
+/// @brief 从 EXT-X-KEY 指定的地址取 16 字节 AES-128 密钥。
+/// @note 密钥请求与分片共用同一 HttpClient，但单独保存在 m_keyReply；
+///       失败/退出时必须一起 abort，不能留下迟到的回调改状态。
+void DownloadTask::fetchSegmentKey(const Segment &segment,
+                                   const std::function<void()> &ready)
+{
+    if (m_done)
+        return;
+    if (!isHttpUrl(segment.key.url)
+        || !NetworkAddressPolicy::allowsMediaTarget(segment.key.url, m_originUrl)) {
+        fail(tr("密钥地址不可访问（可能指向本机或内网），已取消下载"), true);
+        return;
+    }
+
+    const QString cacheKey = keyCacheKey(segment.key.url);
+    QPointer<DownloadTask> self(this);
+    const QHash<QString, QString> headers =
+        HeaderPolicy::sanitizedForTarget(segment.key.url, m_headers, m_originUrl);
+    m_http->fetch(
+        segment.key.url, QByteArray(), headers,
+        [self, segment, cacheKey, ready](QNetworkReply *reply) {
+            if (self.isNull()) {
+                if (reply != nullptr) {
+                    reply->abort();
+                    reply->deleteLater();
+                }
+                return;
+            }
+            self->onSegmentKeyFinished(reply, segment, cacheKey, ready);
+        },
+        64 * 1024, m_originUrl);
+}
+
+/// @brief 处理密钥响应：必须恰好 16 字节，成功后才缓存并继续当前分片。
+void DownloadTask::onSegmentKeyFinished(QNetworkReply *reply, const Segment &segment,
+                                        const QString &cacheKey,
+                                        const std::function<void()> &ready)
+{
+    if (m_done) {
+        if (reply != nullptr) {
+            reply->abort();
+            reply->deleteLater();
+        }
+        return;
+    }
+    if (reply == nullptr) {
+        fail(tr("密钥地址请求失败（重定向或协议不允许）"), true);
+        return;
+    }
+
+    m_keyReply = reply;
+    if (!HttpClient::isHttpSuccess(reply)) {
+        const QString error = HttpClient::describeError(reply);
+        m_keyReply = nullptr;
+        reply->deleteLater();
+        fail(tr("获取 AES-128 密钥失败：%1").arg(error), true);
+        return;
+    }
+
+    bool tooLarge = false;
+    const QByteArray key = HttpClient::readAllLimited(reply, 64 * 1024, &tooLarge);
+    m_keyReply = nullptr;
+    reply->deleteLater();
+
+    if (tooLarge) {
+        fail(tr("密钥响应超过大小上限，已取消下载"), true);
+        return;
+    }
+    if (key.size() != 16) {
+        fail(tr("AES-128 密钥长度不是 16 字节（实际 %1 字节），已取消下载")
+                 .arg(key.size()), true);
+        return;
+    }
+
+    m_keyCache.insert(cacheKey, key);
+    m_currentKey = key;
+    qCInfo(lcDownload) << "已获取 AES-128 密钥："
+                       << HttpClient::redactUrl(segment.key.url);
+    ready();
+}
+
+/// @brief 单个分片完成：校验长度、按需解密、推进序号并记录分片边界检查点。
 void DownloadTask::onSegmentFinished(QNetworkReply *reply)
 {
     if (m_done || reply == nullptr)
@@ -1082,6 +1397,11 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
         return;
     }
 
+    if (m_currentSegment.key.enabled && !writeDecryptedSegment(m_currentSegment))
+        return;
+
+    m_segmentCipher.clear();
+    m_currentKey.clear();
     m_segmentExpected = -1;
     m_segmentBytes = 0;
     ++m_segmentIndex;
@@ -1134,6 +1454,50 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
     commitFile();
 }
 
+/// @brief 解密当前完整分片并写入临时文件。
+/// @return 成功返回 true；失败时已 emit failed，调用方直接返回。
+/// @note 只在 onSegmentFinished 收齐整段后调用，保证 CBC 的填充校验不会被
+///       readyRead 的碎块打断。
+bool DownloadTask::writeDecryptedSegment(const Segment &segment)
+{
+    if (m_file == nullptr) {
+        fail(tr("解密分片时目标文件已失效"));
+        return false;
+    }
+    if (m_currentKey.size() != 16) {
+        fail(tr("AES-128 密钥尚未就绪，已取消下载"));
+        return false;
+    }
+    if (m_segmentCipher.isEmpty()) {
+        fail(tr("加密分片为空，已取消下载"), true);
+        return false;
+    }
+
+    QByteArray plain;
+    QString error;
+    if (!Aes128Cbc::decrypt(m_segmentCipher, m_currentKey, segment.key.iv, &plain, &error)) {
+        fail(tr("分片解密失败：%1").arg(error), true);
+        return false;
+    }
+    if (plain.isEmpty()) {
+        fail(tr("分片解密后为空，已取消下载"), true);
+        return false;
+    }
+
+    const qint64 remaining = m_maxBytes - m_bytesWritten;
+    if (remaining <= 0 || plain.size() > remaining) {
+        fail(tr("文件超过 %1 MB 上限，已停止下载").arg(m_maxBytes / (1024 * 1024)), true);
+        return false;
+    }
+    const qint64 written = m_file->write(plain);
+    if (written != plain.size()) {
+        fail(tr("写入文件不完整：%1").arg(m_file->errorString()));
+        return false;
+    }
+    m_bytesWritten += plain.size();
+    return true;
+}
+
 /// @brief 把当前可读字节写入临时文件并上报进度。
 /// @note 超过上限时只写入剩余额度再失败，使临时文件停在真实上限而非丢掉整块；
 ///       HLS 只在完整分片边界发 checkpoint，普通下载的检查点最多每秒一次。
@@ -1154,6 +1518,22 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
             return;
         }
         m_verifyMediaMagic = false;
+    }
+
+    if (m_isHls && m_currentSegment.key.enabled) {
+        // AES-128 必须收完整段才能验 PKCS#7 填充；先只放内存，解密成功后再写盘。
+        const qint64 remainingForPlain = m_maxBytes - m_bytesWritten;
+        const qint64 bufferLimit = qMin<qint64>(
+            NetLimits::kEncryptedSegmentBytes, qMax<qint64>(0, remainingForPlain + 16));
+        if (remainingForPlain <= 0 || m_segmentCipher.size() + chunk.size() > bufferLimit) {
+            fail(tr("加密分片超过单文件 %1 MB 上限，已停止下载")
+                     .arg(m_maxBytes / (1024 * 1024)), true);
+            return;
+        }
+        m_segmentCipher.append(chunk);
+        m_segmentBytes += chunk.size();
+        emit progress(m_segmentIndex, m_segments.size());
+        return;
     }
 
     const qint64 remaining = m_maxBytes - m_bytesWritten;
@@ -1317,6 +1697,7 @@ void DownloadTask::fail(const QString &message, bool removePartial)
         reply->abort();
         reply->deleteLater();
     }
+    clearKeyMaterial();
     if (m_file != nullptr) {
         m_file->flush();
         m_file->close();
@@ -1348,6 +1729,7 @@ void DownloadTask::stopForExit()
         reply->abort();
         reply->deleteLater();
     }
+    clearKeyMaterial();
     if (m_file != nullptr) {
         // 退出前补一次精确检查点；普通下载的 readyRead 检查点有 1 秒节流。
         emit checkpoint(m_bytesWritten, m_segmentIndex,
@@ -1379,6 +1761,7 @@ void DownloadTask::cancel()
         reply->abort();
         reply->deleteLater();
     }
+    clearKeyMaterial();
     const QString temp = partialPath();
     if (m_file != nullptr) {
         m_file->close();
@@ -1394,6 +1777,20 @@ void DownloadTask::cancel()
     deleteLater();
 }
 
+/// @brief 清掉内存中的密钥、密文与在途密钥请求，避免退出后残留敏感数据。
+void DownloadTask::clearKeyMaterial()
+{
+    if (!m_keyReply.isNull()) {
+        QNetworkReply *reply = m_keyReply.data();
+        m_keyReply = nullptr;
+        reply->abort();
+        reply->deleteLater();
+    }
+    m_keyCache.clear();
+    m_currentKey.clear();
+    m_segmentCipher.clear();
+}
+
 /// @brief 设置单文件字节上限。
 void DownloadTask::setMaxBytes(qint64 bytes)
 {
@@ -1407,6 +1804,7 @@ void DownloadTask::finish()
     if (m_done)
         return;
     m_done = true;
+    clearKeyMaterial();
     emit finished();
     deleteLater();
 }

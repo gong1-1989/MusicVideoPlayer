@@ -27,7 +27,7 @@ class QTimer;
 /// - 单文件 `EXT-X-BYTERANGE`：整段媒体本身就是一个 MP4，直接按 Range 下载，
 ///   不再发一百多个分片请求。
 /// 主列表带独立音轨时，同时缓存对应音轨并在转封装时合并，避免无声 MP4。
-/// 加密 HLS、没有 ENDLIST 且非 VOD 的列表不生成缓存。
+/// 播放列表带 AES-128 时，子任务会自动取 KEY 解密；SAMPLE-AES 等仍不生成缓存。
 class HlsCacheBuilder : public QObject
 {
     Q_OBJECT
@@ -111,6 +111,7 @@ private:
     QUrl m_audioPlaylistUrl;
     QUrl m_videoSource;
     QUrl m_audioSource;
+    QUrl m_masterBaseUrl;
     bool m_videoDirect = false;
     bool m_audioDirect = false;
     bool m_hasAudio = false;

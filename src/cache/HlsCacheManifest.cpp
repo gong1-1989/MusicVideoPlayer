@@ -19,6 +19,7 @@ const QRegularExpression kGroupId(QStringLiteral("\\bGROUP-ID\\s*=\\s*\"([^\"]*)
 const QRegularExpression kName(QStringLiteral("\\bNAME\\s*=\\s*\"([^\"]*)\""));
 const QRegularExpression kDefault(QStringLiteral("\\bDEFAULT\\s*=\\s*YES"),
                                   QRegularExpression::CaseInsensitiveOption);
+const QRegularExpression kMethod(QStringLiteral("METHOD=([^,\\s]+)"));
 const QRegularExpression kUri(
     QStringLiteral("\\bURI\\s*=\\s*(?:\"([^\"]*)\"|([^,\\s]*))"));
 
@@ -71,6 +72,19 @@ bool parseMaster(const QByteArray &body, const QUrl &baseUrl, Master *out, QStri
         const QString line = raw.trimmed();
         if (line.isEmpty())
             continue;
+
+        if (line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))) {
+            // 子列表可能完全不重复写 KEY，缓存任务必须把主列表的 SESSION-KEY
+            // 带过去，否则会把密文当明文合并进 MP4。
+            out->sessionKeyLines.append(line);
+            const QRegularExpressionMatch method = kMethod.match(line);
+            const QString value = method.hasMatch() ? method.captured(1).trimmed() : QString();
+            if (!value.isEmpty()
+                && value.compare(QLatin1String("NONE"), Qt::CaseInsensitive) != 0) {
+                out->encrypted = true;
+            }
+            continue;
+        }
 
         if (line.startsWith(QLatin1String("#EXT-X-MEDIA:"))
             && line.contains(QLatin1String("TYPE=AUDIO"))) {
@@ -152,6 +166,16 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
         if (line.isEmpty())
             continue;
 
+        if (line.startsWith(QLatin1String("#EXT-X-KEY"))
+            || line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))) {
+            const QRegularExpressionMatch method = kMethod.match(line);
+            const QString value = method.hasMatch() ? method.captured(1).trimmed() : QString();
+            if (!value.isEmpty()
+                && value.compare(QLatin1String("NONE"), Qt::CaseInsensitive) != 0) {
+                out->encrypted = true;
+            }
+            continue;
+        }
         if (line.startsWith(QLatin1String("#EXTINF:"))) {
             pendingDuration = true;
             continue;
@@ -185,10 +209,10 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
 
     out->valid = true;
     out->segmentCount = segmentUrls.size();
-    out->singleFile = true;
+    out->singleFile = !out->encrypted;
     const QUrl first = segmentUrls.first();
-    out->singleFileUrl = first;
-    for (int i = 0; i < segmentUrls.size(); ++i) {
+    out->singleFileUrl = out->singleFile ? first : QUrl();
+    for (int i = 0; i < segmentUrls.size() && out->singleFile; ++i) {
         if (!segmentRanges.at(i) || !sameUrlIgnoringQuery(segmentUrls.at(i), first)) {
             out->singleFile = false;
             out->singleFileUrl = QUrl();

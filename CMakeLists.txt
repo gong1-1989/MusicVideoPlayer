@@ -50,6 +50,8 @@ qt_add_library(mvp_core STATIC
     src/audio/SpectrumMath.cpp
     src/audio/AudioSpectrumAnalyzer.h
     src/audio/AudioSpectrumAnalyzer.cpp
+    src/util/Aes128Cbc.h
+    src/util/Aes128Cbc.cpp
     src/util/HeaderPolicy.h
     src/util/NetworkAddressPolicy.h
     src/util/NetworkAddressPolicy.cpp
@@ -134,8 +136,9 @@ target_link_libraries(mvp_core PUBLIC
     Qt6::Multimedia
 )
 if(WIN32)
-    # 源配置凭据使用 DPAPI 加密，避免 sources.json 出现明文 Cookie
-    target_link_libraries(mvp_core PUBLIC crypt32)
+    # 源配置凭据使用 DPAPI 加密，避免 sources.json 出现明文 Cookie；
+    # HLS 的 AES-128 分片解密走系统 CNG，必须显式链接 bcrypt。
+    target_link_libraries(mvp_core PUBLIC crypt32 bcrypt)
 endif()
 mvp_enable_warnings(mvp_core)
 

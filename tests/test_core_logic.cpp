@@ -24,6 +24,7 @@
 #include "stream/StreamRange.h"
 #include "net/NetLimits.h"
 #include "stream/StreamTokenRegistry.h"
+#include "util/Aes128Cbc.h"
 #include "util/HeaderPolicy.h"
 #include "util/NetworkAddressPolicy.h"
 #include "util/PlaylistSniffer.h"
@@ -616,6 +617,118 @@ public:
     qint64 initRangeEnd = -1;
 };
 
+/// 本地 AES-128 HLS 源：主列表只写 SESSION-KEY，媒体列表中途换 key。
+/// 用来验证“从站点自动取 key + 默认 IV + 显式 IV + 解密后合并”。
+class AesHlsDownloadServer : public QTcpServer
+{
+public:
+    explicit AesHlsDownloadServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        key1 = QByteArray::fromHex("000102030405060708090A0B0C0D0E0F");
+        key2 = QByteArray::fromHex("0F0E0D0C0B0A09080706050403020100");
+        segment0 = QByteArray::fromHex(
+            "A7AF14C58597562145AE04D5D25CF1A05A512B545589BB14B8875F9A4128B2F4");
+        segment1 = QByteArray::fromHex(
+            "5DADE9B6B556DF6104567947F89AA058F7E6D0CB9AB73C69D796A3BE2EB27B55");
+        plain0 = QByteArrayLiteral("0123456789ABCDEF");
+        plain1 = QByteArrayLiteral("abcdefghijklmnopq");
+
+        master = QByteArrayLiteral(
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"key.bin\"\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=1\n"
+            "media.m3u8\n");
+        media = QByteArrayLiteral(
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            "#EXT-X-TARGETDURATION:1\n"
+            "#EXT-X-MEDIA-SEQUENCE:7\n"
+            "#EXTINF:1,\n"
+            "seg0.ts\n"
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"key2.bin\","
+            "IV=0x101112131415161718191A1B1C1D1E1F\n"
+            "#EXTINF:1,\n"
+            "seg1.ts\n"
+            "#EXT-X-ENDLIST\n");
+
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    if (socket->property("responded").toBool())
+                        return;
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+
+                    const QByteArray head = pending.left(headEnd);
+                    const QString path = QString::fromUtf8(
+                        head.split('\n').value(0).trimmed().split(' ').value(1));
+                    for (const QByteArray &line : head.split('\n')) {
+                        if (line.toLower().startsWith("referer:"))
+                            lastKeyReferer = line.mid(8).trimmed();
+                    }
+                    socket->setProperty("responded", true);
+
+                    QByteArray body;
+                    QByteArray contentType = QByteArrayLiteral("application/octet-stream");
+                    if (path == QLatin1String("/master.m3u8")) {
+                        body = master;
+                        contentType = "application/vnd.apple.mpegurl";
+                    } else if (path == QLatin1String("/media.m3u8")) {
+                        body = media;
+                        contentType = "application/vnd.apple.mpegurl";
+                    } else if (path == QLatin1String("/key.bin")) {
+                        ++key1Requests;
+                        body = key1;
+                    } else if (path == QLatin1String("/key2.bin")) {
+                        ++key2Requests;
+                        body = key2;
+                    } else if (path == QLatin1String("/seg0.ts")) {
+                        body = segment0;
+                    } else if (path == QLatin1String("/seg1.ts")) {
+                        body = segment1;
+                    } else {
+                        socket->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n"
+                                      "Connection: close\r\n\r\n");
+                        QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                        return;
+                    }
+
+                    QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: " + contentType
+                                          + "\r\nContent-Length: " + QByteArray::number(body.size())
+                                          + "\r\nConnection: close\r\n\r\n" + body;
+                    socket->write(response);
+                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QByteArray master;
+    QByteArray media;
+    QByteArray key1;
+    QByteArray key2;
+    QByteArray segment0;
+    QByteArray segment1;
+    QByteArray plain0;
+    QByteArray plain1;
+    int key1Requests = 0;
+    int key2Requests = 0;
+    QByteArray lastKeyReferer;
+
+    QString baseUrl() const
+    {
+        return QStringLiteral("http://127.0.0.1:%1/").arg(serverPort());
+    }
+};
+
 bool readProxyResponse(QTcpSocket *socket, QByteArray *head, QByteArray *body,
                        int timeoutMs = 5000)
 {
@@ -797,6 +910,9 @@ private slots:
     void downloadUsesContentRangeEndWhenTotalUnknown();
     void downloadResumesMidFileWithoutMagicFalsePositive();
     void downloadHlsVerifiesSegmentsAndMapRange();
+    void aes128CbcDecryptsKnownVector();
+    void downloadHlsDecryptsAes128Segments();
+    void hlsCacheManifestKeepsSessionKeyAndDisablesEncryptedSingleFile();
     void configMapperReadsNestedPaths();
     void configMapperBoolRulesDoNotMixWithNumbers();
     void configMapperSplitsEpisodesAndResolvesUrls();
@@ -2238,6 +2354,94 @@ void CoreLogicTest::downloadHlsVerifiesSegmentsAndMapRange()
     QVERIFY(server.initRangeReceived);
     QCOMPARE(server.initRangeStart, qint64(0));
     QCOMPARE(server.initRangeEnd, qint64(9));
+}
+
+void CoreLogicTest::aes128CbcDecryptsKnownVector()
+{
+    const QByteArray ciphertext = QByteArray::fromHex(
+        "39D963D814C82E03B417192899964797DB6FC66358A7D270F6B5909E0725FD68E4"
+        "C72C4C4114FDEC1B4C607CAE2AD368");
+    const QByteArray key = QByteArray::fromHex("000102030405060708090A0B0C0D0E0F");
+    const QByteArray iv = QByteArray::fromHex("101112131415161718191A1B1C1D1E1F");
+
+    QByteArray plain;
+    QString error;
+    QVERIFY2(Aes128Cbc::decrypt(ciphertext, key, iv, &plain, &error), qPrintable(error));
+    QCOMPARE(plain, QByteArrayLiteral("AES-128 HLS test segment payload."));
+
+    QVERIFY(!Aes128Cbc::decrypt(ciphertext, key.left(15), iv, &plain, &error));
+    QVERIFY(!Aes128Cbc::decrypt(ciphertext.left(47), key, iv, &plain, &error));
+}
+
+void CoreLogicTest::downloadHlsDecryptsAes128Segments()
+{
+    AesHlsDownloadServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString target = dir.filePath(QStringLiteral("movie.mp4"));
+    const QString base = server.baseUrl();
+
+    HttpClient http;
+    QHash<QString, QString> headers;
+    headers.insert(QStringLiteral("Referer"), base);
+    const QUrl url(base + QStringLiteral("master.m3u8"));
+    DownloadTask *task = DownloadTask::start(&http, url, target, headers);
+    QVERIFY(task != nullptr);
+    task->setOriginUrl(QUrl(base));
+
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 8000);
+    QCOMPARE(failed.count(), 0);
+    QVERIFY(succeeded.count() == 1);
+
+    const QString output = succeeded.at(0).at(0).toString();
+    QFile file(output);
+    QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(output));
+    QCOMPARE(file.readAll(), server.plain0 + server.plain1);
+
+    // 两个不同 KEY URI 各请求一次；默认 IV 与显式 IV 都必须解出正确明文。
+    QCOMPARE(server.key1Requests, 1);
+    QCOMPARE(server.key2Requests, 1);
+    QCOMPARE(server.lastKeyReferer, base.toUtf8());
+}
+
+void CoreLogicTest::hlsCacheManifestKeepsSessionKeyAndDisablesEncryptedSingleFile()
+{
+    HlsCacheManifest::Master master;
+    QString error;
+    const QByteArray masterBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"key.bin\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=1000\n"
+        "media.m3u8\n");
+    QVERIFY2(HlsCacheManifest::parseMaster(masterBody, QUrl(QStringLiteral("http://example.com/")),
+                                            &master, &error),
+             qPrintable(error));
+    QVERIFY(master.encrypted);
+    QCOMPARE(master.sessionKeyLines.size(), 1);
+    QVERIFY(master.sessionKeyLines.first().contains(QLatin1String("METHOD=AES-128")));
+
+    HlsCacheManifest::MediaTrack track;
+    const QByteArray mediaBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n"
+        "#EXT-X-BYTERANGE:10@0\n"
+        "#EXTINF:1,\n"
+        "all.mp4\n"
+        "#EXT-X-BYTERANGE:10@10\n"
+        "#EXTINF:1,\n"
+        "all.mp4\n"
+        "#EXT-X-ENDLIST\n");
+    QVERIFY2(HlsCacheManifest::parseMediaTrack(mediaBody,
+                                               QUrl(QStringLiteral("http://example.com/media.m3u8")),
+                                               &track, &error),
+             qPrintable(error));
+    QVERIFY(track.encrypted);
+    QVERIFY(!track.singleFile);
+    QVERIFY(track.singleFileUrl.isEmpty());
 }
 
 void CoreLogicTest::downloadRejectsHtmlDisguisedAsOctetStream()
