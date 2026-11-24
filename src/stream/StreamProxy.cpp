@@ -762,9 +762,13 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         if (!looksLikeMedia(reply)) {
             const QString type =
                 reply->header(QNetworkRequest::ContentTypeHeader).toString();
+            const int status =
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            // 日志带上最终状态码：403/404 和“返回 HTML 的 200”是两类问题，
+            // 只记 Content-Type 无法区分源站拒绝与版权页跳转。
             qCWarning(lcProxy) << "上游返回的不是音视频：" << HttpClient::redactUrl(reply->url())
-                              << type;
-            emit sourceUnavailable(upstream, type);
+                              << "状态" << status << "类型" << type;
+            emit sourceUnavailable(upstream, type, status);
             replyError(client, 404, QStringLiteral("no audio source"));
             reply->abort();
             reply->deleteLater();

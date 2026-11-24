@@ -29,7 +29,9 @@ public:
         TypeRole,
         SourceRole,
         /// 清晰度/音质（4K、1080P、无损等）
-        QualityRole
+        QualityRole,
+        /// 搜索结果分组标题；普通播放列表为空
+        GroupRole
     };
 
     explicit PlaylistModel(QObject *parent = nullptr);

@@ -117,6 +117,8 @@ signals:
 
 private:
     void playRowInternal(int row, bool autoAdvance);
+    /// 启动阶段失败时切到下一条备用线路；没有备用或已经出声后返回 false。
+    bool tryNextFallback();
     int rowCount() const;
     void onMediaStatusChanged(QMediaPlayer::MediaStatus status);
     void updateLoops();
@@ -169,6 +171,12 @@ private:
     /// 用户切换码率时，本条重载必须强行走网络代理，不能因为整片缓存已经
     /// 落盘就继续播放固定码率的本地 MP4；只对紧接着的一次 playRowInternal 生效。
     bool m_forceStreamOnce = false;
+    /// 当前条目的备用线路队列。只在启动阶段失败时消费；已经播出声后
+    /// 网络抖动/解码失败不换线，避免用户看到“播到一半突然换片源”。
+    QVector<QUrl> m_fallbackUrls;
+    QString m_fallbackIdentity;
+    /// tryNextFallback() 选中的下一条地址，由紧接着的 playRowInternal() 消费。
+    QUrl m_forcedNextUrl;
 };
 
 #endif // PLAYBACKCONTROLLER_H

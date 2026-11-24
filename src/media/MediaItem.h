@@ -134,6 +134,11 @@ struct MediaItem
     /// 影视站vod_remarks里有就原样归一化；音乐源没有独立字段时从标题推断。
     QString quality;
 
+    /// 搜索结果分组的标题文字（例如“音乐（12 首）”）。
+    /// 只在搜索面板分页时写入当前页的第一行/组边界行，不参与播放列表持久化；
+    /// 普通播放列表和落盘数据保持空，避免把界面分组文案写进条目。
+    QString searchSectionLabel;
+
     bool isValid() const { return !url.isEmpty() && url.isValid(); }
 
     QString displayName() const
@@ -227,6 +232,32 @@ inline QUrl preferredPlaybackUrl(const MediaItem &item)
             return candidate;
     }
     return item.url;
+}
+
+/// 播放候选顺序：优先播放地址在前，其余备用线路依次在后。
+/// 播放器启动失败时按这个顺序换线，不能只挑一条“看起来最好”的地址后
+/// 把 alternateUrls 丢掉；同一地址只保留一次，避免重复重试。
+inline QVector<QUrl> playbackCandidateUrls(const MediaItem &item)
+{
+    QVector<QUrl> candidates;
+    QSet<QString> seen;
+    const auto append = [&candidates, &seen](const QUrl &url) {
+        if (url.isEmpty() || !url.isValid() || url.isRelative())
+            return;
+        const QString key = url.toString(QUrl::FullyEncoded);
+        if (seen.contains(key))
+            return;
+        seen.insert(key);
+        candidates.append(url);
+    };
+
+    append(preferredPlaybackUrl(item));
+    for (const QString &raw : item.alternateUrls)
+        append(QUrl(raw));
+    // 主地址可能不是 preferred（例如视频主地址是 m3u8、备选有 mp4），
+    // 仍然保留它作为最后一条回退，不能因为首选失败就把原始线路删掉。
+    append(item.url);
+    return candidates;
 }
 
 /// UI 是否应该按 HLS 处理定位等待：必须看实际播放地址，而不是原始 URL。

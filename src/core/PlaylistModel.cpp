@@ -75,6 +75,8 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
         return item.sourceId;
     case QualityRole:
         return item.quality;
+    case GroupRole:
+        return item.searchSectionLabel;
     default:
         return QVariant();
     }

@@ -135,8 +135,26 @@ protected:
         // QSS 给 item 留了 7px 上下内边距，SE_ItemViewItemText 会把可用高度再扣掉，
         // 150% 字体下永远塞不下第二行。这里直接按整行绘制，只留 2px 内缩，
         // 让“标题 + 品质/来源”两行真正放得下。
-        const QRect inner = option.rect.adjusted(4, 2, -4, -2);
         const QFontMetrics metrics(opt.font);
+        const QString section = index.data(PlaylistModel::GroupRole).toString();
+        // 分组标题画在第一行内部，而不是插入伪行：这样不用改分页和双击索引，
+        // 也不会出现“组头被当成条目播放”的额外交互分支。组头占一行高度，
+        // 行内的标题/来源整体下移，分页跨组时只重复一次组头。
+        const int headerHeight = section.isEmpty() ? 0 : metrics.height() + 8;
+        if (!section.isEmpty()) {
+            painter->save();
+            QFont headerFont = opt.font;
+            headerFont.setBold(true);
+            painter->setFont(headerFont);
+            painter->setPen(opt.palette.color(QPalette::Normal, QPalette::Highlight));
+            painter->drawText(QRect(option.rect.left() + 8, option.rect.top() + 2,
+                                    option.rect.width() - 16, headerHeight - 2),
+                              Qt::AlignVCenter | Qt::AlignLeft,
+                              metrics.elidedText(section, Qt::ElideRight,
+                                                 option.rect.width() - 16));
+            painter->restore();
+        }
+        const QRect inner = option.rect.adjusted(4, 2 + headerHeight, -4, -2);
 
         const bool isVideo = index.data(PlaylistModel::TypeRole).toInt()
                              == static_cast<int>(MediaType::Video);
@@ -226,6 +244,9 @@ protected:
         // 留出标题 + 品质/来源两行的空间，避免 150% 字体下行高被压成一行。
         const QFontMetrics metrics(option.font);
         hint.setHeight(qMax(hint.height(), metrics.height() * 2 + 10));
+        // 组头行比普通行多一行文字高度；QListView 非统一行高时会逐行调用这里。
+        if (!index.data(PlaylistModel::GroupRole).toString().isEmpty())
+            hint.setHeight(hint.height() + metrics.height() + 8);
         return hint;
     }
 
@@ -255,8 +276,11 @@ private:
         const QString text = artist.isEmpty() ? title
                                               : title + QStringLiteral(" - ") + artist;
         // 与 paint() 保持同一套可用宽度：两行布局时来源在下一行，
-        // 标题几乎占满整行；单行布局才给右侧来源留位置。
-        const QRect inner = rect.adjusted(4, 2, -4, -2);
+        // 标题几乎占满整行；单行布局才给右侧来源留位置。组头占用的高度
+        // 也要从可绘制区域扣掉，否则悬停滚动会按整行高度误判为“没溢出”。
+        const QString section = index.data(PlaylistModel::GroupRole).toString();
+        const int headerHeight = section.isEmpty() ? 0 : metrics.height() + 8;
+        const QRect inner = rect.adjusted(4, 2 + headerHeight, -4, -2);
         const int iconWidth = 22;
         const int gap = 6;
         const int textLeft = inner.left() + iconWidth + gap;
@@ -1082,6 +1106,14 @@ void SearchPanelController::refreshPageSize()
         // 当前页模型为空时 sizeHintForRow 返回 -1，用字体行高加内边距兜底。
         rowHeight = qMax(30, m_ui.list->fontMetrics().height() + 12);
     }
+    // 第一行通常带分组标题，比普通行多一行文字。用第二行估每页条数，
+    // 否则页首组头会把每页容量算小一格，窗口稍矮就只剩几行。
+    if (m_model->rowCount() > 1
+        && !m_model->index(0, 0).data(PlaylistModel::GroupRole).toString().isEmpty()) {
+        const int normalHeight = m_ui.list->sizeHintForRow(1);
+        if (normalHeight > 0)
+            rowHeight = normalHeight;
+    }
     const int nextSize = ListMetrics::pageSizeForViewport(
         m_ui.list->viewport()->height(), rowHeight, m_ui.list->spacing());
     if (nextSize == m_pageSize)
@@ -1148,10 +1180,33 @@ void SearchPanelController::applyPage()
     const int begin = m_page * m_pageSize;
     const int end = qMin(begin + m_pageSize, m_visibleResults.size());
 
+    // 分组计数按当前筛选后的完整结果算，而不是当前页，避免翻页后组头数字变小。
+    int musicTotal = 0;
+    int videoTotal = 0;
+    for (const MediaItem &item : std::as_const(m_visibleResults)) {
+        if (item.type == MediaType::Video)
+            ++videoTotal;
+        else
+            ++musicTotal;
+    }
+
     QVector<MediaItem> slice;
     slice.reserve(end - begin);
-    for (int i = begin; i < end; ++i)
-        slice.append(m_visibleResults.at(i));
+    int previousType = -1;
+    for (int i = begin; i < end; ++i) {
+        MediaItem item = m_visibleResults.at(i);
+        const int currentType = static_cast<int>(item.type);
+        // 组头只写在组边界和当前页第一行：组内每行都写会让列表变成一堵标题墙；
+        // 页首重复一次则保证翻到音乐/影视中段时仍知道自己在哪一组。
+        if (currentType != previousType) {
+            item.searchSectionLabel =
+                item.type == MediaType::Music
+                    ? tr("音乐（%1 首）").arg(musicTotal)
+                    : tr("影视（%1 个）").arg(videoTotal);
+            previousType = currentType;
+        }
+        slice.append(item);
+    }
     m_model->setItems(slice);
 
     m_ui.pageLabel->setText(tr("%1 / %2").arg(m_page + 1).arg(pages));

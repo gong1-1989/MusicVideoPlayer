@@ -113,7 +113,7 @@ public:
 
 signals:
     /// 上游 302 落到 /404 或返回的不是音视频，通常是版权/付费/登录限制。
-    void sourceUnavailable(const QUrl &upstream, const QString &contentType);
+    void sourceUnavailable(const QUrl &upstream, const QString &contentType, int statusCode);
 
 private slots:
     void onNewConnection();

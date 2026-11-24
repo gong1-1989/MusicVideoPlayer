@@ -18,7 +18,7 @@ class SourceRegistry;
 SearchProviderBase *createSearchProvider(const SourceConfig &config, HttpClient *http,
                                          QObject *parent);
 
-/// 并发跑所有启用源，按源配置顺序合并结果；单个源失败/超时不影响其它源。
+/// 并发跑所有启用源，按“音乐/影视分组 + 相关性”合并结果；单个源失败/超时不影响其它源。
 class SearchCoordinator : public QObject
 {
     Q_OBJECT

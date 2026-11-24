@@ -133,7 +133,17 @@ PlaybackController::PlaybackController(QObject *parent)
                 // 用代理给出的真实原因替换掉，别让用户以为是自己操作错了
                 const QString text = m_unavailableReason.isEmpty() ? message : m_unavailableReason;
                 m_unavailableReason.clear();
-                qCWarning(lcPlayer) << "播放出错：" << text;
+                const MediaItem failedItem = currentItem();
+                qCWarning(lcPlayer) << "播放出错：" << text << "条目" << failedItem.displayName()
+                                    << "源" << failedItem.sourceId << "地址"
+                                    << HttpClient::redactUrl(preferredPlaybackUrl(failedItem));
+
+                // 启动阶段失败先试备用线路。很多影视结果同时带 m3u8/mp4 多条
+                // 线路，旧逻辑只选一条，主线路 403/404 就直接跳下一首；这里
+                // 在真正报错前换线，只有全部线路都失败才让用户看到错误。
+                if (!m_playAttemptStarted && tryNextFallback())
+                    return;
+
                 emit errorOccurred(text);
 
                 // 已经播到中途才出错（网络抖动、分片过期、解码失败），说明
@@ -157,13 +167,18 @@ PlaybackController::PlaybackController(QObject *parent)
             });
 
     connect(m_proxy, &StreamProxy::sourceUnavailable, this,
-            [this](const QUrl &upstream, const QString &contentType) {
-                qCWarning(lcPlayer) << "音源不可用："
-                                   << HttpClient::redactUrl(upstream) << contentType;
+            [this](const QUrl &upstream, const QString &contentType, int statusCode) {
+                qCWarning(lcPlayer) << "音源不可用：" << HttpClient::redactUrl(upstream)
+                                   << "状态" << statusCode << "类型" << contentType;
                 // 只记录原因，不在这里 emit：QMediaPlayer 随后一定会发 errorOccurred，
-                // 否则同一次失败会在界面弹两次。
+                // 否则同一次失败会在界面弹两次。状态码和 Content-Type 一起展示，
+                // 用户能区分“403 被源站拒绝”和“返回了网页/版权页”两种不可播。
+                QString detail = contentType.isEmpty() ? tr("未知类型") : contentType;
+                if (statusCode > 0)
+                    detail = tr("HTTP %1，%2").arg(statusCode).arg(detail);
                 m_unavailableReason =
-                    tr("这个源没有返回可播放的音频/视频（版权、付费或需要登录），换一首试试");
+                    tr("这个源没有返回可播放的音频/视频（%1；版权、付费或需要登录）")
+                        .arg(detail);
             });
 }
 
@@ -365,6 +380,34 @@ void PlaybackController::playRow(int row)
     playRowInternal(row, false);
 }
 
+/// @brief 启动失败时切到下一条备用线路。
+/// @return 已排队重试返回 true；没有备用/已经出声/条目已变返回 false。
+/// @note 已经播出声后不换线：网络抖动或解码错误换到另一条线路会表现为
+///       “播到一半突然重播/换片源”，这类错误仍保留当前条目交给用户决定。
+bool PlaybackController::tryNextFallback()
+{
+    if (m_playAttemptStarted || m_playlist == nullptr || m_row < 0
+        || m_fallbackUrls.isEmpty() || m_fallbackIdentity.isEmpty())
+        return false;
+
+    const MediaItem current = m_playlist->itemAt(m_row);
+    if (!current.isValid() || mediaIdentity(current) != m_fallbackIdentity) {
+        m_fallbackUrls.clear();
+        m_fallbackIdentity.clear();
+        return false;
+    }
+
+    m_forcedNextUrl = m_fallbackUrls.takeFirst();
+    qCInfo(lcPlayer) << "主线路启动失败，改用备用线路："
+                     << HttpClient::redactUrl(m_forcedNextUrl)
+                     << "剩余" << m_fallbackUrls.size() << "条"
+                     << "条目" << current.displayName();
+    // 异步重载，避免在 QMediaPlayer 的 errorOccurred 回调里同步 setSource
+    // 造成播放器状态机重入；下一拍消费 m_forcedNextUrl。
+    QTimer::singleShot(0, this, [this, row = m_row] { playRowInternal(row, true); });
+    return true;
+}
+
 void PlaybackController::playRowInternal(int row, bool autoAdvance)
 {
     if (!m_playlist || row < 0 || row >= m_playlist->size())
@@ -406,6 +449,24 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     // 恢复内存态凭据，模型本身仍保持脱敏内容。
     const MediaItem playbackItem = m_itemResolver ? m_itemResolver(item) : item;
 
+    // 备用线路队列只为“当前条目”的一次启动流程服务：
+    // - 新条目/用户重新点播：重建候选队列；
+    // - 启动失败后的自动重试：只取上一条错误选出的地址，不重置队列。
+    const QString playbackIdentity = mediaIdentity(playbackItem);
+    const bool fallbackRetry = !m_forcedNextUrl.isEmpty() && row == m_row
+                               && playbackIdentity == m_fallbackIdentity;
+    QUrl playbackUrl;
+    if (fallbackRetry) {
+        playbackUrl = std::exchange(m_forcedNextUrl, QUrl());
+    } else {
+        m_forcedNextUrl = QUrl();
+        m_fallbackIdentity = playbackIdentity;
+        QVector<QUrl> candidates = playbackCandidateUrls(playbackItem);
+        playbackUrl = candidates.isEmpty() ? preferredPlaybackUrl(playbackItem)
+                                           : candidates.takeFirst();
+        m_fallbackUrls = candidates;
+    }
+
     // 换条目时清空上一部的 master 变体，避免码率栏在加载新视频前仍显示旧码率。
     // 同一行重载（切换码率）不能清，否则刚锁定的选择会被自己抹掉。
     if (row != m_row && m_proxy != nullptr && m_proxyReady) {
@@ -431,7 +492,8 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     // 本地条目本来就在磁盘上，再缓存一份纯属浪费；只有在线条目（音乐/影视）
     // 才建立与播放列表条目一一对应的整段缓存。HLS 完整分片由 HlsCacheBuilder
     // 合并转成无后缀 MP4 后，也在这个分支优先按本地文件播放。
-    const QUrl playbackUrl = preferredPlaybackUrl(playbackItem);
+    // 换备用线路时跳过缓存的“完整/续传”分支：缓存路径按条目身份生成，
+    // 主线路的分片/半截文件可能和备用线路格式不同，混用会把坏数据当成本地完整缓存。
     // 公网源返回的播放地址可能指向 127.0.0.1/192.168.x.x；缓存和流转代理
     // 都会真实回源，必须在进入代理前拒绝，避免本机成为 SSRF 跳板。
     // 用户自己配置的本地源（sourceOrigin 也是本地）仍允许本地媒体地址。
@@ -451,10 +513,13 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     QUrl source = playbackUrl;
     QString sourceKind = playbackItem.online ? QStringLiteral("在线代理")
                                              : QStringLiteral("本地文件");
-    const bool cacheable = MediaCache::isCacheable(playbackItem);
+    if (fallbackRetry)
+        sourceKind = QStringLiteral("备用线路");
+    const bool cacheable = !fallbackRetry && MediaCache::isCacheable(playbackItem);
     const QString completeCache =
-        (playbackItem.online && !forceStream) ? MediaCache::completeFileForItem(playbackItem)
-                                              : QString();
+        (playbackItem.online && !forceStream && !fallbackRetry)
+            ? MediaCache::completeFileForItem(playbackItem)
+            : QString();
     if (!completeCache.isEmpty()) {
         source = QUrl::fromLocalFile(completeCache);
         sourceKind = QStringLiteral("本地缓存");
@@ -513,6 +578,10 @@ void PlaybackController::stop()
     // 停止后旧 source 的延迟定位目标必须清掉，否则下一次加载会先跳到旧位置。
     m_deferredSeekMs = -1;
     m_consecutiveErrors = 0;
+    // 已经停止的条目不再保留备用线路队列，避免下一轮播放误用旧地址。
+    m_fallbackUrls.clear();
+    m_fallbackIdentity.clear();
+    m_forcedNextUrl = QUrl();
     m_player->stop();
 }
 

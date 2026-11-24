@@ -5,6 +5,7 @@
 #include "net/ConfigSearchProvider.h"
 #include "net/ExternalSearchProvider.h"
 #include "net/MaccmsWebProvider.h"
+#include "net/SearchRanker.h"
 #include "net/SourceRegistry.h"
 
 #include <QLoggingCategory>
@@ -302,16 +303,17 @@ void SearchCoordinator::onProviderFinished(SearchProviderBase *provider,
         finishSearch();
 }
 
-/// @brief 按源配置顺序合并各源结果，并补齐缺失的品质字段。
-/// @return 合并后的条目列表；顺序稳定，不随网络返回先后变化。
+/// @brief 合并各源结果，补品质后按“音乐/影视 + 相关性”排序去重。
+/// @return 排序后的条目列表；分数相同保持源配置顺序，避免网络返回先后影响顺序。
+/// @note 以前按源分桶直接拼接，用户看到的是“源顺序”，标题完全匹配的结果可能
+///       被排到第二个源的最后；现在在协调器出口统一排序，所有 UI/调用方一致。
 QVector<MediaItem> SearchCoordinator::mergedItems() const
 {
-    // 按源配置顺序合并，而不是按网络返回先后；同一关键词多次搜索的列表顺序保持稳定
     QVector<MediaItem> all;
     for (const QVector<MediaItem> &bucket : m_buckets)
         all += bucket;
     // 各源字段差异很大：影视站有 vod_remarks、音乐源多数没有独立品质字段。
-    // 统一在合并出口补一次推断，搜索结果品质栏不会长期空着。
+    // 统一在合并出口补一次推断，搜索结果品质栏不会长期空着；品质也是排序同分时的依据。
     for (MediaItem &item : all) {
         if (item.quality.isEmpty()) {
             item.quality = inferQuality(item.title + QLatin1Char(' ') + item.description
@@ -322,7 +324,9 @@ QVector<MediaItem> SearchCoordinator::mergedItems() const
         if (item.quality.isEmpty() && item.type == MediaType::Music)
             item.quality = QStringLiteral("标准");
     }
-    return all;
+    // 统一出口排序：先按类型分组（音乐在前、影视在后），再按关键词相关性。
+    // 同 identity 跨源重复时保留分数/品质更好的那条，而不是首个源先到先得。
+    return SearchRanker::rankAndDedupe(all, m_keyword);
 }
 
 /// @brief 汇总各源被过滤掉的条数。

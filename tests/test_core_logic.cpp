@@ -18,6 +18,7 @@
 #include "net/SourceProbe.h"
 #include "net/SourceRegistry.h"
 #include "net/SearchCoordinator.h"
+#include "net/SearchRanker.h"
 #include "settings/AppShortcuts.h"
 #include "stream/StreamProxy.h"
 #include "stream/HlsPlaylist.h"
@@ -984,9 +985,12 @@ private slots:
     void mediaItemJsonRoundTrip();
     void audioStreamScopeLabelsAndRoundTrip();
     void preferredPlaybackUrlSelectsProgressive();
+    void playbackCandidateUrlsKeepOriginalAsFallback();
     void mediaItemValidity();
     void mediaIdentityUsesStableWebUrl();
     void dedupeItemsKeepsFirstOccurrence();
+    void searchRankerGroupsAndRanks();
+    void searchRankerKeepsBestDuplicate();
     void playlistModelRefreshesSignedUrlWithoutLosingProgress();
     void playlistModelUpdatesPlaybackPositionSeparately();
     void playbackModeTextMatchesCompactLabels();
@@ -1277,6 +1281,24 @@ void CoreLogicTest::preferredPlaybackUrlSelectsProgressive()
     QVERIFY(!playbackIsHls(music));
 }
 
+void CoreLogicTest::playbackCandidateUrlsKeepOriginalAsFallback()
+{
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.url = QUrl(QStringLiteral("https://example.com/video.m3u8"));
+    item.alternateUrls = {QStringLiteral("https://example.com/video.mp4"),
+                          QStringLiteral("https://example.com/video.mp4"),
+                          QStringLiteral("https://example.com/video.flv")};
+
+    const QVector<QUrl> candidates = playbackCandidateUrls(item);
+    QCOMPARE(candidates.size(), 3);
+    // 首选按 preferredPlaybackUrl 走 mp4，但原始 m3u8 必须保留为最后回退，
+    // 不能“选完 preferred 就把 alternateUrls/主地址丢掉”。
+    QCOMPARE(candidates.at(0), QUrl(QStringLiteral("https://example.com/video.mp4")));
+    QCOMPARE(candidates.at(1), QUrl(QStringLiteral("https://example.com/video.flv")));
+    QCOMPARE(candidates.at(2), item.url);
+}
+
 void CoreLogicTest::mediaItemValidity()
 {
     MediaItem empty;
@@ -1352,6 +1374,58 @@ void CoreLogicTest::dedupeItemsKeepsFirstOccurrence()
     QCOMPARE(unique.at(0).url, first.url);
     QCOMPARE(unique.at(1).title, QStringLiteral("第二集"));
     QCOMPARE(unique.at(2).url, localA.url);
+}
+
+void CoreLogicTest::searchRankerGroupsAndRanks()
+{
+    MediaItem exactMusic;
+    exactMusic.type = MediaType::Music;
+    exactMusic.online = true;
+    exactMusic.title = QStringLiteral("稻香");
+    exactMusic.artist = QStringLiteral("周杰伦");
+    exactMusic.url = QUrl(QStringLiteral("https://example.com/song.mp3"));
+
+    MediaItem partialMusic = exactMusic;
+    partialMusic.title = QStringLiteral("稻香现场版");
+    partialMusic.url = QUrl(QStringLiteral("https://example.com/live.mp3"));
+
+    MediaItem exactVideo;
+    exactVideo.type = MediaType::Video;
+    exactVideo.online = true;
+    exactVideo.title = QStringLiteral("稻香");
+    exactVideo.url = QUrl(QStringLiteral("https://example.com/video.mp4"));
+
+    // 输入顺序故意把视频和弱匹配放前面：排序后音乐组在前，组内标题完全匹配在前。
+    const QVector<MediaItem> ranked =
+        SearchRanker::rankAndDedupe({exactVideo, partialMusic, exactMusic},
+                                    QStringLiteral("稻香"));
+    QCOMPARE(ranked.size(), 3);
+    QCOMPARE(ranked.at(0).url, exactMusic.url);
+    QCOMPARE(ranked.at(1).url, partialMusic.url);
+    QCOMPARE(ranked.at(2).url, exactVideo.url);
+    QVERIFY(ranked.at(0).type == MediaType::Music);
+    QVERIFY(ranked.at(2).type == MediaType::Video);
+}
+
+void CoreLogicTest::searchRankerKeepsBestDuplicate()
+{
+    MediaItem first;
+    first.online = true;
+    first.title = QStringLiteral("稻香");
+    first.webUrl = QUrl(QStringLiteral("https://example.com/detail/1"));
+    first.url = QUrl(QStringLiteral("https://cdn.example.com/a.mp3"));
+
+    MediaItem better = first;
+    better.artist = QStringLiteral("周杰伦");
+    better.quality = QStringLiteral("无损");
+    better.url = QUrl(QStringLiteral("https://cdn.example.com/b.mp3"));
+
+    const QVector<MediaItem> ranked =
+        SearchRanker::rankAndDedupe({first, better}, QStringLiteral("周杰伦 稻香"));
+    QCOMPARE(ranked.size(), 1);
+    // 同 identity 不能继续“先到先得”：歌手命中、品质更好的第二条应被保留。
+    QCOMPARE(ranked.first().artist, QStringLiteral("周杰伦"));
+    QCOMPARE(ranked.first().url, better.url);
 }
 
 void CoreLogicTest::playlistModelRefreshesSignedUrlWithoutLosingProgress()

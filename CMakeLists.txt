@@ -81,6 +81,8 @@ qt_add_library(mvp_core STATIC
     src/net/SourceRegistry.cpp
     src/net/SearchCoordinator.h
     src/net/SearchCoordinator.cpp
+    src/net/SearchRanker.h
+    src/net/SearchRanker.cpp
     src/lyrics/LrcParser.h
     src/lyrics/LrcParser.cpp
     src/lyrics/LyricsService.h
