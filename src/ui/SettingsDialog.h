@@ -2,6 +2,7 @@
 #define SETTINGSDIALOG_H
 
 #include "net/SourceConfig.h"
+#include "ui/SourceProbeDialog.h"
 
 #include <QDialog>
 #include <QHash>
@@ -49,6 +50,8 @@ private:
     HttpClient *m_http = nullptr;
     QVector<SourceConfig> m_stagedSources;
     bool m_sourcesDirty = false;
+    SourceParserSettings m_stagedParserSettings;
+    bool m_parserDirty = false;
 
     QHash<QString, QString> m_stagedShortcuts;
     bool m_shortcutsDirty = false;

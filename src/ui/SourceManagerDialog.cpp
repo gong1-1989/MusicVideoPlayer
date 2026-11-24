@@ -94,6 +94,15 @@ void SourceManagerDialog::setDraftSources(const QVector<SourceConfig> &sources)
     reloadList(m_drafts.isEmpty() ? -1 : 0);
 }
 
+void SourceManagerDialog::setParserSettings(const SourceParserSettings &settings)
+{
+    m_parserSettings = settings;
+    m_parserSettings.timeoutMs = qBound(5000, m_parserSettings.timeoutMs, 600000);
+    m_parserDirty = false;
+    refreshParserSummary();
+    updateActions();
+}
+
 void SourceManagerDialog::reloadList(int targetRow)
 {
     m_updating = true;
@@ -323,9 +332,12 @@ void SourceManagerDialog::openParserConfig()
     if (dialog.exec() != QDialog::Accepted)
         return;
     m_parserSettings = dialog.parserSettings();
+    m_parserDirty = true;
     refreshParserSummary();
     updateActions();
-    ui->label_status->setText(tr("解析器配置已修改，点“保存”后写入设置。"));
+    ui->label_status->setText(m_deferCommit
+                                  ? tr("解析器配置已修改，回到系统设置点“保存”后写入。")
+                                  : tr("解析器配置已修改，点“保存”后写入设置。"));
 }
 
 void SourceManagerDialog::refreshParserSummary()
@@ -371,8 +383,11 @@ bool SourceManagerDialog::saveAll()
 
 void SourceManagerDialog::accept()
 {
-    saveParserSettings();
     if (!saveAll())
         return;
+    // 延迟提交时只回传草稿，解析器配置由系统设置页确认后统一写盘；
+    // 立即提交模式才在源列表保存成功后写解析器配置。
+    if (!m_deferCommit)
+        saveParserSettings();
     QDialog::accept();
 }

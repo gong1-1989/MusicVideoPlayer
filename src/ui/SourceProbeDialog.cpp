@@ -244,10 +244,11 @@ void SourceProbeDialog::startProbe()
 
     QStringList lines;
     QSet<QString> seen;
+    bool truncated = false;
     const QStringList rawLines = m_sitesEdit->toPlainText().split(
         QRegularExpression(QStringLiteral("[\\r\\n]+")), Qt::SkipEmptyParts);
-    for (const QString &raw : rawLines) {
-        const QString text = raw.trimmed();
+    for (int i = 0; i < rawLines.size(); ++i) {
+        const QString text = rawLines.at(i).trimmed();
         if (text.isEmpty())
             continue;
         const QString key = text.toLower();
@@ -255,15 +256,15 @@ void SourceProbeDialog::startProbe()
             continue;
         seen.insert(key);
         lines.append(text);
-        if (lines.size() >= kMaxBatchSites)
+        if (lines.size() >= kMaxBatchSites) {
+            truncated = i + 1 < rawLines.size();
             break;
+        }
     }
     if (lines.isEmpty()) {
         showFailure(tr("先输入至少一个网站地址，每行一个。"));
         return;
     }
-    if (rawLines.size() > kMaxBatchSites)
-        m_log->setPlainText(tr("单次最多探测 %1 个站点，超出部分已忽略。").arg(kMaxBatchSites));
 
     m_updating = true;
     m_table->setRowCount(0);
@@ -277,6 +278,8 @@ void SourceProbeDialog::startProbe()
     m_stderr.clear();
     m_outputOverflow = false;
     m_log->clear();
+    if (truncated)
+        m_log->appendPlainText(tr("单次最多探测 %1 个站点，超出部分已忽略。").arg(kMaxBatchSites));
     m_btnSave->setEnabled(false);
     m_btnProbe->setEnabled(false);
     m_status->setText(tr("正在整理站点…"));
@@ -349,6 +352,12 @@ void SourceProbeDialog::startSiteProbe(const QUrl &site)
     m_outputOverflow = false;
 
     QString program = m_parser.command.trimmed();
+    // 用户从命令行/文档粘贴路径时常带一对引号；QProcess 的 program 参数
+    // 不接受引号，这里只剥掉整体包裹的引号，参数里的引号仍交给 splitCommand。
+    if (program.size() >= 2 && program.startsWith(QLatin1Char('"'))
+        && program.endsWith(QLatin1Char('"'))) {
+        program = program.mid(1, program.size() - 2).trimmed();
+    }
     const QFileInfo programInfo(program);
     if (programInfo.isRelative()) {
         const QDir appDir(QCoreApplication::applicationDirPath());
@@ -415,6 +424,7 @@ void SourceProbeDialog::finishCurrentProbe()
     m_stderr.append(process->readAllStandardError());
     const bool failedToStart = process->error() == QProcess::FailedToStart;
     const QProcess::ExitStatus exitStatus = process->exitStatus();
+    const int exitCode = process->exitCode();
     process->deleteLater();
 
     if (failedToStart) {
@@ -449,6 +459,29 @@ void SourceProbeDialog::finishCurrentProbe()
     const QJsonObject root = document.object();
     if (!root.value(QStringLiteral("ok")).toBool(true)) {
         setRowStatus(row, tr("失败：%1").arg(reasonFromJson(root)), output);
+        m_nextSite++;
+        QTimer::singleShot(0, this, &SourceProbeDialog::startNextSite);
+        return;
+    }
+
+    // 协议要求成功必须正常退出且退出码为 0；不能只看 stdout 的 ok:true，
+    // 否则解析器打印完 JSON 后崩溃、或脚本最后 return 1，都会被误当成成功。
+    if (exitStatus != QProcess::NormalExit) {
+        QString detail = QString::fromUtf8(m_stderr).trimmed();
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += output;
+        setRowStatus(row, tr("失败：解析器异常退出"), detail);
+        m_nextSite++;
+        QTimer::singleShot(0, this, &SourceProbeDialog::startNextSite);
+        return;
+    }
+    if (exitCode != 0) {
+        QString detail = QString::fromUtf8(m_stderr).trimmed();
+        if (!detail.isEmpty())
+            detail += QLatin1Char('\n');
+        detail += output;
+        setRowStatus(row, tr("失败：解析器退出码 %1").arg(exitCode), detail);
         m_nextSite++;
         QTimer::singleShot(0, this, &SourceProbeDialog::startNextSite);
         return;
@@ -589,10 +622,26 @@ void SourceProbeDialog::showFailure(const QString &error, const QString &detail)
 {
     stopProcess();
     m_busy = false;
-    m_configs.clear();
-    m_btnSave->setEnabled(false);
+
+    // 只标记当前正在探测的那一行；已经成功的行保留下来，仍允许用户
+    // 确认部分结果，不能因为后面一个站点失败就把前面的成功全部作废。
+    const int row = m_nextSite < m_sites.size() ? m_siteRows.value(m_nextSite, -1) : -1;
+    if (row >= 0 && row < m_rowConfigs.size() && !m_rowConfigs.at(row).isValid())
+        setRowStatus(row, tr("失败：%1").arg(error), detail);
+
+    int successCount = 0;
+    for (const SourceConfig &config : m_rowConfigs) {
+        if (config.isValid())
+            ++successCount;
+    }
     m_btnProbe->setEnabled(true);
-    m_status->setText(tr("探测失败：%1").arg(error));
+    if (successCount > 0) {
+        m_status->setText(tr("探测中断：%1。已成功的 %2 个结果可以继续确认。")
+                              .arg(error)
+                              .arg(successCount));
+    } else {
+        m_status->setText(tr("探测失败：%1").arg(error));
+    }
     if (!detail.trimmed().isEmpty())
         m_log->setPlainText(detail);
     updateResultActions();

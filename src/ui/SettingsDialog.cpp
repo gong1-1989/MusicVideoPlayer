@@ -67,6 +67,10 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
 
     bindUi();
     loadValues();
+    // 解析器配置也属于设置页草稿：源管理只回传，点本页“保存”才写盘。
+    m_stagedParserSettings.command = AppSettings::sourceParserCommand();
+    m_stagedParserSettings.arguments = AppSettings::sourceParserArguments();
+    m_stagedParserSettings.timeoutMs = AppSettings::sourceParserTimeoutMs();
 
     // 模态窗口的原生标题栏同样要跟着主题
     ThemeManager::instance().applyWindowChrome(this);
@@ -271,9 +275,14 @@ void SettingsDialog::openSourceManager()
     SourceManagerDialog dialog(m_registry, this, true);
     if (m_sourcesDirty)
         dialog.setDraftSources(m_stagedSources);
+    dialog.setParserSettings(m_stagedParserSettings);
     if (dialog.exec() == QDialog::Accepted) {
         m_stagedSources = dialog.committedSources();
         m_sourcesDirty = true;
+        if (dialog.parserSettingsDirty()) {
+            m_stagedParserSettings = dialog.parserSettings();
+            m_parserDirty = true;
+        }
         refreshSourcesLabel();
     }
 }
@@ -323,6 +332,15 @@ void SettingsDialog::accept()
             return;
         }
         m_sourcesDirty = false;
+    }
+
+    // 解析器配置和源列表一样是设置页草稿，源保存成功后才一起写盘；
+    // 这样在源管理里改了解析器又取消系统设置，不会留下半套配置。
+    if (m_parserDirty) {
+        AppSettings::setSourceParserCommand(m_stagedParserSettings.command.trimmed());
+        AppSettings::setSourceParserArguments(m_stagedParserSettings.arguments.trimmed());
+        AppSettings::setSourceParserTimeoutMs(m_stagedParserSettings.timeoutMs);
+        m_parserDirty = false;
     }
 
     AppSettings::setThemeId(m_theme->currentData().toString());

@@ -57,9 +57,12 @@ SourceParserSettings SourceParserSettingsDialog::parserSettings() const
 void SourceParserSettingsDialog::browseCommand()
 {
     const QString current = ui->edit_command->text().trimmed();
-    const QString startDir = current.isEmpty()
-        ? QCoreApplication::applicationDirPath()
-        : QFileInfo(current).absolutePath();
+    const QString appDir = QCoreApplication::applicationDirPath();
+    QString startDir = appDir;
+    if (!current.isEmpty()) {
+        const QFileInfo info(current);
+        startDir = info.isRelative() ? appDir : info.absolutePath();
+    }
     const QString path = QFileDialog::getOpenFileName(
         this, tr("选择外部解析器"), startDir,
         tr("可执行文件 (*.exe);;所有文件 (*)"));

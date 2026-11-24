@@ -112,6 +112,7 @@ private slots:
     void parserSettingsDialogKeepsParserConfiguration();
     void sourceManagerOnlyKeepsCoreControls();
     void sourceProbeDialogCallsExternalParser();
+    void sourceProbeDialogRejectsNonZeroExitAndKeepsSuccesses();
 };
 
 void UiLogicTest::lyricsClearCancelsPendingRequest()
@@ -643,6 +644,63 @@ Write-Output $payload
     QCOMPARE(configs.first().name, QStringLiteral("自定义源"));
     QVERIFY(configs.first().isValid());
     QVERIFY(configs.last().isValid());
+}
+
+void UiLogicTest::sourceProbeDialogRejectsNonZeroExitAndKeepsSuccesses()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString scriptPath = QDir::fromNativeSeparators(temp.filePath(QStringLiteral("exit-parser.ps1")));
+    QFile script(scriptPath);
+    QVERIFY(script.open(QIODevice::WriteOnly | QIODevice::Text));
+    script.write(R"PS(
+param([string]$Site, [string]$Type)
+$payload = '{"ok":true,"siteName":"Fake Site","source":{"id":"fake_site","name":"Fake Site","mediaType":"video","kind":"builtin","provider":"maccms_web","url":"https://example.com/"}}'
+Write-Output $payload
+if ($Site -like '*bad*') { exit 1 }
+exit 0
+)PS");
+    script.close();
+
+    SourceParserSettings parser;
+    parser.command = QStringLiteral("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
+    parser.arguments =
+        QStringLiteral("-NoProfile -ExecutionPolicy Bypass -File %1 -Site {site} -Type {type}")
+            .arg(scriptPath);
+    parser.timeoutMs = 30000;
+
+    SourceProbeDialog dialog(MediaType::Video, QString(), QStringLiteral("测试退出码"), parser);
+    dialog.show();
+    QPlainTextEdit *sites = dialog.findChild<QPlainTextEdit *>(QStringLiteral("edit_sites"));
+    QTableWidget *table = dialog.findChild<QTableWidget *>(QStringLiteral("table_results"));
+    QPushButton *probe = dialog.findChild<QPushButton *>(QStringLiteral("btn_probe"));
+    QPushButton *confirm = dialog.findChild<QPushButton *>(QStringLiteral("btn_applyPrimary"));
+    QLabel *status = dialog.findChild<QLabel *>(QStringLiteral("label_status"));
+    QVERIFY(sites != nullptr);
+    QVERIFY(table != nullptr);
+    QVERIFY(probe != nullptr);
+    QVERIFY(confirm != nullptr);
+
+    sites->setPlainText(QStringLiteral("https://good.example/\nhttps://bad.example/"));
+    probe->click();
+    for (int i = 0; i < 400 && !confirm->isEnabled(); ++i)
+        QTest::qWait(100);
+    QVERIFY2(confirm->isEnabled(),
+             qPrintable(status != nullptr ? status->text() : QStringLiteral("<none>")));
+    QCOMPARE(table->rowCount(), 2);
+
+    // 第二条 stdout 虽然是 ok:true，但退出码为 1，必须按失败处理且不能勾选。
+    QTableWidgetItem *badStatus = table->item(1, 4);
+    QVERIFY(badStatus != nullptr);
+    QVERIFY(badStatus->text().contains(QStringLiteral("退出码 1")));
+    QTableWidgetItem *badCheck = table->item(1, 0);
+    QVERIFY(badCheck != nullptr);
+    QCOMPARE(badCheck->checkState(), Qt::Unchecked);
+
+    confirm->click();
+    const QVector<SourceConfig> configs = dialog.probedConfigs();
+    QCOMPARE(configs.size(), 1);
+    QCOMPARE(configs.first().id, QStringLiteral("fake_site"));
 }
 
 QTEST_MAIN(UiLogicTest)

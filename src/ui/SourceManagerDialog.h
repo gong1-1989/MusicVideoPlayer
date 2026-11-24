@@ -33,6 +33,11 @@ public:
 
     void setDraftSources(const QVector<SourceConfig> &sources);
     QVector<SourceConfig> committedSources() const { return m_committedSources; }
+    /// 设置页延迟提交时，用它把当前草稿解析器配置带进源管理窗口。
+    void setParserSettings(const SourceParserSettings &settings);
+    /// 延迟提交时，返回用户本次是否改过解析器配置。
+    SourceParserSettings parserSettings() const { return m_parserSettings; }
+    bool parserSettingsDirty() const { return m_parserDirty; }
 
 protected:
     void accept() override;
@@ -51,7 +56,6 @@ private:
     void selectRow(int row);
     int currentIndex() const;
     QString uniqueId(const QString &preferred) const;
-    SourceParserSettings parserSettings() const { return m_parserSettings; }
     void saveParserSettings() const;
     bool saveAll();
 
@@ -67,6 +71,7 @@ private:
     QPushButton *m_btnRefresh = nullptr;
 
     SourceParserSettings m_parserSettings;
+    bool m_parserDirty = false;
     QVector<SourceConfig> m_drafts;
     QVector<SourceConfig> m_committedSources;
 };
