@@ -21,6 +21,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
+#include <QScrollArea>
 #include <QSlider>
 #include <QStyle>
 
@@ -48,6 +49,22 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
         card->style()->polish(card);
         card->update();
     }
+
+    // QScrollArea 的 viewport 默认用调色板 Base（深色主题下是白底），
+    // QSS 只把 QScrollArea 本身设成透明并不能覆盖 viewport。卡片下方
+    // 会因此露出一整块白底，和深色梦幻主题完全断裂；这里显式关掉
+    // viewport 的自动填充并让内容层透明，露出对话框自己的渐变背景。
+    QScrollArea *pages[] = {ui->page_basic, ui->page_playback,
+                            ui->page_sources, ui->page_system_info};
+    for (QScrollArea *page : pages) {
+        if (page->viewport() != nullptr) {
+            page->viewport()->setAutoFillBackground(false);
+            page->viewport()->setStyleSheet(QStringLiteral("background: transparent;"));
+        }
+        if (page->widget() != nullptr)
+            page->widget()->setAutoFillBackground(false);
+    }
+    ui->tabs_settings->setAutoFillBackground(false);
 
     setWindowTitle(tr("系统设置"));
     setModal(true);
