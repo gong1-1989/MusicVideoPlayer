@@ -38,6 +38,34 @@ QFrame#panelStage {
     border: 1px solid rgba(140, 150, 235, 30%);
 }
 
+/* 码率栏贴在视频上沿，底色保持透明，避免把舞台切成两块 */
+QWidget#bitrateBar {
+    background: transparent;
+    border: none;
+}
+
+QLabel#label_bitrateTitle {
+    color: rgba(88, 96, 150, 72%);
+    font-size: 12px;
+}
+
+QLabel#label_bitrateCurrent {
+    color: rgba(72, 78, 130, 88%);
+    font-size: 12px;
+}
+
+QComboBox#combo_bitrate {
+    background: rgba(255, 255, 255, 78%);
+    border: 1px solid rgba(140, 150, 235, 30%);
+    border-radius: 8px;
+    padding: 2px 20px 2px 8px;
+    min-height: 24px;
+}
+
+QComboBox#combo_bitrate:hover {
+    border: 1px solid rgba(120, 110, 235, 55%);
+}
+
 /* 侧栏做成浮层时压在画面上，底色要更实才看得清；回布局时保持原来的淡玻璃 */
 QFrame#panelSidebar[floating="true"] {
     background: rgba(253, 252, 255, 92%);

@@ -89,6 +89,10 @@ private:
     void showVolumePopup();
     /// 让控制条左右两列等宽，保证中间播放键组落在面板真正的中线
     void updateControlBarCentering();
+    /// @brief 初始化播放区域的 HLS 码率栏，并按秒同步实际播放码率。
+    void setupBitrateBar();
+    /// @brief 按播放器当前快照刷新码率下拉项与“当前”标签。
+    void refreshBitrateBar();
     /// 左侧栏宽度、标签页高度和底部控制条高度随字体缩放动态调整
     void updateAdaptiveMetrics();
     /// 显示后把窗口夹回当前屏幕可用区；尺寸由窗口预设/用户拖动决定，不再按 150% 特判
@@ -118,6 +122,10 @@ private:
     QLabel *m_volumeLabel = nullptr;
     MusicVisualWidget *m_musicVisual = nullptr;
     HlsCacheBuilder *m_hlsCache = nullptr;
+    /// 码率栏刷新定时器：HLS 自适应会在播放中途换码率，只能定期比对代理快照。
+    QTimer *m_bitrateTimer = nullptr;
+    /// 上次写入下拉框的“选项指纹”，避免每秒重建模型导致下拉弹层被关掉。
+    QString m_bitrateOptionsSignature;
     QVector<QShortcut *> m_shortcuts;
     /// 刚刚从搜索窗口点播的条目身份；启动失败时用它弹一次明确的错误，
     /// 而不是搜索窗关掉后用户只看到“点了没反应”。

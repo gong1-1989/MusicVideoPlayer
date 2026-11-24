@@ -20,6 +20,20 @@ QString decodePlaylist(const QByteArray &body)
         source.remove(0, 1);
     return source;
 }
+
+/// 从 #EXT-X-STREAM-INF 行里取属性；属性值可能带引号，也可能不带。
+QString playlistAttribute(const QString &line, const QString &name)
+{
+    // 这里按调用构造正则：解析只发生在 master 加载时，不值得为了微小开销
+    // 引入可变的全局正则缓存，避免代理线程和测试线程同时解析时的竞态。
+    const QRegularExpression pattern(
+        QStringLiteral("%1=(?:\"([^\"]*)\"|([^,\\s]*))")
+            .arg(QRegularExpression::escape(name)));
+    const QRegularExpressionMatch match = pattern.match(line);
+    if (!match.hasMatch())
+        return {};
+    return match.captured(1).isEmpty() ? match.captured(2) : match.captured(1);
+}
 } // namespace
 
 /// @brief 解析媒体播放列表，建立分片地址与起始时间轴。
@@ -188,6 +202,140 @@ bool HlsPlaylist::sameScope(const QUrl &a, const QUrl &b)
                        "media|main|v\\d+)$"),
         QRegularExpression::CaseInsensitiveOption);
     return variantDir.match(component).hasMatch();
+}
+
+/// @brief 解析 master 中的视频码率变体，供播放区域码率栏展示和选择。
+/// @param body master 正文。
+/// @param playlistUrl master 地址，用于解析相对子列表。
+/// @return 有效 HTTP(S) 子列表的变体列表；序号保留原始文件顺序。
+QList<HlsPlaylist::Variant> HlsPlaylist::variants(const QByteArray &body,
+                                                  const QUrl &playlistUrl)
+{
+    const QString source = decodePlaylist(body);
+    QStringList lines = source.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    for (QString &line : lines) {
+        if (line.endsWith(QLatin1Char('\r')))
+            line.chop(1);
+    }
+
+    QUrl base = playlistUrl;
+    QList<Variant> result;
+    int variantIndex = -1;
+    bool pending = false;
+    Variant current;
+
+    for (const QString &raw : std::as_const(lines)) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty())
+            continue;
+
+        if (line.startsWith(QLatin1String("#EXT-X-BASE:"))) {
+            const QString value = line.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
+            const QUrl next = base.resolved(QUrl(value));
+            if (next.isValid())
+                base = next;
+            continue;
+        }
+
+        if (line.startsWith(QLatin1String("#EXT-X-STREAM-INF:"))) {
+            ++variantIndex;
+            current = Variant();
+            current.index = variantIndex;
+            const QString bandwidth = playlistAttribute(line, QStringLiteral("BANDWIDTH"));
+            bool bandwidthOk = false;
+            current.bandwidth = bandwidth.toInt(&bandwidthOk);
+            if (!bandwidthOk)
+                current.bandwidth = 0;
+            current.resolution = playlistAttribute(line, QStringLiteral("RESOLUTION"));
+            current.codecs = playlistAttribute(line, QStringLiteral("CODECS"));
+            current.audioGroup = playlistAttribute(line, QStringLiteral("AUDIO"));
+            pending = true;
+            continue;
+        }
+
+        if (!pending)
+            continue;
+        if (line.startsWith(QLatin1Char('#')))
+            continue;
+
+        const QUrl uri = base.resolved(QUrl(line));
+        if (uri.isValid()
+            && (uri.scheme() == QLatin1String("http")
+                || uri.scheme() == QLatin1String("https"))) {
+            current.uri = uri;
+            result.append(current);
+        }
+        pending = false;
+    }
+    return result;
+}
+
+/// @brief 只保留用户选择的视频变体，其他码率块从 master 中删掉。
+/// @param body master 正文。
+/// @param playlistUrl master 地址（保留参数是为了和 variants 保持同一接口形态）。
+/// @param variantIndex 变体在原始文件里的序号；小于 0 表示不裁剪。
+/// @return 裁剪后的正文；序号不存在时原样返回，避免选错时播放直接失败。
+QByteArray HlsPlaylist::restrictToVariant(const QByteArray &body, const QUrl &playlistUrl,
+                                           int variantIndex)
+{
+    if (variantIndex < 0)
+        return body;
+
+    const QString source = decodePlaylist(body);
+    const bool crlf = source.contains(QLatin1String("\r\n"));
+    QStringList lines = source.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    for (QString &line : lines) {
+        if (line.endsWith(QLatin1Char('\r')))
+            line.chop(1);
+    }
+
+    Q_UNUSED(playlistUrl)
+
+    QStringList output;
+    QStringList pendingLines;
+    int currentIndex = -1;
+    bool pending = false;
+    bool keep = false;
+    bool found = false;
+
+    for (const QString &raw : std::as_const(lines)) {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QLatin1String("#EXT-X-STREAM-INF:"))) {
+            // 正常 master 不会在上一个变体 URI 之前再开一个变体；真遇到
+            // 这种畸形文件时先原样吐出前一个块，避免丢内容。
+            if (pending)
+                output.append(pendingLines);
+            ++currentIndex;
+            keep = currentIndex == variantIndex;
+            found = found || keep;
+            pending = true;
+            pendingLines.clear();
+            pendingLines.append(raw);
+            continue;
+        }
+
+        if (pending) {
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+                pendingLines.append(raw);
+                continue;
+            }
+            if (keep) {
+                output.append(pendingLines);
+                output.append(raw);
+            }
+            pending = false;
+            pendingLines.clear();
+            continue;
+        }
+
+        output.append(raw);
+    }
+    if (pending && keep)
+        output.append(pendingLines);
+
+    if (!found)
+        return body;
+    return output.join(crlf ? QStringLiteral("\r\n") : QStringLiteral("\n")).toUtf8();
 }
 
 /// @brief 把播放列表中的分片、KEY、MAP、MEDIA 等 URI 全部改写为本地代理地址。

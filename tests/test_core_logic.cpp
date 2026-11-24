@@ -936,6 +936,7 @@ private slots:
     void hlsPlaylistParsesAndIndexes();
     void hlsPlaylistRewritesUris();
     void hlsPlaylistSameScopeRejectsSiblingDirectory();
+    void hlsPlaylistSelectsBitrateVariant();
     void hlsPlaylistRejectsTooManySegments();
     void streamTokensReuseByUrlAndHeaders();
     void streamTokensExpireByIdleClock();
@@ -3773,6 +3774,59 @@ void CoreLogicTest::hlsPlaylistRewritesUris()
                 .contains(QStringLiteral("URI=http://127.0.0.1:1234/stream/token/key.bin")));
     QVERIFY(!QString::fromUtf8(unquotedRewritten)
                  .contains(QStringLiteral("URI=\"http://127.0.0.1:1234/stream/token/key.bin\"")));
+}
+
+void CoreLogicTest::hlsPlaylistSelectsBitrateVariant()
+{
+    const QUrl masterUrl(QStringLiteral("https://cdn.test/videos/master.m3u8"));
+    const QByteArray master =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:7\n"
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"main\",URI=\"audio.m3u8\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,"
+        "CODECS=\"avc1.4d401e,mp4a.40.2\",AUDIO=\"aud\"\n"
+        "low/index.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720,"
+        "CODECS=\"avc1.4d401f,mp4a.40.2\",AUDIO=\"aud\"\n"
+        "mid/index.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,"
+        "CODECS=\"avc1.640028,mp4a.40.2\",AUDIO=\"aud\"\n"
+        "high/index.m3u8\n"
+        "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100000,URI=\"iframe.m3u8\"\n";
+
+    const QList<HlsPlaylist::Variant> variants = HlsPlaylist::variants(master, masterUrl);
+    QCOMPARE(variants.size(), 3);
+    QCOMPARE(variants.at(0).index, 0);
+    QCOMPARE(variants.at(0).bandwidth, 800000);
+    QCOMPARE(variants.at(0).resolution, QStringLiteral("640x360"));
+    QCOMPARE(variants.at(0).audioGroup, QStringLiteral("aud"));
+    QCOMPARE(variants.at(0).uri,
+             QUrl(QStringLiteral("https://cdn.test/videos/low/index.m3u8")));
+    QCOMPARE(variants.at(2).index, 2);
+    QCOMPARE(variants.at(2).bandwidth, 5000000);
+    QCOMPARE(variants.at(2).resolution, QStringLiteral("1920x1080"));
+    QCOMPARE(variants.at(2).uri,
+             QUrl(QStringLiteral("https://cdn.test/videos/high/index.m3u8")));
+
+    const QByteArray restricted = HlsPlaylist::restrictToVariant(master, masterUrl, 1);
+    const QString text = QString::fromUtf8(restricted);
+    QVERIFY2(text.contains(QStringLiteral("mid/index.m3u8")), qPrintable(text));
+    QVERIFY(!text.contains(QStringLiteral("low/index.m3u8")));
+    QVERIFY(!text.contains(QStringLiteral("high/index.m3u8")));
+    QCOMPARE(text.count(QStringLiteral("#EXT-X-STREAM-INF:")), 1);
+    // 独立音轨、版本和 I-FRAME 等全局标签必须保留，否则裁剪后会丢音轨/加密信息。
+    QVERIFY(text.contains(QStringLiteral("#EXT-X-VERSION:7")));
+    QVERIFY(text.contains(QStringLiteral("#EXT-X-MEDIA:TYPE=AUDIO")));
+    QVERIFY(text.contains(QStringLiteral("#EXT-X-I-FRAME-STREAM-INF")));
+    QVERIFY(!text.contains(QStringLiteral("#EXTM3U\n\n")));
+
+    // 越界序号不能把 master 裁成空文件，必须原样返回让播放器仍能起播。
+    QCOMPARE(HlsPlaylist::restrictToVariant(master, masterUrl, 9), master);
+
+    // 普通媒体列表没有码率变体，码率栏应拿到空列表而不是把分片当变体。
+    const QByteArray media =
+        "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nseg1.ts\n#EXT-X-ENDLIST\n";
+    QVERIFY(HlsPlaylist::variants(media, masterUrl).isEmpty());
 }
 
 void CoreLogicTest::hlsPlaylistSameScopeRejectsSiblingDirectory()

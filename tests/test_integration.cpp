@@ -254,6 +254,8 @@ private slots:
     void downloadManagerForcesSnapshotOnlyAfterConsent();
     void streamProxyPreservesEncodedSegmentQuery();
     void streamProxyServesFirstSegmentOfLongPlaylist();
+    void streamProxySelectsBitrateVariant();
+    void playbackControllerSelectsHlsVariant();
     void streamProxyReleaseCacheFileClosesEntry();
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
@@ -2191,6 +2193,247 @@ void IntegrationTest::streamProxyServesFirstSegmentOfLongPlaylist()
     QCOMPARE(server.requests.size(), 1);
     QCOMPARE(server.requests.first().path, QByteArray("/hls/seg0.ts"));
     proxy.shutdown();
+}
+
+void IntegrationTest::streamProxySelectsBitrateVariant()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+
+    const QByteArray master =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:7\n"
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"main\",URI=\"audio.m3u8\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,AUDIO=\"aud\"\n"
+        "low/index.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720,AUDIO=\"aud\"\n"
+        "mid/index.m3u8\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO=\"aud\"\n"
+        "high/index.m3u8\n";
+    const QByteArray media =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:4\n"
+        "#EXTINF:4,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n";
+
+    server.handler = [master, media](const LocalHttpServer::Request &request,
+                                     QTcpSocket *socket) {
+        if (request.path == QByteArray("/hls/master.m3u8")) {
+            LocalHttpServer::respond(socket, 200, master, "application/vnd.apple.mpegurl");
+        } else if (request.path == QByteArray("/hls/low/index.m3u8")
+                   || request.path == QByteArray("/hls/mid/index.m3u8")
+                   || request.path == QByteArray("/hls/high/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, media, "application/vnd.apple.mpegurl");
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+    const QUrl masterUrl = server.url(QStringLiteral("/hls/master.m3u8"));
+    const QUrl proxiedMaster = proxy.proxyUrlFor(masterUrl);
+    QVERIFY(proxiedMaster.isValid());
+
+    HttpClient http;
+    auto fetch = [&http](const QUrl &url, QByteArray *body) {
+        auto *reply = http.get(url);
+        bool finished = false;
+        bool success = false;
+        QObject::connect(reply, &QNetworkReply::finished, reply, [&, reply] {
+            success = HttpClient::isHttpSuccess(reply);
+            if (success)
+                *body = reply->readAll();
+            finished = true;
+            reply->deleteLater();
+        });
+        QElapsedTimer timer;
+        timer.start();
+        while (!finished && timer.elapsed() < 5000)
+            QTest::qWait(20);
+        return finished && success;
+    };
+
+    QByteArray first;
+    QVERIFY(fetch(proxiedMaster, &first));
+    const StreamProxy::VariantState initial = proxy.variantState();
+    QCOMPARE(initial.variants.size(), 3);
+    QCOMPARE(initial.selectedIndex, -1);
+    QCOMPARE(initial.variants.at(1).bandwidth, 2400000);
+
+    int childLines = 0;
+    for (const QString &line : QString::fromUtf8(first).split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty() && !trimmed.startsWith(QLatin1Char('#'))) {
+            ++childLines;
+        }
+    }
+    QCOMPARE(childLines, 3);
+
+    // 锁定 720P：代理再返回 master 时只能剩一个视频变体。
+    proxy.setVariantIndex(1);
+    QCOMPARE(proxy.variantState().selectedIndex, 1);
+
+    QByteArray locked;
+    QVERIFY(fetch(proxiedMaster, &locked));
+    childLines = 0;
+    QString lockedChild;
+    for (const QString &line : QString::fromUtf8(locked).split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty() && !trimmed.startsWith(QLatin1Char('#'))) {
+            ++childLines;
+            if (lockedChild.isEmpty())
+                lockedChild = trimmed;
+        }
+    }
+    QCOMPARE(childLines, 1);
+    QVERIFY(!lockedChild.isEmpty());
+
+    // 播放器抓到子列表后，实际播放序号必须回指到刚锁定的 720P 变体，
+    // 码率栏“当前”标签依赖这个反查结果。
+    QByteArray childBody;
+    QVERIFY(fetch(QUrl::fromEncoded(lockedChild.toUtf8()), &childBody));
+    const StreamProxy::VariantState playing = proxy.variantState();
+    QCOMPARE(playing.currentIndex, 1);
+
+    proxy.setVariantIndex(-1);
+    QCOMPARE(proxy.variantState().selectedIndex, -1);
+    proxy.shutdown();
+}
+
+void IntegrationTest::playbackControllerSelectsHlsVariant()
+{
+    if (!MediaRemux::isAvailable())
+        QSKIP("未找到 ffmpeg，跳过 HLS 码率切换测试");
+
+    const QString root = m_tempDir.filePath(QStringLiteral("bitrate-hls"));
+    QDir(root).removeRecursively();
+    QVERIFY(QDir().mkpath(root + QStringLiteral("/low")));
+    QVERIFY(QDir().mkpath(root + QStringLiteral("/high")));
+
+    const QString ffmpeg = MediaRemux::ffmpegExecutable();
+    auto generate = [&ffmpeg](const QString &size, const QString &bitrate,
+                              const QString &dir) -> bool {
+        QProcess generator;
+        generator.start(ffmpeg,
+                        {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                         QStringLiteral("-loglevel"), QStringLiteral("error"),
+                         QStringLiteral("-f"), QStringLiteral("lavfi"),
+                         QStringLiteral("-i"),
+                         QStringLiteral("testsrc=size=%1:rate=15").arg(size),
+                         QStringLiteral("-f"), QStringLiteral("lavfi"),
+                         QStringLiteral("-i"), QStringLiteral("sine=frequency=440"),
+                         QStringLiteral("-t"), QStringLiteral("8"),
+                         QStringLiteral("-c:v"), QStringLiteral("mpeg2video"),
+                         QStringLiteral("-b:v"), bitrate,
+                         QStringLiteral("-c:a"), QStringLiteral("aac"),
+                         QStringLiteral("-b:a"), QStringLiteral("64k"),
+                         QStringLiteral("-hls_time"), QStringLiteral("2"),
+                         QStringLiteral("-hls_playlist_type"), QStringLiteral("vod"),
+                         QStringLiteral("-hls_segment_filename"),
+                         QDir(dir).filePath(QStringLiteral("seg%03d.ts")),
+                         QDir(dir).filePath(QStringLiteral("index.m3u8"))});
+        return generator.waitForFinished(30000) && generator.exitCode() == 0;
+    };
+    QVERIFY2(generate(QStringLiteral("160x90"), QStringLiteral("300k"),
+                      root + QStringLiteral("/low")),
+             "无法生成低码率 HLS");
+    QVERIFY2(generate(QStringLiteral("320x180"), QStringLiteral("800k"),
+                      root + QStringLiteral("/high")),
+             "无法生成高码率 HLS");
+
+    const QString masterPath = root + QStringLiteral("/master.m3u8");
+    QFile masterFile(masterPath);
+    QVERIFY(masterFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    masterFile.write("#EXTM3U\n"
+                     "#EXT-X-VERSION:3\n"
+                     "#EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=160x90\n"
+                     "low/index.m3u8\n"
+                     "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=320x180\n"
+                     "high/index.m3u8\n");
+    masterFile.close();
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QString rootCopy = root;
+    server.handler = [rootCopy](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        QString path = QString::fromUtf8(request.path).section(QLatin1Char('?'), 0, 0);
+        if (!path.startsWith(QLatin1String("/hls/"))) {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+            return;
+        }
+        const QString relative = path.mid(5);
+        if (relative.contains(QLatin1String(".."))) {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+            return;
+        }
+        QFile file(rootCopy + QLatin1Char('/') + relative);
+        if (!file.open(QIODevice::ReadOnly)) {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+            return;
+        }
+        const QByteArray body = file.readAll();
+        const QByteArray type = relative.endsWith(QLatin1String(".m3u8"))
+                                    ? QByteArrayLiteral("application/vnd.apple.mpegurl")
+                                    : QByteArrayLiteral("video/mp2t");
+        LocalHttpServer::respond(socket, 200, body, type);
+    };
+
+    PlaylistModel playlist;
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("bitrate-switch");
+    item.url = server.url(QStringLiteral("/hls/master.m3u8"));
+    item.online = true;
+    item.sourceOrigin = QUrl(QStringLiteral("http://127.0.0.1:%1").arg(server.serverPort()));
+    item.durationMs = 8000;
+    playlist.addItem(item);
+
+    PlaybackController player;
+    player.setPlaylist(&playlist);
+    player.playRow(0);
+
+    QElapsedTimer timer;
+    timer.start();
+    while (player.bitrateSnapshot().options.size() < 2 && timer.elapsed() < 12000)
+        QTest::qWait(100);
+    const auto initial = player.bitrateSnapshot();
+    QVERIFY2(initial.options.size() == 2,
+             qPrintable(QStringLiteral("码率选项 %1 个").arg(initial.options.size())));
+    QCOMPARE(initial.selectedIndex, -1);
+
+    // 等真正播过 3 秒，确保保存的不是“片头忽略”区间。
+    timer.restart();
+    while (player.position() < 3000 && timer.elapsed() < 15000)
+        QTest::qWait(100);
+    if (player.position() < 3000)
+        QSKIP("当前环境没有可用的 HLS 多媒体后端，跳过码率切换测试");
+    const qint64 savedPosition = player.position();
+
+    player.selectBitrate(1);
+    QCOMPARE(player.bitrateSnapshot().selectedIndex, 1);
+
+    timer.restart();
+    while (player.bitrateSnapshot().currentIndex != 1 && timer.elapsed() < 15000)
+        QTest::qWait(100);
+    QVERIFY2(player.bitrateSnapshot().currentIndex == 1,
+             qPrintable(QStringLiteral("切换后实际码率序号 %1")
+                            .arg(player.bitrateSnapshot().currentIndex)));
+
+    timer.restart();
+    while (player.position() + 1500 < savedPosition && timer.elapsed() < 15000)
+        QTest::qWait(100);
+    QVERIFY2(player.position() + 1500 >= savedPosition,
+             qPrintable(QStringLiteral("切码率后位置 %1，保存位置 %2")
+                            .arg(player.position())
+                            .arg(savedPosition)));
+
+    // 回到自动：代理必须恢复完整 master，而不是继续锁着 800k。
+    player.selectBitrate(-1);
+    QCOMPARE(player.bitrateSnapshot().selectedIndex, -1);
+    player.stop();
 }
 
 void IntegrationTest::streamProxyReleaseCacheFileClosesEntry()

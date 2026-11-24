@@ -356,6 +356,7 @@ void StreamProxy::shutdown()
     m_tokens.clear();
     m_playlists.clear();
     m_lastPlaylistKey.clear();
+    clearVariantState();
 }
 
 /// @brief 在 127.0.0.1 的随机端口启动服务（幂等）。
@@ -1813,6 +1814,9 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
             return;
         }
         QString rewriteError;
+        // 必须在裁剪/改写前记录完整变体：改写后 master 只剩用户选中的那一个，
+        // 之后再解析就永远看不到其它码率，码率栏会退化成一个选项。
+        rememberMasterVariants(body, finalUrl);
         QByteArray rewritten = rewritePlaylist(body, finalUrl, headers, &rewriteError,
                                               sourceOrigin);
         if (!rewriteError.isEmpty()) {
@@ -1855,8 +1859,15 @@ QByteArray StreamProxy::rewritePlaylist(const QByteArray &body, const QUrl &play
                                         const QHash<QString, QString> &headers, QString *error,
                                         const QUrl &sourceOrigin)
 {
+    // 用户锁定码率后，只把选中的 #EXT-X-STREAM-INF 变体交给 FFmpeg，
+    // 它就不会再按带宽自动切到别的码率。全局标签（独立音轨、KEY 等）
+    // 由 restrictToVariant 原样保留。
+    const QByteArray effective =
+        m_selectedVariantIndex >= 0
+            ? HlsPlaylist::restrictToVariant(body, playlistUrl, m_selectedVariantIndex)
+            : body;
     return HlsPlaylist::rewrite(
-        body, playlistUrl,
+        effective, playlistUrl,
         [this, &headers, &sourceOrigin, error](const QUrl &absolute) {
             if (!NetworkAddressPolicy::allowsMediaTarget(absolute, sourceOrigin)) {
                 if (error != nullptr)
@@ -2507,6 +2518,82 @@ QUrl StreamProxy::lastPlaybackAudioPlaylist() const
 {
     QMutexLocker locker(&m_playbackPlaylistMutex);
     return m_lastPlaybackAudioPlaylist;
+}
+
+/// @brief 返回当前 HLS 主列表的码率快照，以及播放器实际使用/用户选择的序号。
+StreamProxy::VariantState StreamProxy::variantState() const
+{
+    VariantState state;
+    state.masterUrl = m_variantMasterUrl;
+    state.variants = m_masterVariants;
+    state.selectedIndex = m_selectedVariantIndex;
+    state.currentVideoPlaylist = lastPlaybackVideoPlaylist();
+
+    const auto identity = [](const QUrl &url) {
+        return url.scheme().toLower() + QStringLiteral("://")
+               + url.host().toLower() + QLatin1Char(':')
+               + QString::number(url.port(-1)) + url.path();
+    };
+    if (state.currentVideoPlaylist.isValid()) {
+        const QString played = identity(state.currentVideoPlaylist);
+        for (const HlsPlaylist::Variant &variant : std::as_const(state.variants)) {
+            if (identity(variant.uri) == played) {
+                state.currentIndex = variant.index;
+                break;
+            }
+        }
+    }
+    return state;
+}
+
+/// @brief 锁定用户选择的码率；-1 表示恢复自动选择。
+void StreamProxy::setVariantIndex(int index)
+{
+    if (index < 0) {
+        m_selectedVariantIndex = -1;
+        return;
+    }
+    const auto found = std::find_if(m_masterVariants.cbegin(), m_masterVariants.cend(),
+                                    [index](const HlsPlaylist::Variant &variant) {
+                                        return variant.index == index;
+                                    });
+    m_selectedVariantIndex = found != m_masterVariants.cend() ? index : -1;
+}
+
+/// @brief 切换视频条目时清空上一份 master 状态，避免码率栏显示旧选项。
+void StreamProxy::clearVariantState()
+{
+    m_variantMasterUrl = QUrl();
+    m_variantMasterIdentity.clear();
+    m_masterVariants.clear();
+    m_selectedVariantIndex = -1;
+}
+
+/// @brief 解析 master 的完整变体列表；同一地址（忽略 token 查询串）保留用户选择。
+void StreamProxy::rememberMasterVariants(const QByteArray &body, const QUrl &playlistUrl)
+{
+    const QList<HlsPlaylist::Variant> variants = HlsPlaylist::variants(body, playlistUrl);
+    if (variants.isEmpty())
+        return;
+
+    const QString identity = playlistUrl.scheme().toLower() + QStringLiteral("://")
+                             + playlistUrl.host().toLower() + QLatin1Char(':')
+                             + QString::number(playlistUrl.port(-1)) + playlistUrl.path();
+    if (identity != m_variantMasterIdentity)
+        m_selectedVariantIndex = -1;
+
+    m_variantMasterIdentity = identity;
+    m_variantMasterUrl = playlistUrl;
+    m_masterVariants = variants;
+
+    if (m_selectedVariantIndex >= 0) {
+        const bool exists = std::any_of(m_masterVariants.cbegin(), m_masterVariants.cend(),
+                                        [this](const HlsPlaylist::Variant &variant) {
+                                            return variant.index == m_selectedVariantIndex;
+                                        });
+        if (!exists)
+            m_selectedVariantIndex = -1;
+    }
 }
 
 /// @brief 释放指定路径的磁盘缓存占用（删除缓存文件并移除元数据）。

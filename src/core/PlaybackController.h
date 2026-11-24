@@ -5,6 +5,7 @@
 #include "media/MediaItem.h"
 
 #include <QElapsedTimer>
+#include <QList>
 #include <QMediaPlayer>
 #include <QObject>
 #include <QPointer>
@@ -80,6 +81,28 @@ public:
     /// 代理方法内部加锁，可从主线程安全读取。
     QUrl lastHlsVideoPlaylistUrl() const;
     QUrl lastHlsAudioPlaylistUrl() const;
+
+    /// 播放区域码率栏需要的快照：可用变体、用户锁定项和实际播放项。
+    /// currentIndex/selectedIndex 为 -1 时分别表示“自动选择”和“尚未解析到”。
+    struct BitrateOption
+    {
+        int index = -1;
+        int bandwidth = 0;
+        QString resolution;
+        QString codecs;
+    };
+    struct BitrateSnapshot
+    {
+        QList<BitrateOption> options;
+        int selectedIndex = -1;
+        int currentIndex = -1;
+        bool isVideo = false;
+    };
+    BitrateSnapshot bitrateSnapshot() const;
+
+    /// 用户选择码率：先保存当前进度，再让代理锁定新变体并重载同一视频。
+    /// index 为 -1 表示恢复自动码率；切换失败时保留原播放状态。
+    void selectBitrate(int index);
 
 signals:
     void currentItemChanged(const MediaItem &item, int row);

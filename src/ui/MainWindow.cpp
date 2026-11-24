@@ -27,6 +27,7 @@
 
 #include <QAbstractItemView>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDateTime>
 #include <QEvent>
 #include <QCoreApplication>
@@ -44,11 +45,14 @@
 #include <QSet>
 #include <QShortcut>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QTabBar>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <algorithm>
 
 #ifdef Q_OS_WIN
 #  ifndef NOMINMAX
@@ -260,6 +264,14 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const MediaItem &item, int) {
                 const bool music = item.isValid() && item.type == MediaType::Music;
                 if (music) {
+                    // 码率栏只属于 HLS 视频。先收起并立即重排，再按新的
+                    // videoStage 尺寸铺满视觉层，否则音乐视图顶上会留一条
+                    // 码率栏高度，直到定时器下一次刷新才恢复。
+                    if (ui->bitrateBar != nullptr) {
+                        ui->bitrateBar->hide();
+                        m_bitrateOptionsSignature.clear();
+                    }
+                    ui->layout_stage->activate();
                     m_musicVisual->setTrack(item);
                     QString sourceName;
                     if (!item.sourceId.isEmpty() && item.sourceId != QLatin1String("link")) {
@@ -312,6 +324,7 @@ MainWindow::MainWindow(QWidget *parent)
                    tr("下载任务"), 20);
     UiIcons::apply(ui->btn_volume, QStringLiteral("volume"), tr("音量"), 20);
     setupVolumePopup();
+    setupBitrateBar();
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
             [this] {
                 ThemeManager::instance().applyWindowChrome(this);
@@ -807,6 +820,119 @@ void MainWindow::clearPlaybackUi()
         ui->videoWidget->clearFrame();
         ui->videoWidget->show();
     }
+    // 当前条目被删后代理里还留着上一部的 master 变体；先收起码率栏，
+    // 等下一条视频重新解析 master 再显示，避免误操作到已删除的码率。
+    if (ui->bitrateBar != nullptr) {
+        ui->bitrateBar->hide();
+        m_bitrateOptionsSignature.clear();
+    }
+}
+
+void MainWindow::setupBitrateBar()
+{
+    ui->bitrateBar->hide();
+    connect(ui->combo_bitrate, QOverload<int>::of(&QComboBox::activated), this,
+            [this](int comboIndex) {
+                const int target = ui->combo_bitrate->itemData(comboIndex).toInt();
+                if (m_player == nullptr)
+                    return;
+                m_player->selectBitrate(target);
+                // 切换是同步重载，下一次快照能立即反映锁定项；延时一拍是为了
+                // 让下拉框先收起，再按新状态刷新“当前”标签。
+                QTimer::singleShot(0, this, &MainWindow::refreshBitrateBar);
+            });
+
+    m_bitrateTimer = new QTimer(this);
+    m_bitrateTimer->setInterval(1000);
+    connect(m_bitrateTimer, &QTimer::timeout, this, &MainWindow::refreshBitrateBar);
+    m_bitrateTimer->start();
+    refreshBitrateBar();
+}
+
+void MainWindow::refreshBitrateBar()
+{
+    if (ui == nullptr || ui->bitrateBar == nullptr || m_player == nullptr)
+        return;
+
+    // 停止后不再显示“当前播放码率”，否则用户已经停止播放，栏里还报着
+    // 上一个码率容易误解；暂停仍保留，因为继续播放还是这个码率。
+    if (m_player->mediaPlayer() != nullptr
+        && m_player->mediaPlayer()->playbackState() == QMediaPlayer::StoppedState) {
+        ui->bitrateBar->hide();
+        return;
+    }
+
+    const auto snapshot = m_player->bitrateSnapshot();
+    if (!snapshot.isVideo || snapshot.options.isEmpty()) {
+        ui->bitrateBar->hide();
+        m_bitrateOptionsSignature.clear();
+        return;
+    }
+
+    const auto labelFor = [this](const PlaybackController::BitrateOption &option) {
+        const QString resolution = option.resolution.isEmpty()
+                                       ? tr("未知分辨率")
+                                       : option.resolution;
+        QString bandwidth;
+        if (option.bandwidth <= 0) {
+            bandwidth = tr("未知码率");
+        } else if (option.bandwidth >= 1000) {
+            bandwidth = QStringLiteral("%1 Mbps").arg(option.bandwidth / 1000.0, 0, 'f', 2);
+        } else {
+            bandwidth = QStringLiteral("%1 kbps").arg(option.bandwidth);
+        }
+        return QStringLiteral("%1 · %2").arg(resolution, bandwidth);
+    };
+
+    // 高码率放前面，符合“清晰度优先”的直觉；序号仍来自原始 master，
+    // 排序不会影响锁定项和当前项的匹配。
+    QList<PlaybackController::BitrateOption> ordered = snapshot.options;
+    std::sort(ordered.begin(), ordered.end(),
+              [](const PlaybackController::BitrateOption &a,
+                 const PlaybackController::BitrateOption &b) {
+                  if (a.bandwidth != b.bandwidth)
+                      return a.bandwidth > b.bandwidth;
+                  return a.index < b.index;
+              });
+
+    QString signature;
+    for (const PlaybackController::BitrateOption &option : std::as_const(ordered)) {
+        signature += QStringLiteral("%1:%2:%3;").arg(option.index)
+                         .arg(option.bandwidth)
+                         .arg(option.resolution);
+    }
+
+    if (signature != m_bitrateOptionsSignature) {
+        QSignalBlocker blocker(ui->combo_bitrate);
+        ui->combo_bitrate->clear();
+        ui->combo_bitrate->addItem(tr("自动（跟随网络）"), -1);
+        for (const PlaybackController::BitrateOption &option : std::as_const(ordered))
+            ui->combo_bitrate->addItem(labelFor(option), option.index);
+        m_bitrateOptionsSignature = signature;
+    }
+
+    {
+        QSignalBlocker blocker(ui->combo_bitrate);
+        const int comboIndex = ui->combo_bitrate->findData(snapshot.selectedIndex);
+        ui->combo_bitrate->setCurrentIndex(comboIndex >= 0 ? comboIndex : 0);
+    }
+
+    QString currentText = snapshot.selectedIndex >= 0 ? tr("当前：正在切换码率…")
+                                                      : tr("当前：自动选择中");
+    for (const PlaybackController::BitrateOption &option : std::as_const(ordered)) {
+        if (option.index != snapshot.currentIndex)
+            continue;
+        currentText = tr("当前：%1").arg(labelFor(option));
+        if (snapshot.selectedIndex >= 0 && snapshot.selectedIndex != snapshot.currentIndex)
+            currentText = tr("当前：%1（切换中）").arg(labelFor(option));
+        else if (snapshot.selectedIndex >= 0)
+            currentText += tr("（已锁定）");
+        else
+            currentText += tr("（自动）");
+        break;
+    }
+    ui->label_bitrateCurrent->setText(currentText);
+    ui->bitrateBar->show();
 }
 
 void MainWindow::setupVolumePopup()
