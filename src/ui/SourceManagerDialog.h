@@ -2,18 +2,17 @@
 #define SOURCEMANAGERDIALOG_H
 
 #include "net/SourceConfig.h"
+#include "ui/SourceProbeDialog.h"
 
 #include <QDialog>
 #include <QPoint>
 #include <QVector>
 
-class QLineEdit;
+class QLabel;
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
-class QSpinBox;
 class SourceRegistry;
-struct SourceParserSettings;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -47,10 +46,12 @@ private:
     void onRemoveSelected();
     void onListContextMenu(const QPoint &pos);
     void onItemChanged(QListWidgetItem *item);
+    void openParserConfig();
+    void refreshParserSummary();
     void selectRow(int row);
     int currentIndex() const;
     QString uniqueId(const QString &preferred) const;
-    SourceParserSettings parserSettings() const;
+    SourceParserSettings parserSettings() const { return m_parserSettings; }
     void saveParserSettings() const;
     bool saveAll();
 
@@ -60,12 +61,12 @@ private:
     bool m_updating = false;
 
     QListWidget *m_list = nullptr;
-    QLineEdit *m_command = nullptr;
-    QLineEdit *m_arguments = nullptr;
-    QSpinBox *m_timeout = nullptr;
+    QLabel *m_parserLabel = nullptr;
+    QPushButton *m_btnParserConfig = nullptr;
     QPushButton *m_btnAdd = nullptr;
     QPushButton *m_btnRefresh = nullptr;
 
+    SourceParserSettings m_parserSettings;
     QVector<SourceConfig> m_drafts;
     QVector<SourceConfig> m_committedSources;
 };

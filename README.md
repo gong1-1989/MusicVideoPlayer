@@ -80,6 +80,8 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 - 用户自定义图标：把 `prev / play / pause / stop / next / mode-list / mode-single / mode-random / fullscreen / settings / volume` 同名文件（支持 svg/png/ico/jpg/jpeg/webp/bmp）放到程序目录 `icons/` 或 `Data/icons/` 即可覆盖内置图标。
 - 也可以用 `Data/ui-icons.json` 精确指定文件，相对路径按 exe 目录解析，例如 `{"play":"icons/custom/play.png","pause":"icons/custom/pause.png"}`。
 - 系统设置里的“字体大小”是真实像素字号：10/11/12/13/14/15/16/18/20 px，默认 13 px；配置文件允许 9–20 px。列表、设置页和音乐动感视图会一起调整。
+- 系统设置已改为分页：`基本设置`（外观、窗口）、`播放与布局`（布局、播放与搜索、下载目录、缓存清理、快捷键）、`搜索源管理`、`更新`（预留占位）、`系统信息`。设置页不再使用双列自适应排版。
+- 全屏窗口拥有自己的窗口级快捷键，和主窗共用同一套用户绑定；全屏时 `Space` 播放/暂停等快捷键仍可用，退出全屏后自动释放。
 
 ## 搜索源
 
@@ -90,13 +92,27 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 - `kind=builtin`：内置解析器（当前为 maccms 网页源）
 - `kind=external`：调用本机外部程序，默认关闭，需要显式开启
 
-搜索源管理只保留列表、新增、更新和外部解析器配置。新增/更新源时程序调用配置的解析器探测站点，只有解析器返回成功且用户确认后才回填列表。解析器通过参数占位符 `{site}`、`{type}`、`{mode}` 接收站点、媒体类型和调用场景，向 stdout 输出 JSON：
+搜索源管理只保留列表、新增、更新和外部解析器配置。新增/更新源时程序调用配置的解析器探测站点，只有解析器返回成功且用户确认后才回填列表。
+
+外部解析器配置在独立的“外部解析器配置”对话框中维护，包括命令、参数模板和超时；源管理窗口只显示解析器摘要和一个配置按钮，避免把底层参数常驻在主界面上。
+
+- 命令：可执行文件路径，或相对于程序目录的文件名。默认 `source-probe-cli.exe`。
+- 参数模板：默认 `--site {site} --type {type} --mode {mode}`。
+- 超时：5000–600000 ms，默认 120000 ms；超时会结束当前站点探测并继续下一个站点。
+- 占位符：`{site}` 站点 URL，`{url}` 是 `{site}` 的别名，`{type}` 为 `music` / `video`，`{mode}` 为 `add` / `update`。
+- 环境变量：同时提供 `MVP_SOURCE_SITE`、`MVP_SOURCE_TYPE`、`MVP_SOURCE_MODE`，方便解析器从环境读取。
+- 返回值：stdout 只输出一个 JSON 对象；成功时 `{"ok":true,"source":{...},"samples":[...],"attempts":[...]}`，失败时 `{"ok":false,"error":"原因"}`。
+- 退出码：`0` 成功，`1` 探测失败，`2` 参数错误，`3` 解析器内部超时；程序还会按配置的外层超时兜底。
+
+自带 `source-probe-cli.exe` 作为默认解析器，保持无界面，只通过 stdout 返回 JSON。它继承原有站点探测规则，但不在主程序进程内运行，避免网页解析拖慢界面。
+
+`SourceProbeDialog` 的“新增源”支持一行一个站点批量探测，最多 48 个；结果表逐行显示状态，成功行可勾选并直接修改源名称，失败行保留原因，允许部分成功。“更新所选”仍只接受一个成功结果，避免误覆盖其他源。
+
+`tools/source-probe/` 是研发期的数据采集与规则验证脚本，不参与编译、安装或主程序运行：`collect_video_nodes.ps1` / `probe_video_nodes.ps1` 生成并验证影视站点候选，`collect_music_nodes.ps1` / `probe_music_nodes.ps1` 生成并验证音乐接口候选；结果只保存在 `docs/source-probe/`，不保存影片标题或播放地址。真正随程序发布的外部解析器源码在 `tools/source_probe_cli/main.cpp`。
 
 ```json
 { "ok": true, "source": { "id": "demo", "name": "示例源", "url": "https://example.com/search?q={keyword}", "itemsPath": "items", "fields": { "title": "title", "streamUrl": "url" } } }
 ```
-
-失败时输出 `{ "ok": false, "error": "原因" }`，或使用非 0 退出码。程序自带 `source-probe-cli.exe` 作为默认解析器，原有站点探测规则已移到这个独立进程。
 
 每个源实际抓取条数由系统设置“搜索条数”控制（配置键 `search/limit`，默认 20，范围 1–100；设置界面提供 10/20/30/50）。搜索结果每页条数按搜索列表当前可见高度和实际行高动态计算，分页条右侧显示当前“每页 N 条”。
 
@@ -111,7 +127,7 @@ ctest --test-dir build --output-on-failure
 - `mvp_core_logic`：时间格式、LRC、条目/源配置校验、URL 脱敏、HLS 分片与播放列表解析、缓存路径
 - `mvp_integration`：本地 HTTP 服务、重定向密钥剥离、下载完整性、搜索超时/中止、响应上限
 - `mvp_storage`：播放列表、视频进度持久化、搜索源、损坏文件备份、下载状态与路径冲突
-- `mvp_ui_logic`：歌词切歌取消、进度条点击定位、动态每页条数、字体缩放、播放列表保存失败重试
+- `mvp_ui_logic`：歌词切歌取消、进度条点击定位、动态每页条数、字体缩放、播放列表保存失败重试、系统设置分页、解析器配置回显、批量站点探测与名称回填
 
 ## 发布
 
@@ -145,6 +161,6 @@ src/ui         主窗、控制器与对话框
 tests          单元与集成测试
 resources      主题 QSS 与图标
 docs           源探查规则与结果
-tools          源探查脚本
+tools          源探查脚本与外部解析器 CLI 源码
 third_party    内置 FFmpeg 压缩包
 ```

@@ -2,13 +2,16 @@
 #define FULLSCREENCONTROLLER_H
 
 #include <QAbstractNativeEventFilter>
+#include <QList>
 #include <QObject>
 #include <QPoint>
 #include <QPointer>
+#include <QString>
 
 class PanelOverlayController;
 class QEvent;
 class QMediaPlayer;
+class QShortcut;
 class QTimer;
 class QVBoxLayout;
 class QWidget;
@@ -33,6 +36,12 @@ public slots:
     void toggle();
     void enterFullScreen();
     void exitFullScreen();
+    /// 设置页修改快捷键后重建全屏窗口上的 QShortcut。
+    void refreshShortcuts();
+
+signals:
+    /// 全屏窗口捕获到快捷键时交回主窗统一执行，避免两套动作逻辑。
+    void shortcutTriggered(const QString &actionId);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -46,6 +55,7 @@ private:
     void showControls();
     void scheduleHideControls();
     void hideControls();
+    void clearShortcuts();
     /// 全屏空闲时连系统鼠标一起隐藏；有鼠标活动立即恢复箭头。
     void setCursorHidden(bool hidden);
 
@@ -69,6 +79,8 @@ private:
     int m_cursorHideSteps = 0;
     /// 隐藏前的真实鼠标位置；只有坐标变化才算用户移动，过滤光标设置产生的合成事件。
     QPoint m_lastMouseGlobalPos;
+    /// 全屏窗口自己的快捷键；主窗 QShortcut 在独立顶层全屏窗激活时不生效。
+    QList<QShortcut *> m_shortcuts;
 };
 
 #endif // FULLSCREENCONTROLLER_H

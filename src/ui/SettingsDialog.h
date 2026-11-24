@@ -10,11 +10,9 @@
 class HttpClient;
 class QCheckBox;
 class QComboBox;
-class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QPushButton;
-class QResizeEvent;
 class QSlider;
 class SourceRegistry;
 
@@ -38,7 +36,6 @@ public:
 
 protected:
     void accept() override;
-    void resizeEvent(QResizeEvent *event) override;
 
 private:
     void bindUi();
@@ -46,8 +43,6 @@ private:
     void refreshSourcesLabel();
     void openSourceManager();
     void openShortcutSettings();
-    /// 大字体/窄窗口下把左右两列改成单列，避免右列被横向裁掉
-    void updateColumnLayout();
 
     Ui::SettingsDialog *ui;
     SourceRegistry *m_registry = nullptr;
@@ -72,8 +67,6 @@ private:
     QCheckBox *m_controlsAutoHide = nullptr;
     QLabel *m_sourcesLabel = nullptr;
     QPushButton *m_sourcesButton = nullptr;
-    QHBoxLayout *m_columns = nullptr;
-    bool m_singleColumn = false;
 };
 
 #endif // SETTINGSDIALOG_H

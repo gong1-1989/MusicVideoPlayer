@@ -14,23 +14,19 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QGuiApplication>
-#include <QBoxLayout>
 #include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLoggingCategory>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QResizeEvent>
 #include <QScreen>
-#include <QScrollBar>
 #include <QSlider>
 #include <QStyle>
-#include <QTimer>
 
 Q_LOGGING_CATEGORY(lcSettings, "mvp.settings")
 
-/// @brief 构造设置页：初始化卡片样式、按屏幕尺寸设限、绑定并载入当前值。
+/// @brief 构造设置页：按页建立选项卡、按屏幕尺寸设限、绑定并载入当前值。
 /// @param registry 源注册表，可为空；为空时源管理入口禁用。
 /// @param http 共享 HTTP 客户端，源管理窗口试搜用。
 /// @param parent 父窗口。
@@ -41,9 +37,9 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
     , m_http(http)
 {
     ui->setupUi(this);
-    // 卡片在滚动容器里时，半透明背景需要显式开启 styled background 才会绘制
+    // 卡片放在选项卡的滚动容器里时，半透明背景需要显式开启 styled background 才会绘制
     QFrame *cards[] = {ui->card_appearance, ui->card_layout, ui->card_window,
-                       ui->card_behavior, ui->card_sources};
+                       ui->card_behavior, ui->card_sources, ui->card_about};
     for (QFrame *card : cards) {
         card->setAttribute(Qt::WA_StyledBackground, true);
         // setWidget 会在 retranslateUi 之前先 polish 子控件，此时对象名还是旧值。
@@ -63,20 +59,11 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
                                                 : QRect(0, 0, 1280, 800);
     // 720 是舒适宽度，不是硬下限；窄屏上必须让窗口还能完整落在屏幕内。
     setMinimumWidth(qMin(720, qMax(320, available.width() - 20)));
-    // 滚动区允许被压缩到 0，否则布局最小高度会把窗口顶出屏幕，底部按钮再次不可达
-    ui->scroll_content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
-    ui->scroll_content->setMinimumHeight(0);
-    // 滚动区独占根布局的剩余高度，标题保持贴顶，不被拉成居中
+    // 选项卡占满根布局的剩余高度，底部按钮保持固定可见。
     ui->layout_root->setStretch(1, 1);
     setMaximumSize(available.width(), available.height() - 20);
     resize(qMin(820, available.width() - 40), qMin(620, available.height() - 60));
-    m_columns = ui->layout_columns;
-    updateColumnLayout();
-
-    // 首次打开时焦点落在首个输入控件会把滚动区带到中间，显示时强制回到顶部
-    QTimer::singleShot(0, this, [this] {
-        ui->scroll_content->verticalScrollBar()->setValue(0);
-    });
+    ui->tabs_settings->setCurrentIndex(0);
 
     bindUi();
     loadValues();
@@ -89,39 +76,6 @@ SettingsDialog::SettingsDialog(SourceRegistry *registry, HttpClient *http, QWidg
 SettingsDialog::~SettingsDialog()
 {
     delete ui;
-}
-
-/// @brief 窗口尺寸变化后重新评估单列/双列布局。
-void SettingsDialog::resizeEvent(QResizeEvent *event)
-{
-    QDialog::resizeEvent(event);
-    updateColumnLayout();
-}
-
-/// @brief 根据字号和窗口宽度决定左右双列或上下单列。
-/// @note 大字号/窄窗口下双列最小宽度会超出滚动区，必须改成单列才能滚到全部设置。
-void SettingsDialog::updateColumnLayout()
-{
-    if (m_columns == nullptr)
-        return;
-
-    // 150% 字体时左右两列的总最小宽度会超过滚动区，右列被裁掉；
-    // 窄窗口同理。这里改成上下铺开，让全部设置都能纵向滚动到。
-    const bool single = AppSettings::uiFontSizePx() > 13 || width() < 760;
-    if (single == m_singleColumn)
-        return;
-
-    m_singleColumn = single;
-    m_columns->setDirection(single ? QBoxLayout::TopToBottom
-                                   : QBoxLayout::LeftToRight);
-    if (single) {
-        ui->spacer_left->changeSize(0, 0, QSizePolicy::Minimum,
-                                    QSizePolicy::Minimum);
-    } else {
-        ui->spacer_left->changeSize(20, 40, QSizePolicy::Minimum,
-                                    QSizePolicy::Expanding);
-    }
-    m_columns->invalidate();
 }
 
 /// @brief 绑定所有设置控件与按钮信号。

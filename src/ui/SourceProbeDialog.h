@@ -6,14 +6,19 @@
 
 #include <QByteArray>
 #include <QDialog>
+#include <QJsonObject>
 #include <QProcess>
+#include <QSet>
+#include <QStringList>
+#include <QUrl>
+#include <QVector>
 
 class QComboBox;
 class QLabel;
-class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 class QShowEvent;
+class QTableWidget;
 class QTimer;
 
 QT_BEGIN_NAMESPACE
@@ -30,53 +35,62 @@ struct SourceParserSettings
     int timeoutMs = 120000;
 };
 
-/// “外部解析器探测”窗口：输入网站 → 调用配置的解析器 → 成功/失败 →
-/// 用户确认后返回 SourceConfig。主程序不内置探测规则，只消费解析器 stdout。
+/// “外部解析器探测”窗口：支持一行一个站点批量探测，成功的行可编辑名称并勾选，
+/// 确认后返回 SourceConfig 列表。主程序不内置探测规则，只消费解析器 stdout。
 class SourceProbeDialog : public QDialog
 {
     Q_OBJECT
 
 public:
     SourceProbeDialog(MediaType type, const QString &initialUrl, const QString &titleText,
-                      const SourceParserSettings &parser, QWidget *parent = nullptr);
+                      const SourceParserSettings &parser, QWidget *parent = nullptr,
+                      const QString &mode = QStringLiteral("add"));
     ~SourceProbeDialog() override;
 
-    SourceConfig probedConfig() const { return m_config; }
+    QVector<SourceConfig> probedConfigs() const { return m_configs; }
 
 protected:
-    void closeEvent(QCloseEvent *event) override;
+    void accept() override;
     void showEvent(QShowEvent *event) override;
 
 private:
     void bindUi();
     void startProbe();
+    void startNextSite();
+    void startSiteProbe(const QUrl &site);
+    void finishCurrentProbe();
     void stopProcess();
     void readOutput();
-    void finishProbe();
     void onProcessError(QProcess::ProcessError error);
     void showFailure(const QString &error, const QString &detail = QString());
-    void showSuccess(const SourceConfig &config, const QJsonObject &root);
+    void onTimeout();
+    void updateResultActions();
+    void setRowStatus(int row, const QString &status, const QString &detail = QString());
     MediaType currentType() const;
     QString reasonFromJson(const QJsonObject &root) const;
     SourceConfig configFromJsonObject(const QJsonObject &object, bool *ok) const;
+    int addResultRow(const QString &siteText, const QString &status);
 
     Ui::SourceProbeDialog *ui;
     SourceParserSettings m_parser;
-    SourceConfig m_config;
-    bool m_hasResult = false;
+    QString m_mode;
+    QVector<SourceConfig> m_configs;
+    /// 每个结果行对应的成功配置；失败行不写入。
+    QVector<int> m_siteRows;
+    QVector<SourceConfig> m_rowConfigs;
+    QVector<QUrl> m_sites;
+    int m_nextSite = 0;
     bool m_busy = false;
     bool m_outputOverflow = false;
+    bool m_updating = false;
 
-    QLineEdit *m_url = nullptr;
+    QPlainTextEdit *m_sitesEdit = nullptr;
     QComboBox *m_type = nullptr;
     QPushButton *m_btnProbe = nullptr;
     QPushButton *m_btnSave = nullptr;
     QLabel *m_status = nullptr;
     QLabel *m_parserLabel = nullptr;
-    QLabel *m_nameLabel = nullptr;
-    QLabel *m_typeLabel = nullptr;
-    QLabel *m_urlLabel = nullptr;
-    QLabel *m_kindLabel = nullptr;
+    QTableWidget *m_table = nullptr;
     QPlainTextEdit *m_log = nullptr;
 
     QProcess *m_process = nullptr;

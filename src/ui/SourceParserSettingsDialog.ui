@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SourceParserSettingsDialog</class>
+ <widget class="QDialog" name="SourceParserSettingsDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>720</width>
+    <height>560</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>600</width>
+    <height>480</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>外部解析器配置</string>
+  </property>
+  <layout class="QVBoxLayout" name="layout_root">
+   <property name="spacing">
+    <number>10</number>
+   </property>
+   <property name="leftMargin">
+    <number>16</number>
+   </property>
+   <property name="topMargin">
+    <number>12</number>
+   </property>
+   <property name="rightMargin">
+    <number>16</number>
+   </property>
+   <property name="bottomMargin">
+    <number>12</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="label_hint">
+     <property name="objectName">
+      <string>label_hint</string>
+     </property>
+     <property name="text">
+      <string>主程序不内置站点解析规则，只调用外部解析器；解析器需要向 stdout 输出一行 JSON。</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="grid_parser">
+     <property name="horizontalSpacing">
+      <number>12</number>
+     </property>
+     <property name="verticalSpacing">
+      <number>10</number>
+     </property>
+     <item row="0" column="0">
+      <widget class="QLabel" name="label_commandCaption">
+       <property name="text">
+        <string>解析器命令</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLineEdit" name="edit_command">
+       <property name="placeholderText">
+        <string>source-probe-cli.exe</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="2">
+      <widget class="QPushButton" name="btn_browse">
+       <property name="text">
+        <string>浏览…</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="label_argumentsCaption">
+       <property name="text">
+        <string>参数模板</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="1" colspan="2">
+      <widget class="QLineEdit" name="edit_arguments">
+       <property name="placeholderText">
+        <string>--site {site} --type {type} --mode {mode}</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="label_timeoutCaption">
+       <property name="text">
+        <string>单站点超时</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1" colspan="2">
+      <widget class="QSpinBox" name="spin_timeout">
+       <property name="suffix">
+        <string> ms</string>
+       </property>
+       <property name="minimum">
+        <number>5000</number>
+       </property>
+       <property name="maximum">
+        <number>600000</number>
+       </property>
+       <property name="singleStep">
+        <number>1000</number>
+       </property>
+       <property name="value">
+        <number>120000</number>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QFrame" name="card_protocol">
+     <property name="objectName">
+      <string>settingsCard</string>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <layout class="QVBoxLayout" name="layout_protocol">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <property name="leftMargin">
+       <number>16</number>
+      </property>
+      <property name="topMargin">
+       <number>12</number>
+      </property>
+      <property name="rightMargin">
+       <number>16</number>
+      </property>
+      <property name="bottomMargin">
+       <number>12</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="label_protocolTitle">
+        <property name="objectName">
+         <string>label_sectionTitle</string>
+        </property>
+        <property name="text">
+         <string>参数与输出协议</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="label_details">
+        <property name="textFormat">
+         <enum>Qt::RichText</enum>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="text">
+         <string>&lt;b&gt;占位符&lt;/b&gt;：{site} / {url} 为站点地址（{url} 是别名）；{type} 为 video 或 music；{mode} 为 add 或 update。&lt;br/&gt;&lt;b&gt;环境变量&lt;/b&gt;：MVP_SOURCE_SITE、MVP_SOURCE_TYPE、MVP_SOURCE_MODE。&lt;br/&gt;&lt;b&gt;退出码&lt;/b&gt;：0 成功；1 探测失败；2 参数错误；3 内部超时。&lt;br/&gt;&lt;b&gt;stdout&lt;/b&gt;：成功输出 {"ok":true,"source":{...}}，失败输出 {"ok":false,"error":"原因"}。stderr 只用于诊断，不要混入 JSON。&lt;br/&gt;&lt;b&gt;注意&lt;/b&gt;：{mode} 目前只传给解析器，是否区分 add/update 行为由解析器自行决定。</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="label_commandHint">
+     <property name="objectName">
+      <string>label_hint</string>
+     </property>
+     <property name="text">
+      <string>相对命令会先按程序所在目录查找；找不到时再交给系统 PATH。超时范围 5–600 秒。</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <spacer name="spacer_root">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>20</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="layout_buttons">
+     <property name="spacing">
+      <number>10</number>
+     </property>
+     <item>
+      <spacer name="spacer_buttons">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_cancel">
+       <property name="text">
+        <string>取消</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_save">
+       <property name="objectName">
+        <string>btn_applyPrimary</string>
+       </property>
+       <property name="text">
+        <string>确定</string>
+       </property>
+       <property name="default">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

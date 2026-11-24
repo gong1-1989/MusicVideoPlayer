@@ -856,7 +856,9 @@ void IntegrationTest::downloadManagerCleansPreexistingCacheWithoutSeed()
     QVERIFY(LyricsCache::store(item, QByteArrayLiteral("[00:01.00]cleaned")));
 
     const QString dir = m_tempDir.filePath(QStringLiteral("dl-cache-sweep"));
-    QVERIFY(QDir().removeRecursively() || !QFileInfo::exists(dir));
+    // 这里必须删除测试自己的临时子目录；QDir() 默认是当前构建目录，
+    // 早期误写会在测试时把整个 build 目录递归删掉。
+    QVERIFY(QDir(dir).removeRecursively() || !QFileInfo::exists(dir));
     QVERIFY(QDir().mkpath(dir));
     const QString target = QDir(dir).filePath(QStringLiteral("独立缓存清理.mp3"));
 

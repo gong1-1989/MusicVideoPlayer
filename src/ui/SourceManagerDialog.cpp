@@ -1,9 +1,10 @@
 /// @file SourceManagerDialog.cpp
-/// @brief 搜索源列表、新增/更新与外部解析器配置。
+/// @brief 搜索源列表、批量新增/更新与外部解析器配置入口。
 #include "ui/SourceManagerDialog.h"
 
 #include "net/SourceRegistry.h"
 #include "settings/AppSettings.h"
+#include "ui/SourceParserSettingsDialog.h"
 #include "ui/SourceProbeDialog.h"
 #include "ui/ThemeManager.h"
 #include "ui_SourceManagerDialog.h"
@@ -11,14 +12,13 @@
 #include <QAction>
 #include <QDateTime>
 #include <QGuiApplication>
-#include <QLineEdit>
+#include <QLabel>
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScreen>
-#include <QSpinBox>
 #include <QUrl>
 
 SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, QWidget *parent,
@@ -44,7 +44,12 @@ SourceManagerDialog::SourceManagerDialog(SourceRegistry *registry, QWidget *pare
     if (m_registry != nullptr)
         m_drafts = m_registry->sources();
 
+    m_parserSettings.command = AppSettings::sourceParserCommand();
+    m_parserSettings.arguments = AppSettings::sourceParserArguments();
+    m_parserSettings.timeoutMs = qBound(5000, AppSettings::sourceParserTimeoutMs(), 600000);
+
     bindUi();
+    refreshParserSummary();
     reloadList(m_drafts.isEmpty() ? -1 : 0);
     ThemeManager::instance().applyWindowChrome(this);
 }
@@ -57,21 +62,22 @@ SourceManagerDialog::~SourceManagerDialog()
 void SourceManagerDialog::bindUi()
 {
     m_list = ui->list_sources;
-    m_command = ui->edit_command;
-    m_arguments = ui->edit_arguments;
-    m_timeout = ui->spin_timeout;
+    m_parserLabel = ui->label_parserSummary;
+    m_btnParserConfig = ui->btn_parserConfig;
     m_btnAdd = ui->btn_add;
     m_btnRefresh = ui->btn_refresh;
 
-    m_command->setText(AppSettings::sourceParserCommand());
-    m_arguments->setText(AppSettings::sourceParserArguments());
-    m_timeout->setRange(5000, 600000);
-    m_timeout->setSingleStep(5000);
-    m_timeout->setValue(AppSettings::sourceParserTimeoutMs());
+    m_btnAdd->setToolTip(tr("打开批量探测窗口：一行一个站点，可一次加入多个源。"));
+    m_btnRefresh->setToolTip(tr("重新探测当前选中源，确认后覆盖其配置；内置源不可覆盖。"));
+    m_btnParserConfig->setToolTip(tr("配置外部解析器命令、参数模板和单站点超时。"));
+    ui->label_parserHint->setText(
+        tr("解析器必须是无界面的命令行程序：读取参数、向 stdout 输出 JSON，不在主程序里弹窗。"));
 
     connect(m_btnAdd, &QPushButton::clicked, this, &SourceManagerDialog::onAdd);
     connect(m_btnRefresh, &QPushButton::clicked, this,
             &SourceManagerDialog::onRefreshSelected);
+    connect(m_btnParserConfig, &QPushButton::clicked, this,
+            &SourceManagerDialog::openParserConfig);
     connect(ui->btn_cancel, &QPushButton::clicked, this, &QDialog::reject);
     connect(ui->btn_save, &QPushButton::clicked, this, &SourceManagerDialog::accept);
     connect(m_list, &QListWidget::currentRowChanged, this,
@@ -136,9 +142,7 @@ void SourceManagerDialog::updateActions()
     const int index = currentIndex();
     const bool canRefresh = index >= 0 && !m_drafts.at(index).builtin;
     m_btnRefresh->setEnabled(canRefresh);
-    m_btnRefresh->setToolTip(canRefresh
-                                 ? tr("重新调用外部解析器探测选中源，确认后覆盖配置")
-                                 : tr("内置源由程序维护，不能通过解析器覆盖"));
+    m_btnAdd->setEnabled(!m_parserSettings.command.trimmed().isEmpty());
 }
 
 void SourceManagerDialog::onItemChanged(QListWidgetItem *item)
@@ -179,24 +183,32 @@ void SourceManagerDialog::onItemChanged(QListWidgetItem *item)
 
 void SourceManagerDialog::onAdd()
 {
-    if (m_command->text().trimmed().isEmpty()) {
+    if (m_parserSettings.command.trimmed().isEmpty()) {
         QMessageBox::warning(this, tr("缺少解析器"),
-                             tr("请先填写外部解析器命令，再新增源。"));
+                             tr("请先配置外部解析器命令，再新增源。"));
         return;
     }
 
     SourceProbeDialog dialog(MediaType::Music, QString(), tr("新增搜索源"),
-                             parserSettings(), this);
+                             m_parserSettings, this, QStringLiteral("add"));
     if (dialog.exec() != QDialog::Accepted)
         return;
 
-    SourceConfig config = dialog.probedConfig();
-    config.id = uniqueId(config.id);
-    config.enabled = true;
-    config.builtin = false;
-    m_drafts.append(config);
-    reloadList(m_drafts.size() - 1);
-    ui->label_status->setText(tr("已添加“%1”，保存后生效。").arg(config.name));
+    const QVector<SourceConfig> configs = dialog.probedConfigs();
+    if (configs.isEmpty())
+        return;
+
+    int firstAdded = m_drafts.size();
+    for (SourceConfig config : configs) {
+        config.id = uniqueId(config.id);
+        config.enabled = true;
+        config.builtin = false;
+        m_drafts.append(config);
+    }
+    const int added = m_drafts.size() - firstAdded;
+    reloadList(firstAdded);
+    ui->label_status->setText(
+        tr("已添加 %1 个源，保存后生效。").arg(added));
 }
 
 void SourceManagerDialog::onRefreshSelected()
@@ -209,9 +221,9 @@ void SourceManagerDialog::onRefreshSelected()
                                  tr("内置源由程序维护，不能通过外部解析器覆盖。"));
         return;
     }
-    if (m_command->text().trimmed().isEmpty()) {
+    if (m_parserSettings.command.trimmed().isEmpty()) {
         QMessageBox::warning(this, tr("缺少解析器"),
-                             tr("请先填写外部解析器命令，再更新源。"));
+                             tr("请先配置外部解析器命令，再更新源。"));
         return;
     }
 
@@ -224,11 +236,18 @@ void SourceManagerDialog::onRefreshSelected()
 
     SourceProbeDialog dialog(existing.mediaType, initialUrl,
                              tr("更新搜索源：%1").arg(existing.name),
-                             parserSettings(), this);
+                             m_parserSettings, this, QStringLiteral("update"));
     if (dialog.exec() != QDialog::Accepted)
         return;
 
-    SourceConfig config = dialog.probedConfig();
+    const QVector<SourceConfig> configs = dialog.probedConfigs();
+    if (configs.size() != 1) {
+        QMessageBox::warning(this, tr("更新失败"),
+                             tr("更新模式需要且只能返回一个有效源配置。"));
+        return;
+    }
+
+    SourceConfig config = configs.first();
     config.id = existing.id;
     config.enabled = existing.enabled;
     config.builtin = false;
@@ -298,20 +317,38 @@ QString SourceManagerDialog::uniqueId(const QString &preferred) const
     return base + QStringLiteral("_") + QString::number(QDateTime::currentMSecsSinceEpoch());
 }
 
-SourceParserSettings SourceManagerDialog::parserSettings() const
+void SourceManagerDialog::openParserConfig()
 {
-    SourceParserSettings settings;
-    settings.command = m_command->text().trimmed();
-    settings.arguments = m_arguments->text().trimmed();
-    settings.timeoutMs = m_timeout->value();
-    return settings;
+    SourceParserSettingsDialog dialog(m_parserSettings, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    m_parserSettings = dialog.parserSettings();
+    refreshParserSummary();
+    updateActions();
+    ui->label_status->setText(tr("解析器配置已修改，点“保存”后写入设置。"));
+}
+
+void SourceManagerDialog::refreshParserSummary()
+{
+    if (m_parserSettings.command.trimmed().isEmpty()) {
+        m_parserLabel->setText(tr("尚未配置外部解析器，新增/更新源不可用。"));
+        m_parserLabel->setToolTip(QString());
+        return;
+    }
+    m_parserLabel->setText(
+        tr("命令：%1\n参数：%2\n单站点超时：%3 秒")
+            .arg(m_parserSettings.command,
+                 m_parserSettings.arguments.isEmpty() ? tr("（空）") : m_parserSettings.arguments)
+            .arg(m_parserSettings.timeoutMs / 1000));
+    m_parserLabel->setToolTip(
+        tr("参数占位符：{site}/{url} 站点地址，{type} video/music，{mode} add/update。"));
 }
 
 void SourceManagerDialog::saveParserSettings() const
 {
-    AppSettings::setSourceParserCommand(m_command->text().trimmed());
-    AppSettings::setSourceParserArguments(m_arguments->text().trimmed());
-    AppSettings::setSourceParserTimeoutMs(m_timeout->value());
+    AppSettings::setSourceParserCommand(m_parserSettings.command.trimmed());
+    AppSettings::setSourceParserArguments(m_parserSettings.arguments.trimmed());
+    AppSettings::setSourceParserTimeoutMs(m_parserSettings.timeoutMs);
 }
 
 bool SourceManagerDialog::saveAll()

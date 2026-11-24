@@ -2,6 +2,7 @@
 /// @brief 全屏窗口、控制条浮层与光标自动隐藏实现。
 #include "ui/FullscreenController.h"
 
+#include "settings/AppShortcuts.h"
 #include "ui/PanelOverlayController.h"
 #include "ui/VideoSurface.h"
 
@@ -10,9 +11,12 @@
 #include <QEvent>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLayout>
 #include <QMediaPlayer>
 #include <QMouseEvent>
+#include <QShortcut>
+#include <QSet>
 #include <QSizePolicy>
 #include <QStyle>
 #include <QTimer>
@@ -148,8 +152,11 @@ void FullscreenController::enterFullScreen()
     window->activateWindow();
     window->setFocus();
     m_window = window;
+    // 全屏窗是独立顶层窗口，主窗的 WindowShortcut 不会生效；
+    // 这里按当前绑定再建一套，Space 等按键才能在观影状态下继续工作。
     m_lastMouseGlobalPos = QCursor::pos();
     setCursorHidden(false);
+    refreshShortcuts();
 
     updateControlGeometry();
     showControls();
@@ -184,6 +191,7 @@ void FullscreenController::exitFullScreen()
     if (m_hideTimer != nullptr)
         m_hideTimer->stop();
     setCursorHidden(false);
+    clearShortcuts();
     m_window = nullptr;
 
     window->removeEventFilter(this);
@@ -220,6 +228,45 @@ void FullscreenController::exitFullScreen()
     }
     window->close();
     window->deleteLater();
+}
+
+/// @brief 按当前快捷键绑定重建全屏窗口上的 QShortcut。
+/// @note 只在全屏窗口存在时创建；主窗与全屏窗都通过同一个 actionId 派发，
+///       避免“窗口模式能按、全屏模式不能按”两套行为。
+void FullscreenController::refreshShortcuts()
+{
+    clearShortcuts();
+    if (m_window == nullptr)
+        return;
+
+    const QHash<QString, QString> bindings = AppShortcuts::currentBindings();
+    QSet<QString> used;
+    for (const AppShortcuts::Action &action : AppShortcuts::actions()) {
+        const QString sequence =
+            AppShortcuts::normalizeSequence(bindings.value(action.id));
+        if (sequence.isEmpty() || used.contains(sequence))
+            continue;
+        used.insert(sequence);
+
+        auto *shortcut = new QShortcut(
+            QKeySequence::fromString(sequence, QKeySequence::PortableText), m_window);
+        shortcut->setContext(Qt::WindowShortcut);
+        const QString actionId = action.id;
+        connect(shortcut, &QShortcut::activated, this,
+                [this, actionId] { emit shortcutTriggered(actionId); });
+        m_shortcuts.append(shortcut);
+    }
+}
+
+/// @brief 停用并释放全屏窗口上的快捷键，不依赖窗口析构顺序。
+void FullscreenController::clearShortcuts()
+{
+    for (QShortcut *shortcut : m_shortcuts) {
+        shortcut->setEnabled(false);
+        shortcut->disconnect();
+        shortcut->deleteLater();
+    }
+    m_shortcuts.clear();
 }
 
 /// @brief 按全屏窗口尺寸把控制条居中放在底部，并限制最大宽度/高度。

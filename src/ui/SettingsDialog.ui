@@ -7,13 +7,13 @@
     <x>0</x>
     <y>0</y>
     <width>820</width>
-    <height>560</height>
+    <height>620</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>720</width>
-    <height>440</height>
+    <width>560</width>
+    <height>480</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -21,19 +21,19 @@
   </property>
   <layout class="QVBoxLayout" name="layout_root">
    <property name="spacing">
-    <number>14</number>
+    <number>10</number>
    </property>
    <property name="leftMargin">
-    <number>22</number>
+    <number>16</number>
    </property>
    <property name="topMargin">
-    <number>20</number>
+    <number>12</number>
    </property>
    <property name="rightMargin">
-    <number>22</number>
+    <number>16</number>
    </property>
    <property name="bottomMargin">
-    <number>18</number>
+    <number>12</number>
    </property>
    <item>
     <widget class="QLabel" name="label_title">
@@ -49,248 +49,642 @@
     </widget>
    </item>
    <item>
-    <widget class="QScrollArea" name="scroll_content">
-     <property name="frameShape">
-      <enum>QFrame::NoFrame</enum>
-     </property>
-     <property name="widgetResizable">
+    <widget class="QTabWidget" name="tabs_settings">
+     <property name="documentMode">
       <bool>true</bool>
      </property>
-     <property name="horizontalScrollBarPolicy">
-      <enum>Qt::ScrollBarAlwaysOff</enum>
-     </property>
-     <widget class="QWidget" name="scroll_widget">
-      <layout class="QHBoxLayout" name="layout_columns">
-     <property name="spacing">
-      <number>14</number>
-     </property>
-     <item>
-      <layout class="QVBoxLayout" name="column_left">
+     <widget class="QScrollArea" name="page_basic">
+      <attribute name="title">
+       <string>基本设置</string>
+      </attribute>
+      <property name="frameShape">
+       <enum>QFrame::NoFrame</enum>
+      </property>
+      <property name="widgetResizable">
+       <bool>true</bool>
+      </property>
+      <property name="horizontalScrollBarPolicy">
+       <enum>Qt::ScrollBarAlwaysOff</enum>
+      </property>
+      <widget class="QWidget" name="basic_content">
+       <layout class="QVBoxLayout" name="layout_basic">
+        <property name="spacing">
+         <number>12</number>
+        </property>
+        <property name="leftMargin">
+         <number>4</number>
+        </property>
+        <property name="topMargin">
+         <number>4</number>
+        </property>
+        <property name="rightMargin">
+         <number>4</number>
+        </property>
+        <property name="bottomMargin">
+         <number>4</number>
+        </property>
+        <item>
+         <widget class="QFrame" name="card_appearance">
+          <property name="objectName">
+           <string>settingsCard</string>
+          </property>
+          <property name="frameShape">
+           <enum>QFrame::NoFrame</enum>
+          </property>
+          <layout class="QVBoxLayout" name="layout_appearance">
+           <property name="spacing">
+            <number>10</number>
+           </property>
+           <property name="leftMargin">
+            <number>18</number>
+           </property>
+           <property name="topMargin">
+            <number>14</number>
+           </property>
+           <property name="rightMargin">
+            <number>18</number>
+           </property>
+           <property name="bottomMargin">
+            <number>16</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="label_appearanceTitle">
+             <property name="objectName">
+              <string>label_sectionTitle</string>
+             </property>
+             <property name="text">
+              <string>外观</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QGridLayout" name="grid_appearance">
+             <property name="horizontalSpacing">
+              <number>14</number>
+             </property>
+             <property name="verticalSpacing">
+              <number>8</number>
+             </property>
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_themeCaption">
+               <property name="text">
+                <string>主题</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QComboBox" name="combo_theme"/>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_fontCaption">
+               <property name="text">
+                <string>界面字号</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QComboBox" name="combo_fontSize"/>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_themeHint">
+             <property name="objectName">
+              <string>label_hint</string>
+             </property>
+             <property name="text">
+              <string>主题和字号会同时作用于主窗口、列表与设置页。</string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QFrame" name="card_window">
+          <property name="objectName">
+           <string>settingsCard</string>
+          </property>
+          <property name="frameShape">
+           <enum>QFrame::NoFrame</enum>
+          </property>
+          <layout class="QVBoxLayout" name="layout_windowCard">
+           <property name="spacing">
+            <number>10</number>
+           </property>
+           <property name="leftMargin">
+            <number>18</number>
+           </property>
+           <property name="topMargin">
+            <number>14</number>
+           </property>
+           <property name="rightMargin">
+            <number>18</number>
+           </property>
+           <property name="bottomMargin">
+            <number>16</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="label_windowTitle">
+             <property name="objectName">
+              <string>label_sectionTitle</string>
+             </property>
+             <property name="text">
+              <string>窗口</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QGridLayout" name="grid_window">
+             <property name="horizontalSpacing">
+              <number>14</number>
+             </property>
+             <property name="verticalSpacing">
+              <number>8</number>
+             </property>
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_windowCaption">
+               <property name="text">
+                <string>默认窗口大小</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QComboBox" name="combo_windowSize"/>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_windowHint">
+             <property name="objectName">
+              <string>label_hint</string>
+             </property>
+             <property name="text">
+              <string>自适应屏幕会按当前显示器可用区域计算，避免窗口超出屏幕。</string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <spacer name="spacer_basic">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+     <widget class="QScrollArea" name="page_playback">
+      <attribute name="title">
+       <string>播放与布局</string>
+      </attribute>
+      <property name="frameShape">
+       <enum>QFrame::NoFrame</enum>
+      </property>
+      <property name="widgetResizable">
+       <bool>true</bool>
+      </property>
+      <property name="horizontalScrollBarPolicy">
+       <enum>Qt::ScrollBarAlwaysOff</enum>
+      </property>
+      <widget class="QWidget" name="playback_content">
+       <layout class="QVBoxLayout" name="layout_playback">
+        <property name="spacing">
+         <number>12</number>
+        </property>
+        <property name="leftMargin">
+         <number>4</number>
+        </property>
+        <property name="topMargin">
+         <number>4</number>
+        </property>
+        <property name="rightMargin">
+         <number>4</number>
+        </property>
+        <property name="bottomMargin">
+         <number>4</number>
+        </property>
+        <item>
+         <widget class="QFrame" name="card_layout">
+          <property name="objectName">
+           <string>settingsCard</string>
+          </property>
+          <property name="frameShape">
+           <enum>QFrame::NoFrame</enum>
+          </property>
+          <layout class="QVBoxLayout" name="layout_layoutCard">
+           <property name="spacing">
+            <number>10</number>
+           </property>
+           <property name="leftMargin">
+            <number>18</number>
+           </property>
+           <property name="topMargin">
+            <number>14</number>
+           </property>
+           <property name="rightMargin">
+            <number>18</number>
+           </property>
+           <property name="bottomMargin">
+            <number>16</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="label_layoutTitle">
+             <property name="objectName">
+              <string>label_sectionTitle</string>
+             </property>
+             <property name="text">
+              <string>布局</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="checkbox_sidebar">
+             <property name="text">
+              <string>侧栏自动隐藏</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="checkbox_controls">
+             <property name="text">
+              <string>控制条自动隐藏</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_layoutHint">
+             <property name="objectName">
+              <string>label_hint</string>
+             </property>
+             <property name="text">
+              <string>全屏和窗口模式下都可以启用自动隐藏；鼠标移动到边缘会重新显示。</string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QFrame" name="card_behavior">
+          <property name="objectName">
+           <string>settingsCard</string>
+          </property>
+          <property name="frameShape">
+           <enum>QFrame::NoFrame</enum>
+          </property>
+          <layout class="QVBoxLayout" name="layout_behaviorCard">
+           <property name="spacing">
+            <number>10</number>
+           </property>
+           <property name="leftMargin">
+            <number>18</number>
+           </property>
+           <property name="topMargin">
+            <number>14</number>
+           </property>
+           <property name="rightMargin">
+            <number>18</number>
+           </property>
+           <property name="bottomMargin">
+            <number>16</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="label_behaviorTitle">
+             <property name="objectName">
+              <string>label_sectionTitle</string>
+             </property>
+             <property name="text">
+              <string>播放与搜索</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QGridLayout" name="grid_behavior">
+             <property name="horizontalSpacing">
+              <number>14</number>
+             </property>
+             <property name="verticalSpacing">
+              <number>8</number>
+             </property>
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_volumeCaption">
+               <property name="text">
+                <string>默认音量</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QSlider" name="slider_volume">
+               <property name="minimumWidth">
+                <number>160</number>
+               </property>
+               <property name="maximum">
+                <number>100</number>
+               </property>
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="2">
+              <widget class="QLabel" name="label_volumeValue">
+               <property name="minimumWidth">
+                <number>42</number>
+               </property>
+               <property name="text">
+                <string>60%</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_limitCaption">
+               <property name="text">
+                <string>单源搜索条数</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QComboBox" name="combo_searchLimit"/>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="label_downloadLimitCaption">
+               <property name="text">
+                <string>单个下载上限</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QComboBox" name="combo_downloadLimit"/>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_downloadDirCaption">
+             <property name="text">
+              <string>默认下载目录</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="layout_downloadDir">
+             <property name="spacing">
+              <number>8</number>
+             </property>
+             <item>
+              <widget class="QLineEdit" name="edit_downloadDir">
+               <property name="placeholderText">
+                <string>选择下载保存目录</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btn_browseDownloadDir">
+               <property name="text">
+                <string>选择…</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QCheckBox" name="checkbox_removePlaybackCache">
+             <property name="text">
+              <string>下载完成后清理播放缓存与歌词缓存</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="layout_shortcut">
+             <property name="spacing">
+              <number>10</number>
+             </property>
+             <item>
+              <widget class="QLabel" name="label_shortcutCaption">
+               <property name="text">
+                <string>快捷键</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btn_shortcuts">
+               <property name="text">
+                <string>编辑快捷键…</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <spacer name="spacer_shortcut">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
+             </item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <spacer name="spacer_playback">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+     <widget class="QScrollArea" name="page_sources">
+      <attribute name="title">
+       <string>搜索源管理</string>
+      </attribute>
+      <property name="frameShape">
+       <enum>QFrame::NoFrame</enum>
+      </property>
+      <property name="widgetResizable">
+       <bool>true</bool>
+      </property>
+      <property name="horizontalScrollBarPolicy">
+       <enum>Qt::ScrollBarAlwaysOff</enum>
+      </property>
+      <widget class="QWidget" name="sources_content">
+       <layout class="QVBoxLayout" name="layout_sourcesPage">
+        <property name="spacing">
+         <number>12</number>
+        </property>
+        <property name="leftMargin">
+         <number>4</number>
+        </property>
+        <property name="topMargin">
+         <number>4</number>
+        </property>
+        <property name="rightMargin">
+         <number>4</number>
+        </property>
+        <property name="bottomMargin">
+         <number>4</number>
+        </property>
+        <item>
+         <widget class="QFrame" name="card_sources">
+          <property name="objectName">
+           <string>settingsCard</string>
+          </property>
+          <property name="frameShape">
+           <enum>QFrame::NoFrame</enum>
+          </property>
+          <layout class="QVBoxLayout" name="layout_sourcesCard">
+           <property name="spacing">
+            <number>10</number>
+           </property>
+           <property name="leftMargin">
+            <number>18</number>
+           </property>
+           <property name="topMargin">
+            <number>14</number>
+           </property>
+           <property name="rightMargin">
+            <number>18</number>
+           </property>
+           <property name="bottomMargin">
+            <number>16</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="label_sourcesTitle">
+             <property name="objectName">
+              <string>label_sectionTitle</string>
+             </property>
+             <property name="text">
+              <string>搜索源</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="layout_sourcesRow">
+             <property name="spacing">
+              <number>10</number>
+             </property>
+             <item>
+              <widget class="QLabel" name="label_sources">
+               <property name="text">
+                <string/>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btn_sources">
+               <property name="text">
+                <string>管理搜索源…</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_sourcesHint">
+             <property name="objectName">
+              <string>label_hint</string>
+             </property>
+             <property name="text">
+              <string>源管理只维护列表、新增、更新和外部解析器配置；新增/更新会先调用外部解析器探测。</string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <spacer name="spacer_sources">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+     <widget class="QWidget" name="page_update">
+      <attribute name="title">
+       <string>更新</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="layout_update">
        <property name="spacing">
-        <number>14</number>
+        <number>12</number>
        </property>
        <item>
-        <widget class="QFrame" name="card_appearance">
+        <widget class="QLabel" name="label_updateTitle">
          <property name="objectName">
-          <string>settingsCard</string>
+          <string>label_sectionTitle</string>
          </property>
-         <property name="frameShape">
-          <enum>QFrame::NoFrame</enum>
+         <property name="text">
+          <string>软件更新</string>
          </property>
-         <layout class="QVBoxLayout" name="layout_appearance">
-          <property name="spacing">
-           <number>10</number>
-          </property>
-          <property name="leftMargin">
-           <number>18</number>
-          </property>
-          <property name="topMargin">
-           <number>14</number>
-          </property>
-          <property name="rightMargin">
-           <number>18</number>
-          </property>
-          <property name="bottomMargin">
-           <number>16</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="label_appearanceTitle">
-            <property name="objectName">
-             <string>label_sectionTitle</string>
-            </property>
-            <property name="text">
-             <string>外观</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QGridLayout" name="grid_appearance">
-            <property name="horizontalSpacing">
-             <number>16</number>
-            </property>
-            <property name="verticalSpacing">
-             <number>10</number>
-            </property>
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_themeCaption">
-              <property name="text">
-               <string>主题</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QComboBox" name="combo_theme"/>
-            </item>
-            <item row="1" column="0">
-             <widget class="QLabel" name="label_fontCaption">
-              <property name="text">
-               <string>字体大小</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QComboBox" name="combo_fontSize"/>
-            </item>
-            <item row="2" column="1">
-             <widget class="QLabel" name="label_themeHint">
-              <property name="objectName">
-               <string>label_hint</string>
-              </property>
-              <property name="text">
-               <string>字号使用真实像素值（默认 13 px），列表、设置页和音乐动感视图一起生效；点击“保存”后应用。</string>
-              </property>
-              <property name="wordWrap">
-               <bool>true</bool>
-              </property>
-              <property name="maximumSize">
-               <size>
-                <width>420</width>
-                <height>16777215</height>
-               </size>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-         </layout>
         </widget>
        </item>
        <item>
-        <widget class="QFrame" name="card_layout">
+        <widget class="QLabel" name="label_updateHint">
          <property name="objectName">
-          <string>settingsCard</string>
+          <string>label_hint</string>
          </property>
-         <property name="frameShape">
-          <enum>QFrame::NoFrame</enum>
+         <property name="text">
+          <string>预留占位。后续接入检查更新、下载安装包和版本发布信息。</string>
          </property>
-         <layout class="QVBoxLayout" name="layout_layoutCard">
-          <property name="spacing">
-           <number>10</number>
-          </property>
-          <property name="leftMargin">
-           <number>18</number>
-          </property>
-          <property name="topMargin">
-           <number>14</number>
-          </property>
-          <property name="rightMargin">
-           <number>18</number>
-          </property>
-          <property name="bottomMargin">
-           <number>16</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="label_layoutTitle">
-            <property name="objectName">
-             <string>label_sectionTitle</string>
-            </property>
-            <property name="text">
-             <string>界面布局</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QCheckBox" name="checkbox_sidebar">
-            <property name="text">
-             <string>启动时收起左侧列表</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QCheckBox" name="checkbox_controls">
-            <property name="text">
-             <string>启动时收起底部控制区</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="label_layoutHint">
-            <property name="objectName">
-             <string>label_hint</string>
-            </property>
-            <property name="text">
-             <string>收起后不占播放区，鼠标贴到窗口左边缘 / 底边时自动弹出；不勾选则一直显示。</string>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-         </layout>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
         </widget>
        </item>
        <item>
-        <widget class="QFrame" name="card_window">
-         <property name="objectName">
-          <string>settingsCard</string>
+        <widget class="QPushButton" name="btn_checkUpdate">
+         <property name="text">
+          <string>检查更新（预留）</string>
          </property>
-         <property name="frameShape">
-          <enum>QFrame::NoFrame</enum>
+         <property name="enabled">
+          <bool>false</bool>
          </property>
-         <layout class="QVBoxLayout" name="layout_windowCard">
-          <property name="spacing">
-           <number>10</number>
-          </property>
-          <property name="leftMargin">
-           <number>18</number>
-          </property>
-          <property name="topMargin">
-           <number>14</number>
-          </property>
-          <property name="rightMargin">
-           <number>18</number>
-          </property>
-          <property name="bottomMargin">
-           <number>16</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="label_windowTitle">
-            <property name="objectName">
-             <string>label_sectionTitle</string>
-            </property>
-            <property name="text">
-             <string>窗口尺寸</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QGridLayout" name="grid_window">
-            <property name="horizontalSpacing">
-             <number>16</number>
-            </property>
-            <property name="verticalSpacing">
-             <number>10</number>
-            </property>
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_windowCaption">
-              <property name="text">
-               <string>启动尺寸</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QComboBox" name="combo_windowSize"/>
-            </item>
-            <item row="1" column="1">
-             <widget class="QLabel" name="label_windowHint">
-              <property name="objectName">
-               <string>label_hint</string>
-              </property>
-              <property name="text">
-               <string>自适应按屏幕可用区域铺开；选分辨率时屏幕装不下会自动收一收，不会超出屏幕。</string>
-              </property>
-              <property name="wordWrap">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-         </layout>
         </widget>
        </item>
        <item>
-        <spacer name="spacer_left">
+        <spacer name="spacer_update">
          <property name="orientation">
           <enum>Qt::Vertical</enum>
          </property>
@@ -303,425 +697,163 @@
         </spacer>
        </item>
       </layout>
-     </item>
-     <item>
-      <layout class="QVBoxLayout" name="column_right">
-       <property name="spacing">
-        <number>14</number>
-       </property>
-       <item>
-        <widget class="QFrame" name="card_behavior">
-         <property name="objectName">
-          <string>settingsCard</string>
-         </property>
-         <property name="frameShape">
-          <enum>QFrame::NoFrame</enum>
-         </property>
-         <layout class="QVBoxLayout" name="layout_behaviorCard">
-          <property name="spacing">
-           <number>10</number>
+     </widget>
+     <widget class="QScrollArea" name="page_system_info">
+      <attribute name="title">
+       <string>系统信息</string>
+      </attribute>
+      <property name="frameShape">
+       <enum>QFrame::NoFrame</enum>
+      </property>
+      <property name="widgetResizable">
+       <bool>true</bool>
+      </property>
+      <property name="horizontalScrollBarPolicy">
+       <enum>Qt::ScrollBarAlwaysOff</enum>
+      </property>
+      <widget class="QWidget" name="system_content">
+       <layout class="QVBoxLayout" name="layout_system">
+        <property name="spacing">
+         <number>12</number>
+        </property>
+        <property name="leftMargin">
+         <number>4</number>
+        </property>
+        <property name="topMargin">
+         <number>4</number>
+        </property>
+        <property name="rightMargin">
+         <number>4</number>
+        </property>
+        <property name="bottomMargin">
+         <number>4</number>
+        </property>
+        <item>
+         <widget class="QFrame" name="card_about">
+          <property name="objectName">
+           <string>settingsCard</string>
           </property>
-          <property name="leftMargin">
-           <number>18</number>
+          <property name="frameShape">
+           <enum>QFrame::NoFrame</enum>
           </property>
-          <property name="topMargin">
-           <number>14</number>
-          </property>
-          <property name="rightMargin">
-           <number>18</number>
-          </property>
-          <property name="bottomMargin">
-           <number>16</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="label_behaviorTitle">
-            <property name="objectName">
-             <string>label_sectionTitle</string>
-            </property>
-            <property name="text">
-             <string>播放与搜索</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QGridLayout" name="grid_behavior">
-            <property name="horizontalSpacing">
-             <number>16</number>
-            </property>
-            <property name="verticalSpacing">
-             <number>10</number>
-            </property>
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_volumeCaption">
-              <property name="text">
-               <string>启动音量</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QWidget" name="volumeRow" native="true">
-              <layout class="QHBoxLayout" name="layout_volume">
-               <property name="leftMargin">
-                <number>0</number>
+          <layout class="QVBoxLayout" name="layout_aboutCard">
+           <property name="spacing">
+            <number>10</number>
+           </property>
+           <property name="leftMargin">
+            <number>18</number>
+           </property>
+           <property name="topMargin">
+            <number>14</number>
+           </property>
+           <property name="rightMargin">
+            <number>18</number>
+           </property>
+           <property name="bottomMargin">
+            <number>16</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="label_aboutTitle">
+             <property name="objectName">
+              <string>label_sectionTitle</string>
+             </property>
+             <property name="text">
+              <string>系统信息</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QGridLayout" name="grid_about">
+             <property name="horizontalSpacing">
+              <number>14</number>
+             </property>
+             <property name="verticalSpacing">
+              <number>8</number>
+             </property>
+             <item row="0" column="0">
+              <widget class="QLabel" name="label_aboutNameCaption">
+               <property name="objectName">
+                <string>label_hint</string>
                </property>
-               <property name="topMargin">
-                <number>0</number>
+               <property name="text">
+                <string>名称</string>
                </property>
-               <property name="rightMargin">
-                <number>0</number>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLabel" name="label_aboutName">
+               <property name="text">
+                <string>MusicVideoPlayer</string>
                </property>
-               <property name="bottomMargin">
-                <number>0</number>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="label_aboutAuthorCaption">
+               <property name="objectName">
+                <string>label_hint</string>
                </property>
-               <property name="spacing">
-                <number>10</number>
+               <property name="text">
+                <string>作者</string>
                </property>
-               <item>
-                <widget class="QSlider" name="slider_volume">
-                 <property name="minimumWidth">
-                  <number>180</number>
-                 </property>
-                 <property name="maximum">
-                  <number>100</number>
-                 </property>
-                 <property name="orientation">
-                  <enum>Qt::Horizontal</enum>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QLabel" name="label_volumeValue">
-                 <property name="minimumWidth">
-                  <number>36</number>
-                 </property>
-                 <property name="text">
-                  <string>0%</string>
-                 </property>
-                 <property name="alignment">
-                  <set>Qt::AlignRight|Qt::AlignVCenter</set>
-                 </property>
-                </widget>
-               </item>
-              </layout>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QLabel" name="label_limitCaption">
-              <property name="text">
-               <string>单次搜索条数</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QComboBox" name="combo_searchLimit"/>
-            </item>
-            <item row="2" column="0">
-             <widget class="QLabel" name="label_downloadLimitCaption">
-              <property name="text">
-               <string>单文件下载上限</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="1">
-             <widget class="QComboBox" name="combo_downloadLimit"/>
-            </item>
-            <item row="3" column="0">
-             <widget class="QLabel" name="label_downloadDirCaption">
-              <property name="text">
-               <string>下载根目录</string>
-              </property>
-              <property name="toolTip">
-               <string>音乐下载到该目录下的“音乐”文件夹，影视下载到“影视”文件夹</string>
-              </property>
-             </widget>
-            </item>
-            <item row="3" column="1">
-             <widget class="QWidget" name="downloadDirRow" native="true">
-              <layout class="QHBoxLayout" name="layout_downloadDir">
-               <property name="leftMargin">
-                <number>0</number>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLabel" name="label_aboutAuthor">
+               <property name="text">
+                <string>gong1-1989</string>
                </property>
-               <property name="topMargin">
-                <number>0</number>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="label_aboutVersionCaption">
+               <property name="objectName">
+                <string>label_hint</string>
                </property>
-               <property name="rightMargin">
-                <number>0</number>
+               <property name="text">
+                <string>版本</string>
                </property>
-               <property name="bottomMargin">
-                <number>0</number>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QLabel" name="label_aboutVersion">
+               <property name="text">
+                <string>0.2</string>
                </property>
-               <property name="spacing">
-                <number>10</number>
-               </property>
-               <item>
-                <widget class="QLineEdit" name="edit_downloadDir">
-                 <property name="placeholderText">
-                  <string>下载根目录（音乐/影视会自动分子目录）</string>
-                 </property>
-                 <property name="toolTip">
-                  <string>音乐保存到“音乐”子目录，影视保存到“影视”子目录</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <widget class="QPushButton" name="btn_browseDownloadDir">
-                 <property name="minimumSize">
-                  <size>
-                   <width>82</width>
-                   <height>30</height>
-                  </size>
-                 </property>
-                 <property name="text">
-                  <string>浏览…</string>
-                 </property>
-                </widget>
-               </item>
-              </layout>
-             </widget>
-            </item>
-            <item row="4" column="0" colspan="2">
-             <widget class="QCheckBox" name="checkbox_removePlaybackCache">
-              <property name="text">
-               <string>下载完成后删除该条播放缓存和歌词缓存</string>
-              </property>
-              <property name="toolTip">
-               <string>默认开启。删除 Data/media-cache 中该条目的播放副本，以及 Data/lyrics-cache 里的对应歌词；下载文件本身不受影响。</string>
-              </property>
-             </widget>
-            </item>
-            <item row="5" column="0">
-             <widget class="QLabel" name="label_shortcutCaption">
-              <property name="text">
-               <string>快捷键</string>
-              </property>
-             </widget>
-            </item>
-            <item row="5" column="1">
-             <widget class="QPushButton" name="btn_shortcuts">
-              <property name="text">
-               <string>设置快捷键…</string>
-              </property>
-              <property name="toolTip">
-               <string>自定义播放、全屏、搜索等动作的快捷键；保存时检测重复绑定</string>
-              </property>
-             </widget>
-            </item>
-            <item row="6" column="0" colspan="2">
-             <widget class="QLabel" name="label_shortcutHint">
-              <property name="objectName">
-               <string>label_hint</string>
-              </property>
-              <property name="text">
-               <string>同一个快捷键只能绑定一个动作；播放/暂停、全屏/退出全屏是切换动作，只占一个快捷键。</string>
-              </property>
-              <property name="wordWrap">
-               <bool>true</bool>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QFrame" name="card_sources">
-         <property name="objectName">
-          <string>settingsCard</string>
-         </property>
-         <property name="frameShape">
-          <enum>QFrame::NoFrame</enum>
-         </property>
-         <layout class="QVBoxLayout" name="layout_sourcesCard">
-          <property name="spacing">
-           <number>10</number>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QLabel" name="label_aboutHint">
+             <property name="objectName">
+              <string>label_hint</string>
+             </property>
+             <property name="text">
+              <string>基于 Qt 6 与 FFmpeg 构建，支持本地与网络音乐、影视播放和下载。</string>
+             </property>
+             <property name="wordWrap">
+              <bool>true</bool>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <spacer name="spacer_system">
+          <property name="orientation">
+           <enum>Qt::Vertical</enum>
           </property>
-          <property name="leftMargin">
-           <number>18</number>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
           </property>
-          <property name="topMargin">
-           <number>14</number>
-          </property>
-          <property name="rightMargin">
-           <number>18</number>
-          </property>
-          <property name="bottomMargin">
-           <number>16</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="label_sourcesTitle">
-            <property name="objectName">
-             <string>label_sectionTitle</string>
-            </property>
-            <property name="text">
-             <string>搜索源</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="layout_sourcesRow">
-            <property name="spacing">
-             <number>10</number>
-            </property>
-            <item>
-             <widget class="QLabel" name="label_sources">
-              <property name="text">
-               <string/>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="btn_sources">
-              <property name="text">
-               <string>管理搜索源…</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <widget class="QLabel" name="label_sourcesHint">
-            <property name="objectName">
-             <string>label_hint</string>
-            </property>
-            <property name="text">
-             <string>每个源是一份配置（搜索地址 + 字段对应）。可在这里新增、试搜、导入导出。</string>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QFrame" name="card_about">
-         <property name="objectName">
-          <string>settingsCard</string>
-         </property>
-         <property name="frameShape">
-          <enum>QFrame::NoFrame</enum>
-         </property>
-         <layout class="QVBoxLayout" name="layout_aboutCard">
-          <property name="spacing">
-           <number>10</number>
-          </property>
-          <property name="leftMargin">
-           <number>18</number>
-          </property>
-          <property name="topMargin">
-           <number>14</number>
-          </property>
-          <property name="rightMargin">
-           <number>18</number>
-          </property>
-          <property name="bottomMargin">
-           <number>16</number>
-          </property>
-          <item>
-           <widget class="QLabel" name="label_aboutTitle">
-            <property name="objectName">
-             <string>label_sectionTitle</string>
-            </property>
-            <property name="text">
-             <string>关于</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QGridLayout" name="grid_about">
-            <property name="horizontalSpacing">
-             <number>14</number>
-            </property>
-            <property name="verticalSpacing">
-             <number>8</number>
-            </property>
-            <item row="0" column="0">
-             <widget class="QLabel" name="label_aboutNameCaption">
-              <property name="objectName">
-               <string>label_hint</string>
-              </property>
-              <property name="text">
-               <string>名称</string>
-              </property>
-             </widget>
-            </item>
-            <item row="0" column="1">
-             <widget class="QLabel" name="label_aboutName">
-              <property name="text">
-               <string>MusicVideoPlayer</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="0">
-             <widget class="QLabel" name="label_aboutAuthorCaption">
-              <property name="objectName">
-               <string>label_hint</string>
-              </property>
-              <property name="text">
-               <string>作者</string>
-              </property>
-             </widget>
-            </item>
-            <item row="1" column="1">
-             <widget class="QLabel" name="label_aboutAuthor">
-              <property name="text">
-               <string>gong1-1989</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="0">
-             <widget class="QLabel" name="label_aboutVersionCaption">
-              <property name="objectName">
-               <string>label_hint</string>
-              </property>
-              <property name="text">
-               <string>版本</string>
-              </property>
-             </widget>
-            </item>
-            <item row="2" column="1">
-             <widget class="QLabel" name="label_aboutVersion">
-              <property name="text">
-               <string>0.2</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-          <item>
-           <widget class="QLabel" name="label_aboutHint">
-            <property name="objectName">
-             <string>label_hint</string>
-            </property>
-            <property name="text">
-             <string>基于 Qt 6 与 FFmpeg 构建，支持本地与网络音乐、影视播放和下载。</string>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <spacer name="spacer_right">
-         <property name="orientation">
-          <enum>Qt::Vertical</enum>
-         </property>
-         <property name="sizeHint" stdset="0">
-          <size>
-           <width>20</width>
-           <height>40</height>
-          </size>
-         </property>
-        </spacer>
-       </item>
-      </layout>
-     </item>
-      </layout>
+         </spacer>
+        </item>
+       </layout>
+      </widget>
      </widget>
     </widget>
    </item>

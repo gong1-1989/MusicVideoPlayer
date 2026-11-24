@@ -202,6 +202,9 @@ qt_add_executable(MusicVideoPlayer WIN32
     src/ui/SourceManagerDialog.h
     src/ui/SourceManagerDialog.cpp
     src/ui/SourceManagerDialog.ui
+    src/ui/SourceParserSettingsDialog.h
+    src/ui/SourceParserSettingsDialog.cpp
+    src/ui/SourceParserSettingsDialog.ui
     src/ui/SourceProbeDialog.h
     src/ui/SourceProbeDialog.cpp
     src/ui/SourceProbeDialog.ui
@@ -276,6 +279,8 @@ add_executable(mvp_ui_tests
     src/ui/ShortcutSettingsDialog.cpp
     src/ui/SourceManagerDialog.cpp
     src/ui/SourceManagerDialog.ui
+    src/ui/SourceParserSettingsDialog.cpp
+    src/ui/SourceParserSettingsDialog.ui
     src/ui/SourceProbeDialog.cpp
     src/ui/SourceProbeDialog.ui
     src/ui/ThemeManager.cpp

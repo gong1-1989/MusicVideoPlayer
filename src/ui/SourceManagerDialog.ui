@@ -12,8 +12,8 @@
   </property>
   <property name="minimumSize">
    <size>
-    <width>560</width>
-    <height>420</height>
+    <width>600</width>
+    <height>480</height>
    </size>
   </property>
   <property name="windowTitle">
@@ -24,177 +24,93 @@
     <number>10</number>
    </property>
    <property name="leftMargin">
-    <number>18</number>
-   </property>
-   <property name="topMargin">
     <number>16</number>
    </property>
+   <property name="topMargin">
+    <number>12</number>
+   </property>
    <property name="rightMargin">
-    <number>18</number>
+    <number>16</number>
    </property>
    <property name="bottomMargin">
-    <number>14</number>
+    <number>12</number>
    </property>
    <item>
     <widget class="QLabel" name="label_title">
      <property name="objectName">
       <string>label_sectionTitle</string>
      </property>
-     <property name="styleSheet">
-      <string notr="true">font-size:1.25em;</string>
-     </property>
      <property name="text">
-      <string>搜索源</string>
+      <string>搜索源管理</string>
      </property>
     </widget>
    </item>
    <item>
-    <widget class="QLabel" name="label_hintTop">
+    <widget class="QLabel" name="label_hint">
      <property name="objectName">
       <string>label_hint</string>
+     </property>
+     <property name="text">
+      <string>内置源由程序维护，不能删除或覆盖；外部源通过右键菜单删除。新增和更新都会调用外部解析器，成功后可修改名称并批量加入。</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
      </property>
-     <property name="text">
-      <string>内置源只保留网易云音乐、大米星球、Audius 音乐。新增或更新时，程序调用下方配置的外部解析器探测站点，成功并确认后才写入列表。</string>
-     </property>
     </widget>
    </item>
    <item>
-    <widget class="QListWidget" name="list_sources">
-     <property name="minimumSize">
-      <size>
-       <width>0</width>
-       <height>220</height>
-      </size>
+    <widget class="QFrame" name="card_parser">
+     <property name="objectName">
+      <string>settingsCard</string>
      </property>
-     <property name="contextMenuPolicy">
-      <enum>Qt::CustomContextMenu</enum>
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
      </property>
-     <property name="horizontalScrollBarPolicy">
-      <enum>Qt::ScrollBarAlwaysOff</enum>
-     </property>
-     <property name="textElideMode">
-      <enum>Qt::ElideRight</enum>
-     </property>
-    </widget>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="layout_listActions">
-     <property name="spacing">
-      <number>8</number>
-     </property>
-     <item>
-      <widget class="QPushButton" name="btn_add">
-       <property name="text">
-        <string>新增</string>
-       </property>
-       <property name="toolTip">
-        <string>调用外部解析器探测网站，确认后把源加入列表</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="btn_refresh">
-       <property name="text">
-        <string>更新</string>
-       </property>
-       <property name="toolTip">
-        <string>重新调用外部解析器探测选中源，确认后覆盖配置</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <spacer name="spacer_actions">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="QLabel" name="label_status">
-       <property name="objectName">
-        <string>label_hint</string>
-       </property>
-       <property name="text">
-        <string/>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <widget class="QGroupBox" name="group_parser">
-     <property name="title">
-      <string>外部解析器（新增 / 更新时调用）</string>
-     </property>
-     <layout class="QVBoxLayout" name="layout_parser">
+     <layout class="QVBoxLayout" name="layout_parserCard">
       <property name="spacing">
        <number>8</number>
       </property>
+      <property name="leftMargin">
+       <number>16</number>
+      </property>
+      <property name="topMargin">
+       <number>12</number>
+      </property>
+      <property name="rightMargin">
+       <number>16</number>
+      </property>
+      <property name="bottomMargin">
+       <number>12</number>
+      </property>
       <item>
-       <layout class="QFormLayout" name="form_parser">
-        <property name="horizontalSpacing">
-         <number>12</number>
+       <widget class="QLabel" name="label_parserTitle">
+        <property name="objectName">
+         <string>label_sectionTitle</string>
         </property>
-        <property name="verticalSpacing">
-         <number>6</number>
+        <property name="text">
+         <string>外部解析器</string>
         </property>
-        <item row="0" column="0">
-         <widget class="QLabel" name="label_captionCommand">
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="layout_parserRow">
+        <property name="spacing">
+         <number>10</number>
+        </property>
+        <item>
+         <widget class="QLabel" name="label_parserSummary">
           <property name="text">
-           <string>命令</string>
+           <string/>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
           </property>
          </widget>
         </item>
-        <item row="0" column="1">
-         <widget class="QLineEdit" name="edit_command">
-          <property name="placeholderText">
-           <string>source-probe-cli.exe，或 python / node / 绝对路径脚本</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="0">
-         <widget class="QLabel" name="label_captionArguments">
+        <item>
+         <widget class="QPushButton" name="btn_parserConfig">
           <property name="text">
-           <string>参数</string>
-          </property>
-         </widget>
-        </item>
-        <item row="1" column="1">
-         <widget class="QLineEdit" name="edit_arguments">
-          <property name="placeholderText">
-           <string>--site {site} --type {type} --mode {mode}</string>
-          </property>
-         </widget>
-        </item>
-        <item row="2" column="0">
-         <widget class="QLabel" name="label_captionTimeout">
-          <property name="text">
-           <string>超时</string>
-          </property>
-         </widget>
-        </item>
-        <item row="2" column="1">
-         <widget class="QSpinBox" name="spin_timeout">
-          <property name="minimum">
-           <number>5000</number>
-          </property>
-          <property name="maximum">
-           <number>600000</number>
-          </property>
-          <property name="singleStep">
-           <number>5000</number>
-          </property>
-          <property name="suffix">
-           <string> 毫秒</string>
+           <string>配置解析器…</string>
           </property>
          </widget>
         </item>
@@ -205,11 +121,11 @@
         <property name="objectName">
          <string>label_hint</string>
         </property>
+        <property name="text">
+         <string>解析器必须是无界面的命令行程序：读取参数、向 stdout 输出 JSON，不在主程序里弹窗。</string>
+        </property>
         <property name="wordWrap">
          <bool>true</bool>
-        </property>
-        <property name="text">
-         <string>解析器从 stdout 输出 JSON：成功为 { "ok": true, "source": { SourceConfig 字段 } }；失败为 { "ok": false, "error": "原因" }。参数支持 {site}、{type}、{mode} 占位符。</string>
         </property>
        </widget>
       </item>
@@ -217,7 +133,123 @@
     </widget>
    </item>
    <item>
+    <widget class="QFrame" name="card_sources">
+     <property name="objectName">
+      <string>settingsCard</string>
+     </property>
+     <property name="frameShape">
+      <enum>QFrame::NoFrame</enum>
+     </property>
+     <layout class="QVBoxLayout" name="layout_sourcesCard">
+      <property name="spacing">
+       <number>8</number>
+      </property>
+      <property name="leftMargin">
+       <number>16</number>
+      </property>
+      <property name="topMargin">
+       <number>12</number>
+      </property>
+      <property name="rightMargin">
+       <number>16</number>
+      </property>
+      <property name="bottomMargin">
+       <number>12</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="label_sourcesTitle">
+        <property name="objectName">
+         <string>label_sectionTitle</string>
+        </property>
+        <property name="text">
+         <string>搜索源列表</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QListWidget" name="list_sources">
+        <property name="minimumHeight">
+         <number>180</number>
+        </property>
+        <property name="contextMenuPolicy">
+         <enum>Qt::CustomContextMenu</enum>
+        </property>
+        <property name="alternatingRowColors">
+         <bool>true</bool>
+        </property>
+        <property name="selectionMode">
+         <enum>QAbstractItemView::SingleSelection</enum>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="layout_actions">
+        <property name="spacing">
+         <number>8</number>
+        </property>
+        <item>
+         <widget class="QPushButton" name="btn_add">
+          <property name="text">
+           <string>新增源…</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="btn_refresh">
+          <property name="text">
+           <string>更新所选…</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="spacer_actions">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>40</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="label_status">
+     <property name="objectName">
+      <string>label_hint</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <spacer name="spacer_root">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>20</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+   <item>
     <layout class="QHBoxLayout" name="layout_buttons">
+     <property name="spacing">
+      <number>10</number>
+     </property>
      <item>
       <spacer name="spacer_buttons">
        <property name="orientation">

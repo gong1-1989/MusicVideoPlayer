@@ -233,6 +233,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_fullscreen = new FullscreenController(ui->videoWidget, m_player->mediaPlayer(),
                                             ui->panelTransport, ui->layout_center,
                                             m_panels, 16.0, this);
+    connect(m_fullscreen, &FullscreenController::shortcutTriggered, this,
+            &MainWindow::executeShortcutAction);
 
     // 播放条：进度、音量、播放/停止/上下曲、模式按钮与歌词联动
     PlaybackUi playbackUi;
@@ -454,6 +456,9 @@ void MainWindow::rebuildShortcuts()
                 [this, actionId] { executeShortcutAction(actionId); });
         m_shortcuts.append(shortcut);
     }
+    // 全屏窗有独立的 QShortcut 集合；设置页保存后同步重建，避免全屏仍用旧键。
+    if (m_fullscreen != nullptr)
+        m_fullscreen->refreshShortcuts();
     updateShortcutTooltips();
 }
 

@@ -14,6 +14,7 @@
 #include "ui/SettingsController.h"
 #include "ui/SettingsDialog.h"
 #include "ui/SourceManagerDialog.h"
+#include "ui/SourceParserSettingsDialog.h"
 #include "ui/SourceProbeDialog.h"
 #include "ui/ThemeManager.h"
 
@@ -32,6 +33,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QTemporaryDir>
+#include <QTableWidget>
 #include <QTabWidget>
 #include <QSignalSpy>
 
@@ -106,6 +108,8 @@ private slots:
     void proprietaryVideoFilesAreRejectedWithHint();
     void settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault();
     void settingsRemoveCacheCheckboxReflectsSetting();
+    void settingsDialogUsesPagedTabs();
+    void parserSettingsDialogKeepsParserConfiguration();
     void sourceManagerOnlyKeepsCoreControls();
     void sourceProbeDialogCallsExternalParser();
 };
@@ -498,6 +502,52 @@ void UiLogicTest::settingsRemoveCacheCheckboxReflectsSetting()
     AppSettings::setRemovePlaybackCacheAfterDownload(original);
 }
 
+void UiLogicTest::settingsDialogUsesPagedTabs()
+{
+    SettingsDialog dialog;
+    QTabWidget *tabs = dialog.findChild<QTabWidget *>(QStringLiteral("tabs_settings"));
+    QVERIFY(tabs != nullptr);
+    QCOMPARE(tabs->count(), 5);
+    QCOMPARE(tabs->tabText(0), QStringLiteral("基本设置"));
+    QCOMPARE(tabs->tabText(1), QStringLiteral("播放与布局"));
+    QCOMPARE(tabs->tabText(2), QStringLiteral("搜索源管理"));
+    QCOMPARE(tabs->tabText(3), QStringLiteral("更新"));
+    QCOMPARE(tabs->tabText(4), QStringLiteral("系统信息"));
+    QVERIFY(dialog.findChild<QWidget *>(QStringLiteral("page_update")) != nullptr);
+    QVERIFY(dialog.findChild<QWidget *>(QStringLiteral("page_system_info")) != nullptr);
+}
+
+void UiLogicTest::parserSettingsDialogKeepsParserConfiguration()
+{
+    SourceParserSettings input;
+    input.command = QStringLiteral("source-probe-cli.exe");
+    input.arguments = QStringLiteral("--site {site} --type {type} --mode {mode}");
+    input.timeoutMs = 45000;
+
+    SourceParserSettingsDialog dialog(input);
+    QLineEdit *command = dialog.findChild<QLineEdit *>(QStringLiteral("edit_command"));
+    QLineEdit *arguments = dialog.findChild<QLineEdit *>(QStringLiteral("edit_arguments"));
+    QSpinBox *timeout = dialog.findChild<QSpinBox *>(QStringLiteral("spin_timeout"));
+    QLabel *details = dialog.findChild<QLabel *>(QStringLiteral("label_details"));
+    QVERIFY(command != nullptr);
+    QVERIFY(arguments != nullptr);
+    QVERIFY(timeout != nullptr);
+    QVERIFY(details != nullptr);
+
+    QCOMPARE(command->text(), input.command);
+    QCOMPARE(arguments->text(), input.arguments);
+    QCOMPARE(timeout->value(), input.timeoutMs);
+    QVERIFY(details->text().contains(QStringLiteral("{site}")));
+    QVERIFY(details->text().contains(QStringLiteral("MVP_SOURCE_SITE")));
+    QVERIFY(details->text().contains(QStringLiteral("退出码")));
+
+    command->setText(QStringLiteral("my-parser.exe"));
+    timeout->setValue(5000);
+    const SourceParserSettings saved = dialog.parserSettings();
+    QCOMPARE(saved.command, QStringLiteral("my-parser.exe"));
+    QCOMPARE(saved.timeoutMs, 5000);
+}
+
 void UiLogicTest::sourceManagerOnlyKeepsCoreControls()
 {
     QTemporaryDir temp;
@@ -515,12 +565,14 @@ void UiLogicTest::sourceManagerOnlyKeepsCoreControls()
 
     QVERIFY(dialog.findChild<QPushButton *>(QStringLiteral("btn_add")) != nullptr);
     QVERIFY(dialog.findChild<QPushButton *>(QStringLiteral("btn_refresh")) != nullptr);
-    QVERIFY(dialog.findChild<QLineEdit *>(QStringLiteral("edit_command")) != nullptr);
-    QVERIFY(dialog.findChild<QLineEdit *>(QStringLiteral("edit_arguments")) != nullptr);
-    QVERIFY(dialog.findChild<QSpinBox *>(QStringLiteral("spin_timeout")) != nullptr);
+    QVERIFY(dialog.findChild<QPushButton *>(QStringLiteral("btn_parserConfig")) != nullptr);
+    QVERIFY(dialog.findChild<QLabel *>(QStringLiteral("label_parserSummary")) != nullptr);
 
-    // 旧界面的完整编辑表单、试搜、导入导出和示例入口必须全部移除。
-    for (const QString &name : {QStringLiteral("btn_remove"), QStringLiteral("btn_duplicate"),
+    // 解析器不再内联编辑，旧完整编辑表单、试搜、导入导出和示例入口必须移除。
+    for (const QString &name : {QStringLiteral("edit_command"),
+                                QStringLiteral("edit_arguments"),
+                                QStringLiteral("spin_timeout"),
+                                QStringLiteral("btn_remove"), QStringLiteral("btn_duplicate"),
                                 QStringLiteral("btn_import"), QStringLiteral("btn_export"),
                                 QStringLiteral("btn_example"), QStringLiteral("btn_addSite"),
                                 QStringLiteral("btn_test"), QStringLiteral("edit_url"),
@@ -557,27 +609,40 @@ Write-Output $payload
 
     SourceProbeDialog dialog(MediaType::Video, QString(), QStringLiteral("测试解析器"), parser);
     dialog.show();
-    QLineEdit *url = dialog.findChild<QLineEdit *>(QStringLiteral("edit_url"));
+    QPlainTextEdit *sites = dialog.findChild<QPlainTextEdit *>(QStringLiteral("edit_sites"));
+    QTableWidget *table = dialog.findChild<QTableWidget *>(QStringLiteral("table_results"));
     QPushButton *probe = dialog.findChild<QPushButton *>(QStringLiteral("btn_probe"));
     QPushButton *confirm = dialog.findChild<QPushButton *>(QStringLiteral("btn_applyPrimary"));
-    QVERIFY(url != nullptr);
+    QVERIFY(sites != nullptr);
+    QVERIFY(table != nullptr);
     QVERIFY(probe != nullptr);
     QVERIFY(confirm != nullptr);
 
-    url->setText(QStringLiteral("https://example.com/"));
+    // 批量探测：两行站点应各自得到一行结果，成功后名称列可编辑。
+    sites->setPlainText(QStringLiteral("https://example.com/\nhttps://example.org/"));
     probe->click();
     QTest::qWait(500);
     QLabel *status = dialog.findChild<QLabel *>(QStringLiteral("label_status"));
     QPlainTextEdit *log = dialog.findChild<QPlainTextEdit *>(QStringLiteral("text_log"));
-    for (int i = 0; i < 300 && !confirm->isEnabled(); ++i)
+    for (int i = 0; i < 400 && !confirm->isEnabled(); ++i)
         QTest::qWait(100);
     QVERIFY2(confirm->isEnabled(),
              qPrintable(QStringLiteral("status=%1\nlog=%2")
                             .arg(status != nullptr ? status->text() : QStringLiteral("<none>"),
                                  log != nullptr ? log->toPlainText() : QStringLiteral("<none>"))));
-    QCOMPARE(dialog.probedConfig().id, QStringLiteral("fake_site"));
-    QCOMPARE(dialog.probedConfig().name, QStringLiteral("Fake Site"));
-    QVERIFY(dialog.probedConfig().isValid());
+    QCOMPARE(table->rowCount(), 2);
+    QTableWidgetItem *nameItem = table->item(0, 2);
+    QVERIFY(nameItem != nullptr);
+    QVERIFY(nameItem->flags() & Qt::ItemIsEditable);
+    nameItem->setText(QStringLiteral("自定义源"));
+
+    confirm->click();
+    const QVector<SourceConfig> configs = dialog.probedConfigs();
+    QCOMPARE(configs.size(), 2);
+    QCOMPARE(configs.first().id, QStringLiteral("fake_site"));
+    QCOMPARE(configs.first().name, QStringLiteral("自定义源"));
+    QVERIFY(configs.first().isValid());
+    QVERIFY(configs.last().isValid());
 }
 
 QTEST_MAIN(UiLogicTest)
