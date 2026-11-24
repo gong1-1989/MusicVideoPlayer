@@ -240,6 +240,7 @@ private slots:
     void downloadManagerPausesAndResumesMusic();
     void downloadManagerPublishesAcrossVolumes();
     void downloadManagerRemovesLegacyDownloadCache();
+    void downloadManagerMigratesLegacyStaging();
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
     void hlsCacheBuilderResumesAfterExit();
@@ -1074,6 +1075,100 @@ void IntegrationTest::downloadManagerRemovesLegacyDownloadCache()
     QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(legacyDir), 3000);
     QVERIFY(QFileInfo::exists(userFile));
     QCOMPARE(QFileInfo(userFile).size(), qint64(4));
+
+    manager.shutdownForExit();
+    AppSettings::setDownloadDir(QString());
+}
+
+void IntegrationTest::downloadManagerMigratesLegacyStaging()
+{
+    const QString root = m_tempDir.filePath(QStringLiteral("legacy-migrate"));
+    const QString videoDir = QDir(root).filePath(QStringLiteral("影视"));
+    const QString legacyRoot = QDir(videoDir).filePath(QStringLiteral(".download-cache"));
+    const QString migratedDir = QDir(legacyRoot).filePath(QStringLiteral("legacy-migrated"));
+    const QString missingDir = QDir(legacyRoot).filePath(QStringLiteral("legacy-missing"));
+    QVERIFY(QDir().mkpath(migratedDir));
+    QVERIFY(QDir().mkpath(missingDir));
+
+    const QByteArray partial(500, 'h');
+    DownloadJob migrated;
+    migrated.id = QStringLiteral("legacy-migrated");
+    migrated.item.type = MediaType::Video;
+    migrated.item.title = QStringLiteral("生化危机2002");
+    migrated.item.url = QUrl(QStringLiteral("http://127.0.0.1:1/legacy.m3u8"));
+    migrated.item.online = true;
+    migrated.url = migrated.item.url;
+    migrated.filePath = QDir(videoDir).filePath(QStringLiteral("生化危机2002.mp4"));
+    migrated.stagingPath = QDir(migratedDir).filePath(QStringLiteral("生化危机2002.mp4.ts"));
+    migrated.hls = true;
+    migrated.status = DownloadJob::Status::Paused;
+    migrated.pausedByUser = true;
+    migrated.bytesReceived = partial.size();
+    migrated.segmentIndex = 59;
+    migrated.segmentCount = 649;
+    migrated.message = QStringLiteral("正在下载 59/649 分片");
+    QFile oldPartial(migrated.stagingPath + QStringLiteral(".mvpdownload"));
+    QVERIFY(oldPartial.open(QIODevice::WriteOnly));
+    oldPartial.write(partial);
+    oldPartial.close();
+
+    DownloadJob missing;
+    missing.id = QStringLiteral("legacy-missing");
+    missing.item = migrated.item;
+    missing.item.title = QStringLiteral("缓存已删除");
+    missing.url = migrated.url;
+    missing.filePath = QDir(videoDir).filePath(QStringLiteral("缓存已删除.mp4"));
+    missing.stagingPath = QDir(missingDir).filePath(QStringLiteral("缓存已删除.mp4.ts"));
+    missing.hls = true;
+    missing.status = DownloadJob::Status::Paused;
+    missing.pausedByUser = true;
+    missing.bytesReceived = 13 * 1024 * 1024;
+    missing.segmentIndex = 59;
+    missing.segmentCount = 649;
+    missing.message = QStringLiteral("正在下载 59/649 分片");
+
+    AppSettings::setDownloadDir(root);
+    QDir().mkpath(StoragePaths::dataDir());
+    QFile state(StoragePaths::dataFile(QStringLiteral("downloads.json")));
+    QVERIFY(state.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QJsonArray jobs;
+    jobs.append(migrated.toJson());
+    jobs.append(missing.toJson());
+    QJsonObject rootObject;
+    rootObject.insert(QStringLiteral("version"), 1);
+    rootObject.insert(QStringLiteral("jobs"), jobs);
+    state.write(QJsonDocument(rootObject).toJson(QJsonDocument::Indented));
+    state.close();
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QCOMPARE(manager.jobs().size(), 2);
+
+    const DownloadJob *migratedJob = nullptr;
+    const DownloadJob *missingJob = nullptr;
+    for (const DownloadJob &job : manager.jobs()) {
+        if (job.id == migrated.id)
+            migratedJob = &job;
+        else if (job.id == missing.id)
+            missingJob = &job;
+    }
+    QVERIFY(migratedJob != nullptr);
+    QVERIFY(missingJob != nullptr);
+
+    // 旧缓存搬到应用数据目录，分片进度保留；下载目录不再留下旧暂存目录。
+    QVERIFY(migratedJob->stagingPath.contains(QStringLiteral("download-cache")));
+    QVERIFY(!migratedJob->stagingPath.contains(QStringLiteral("/.download-cache/")));
+    QVERIFY(QFileInfo(migratedJob->partialPath()).exists());
+    QCOMPARE(QFileInfo(migratedJob->partialPath()).size(), qint64(partial.size()));
+    QCOMPARE(migratedJob->segmentIndex, 59);
+    QCOMPARE(migratedJob->segmentCount, 649);
+    QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(legacyRoot), 3000);
+
+    // 旧缓存被用户手动删掉时，不能继续显示 59/649；必须清零并提示重新下载。
+    QCOMPARE(missingJob->segmentIndex, 0);
+    QCOMPARE(missingJob->segmentCount, 0);
+    QCOMPARE(missingJob->bytesReceived, qint64(0));
+    QVERIFY(missingJob->message.contains(QStringLiteral("缓存")));
 
     manager.shutdownForExit();
     AppSettings::setDownloadDir(QString());

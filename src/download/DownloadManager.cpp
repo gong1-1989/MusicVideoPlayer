@@ -806,6 +806,11 @@ void DownloadManager::load()
         }
     }
 
+    // 先迁移旧版放在下载目录里的暂存文件，再校验暂存文件是否还存在。
+    // 顺序不能反：直接清理会把旧任务的续传字节一起删掉。
+    migrateLegacyStagingPaths();
+    reconcileStagingState();
+
     if (changedInLoad)
         scheduleSave();
     qCInfo(lcDownloadManager) << "已载入" << m_jobs.size() << "条下载记录";
@@ -881,6 +886,144 @@ void DownloadManager::saveNow()
     }
     if (trimmed && !m_shuttingDown)
         emit jobsChanged();
+}
+
+/// @brief 把旧版下载目录里的 `.download-cache` 暂存文件迁到应用数据目录。
+/// @note 同盘 rename；跨盘才复制，并校验大小。迁移失败时保留旧路径，
+///       不能为了“清干净下载目录”把用户几百 MB/几 GB 的续传进度删掉。
+void DownloadManager::migrateLegacyStagingPaths()
+{
+    auto moveFile = [](const QString &from, const QString &to) {
+        if (!QFileInfo(from).isFile())
+            return true; // 没有源文件不算失败
+        if (QFileInfo(to).exists() && !QFile::remove(to))
+            return false;
+        if (QFile::rename(from, to))
+            return true;
+        if (QFile::copy(from, to)
+            && QFileInfo(to).size() == QFileInfo(from).size()
+            && QFile::remove(from)) {
+            return true;
+        }
+        QFile::remove(to);
+        return false;
+    };
+
+    bool changed = false;
+    for (DownloadJob &job : m_jobs) {
+        if (job.stagingPath.isEmpty())
+            continue;
+        const QString path = QDir::fromNativeSeparators(job.stagingPath);
+        if (!path.contains(QLatin1String("/.download-cache/")))
+            continue;
+
+        const QFileInfo oldInfo(job.stagingPath);
+        if (oldInfo.absolutePath().isEmpty()) {
+            job.stagingPath.clear();
+            changed = true;
+            continue;
+        }
+        const QString oldDir = oldInfo.absolutePath();
+        const QString oldBase = oldInfo.filePath();
+        const QString oldPartial = oldBase + QStringLiteral(".mvpdownload");
+        const QString oldMp4 = oldInfo.absolutePath() + QLatin1Char('/')
+                               + oldInfo.completeBaseName() + QStringLiteral(".mp4");
+
+        const QString newBase = stagingPathForJob(job, oldInfo.suffix());
+        if (newBase.isEmpty())
+            continue;
+        const QFileInfo newInfo(newBase);
+        const QString newDir = newInfo.absolutePath();
+        const QString newPartial = newBase + QStringLiteral(".mvpdownload");
+        const QString newMp4 = newInfo.absolutePath() + QLatin1Char('/')
+                               + newInfo.completeBaseName() + QStringLiteral(".mp4");
+        if (!QDir().mkpath(newDir)) {
+            qCWarning(lcDownloadManager) << "旧下载缓存迁移目录创建失败" << newDir;
+            continue;
+        }
+
+        const bool hasBase = QFileInfo(oldBase).isFile();
+        const bool hasPartial = QFileInfo(oldPartial).isFile();
+        const bool hasMp4 = QFileInfo(oldMp4).isFile();
+        if (!hasBase && !hasPartial && !hasMp4) {
+            // 用户手动删掉了旧缓存：只改路径并清零，后面按全新任务下载。
+            job.stagingPath = newBase;
+            job.committed = false;
+            job.bytesReceived = 0;
+            job.segmentIndex = 0;
+            job.segmentCount = 0;
+            job.message = tr("旧下载缓存已被清理，将重新下载");
+            qCInfo(lcDownloadManager) << "旧下载缓存不存在，已重置任务" << job.id;
+            changed = true;
+            continue;
+        }
+
+        bool ok = true;
+        if (hasBase && !moveFile(oldBase, newBase)) {
+            qCWarning(lcDownloadManager) << "旧下载缓存迁移失败" << oldBase;
+            ok = false;
+        }
+        if (hasMp4 && !moveFile(oldMp4, newMp4)) {
+            qCWarning(lcDownloadManager) << "旧转封装缓存迁移失败" << oldMp4;
+            ok = false;
+        }
+        if (hasPartial && !hasBase && !moveFile(oldPartial, newPartial)) {
+            qCWarning(lcDownloadManager) << "旧半成品缓存迁移失败" << oldPartial;
+            ok = false;
+        }
+
+        if (!ok) {
+            // 至少保留原 stagingPath，下次仍能从旧位置续传。
+            qCWarning(lcDownloadManager) << "保留旧下载缓存路径等待下次迁移" << job.id;
+            continue;
+        }
+
+        // 迁移成功：优先接已经转封装好的 MP4，其次接完整 TS/半成品。
+        job.stagingPath = QFileInfo(newMp4).isFile() ? newMp4 : newBase;
+        // 完整文件已经搬到新位置后，旧目录里残留的 partial 没有意义。
+        if (hasBase)
+            QFile::remove(oldPartial);
+        QDir(oldDir).removeRecursively();
+        changed = true;
+        qCInfo(lcDownloadManager) << "已迁移旧下载缓存" << oldDir << "->" << newDir;
+    }
+    if (changed)
+        scheduleSave();
+}
+
+/// @brief 暂存文件被外部删除时同步清零续传点，避免显示与实际进度脱节。
+void DownloadManager::reconcileStagingState()
+{
+    bool changed = false;
+    for (DownloadJob &job : m_jobs) {
+        if (job.stagingPath.isEmpty()
+            || job.status == DownloadJob::Status::Completed)
+            continue;
+        // 缓存种子/完整缓存复制还没开始写暂存文件时，不能把进度误判为丢失。
+        if (!job.seedSourcePath.isEmpty() || !job.cacheCopySourcePath.isEmpty())
+            continue;
+
+        const QFileInfo baseInfo(job.stagingPath);
+        const QString partial = job.stagingPath + QStringLiteral(".mvpdownload");
+        const QString stagedMp4 = baseInfo.absolutePath() + QLatin1Char('/')
+                                  + baseInfo.completeBaseName() + QStringLiteral(".mp4");
+        const bool hasStaged = baseInfo.isFile() || QFileInfo(partial).isFile()
+                               || QFileInfo(stagedMp4).isFile();
+        if (hasStaged)
+            continue;
+        if (job.bytesReceived <= 0 && job.segmentIndex <= 0 && !job.committed)
+            continue;
+
+        job.committed = false;
+        job.bytesReceived = 0;
+        job.segmentIndex = 0;
+        job.segmentCount = 0;
+        job.message = tr("下载缓存已被清理，将从头下载");
+        changed = true;
+        qCInfo(lcDownloadManager) << "暂存文件不存在，已重置下载进度" << job.id;
+    }
+    if (changed)
+        scheduleSave();
 }
 
 /// @brief 清掉旧版本遗留在下载目录里的 `.download-cache` 暂存目录。
