@@ -168,6 +168,14 @@ QComboBox QAbstractItemView {
     selection-color: #2b2b45;
 }
 
+/* 下拉弹层上下滚动器默认带浅色底板，会在浅色弹层底部留下色块 */
+QComboBoxPrivateScroller {
+    background: transparent;
+    border: none;
+    min-height: 0;
+    max-height: 0;
+}
+
 QComboBox#combo_searchType,
 QComboBox#combo_searchSource,
 QComboBox#combo_searchQuality {

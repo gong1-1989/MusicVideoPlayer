@@ -167,6 +167,14 @@ QComboBox QAbstractItemView {
     selection-background-color: rgba(110, 92, 255, 45%);
 }
 
+/* 下拉弹层上下滚动器默认带浅色底板，会在深色弹层底部留下白条 */
+QComboBoxPrivateScroller {
+    background: transparent;
+    border: none;
+    min-height: 0;
+    max-height: 0;
+}
+
 /* 搜索筛选行宽度紧张：三个下拉并排时压缩内边距，避免只剩一两个字可见 */
 QComboBox#combo_searchType,
 QComboBox#combo_searchSource,
