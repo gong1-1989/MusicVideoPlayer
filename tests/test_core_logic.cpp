@@ -3760,6 +3760,8 @@ void CoreLogicTest::hlsPreloadIndexPersistsAndFollowsRenamedTrack()
     audioEntry.size = 10;
     HlsPreloadIndex::instance().record(QStringLiteral("item-a"), audioEntry);
     QCOMPARE(HlsPreloadIndex::instance().count(QStringLiteral("item-a")), 2);
+    QCOMPARE(HlsPreloadIndex::instance().countTrack(QStringLiteral("item-a"), finalPath), 1);
+    QCOMPARE(HlsPreloadIndex::instance().countTrack(QStringLiteral("item-a"), audioPartial), 1);
 
     HlsPreloadIndex::instance().clearTrack(finalPath);
     QCOMPARE(HlsPreloadIndex::instance().count(QStringLiteral("item-a")), 1);

@@ -237,6 +237,28 @@ int HlsPreloadIndex::count(const QString &identity) const
     return total;
 }
 
+int HlsPreloadIndex::countTrack(const QString &identity, const QString &targetPath) const
+{
+    if (identity.isEmpty())
+        return 0;
+    QString base = targetPath.trimmed();
+    if (base.endsWith(QLatin1String(".mvpdownload"), Qt::CaseInsensitive))
+        base.chop(int(QStringLiteral(".mvpdownload").size()));
+    if (base.isEmpty())
+        return 0;
+    const QString partial = base + QStringLiteral(".mvpdownload");
+    const QString prefix = identity + QLatin1Char('|');
+    QMutexLocker lock(&m_mutex);
+    int total = 0;
+    for (auto it = m_slices.constBegin(); it != m_slices.constEnd(); ++it) {
+        if (!it.key().startsWith(prefix))
+            continue;
+        if (it.value().filePath == base || it.value().filePath == partial)
+            ++total;
+    }
+    return total;
+}
+
 void HlsPreloadIndex::clear()
 {
     QMutexLocker lock(&m_mutex);

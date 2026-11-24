@@ -792,6 +792,9 @@ void HlsCacheBuilder::maybeStartMigration(bool video, const QString &fingerprint
     const HlsCacheManifest::MediaTrack &track = video ? m_videoTrack : m_audioTrack;
     const QList<QUrl> &segments = video ? m_videoSegments : m_audioSegments;
     const QPointer<HlsPreloadMigrator> &slot = video ? m_videoMigrator : m_audioMigrator;
+    const QString target = resume.targetPath.isEmpty()
+                               ? (video ? m_videoPath : m_audioPath)
+                               : resume.targetPath;
 
     if (!resume.valid || resume.completed || resume.bytesWritten <= 0
         || resume.segmentIndex <= 0 || resume.segmentIndex > segments.size())
@@ -813,16 +816,13 @@ void HlsCacheBuilder::maybeStartMigration(bool video, const QString &fingerprint
                            << (video ? "视频轨" : "音轨");
         return;
     }
-    if (HlsPreloadIndex::instance().count(m_identity) > 0) {
+    if (HlsPreloadIndex::instance().countTrack(m_identity, target) > 0) {
         qCInfo(lcHlsCache) << "旧缓存已有分片索引，跳过迁移" << (video ? "视频轨" : "音轨");
         return;
     }
     if (!slot.isNull())
         return;
 
-    const QString target = resume.targetPath.isEmpty()
-                               ? (video ? m_videoPath : m_audioPath)
-                               : resume.targetPath;
     QString trackPath = target + QStringLiteral(".mvpdownload");
     if (!QFileInfo::exists(trackPath) && QFileInfo::exists(target))
         trackPath = target;
