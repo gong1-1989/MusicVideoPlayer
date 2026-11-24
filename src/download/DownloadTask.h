@@ -78,6 +78,9 @@ signals:
     void progress(qint64 received, qint64 total);
     /// 每完成一个 HLS 分片或普通下载写入一段后更新；供下载管理器持久化续传点
     void checkpoint(qint64 bytesWritten, int segmentIndex, int segmentCount);
+    /// HLS 分片已完整写入合并轨道文件；url/range 定位上游分片，offset/size
+    /// 是合并文件里的切片，供播放代理直接读缓存。
+    void segmentWritten(const QUrl &url, const QByteArray &range, qint64 offset, qint64 size);
     /// 成功解析媒体播放列表后发出结构指纹；续传前用它判断分片是否仍属于同一容器。
     void playlistFingerprint(const QString &fingerprint);
     /// 响应实际是 HLS 时，最终扩展名会从 .mp4/.mp3 改成 .ts
@@ -169,6 +172,8 @@ private:
     qint64 m_sessionBytesWritten = 0;
     qint64 m_segmentBytes = 0;
     qint64 m_segmentExpected = -1;
+    /// 当前分片在合并轨道文件里的起始偏移，完成时用于生成播放缓存切片。
+    qint64 m_segmentFileOffset = 0;
     /// 加密分片必须整段收齐才能验 PKCS#7 填充，收完前只放内存、不写盘。
     QByteArray m_segmentCipher;
     /// 当前分片的明文密钥；只在单个分片生命周期内保留。

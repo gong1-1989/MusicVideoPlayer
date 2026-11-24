@@ -1,6 +1,7 @@
 /// @file StreamProxy.cpp
 /// @brief 本地流转服务实现：令牌化上游地址、Range 分片缓存、HLS 播放列表改写与拖动预取。
 #include "stream/StreamProxy.h"
+#include "cache/HlsPreloadIndex.h"
 #include "cache/MediaCache.h"
 #include "stream/HlsSeekWindow.h"
 #include "net/HttpClient.h"
@@ -555,11 +556,48 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     // 条目缓存只对应播放列表里那一整条媒体地址；HLS 分片是同一 token 下的
     // 相对子资源，不能把整段视频文件当成某一个分片来写。
     const QString cachePath = suffix.isEmpty() ? entry.cachePath : QString();
-    const QString cacheIdentity = suffix.isEmpty() ? entry.cacheIdentity : QString();
+    // 根列表与子分片都必须带同一身份：后台 HLS 缓存按“身份 + 分片地址”
+    // 登记索引，播放代理若丢掉子分片的身份就永远查不到已缓存的字节。
+    const QString cacheIdentity = entry.cacheIdentity;
 
     // 缓存键必须同时包含地址和鉴权头，避免同一 CDN 地址在不同 Referer/Cookie
     // 下共用缓存，把 A 源的响应喂给 B 源。
     const QString cacheKey = cacheKeyFor(upstream, headers);
+
+    // 先查后台 HLS 缓存建立的分片索引：后台已写进合并轨道文件的字节直接
+    // 从本地切片返回，不再向上游请求；索引未命中才走原有整段缓存/回源。
+    if (!isHead && !cacheIdentity.isEmpty()) {
+        HlsPreloadSlice slice;
+        if (HlsPreloadIndex::instance().find(cacheIdentity, upstream, range, &slice)) {
+            QFile file(slice.filePath);
+            if (file.open(QIODevice::ReadOnly) && file.seek(slice.offset)) {
+                QByteArray bytes = file.read(slice.size);
+                if (bytes.size() == slice.size) {
+                    auto cached = QSharedPointer<CacheEntry>::create();
+                    cached->data = bytes;
+                    cached->dataSize = bytes.size();
+                    cached->total = bytes.size();
+                    cached->complete = true;
+                    cached->transient = true;
+                    cached->contentType = slice.contentType.isEmpty()
+                                               ? guessContentType(upstream)
+                                               : slice.contentType;
+                    cached->cacheIdentity = cacheIdentity;
+                    cached->upstream = upstream;
+                    // 索引命中是瞬时响应：插到缓存表让 serveFromCache 统一
+                    // 处理 200/206 头与 Range 切分，客户端断开后按 transient 移除。
+                    m_cache.insert(cacheKey, cached);
+                    if (serveFromCache(client, cached, cacheKey, request.range, hasRange)) {
+                        qCInfo(lcProxy) << "流转预加载命中，直接读本地分片"
+                                        << HttpClient::redactUrl(upstream)
+                                        << "偏移" << slice.offset << "长度" << slice.size;
+                        return;
+                    }
+                    m_cache.remove(cacheKey);
+                }
+            }
+        }
+    }
 
     // 先查缓存：完整或已下载部分都能立刻回 206，拖动无需等上游。
     if (!isHead) {
@@ -790,7 +828,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         // FFmpeg 的 `bytes=0-` 等价于要全文，可以安全改写；明确区间则拒绝。
         if (!isHead && isPlaylistResponse(reply)) {
             if (!hasRange || isOpenEndedRange(request.range)) {
-                attachPlaylist(client, reply, headers, sourceOrigin);
+                attachPlaylist(client, reply, headers, sourceOrigin, cacheIdentity);
             } else {
                 qCWarning(lcProxy) << "播放列表不支持指定区间" << request.range
                                    << HttpClient::redactUrl(upstream);
@@ -1769,12 +1807,12 @@ void StreamProxy::cancelPrefetch()
 
 void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
                                  const QHash<QString, QString> &headers,
-                                 const QUrl &sourceOrigin)
+                                 const QUrl &sourceOrigin, const QString &cacheIdentity)
 {
     QPointer<QTcpSocket> guard(client);
     auto finished = std::make_shared<bool>(false);
 
-    auto finish = [this, guard, reply, headers, finished, sourceOrigin] {
+    auto finish = [this, guard, reply, headers, finished, sourceOrigin, cacheIdentity] {
         if (*finished)
             return;
         *finished = true;
@@ -1818,7 +1856,7 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
         // 之后再解析就永远看不到其它码率，码率栏会退化成一个选项。
         rememberMasterVariants(body, finalUrl);
         QByteArray rewritten = rewritePlaylist(body, finalUrl, headers, &rewriteError,
-                                              sourceOrigin);
+                                              sourceOrigin, cacheIdentity);
         if (!rewriteError.isEmpty()) {
             qCWarning(lcProxy) << "播放列表 URI 被拒绝：" << rewriteError;
             replyError(socket, 502, QStringLiteral("unsupported playlist uri"));
@@ -1857,7 +1895,7 @@ void StreamProxy::attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
 /// @brief 改写播放列表，把分片地址换成同一令牌下的相对路径。
 QByteArray StreamProxy::rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
                                         const QHash<QString, QString> &headers, QString *error,
-                                        const QUrl &sourceOrigin)
+                                        const QUrl &sourceOrigin, const QString &cacheIdentity)
 {
     // 用户锁定码率后，只把选中的 #EXT-X-STREAM-INF 变体交给 FFmpeg，
     // 它就不会再按带宽自动切到别的码率。全局标签（独立音轨、KEY 等）
@@ -1868,14 +1906,16 @@ QByteArray StreamProxy::rewritePlaylist(const QByteArray &body, const QUrl &play
             : body;
     return HlsPlaylist::rewrite(
         effective, playlistUrl,
-        [this, &headers, &sourceOrigin, error](const QUrl &absolute) {
+        [this, &headers, &sourceOrigin, &cacheIdentity, error](const QUrl &absolute) {
             if (!NetworkAddressPolicy::allowsMediaTarget(absolute, sourceOrigin)) {
                 if (error != nullptr)
                     *error = QStringLiteral("播放列表包含本机/内网地址：")
                         + HttpClient::redactUrl(absolute);
                 return QUrl();
             }
-            return proxyUrlFor(absolute, headers, QString(), QString(), sourceOrigin);
+            // 子分片 token 必须继承根列表的条目身份，否则后台缓存登记的分片
+            // 索引没有 identity，播放时代理无法按“条目 + 分片地址”命中。
+            return proxyUrlFor(absolute, headers, QString(), cacheIdentity, sourceOrigin);
         },
         error);
 }

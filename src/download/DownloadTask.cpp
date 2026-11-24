@@ -1211,6 +1211,7 @@ void DownloadTask::startNextSegment()
 void DownloadTask::startSegmentRequest(const Segment &segment)
 {
     m_currentSegment = segment;
+    m_segmentFileOffset = m_bytesWritten;
     m_segmentBytes = 0;
     m_segmentExpected = expectedRangeBytes(segment.range);
     QPointer<DownloadTask> self(this);
@@ -1405,6 +1406,11 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
     m_segmentExpected = -1;
     m_segmentBytes = 0;
     ++m_segmentIndex;
+    const qint64 segmentSize = m_bytesWritten - m_segmentFileOffset;
+    if (segmentSize > 0) {
+        emit segmentWritten(m_currentSegment.url, m_currentSegment.range,
+                            m_segmentFileOffset, segmentSize);
+    }
     // 只在完整分片边界记录续传点：进程中途退出时，状态文件里的字节数
     // 对应的一定是完整分片前缀，重启后可安全截断半截分片并重下该片。
     emit checkpoint(m_bytesWritten, m_segmentIndex, m_segments.size());

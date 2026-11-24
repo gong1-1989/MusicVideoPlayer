@@ -178,7 +178,7 @@ private:
     void attachUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
     void attachPlaylist(QTcpSocket *client, QNetworkReply *reply,
                         const QHash<QString, QString> &headers,
-                        const QUrl &sourceOrigin);
+                        const QUrl &sourceOrigin, const QString &cacheIdentity);
     void flushUpstream(QTcpSocket *client, QNetworkReply *reply, const QUrl &upstream);
 
     /// 命中缓存时接管该客户端并返回 true；条目本身无效时返回 false，
@@ -242,7 +242,8 @@ private:
     /// 否则绝对地址会绕过代理，丢掉 Referer/Cookie，相对地址则会丢 token。
     QByteArray rewritePlaylist(const QByteArray &body, const QUrl &playlistUrl,
                                const QHash<QString, QString> &headers, QString *error = nullptr,
-                               const QUrl &sourceOrigin = QUrl());
+                               const QUrl &sourceOrigin = QUrl(),
+                               const QString &cacheIdentity = QString());
 
     QByteArray buildResponseHead(QNetworkReply *reply, const QUrl &upstream, int status) const;
     static Request parseRequest(const QByteArray &payload);

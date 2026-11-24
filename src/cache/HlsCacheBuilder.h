@@ -2,10 +2,12 @@
 #define HLSCACHEBUILDER_H
 
 #include "cache/HlsCacheManifest.h"
+#include "cache/HlsPreloadIndex.h"
 #include "media/MediaItem.h"
 
 #include <QByteArray>
 #include <QHash>
+#include <QList>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -15,6 +17,7 @@
 
 class DownloadTask;
 class HttpClient;
+class HlsPreloadMigrator;
 class MediaRemux;
 class QNetworkReply;
 class QTimer;
@@ -84,6 +87,12 @@ private:
                               const QString &error);
     void startDownloads();
     bool startTrack(bool video, const QUrl &source, const QString &basePath);
+    /// 旧版缓存只有合并轨道文件、没有逐分片索引；在指纹一致且轨道未加密、
+    /// 非单文件 BYTERANGE 时，先探测每片准确长度，再一次性生成索引。
+    void maybeStartMigration(bool video, const QString &fingerprint);
+    void onMigrationFinished(bool video, qint64 generation,
+                             const QList<HlsPreloadEntry> &entries, const QString &error);
+    void stopMigrations();
     void onTrackProgress(bool video, qint64 received, qint64 total);
     void onTrackFinished(bool video, const QString &path);
     void onTrackFailed(bool video, const QString &message);
@@ -133,12 +142,15 @@ private:
     QUrl m_videoSource;
     QUrl m_audioSource;
     QUrl m_masterBaseUrl;
+    QString m_identity;
     bool m_videoDirect = false;
     bool m_audioDirect = false;
     bool m_hasAudio = false;
     HlsCacheManifest::Master m_master;
     HlsCacheManifest::MediaTrack m_videoTrack;
     HlsCacheManifest::MediaTrack m_audioTrack;
+    QList<QUrl> m_videoSegments;
+    QList<QUrl> m_audioSegments;
 
     QPointer<QNetworkReply> m_playlistReply;
     QTimer *m_variantTimer = nullptr;
@@ -148,6 +160,8 @@ private:
 
     QPointer<DownloadTask> m_videoTask;
     QPointer<DownloadTask> m_audioTask;
+    QPointer<HlsPreloadMigrator> m_videoMigrator;
+    QPointer<HlsPreloadMigrator> m_audioMigrator;
     QString m_videoPath;
     QString m_audioPath;
     TrackResume m_videoResume;

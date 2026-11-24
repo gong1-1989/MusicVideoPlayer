@@ -6,10 +6,12 @@
 #include "cache/HlsCacheBuilder.h"
 
 #include "cache/MediaCache.h"
+#include "cache/HlsPreloadMigrator.h"
 #include "download/DownloadTask.h"
 #include "download/MediaRemux.h"
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
+#include "stream/HlsPlaylist.h"
 #include "util/HeaderPolicy.h"
 
 #include <QDateTime>
@@ -113,6 +115,9 @@ bool HlsCacheBuilder::start(const MediaItem &item)
     m_bodyPath = MediaCache::filePathForItem(item);
     m_videoPath = m_bodyPath + QStringLiteral(".video");
     m_audioPath = m_bodyPath + QStringLiteral(".audio");
+    m_identity = MediaCache::cacheIdentity(item);
+    m_videoSegments.clear();
+    m_audioSegments.clear();
     if (!QDir().mkpath(QFileInfo(m_bodyPath).absolutePath()))
         return false;
     // 完成前没有旁车 JSON，必须靠这个身份标记让下次启动找回同一目录；
@@ -122,6 +127,10 @@ bool HlsCacheBuilder::start(const MediaItem &item)
                               << item.displayName();
         return false;
     }
+
+    // 加载同一缓存目录上次留下的分片索引：播放代理据此把已下载字节直接
+    // 当作分片响应，断点续传后的前半段也能在本次启动继续命中。
+    HlsPreloadIndex::instance().openJournal(m_bodyPath + QStringLiteral(".preload.jsonl"));
 
     m_active = true;
     m_stage = Stage::FetchingMaster;
@@ -460,6 +469,10 @@ void HlsCacheBuilder::onVideoPlaylistReady(const QByteArray &body, const QUrl &f
     m_videoTrack = track;
     m_videoDirect = track.singleFile;
     m_videoSource = track.singleFile ? track.singleFileUrl : finalUrl;
+    // 记录当前播放列表的真实分片顺序，供旧缓存安全迁移探测长度使用。
+    m_videoSegments.clear();
+    if (const auto info = HlsPlaylist::parse(body, finalUrl))
+        m_videoSegments = info->segments;
 
     qCInfo(lcHlsCache) << "视频轨：" << trackSourceLabel(m_videoDirect)
                        << "分片数" << track.segmentCount
@@ -506,6 +519,9 @@ void HlsCacheBuilder::onAudioPlaylistReady(const QByteArray &body, const QUrl &f
     m_audioTrack = track;
     m_audioDirect = track.singleFile;
     m_audioSource = track.singleFile ? track.singleFileUrl : finalUrl;
+    m_audioSegments.clear();
+    if (const auto info = HlsPlaylist::parse(body, finalUrl))
+        m_audioSegments = info->segments;
 
     qCInfo(lcHlsCache) << "音轨：" << trackSourceLabel(m_audioDirect)
                        << "分片数" << track.segmentCount
@@ -670,6 +686,25 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
                 state.valid = true;
                 state.fingerprint = fingerprint;
                 saveTrackResume(basePath, state);
+                // 旧缓存迁移必须等新播放列表算完指纹；只有分片结构完全一致
+                // 才允许把旧合并文件按当前分片顺序建立索引。
+                maybeStartMigration(video, fingerprint);
+            });
+    connect(task, &DownloadTask::segmentWritten, this,
+            [this, video](const QUrl &url, const QByteArray &range, qint64 offset, qint64 size) {
+                // DownloadTask 在完成分片时写的是 `.mvpdownload`；索引路径也要
+                // 指向临时文件，否则下载期间播放代理读不到刚下好的分片。
+                const QString trackPath = video ? m_videoPath : m_audioPath;
+                if (trackPath.isEmpty() || m_identity.isEmpty())
+                    return;
+                HlsPreloadEntry entry;
+                entry.url = url;
+                entry.range = range;
+                entry.filePath = trackPath + QStringLiteral(".mvpdownload");
+                entry.offset = offset;
+                entry.size = size;
+                entry.contentType = QByteArrayLiteral("video/mp2t");
+                HlsPreloadIndex::instance().record(m_identity, entry);
             });
     connect(task, &DownloadTask::progress, this,
             [this, video](qint64 received, qint64 total) {
@@ -689,6 +724,122 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
     connect(task, &DownloadTask::failed, this,
             [this, video](const QString &message) { onTrackFailed(video, message); });
     return true;
+}
+
+/// @brief 旧版合并缓存的安全迁移入口。
+/// @note 只在以下条件全部满足时启动：续传指纹与新播放列表一致、分片数一致、
+///       轨道未加密且不是单文件 BYTERANGE、旧 `.mvpdownload` 至少包含记录前缀。
+///       任一条件不满足就放弃迁移，保留旧文件但绝不用估算偏移冒充缓存。
+void HlsCacheBuilder::maybeStartMigration(bool video, const QString &fingerprint)
+{
+    if (!m_active || m_http == nullptr || fingerprint.isEmpty() || m_identity.isEmpty())
+        return;
+    const TrackResume &resume = video ? m_videoResume : m_audioResume;
+    const HlsCacheManifest::MediaTrack &track = video ? m_videoTrack : m_audioTrack;
+    const QList<QUrl> &segments = video ? m_videoSegments : m_audioSegments;
+    const QPointer<HlsPreloadMigrator> &slot = video ? m_videoMigrator : m_audioMigrator;
+
+    if (!resume.valid || resume.completed || resume.bytesWritten <= 0
+        || resume.segmentIndex <= 0 || resume.segmentIndex > segments.size())
+        return;
+    if (resume.fingerprint.isEmpty() || resume.fingerprint != fingerprint) {
+        qCInfo(lcHlsCache) << "旧缓存迁移跳过：续传指纹与当前播放列表不一致"
+                           << (video ? "视频轨" : "音轨");
+        return;
+    }
+    if (resume.segmentCount != segments.size()) {
+        qCInfo(lcHlsCache) << "旧缓存迁移跳过：续传分片数与当前播放列表不一致"
+                           << resume.segmentCount << segments.size();
+        return;
+    }
+    if (track.singleFile || track.encrypted) {
+        qCInfo(lcHlsCache) << "旧缓存迁移跳过：加密或单文件 BYTERANGE 无法取得"
+                              "与落盘一致的分片边界"
+                           << (video ? "视频轨" : "音轨");
+        return;
+    }
+    if (HlsPreloadIndex::instance().count(m_identity) > 0) {
+        qCInfo(lcHlsCache) << "旧缓存已有分片索引，跳过迁移" << (video ? "视频轨" : "音轨");
+        return;
+    }
+    if (!slot.isNull())
+        return;
+
+    const QString target = resume.targetPath.isEmpty()
+                               ? (video ? m_videoPath : m_audioPath)
+                               : resume.targetPath;
+    QString trackPath = target + QStringLiteral(".mvpdownload");
+    if (!QFileInfo::exists(trackPath) && QFileInfo::exists(target))
+        trackPath = target;
+    if (!QFileInfo::exists(trackPath)) {
+        qCInfo(lcHlsCache) << "旧缓存迁移跳过：找不到旧轨道文件" << trackPath;
+        return;
+    }
+    const qint64 actualBytes = QFileInfo(trackPath).size();
+    if (actualBytes < resume.bytesWritten) {
+        qCWarning(lcHlsCache) << "旧缓存迁移跳过：轨道文件短于续传记录"
+                              << actualBytes << resume.bytesWritten;
+        return;
+    }
+
+    const qint64 generation = m_generation;
+    auto *migrator = new HlsPreloadMigrator(
+        m_http, segments.mid(0, resume.segmentIndex), resume.segmentIndex,
+        resume.bytesWritten, trackPath, QByteArrayLiteral("video/mp2t"), m_item.headers,
+        m_originUrl,
+        [this, video, generation](bool, const QList<HlsPreloadEntry> &entries,
+                                  const QString &error) {
+            onMigrationFinished(video, generation, entries, error);
+        },
+        this);
+    if (video)
+        m_videoMigrator = migrator;
+    else
+        m_audioMigrator = migrator;
+    qCInfo(lcHlsCache) << "开始安全迁移旧 HLS 缓存：" << (video ? "视频轨" : "音轨")
+                       << "分片数" << resume.segmentIndex << "字节" << resume.bytesWritten
+                       << trackPath;
+    migrator->start();
+}
+
+/// @brief 迁移结果只在同一次 start/generation 内落索引，防止切换条目后写错日志。
+void HlsCacheBuilder::onMigrationFinished(bool video, qint64 generation,
+                                          const QList<HlsPreloadEntry> &entries,
+                                          const QString &error)
+{
+    if (video)
+        m_videoMigrator = nullptr;
+    else
+        m_audioMigrator = nullptr;
+    if (!m_active || generation != m_generation)
+        return;
+    if (!error.isEmpty()) {
+        qCWarning(lcHlsCache) << "旧缓存安全迁移失败：" << (video ? "视频轨" : "音轨")
+                              << error;
+        return;
+    }
+    if (entries.isEmpty())
+        return;
+    HlsPreloadIndex::instance().recordMany(m_identity, entries);
+    qCInfo(lcHlsCache) << "旧缓存安全迁移完成，已建立分片索引："
+                       << (video ? "视频轨" : "音轨") << entries.size() << "片";
+}
+
+/// @brief 停止旧缓存迁移探测；切换条目/取消/退出时不能留下迟到的应答。
+void HlsCacheBuilder::stopMigrations()
+{
+    if (m_videoMigrator != nullptr) {
+        HlsPreloadMigrator *migrator = m_videoMigrator.data();
+        m_videoMigrator = nullptr;
+        migrator->abort();
+        migrator->deleteLater();
+    }
+    if (m_audioMigrator != nullptr) {
+        HlsPreloadMigrator *migrator = m_audioMigrator.data();
+        m_audioMigrator = nullptr;
+        migrator->abort();
+        migrator->deleteLater();
+    }
 }
 
 /// @brief 记录单条轨道的下载进度并触发总体进度汇总。
@@ -890,6 +1041,7 @@ void HlsCacheBuilder::stopForExit()
     ++m_generation;
     m_variantTimer->stop();
     abortPlaylistFetch();
+    stopMigrations();
     stopTasksForExit();
 
     if (hadWork) {
@@ -900,6 +1052,9 @@ void HlsCacheBuilder::stopForExit()
     }
     m_item = MediaItem();
     m_bodyPath.clear();
+    m_identity.clear();
+    m_videoSegments.clear();
+    m_audioSegments.clear();
     m_videoPath.clear();
     m_audioPath.clear();
     m_videoResume = TrackResume();
@@ -1017,11 +1172,15 @@ void HlsCacheBuilder::cancel()
     ++m_generation;
     m_variantTimer->stop();
     abortPlaylistFetch();
+    stopMigrations();
     cancelTasks();
     if (!m_bodyPath.isEmpty())
         cleanupPartial(false);
     m_item = MediaItem();
     m_bodyPath.clear();
+    m_identity.clear();
+    m_videoSegments.clear();
+    m_audioSegments.clear();
     m_videoPath.clear();
     m_audioPath.clear();
     m_videoResume = TrackResume();
@@ -1102,6 +1261,9 @@ void HlsCacheBuilder::cleanupTrackFiles()
     }
     if (!videoBase.isEmpty())
         removeTrackResume(videoBase);
+    // 删除条目时同步删除分片索引日志，避免下次同名身份重新打开时残留旧偏移。
+    if (!m_bodyPath.isEmpty())
+        QFile::remove(m_bodyPath + QStringLiteral(".preload.jsonl"));
     if (!audioBase.isEmpty())
         removeTrackResume(audioBase);
     if (!m_bodyPath.isEmpty())
@@ -1141,6 +1303,7 @@ void HlsCacheBuilder::finishFailed(const QString &message)
     ++m_generation;
     m_variantTimer->stop();
     abortPlaylistFetch();
+    stopMigrations();
     cancelTasks();
     cleanupPartial(true);
     m_item = MediaItem();
