@@ -1523,11 +1523,21 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
     if (m_isHls && m_currentSegment.key.enabled) {
         // AES-128 必须收完整段才能验 PKCS#7 填充；先只放内存，解密成功后再写盘。
         const qint64 remainingForPlain = m_maxBytes - m_bytesWritten;
-        const qint64 bufferLimit = qMin<qint64>(
-            NetLimits::kEncryptedSegmentBytes, qMax<qint64>(0, remainingForPlain + 16));
-        if (remainingForPlain <= 0 || m_segmentCipher.size() + chunk.size() > bufferLimit) {
-            fail(tr("加密分片超过单文件 %1 MB 上限，已停止下载")
+        // 缓存任务会把上限设成 qint64 最大值，直接 remaining + 16 会溢出成
+        // 负数，导致缓冲区上限被算成 0、首个加密分片必然失败。先比较再决定
+        // 是否加填充余量，既保留小文件上限的 +16 余量，也避免大上限溢出。
+        const qint64 bufferLimit =
+            remainingForPlain > NetLimits::kEncryptedSegmentBytes
+            ? NetLimits::kEncryptedSegmentBytes
+            : qMax<qint64>(0, remainingForPlain + 16);
+        if (remainingForPlain <= 0) {
+            fail(tr("文件超过 %1 MB 上限，已停止下载")
                      .arg(m_maxBytes / (1024 * 1024)), true);
+            return;
+        }
+        if (m_segmentCipher.size() + chunk.size() > bufferLimit) {
+            fail(tr("加密分片超过 %1 MB 的分片内存上限，已停止下载")
+                     .arg(bufferLimit / (1024 * 1024)), true);
             return;
         }
         m_segmentCipher.append(chunk);

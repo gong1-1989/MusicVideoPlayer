@@ -2390,6 +2390,9 @@ void CoreLogicTest::downloadHlsDecryptsAes128Segments()
     DownloadTask *task = DownloadTask::start(&http, url, target, headers);
     QVERIFY(task != nullptr);
     task->setOriginUrl(QUrl(base));
+    // 模拟播放缓存：上限是 qint64 最大值。这里曾因 remaining + 16 溢出，
+    // 把加密分片缓冲上限算成 0，导致第一个分片就被误判超限。
+    task->setMaxBytes(std::numeric_limits<qint64>::max());
 
     QSignalSpy succeeded(task, &DownloadTask::succeeded);
     QSignalSpy failed(task, &DownloadTask::failed);
