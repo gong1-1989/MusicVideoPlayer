@@ -38,20 +38,10 @@ QFrame#panelStage {
     border: 1px solid rgba(140, 150, 235, 30%);
 }
 
-/* 码率栏贴在视频上沿，底色保持透明，避免把舞台切成两块 */
+/* 画质/音质选择栏位于播放控制区，只保留下拉框，不再单独占一行文字 */
 QWidget#bitrateBar {
     background: transparent;
     border: none;
-}
-
-QLabel#label_bitrateTitle {
-    color: rgba(88, 96, 150, 72%);
-    font-size: 12px;
-}
-
-QLabel#label_bitrateCurrent {
-    color: rgba(72, 78, 130, 88%);
-    font-size: 12px;
 }
 
 QComboBox#combo_bitrate {
@@ -64,6 +54,11 @@ QComboBox#combo_bitrate {
 
 QComboBox#combo_bitrate:hover {
     border: 1px solid rgba(120, 110, 235, 55%);
+}
+
+QComboBox#combo_bitrate:disabled {
+    color: rgba(72, 78, 130, 70%);
+    border: 1px solid rgba(140, 150, 235, 20%);
 }
 
 /* 侧栏做成浮层时压在画面上，底色要更实才看得清；回布局时保持原来的淡玻璃 */
