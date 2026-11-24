@@ -166,6 +166,9 @@ private:
     /// 提前 seek 会被随后的 play() 重置回 0，必须等播放请求真正发出。
     bool m_sourcePlayRequested = false;
     qint64 m_deferredSeekMs = -1;
+    /// 用户切换码率时，本条重载必须强行走网络代理，不能因为整片缓存已经
+    /// 落盘就继续播放固定码率的本地 MP4；只对紧接着的一次 playRowInternal 生效。
+    bool m_forceStreamOnce = false;
 };
 
 #endif // PLAYBACKCONTROLLER_H

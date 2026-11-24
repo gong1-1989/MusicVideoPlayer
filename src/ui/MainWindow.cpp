@@ -32,6 +32,7 @@
 #include <QDateTime>
 #include <QEvent>
 #include <QCoreApplication>
+#include <QFileInfo>
 #include <QFontMetrics>
 #include <QFrame>
 #include <QGuiApplication>
@@ -878,7 +879,22 @@ void MainWindow::refreshBitrateBar()
     }
 
     if (item.type == MediaType::Music) {
-        const QString quality = item.quality.isEmpty() ? tr("标准") : item.quality;
+        // 在线音乐一般带 quality；本地文件此前没有品质字段，直接显示“标准”
+        // 会把 FLAC/APE 这类无损文件标错。按扩展名至少区分无损与有损格式。
+        QString quality = item.quality;
+        if (quality.isEmpty() && !item.online && item.url.isLocalFile()) {
+            const QString suffix = QFileInfo(item.url.toLocalFile()).suffix().toLower();
+            static const QStringList lossless = {
+                QStringLiteral("flac"), QStringLiteral("ape"), QStringLiteral("wav"),
+                QStringLiteral("aiff"), QStringLiteral("alac"), QStringLiteral("dsf")
+            };
+            if (lossless.contains(suffix))
+                quality = tr("无损");
+            else if (!suffix.isEmpty())
+                quality = suffix.toUpper();
+        }
+        if (quality.isEmpty())
+            quality = tr("标准");
         showSingle(tr("音质：%1").arg(quality), tr("当前音乐的播放音质"));
         return;
     }

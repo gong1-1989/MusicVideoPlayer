@@ -243,12 +243,11 @@ PlaybackController::BitrateSnapshot PlaybackController::bitrateSnapshot() const
     const MediaItem item = m_playlist->itemAt(m_row);
     if (!item.isValid() || item.type != MediaType::Video)
         return snapshot;
-    // 只有真正走代理的 HLS 才能按 master 变体切换；直链视频没有码率选项，
-    // 已合并完成的本地 MP4 也不该再显示一个切了不会生效的下拉框。
-    if (!item.online || !playbackIsHls(item)
-        || !MediaCache::completeFileForItem(item).isEmpty()) {
+    // 只有真正走代理的 HLS 才能按 master 变体切换；直链视频没有码率选项。
+    // 注意：即使整片缓存已经完成，也不能直接返回空——当前这一轮播放仍可能
+    // 由代理流提供，而且用户需要在缓存完成后继续看到/切换码率。
+    if (!item.online || !playbackIsHls(item))
         return snapshot;
-    }
     snapshot.isVideo = true;
 
     StreamProxy::VariantState state;
@@ -318,6 +317,9 @@ void PlaybackController::selectBitrate(int index)
 
     // 复用正常播放入口：它会重新走代理、重新解析 master，并读取刚写回的
     // positionMs 恢复进度；缓存构建器也会因 currentItemChanged 跟随新码率。
+    // 如果整片缓存已完成，必须跳过那一次“本地缓存优先”，否则新码率不会
+    // 生效；标记只影响这一次重载。
+    m_forceStreamOnce = true;
     playRowInternal(row, false);
 }
 
@@ -367,6 +369,10 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
 {
     if (!m_playlist || row < 0 || row >= m_playlist->size())
         return;
+
+    // 码率切换请求的“本次强行走网络”标记只消费一次，任何普通播放都恢复
+    // 默认的“本地文件 > 完整缓存 > 网络”优先级。
+    const bool forceStream = std::exchange(m_forceStreamOnce, false);
 
     // 切换视频（含自动下一集）前保存正在播放的那一条；音乐会被存储层忽略。
     saveCurrentVideoPosition();
@@ -447,7 +453,8 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
                                              : QStringLiteral("本地文件");
     const bool cacheable = MediaCache::isCacheable(playbackItem);
     const QString completeCache =
-        playbackItem.online ? MediaCache::completeFileForItem(playbackItem) : QString();
+        (playbackItem.online && !forceStream) ? MediaCache::completeFileForItem(playbackItem)
+                                              : QString();
     if (!completeCache.isEmpty()) {
         source = QUrl::fromLocalFile(completeCache);
         sourceKind = QStringLiteral("本地缓存");
