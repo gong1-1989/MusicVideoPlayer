@@ -2045,18 +2045,22 @@ void StreamProxy::pumpCache(const QString &key, const QSharedPointer<CacheEntry>
         return;
 
     for (int i = entry->clients.size() - 1; i >= 0; --i) {
-        QTcpSocket *client = entry->clients.at(i).data();
-        if (client == nullptr || client->state() != QAbstractSocket::ConnectedState) {
+        QPointer<QTcpSocket> client = entry->clients.at(i);
+        if (client.isNull() || client->state() != QAbstractSocket::ConnectedState) {
             entry->clients.removeAt(i);
             continue;
         }
 
         if (entry->failed) {
+            // 必须先把客户端从 clients 摘掉，再给它写 502/断开。
+            // disconnectFromHost() 在“无待写数据”时会同步发出 disconnected，
+            // 槽里会再次从 clients 删除同一个客户端；如果先断开后 removeAt(i)，
+            // 此时 i 已经越界，Qt 会在 QList::remove 的断言处直接崩掉。
+            entry->clients.removeAt(i);
             if (!client->property(kHeaderSent).toBool())
-                replyError(client, 502, QStringLiteral("Cached stream unavailable"));
+                replyError(client.data(), 502, QStringLiteral("Cached stream unavailable"));
             else
                 client->disconnectFromHost();
-            entry->clients.removeAt(i);
             continue;
         }
 
@@ -2114,7 +2118,11 @@ void StreamProxy::pumpCache(const QString &key, const QSharedPointer<CacheEntry>
         client->setProperty(kCacheNext, next + got);
         if (next + got > end || (entry->complete && next + got >= available)) {
             qCInfo(lcProxy) << "流转缓存发送到末尾，累计" << next + got << "字节";
-            entry->clients.removeAt(i);
+            // write() 失败时可能同步走到 disconnected，槽里已经移除该客户端；
+            // 这里按当前指针重新查找，避免继续用旧的递减下标 removeAt 越界。
+            const int currentIndex = entry->clients.indexOf(client);
+            if (currentIndex >= 0)
+                entry->clients.removeAt(currentIndex);
         }
     }
 

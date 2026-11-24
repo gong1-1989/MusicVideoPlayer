@@ -115,6 +115,59 @@ public:
     QByteArray contentType = QByteArrayLiteral("audio/mpeg");
 };
 
+/// 模拟 HLS 分片首片探测成功，但后续多连接 Range 分片返回 500 的 CDN。
+/// 用于覆盖 failRangeEntry 通知已挂载播放器客户端时的同步断连重入。
+class RangePartFailServer : public QTcpServer
+{
+public:
+    explicit RangePartFailServer(QObject *parent = nullptr)
+        : QTcpServer(parent)
+    {
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, this, [this, socket] {
+                    QByteArray pending = socket->property("pending").toByteArray()
+                                         + socket->readAll();
+                    const int headEnd = pending.indexOf("\r\n\r\n");
+                    if (headEnd < 0) {
+                        socket->setProperty("pending", pending);
+                        return;
+                    }
+                    socket->setProperty("pending", QByteArray());
+
+                    QByteArray range;
+                    for (const QByteArray &line : pending.left(headEnd).split('\n')) {
+                        if (line.toLower().startsWith("range:"))
+                            range = line.mid(6).trimmed();
+                    }
+                    ++requestCount;
+
+                    if (range == QByteArrayLiteral("bytes=0-16383")) {
+                        QByteArray response =
+                            "HTTP/1.1 206 Partial Content\r\n"
+                            "Content-Type: video/mp2t\r\n"
+                            "Accept-Ranges: bytes\r\n"
+                            "Content-Range: bytes 0-16383/185227\r\n"
+                            "Content-Length: 16384\r\n"
+                            "Connection: close\r\n\r\n";
+                        response += body.left(16384);
+                        socket->write(response);
+                    } else {
+                        socket->write("HTTP/1.1 500 Internal Server Error\r\n"
+                                      "Content-Length: 0\r\n"
+                                      "Connection: close\r\n\r\n");
+                    }
+                    QTimer::singleShot(0, socket, [socket] { socket->disconnectFromHost(); });
+                });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+    }
+
+    QByteArray body = proxyTestBody(185227);
+    int requestCount = 0;
+};
+
 /// 模拟整段 200 响应传到一半被 CDN 重置连接，但支持从断点发 Range 续传。
 /// 这是“播放约两分钟后 Demuxing failed”的回归源。
 class TruncatingRangeServer : public QTcpServer
@@ -933,6 +986,7 @@ private slots:
     void streamProxyMultiRangeForHlsSegment();
     void streamProxySkipsSingleFileHlsSegmentCache();
     void streamProxyFallsBackWhenHlsRangeIgnored();
+    void streamProxyHandlesFailedRangePartWithoutCrash();
     void hlsPlaylistParsesAndIndexes();
     void hlsPlaylistRewritesUris();
     void hlsPlaylistSameScopeRejectsSiblingDirectory();
@@ -3649,6 +3703,38 @@ void CoreLogicTest::streamProxyFallsBackWhenHlsRangeIgnored()
     // 首片探测收到 200 后必须回退单路，不能把客户端挂在 multiRange 上等超时。
     QTRY_COMPARE_WITH_TIMEOUT(upstream.requestCount, 2, 5000);
     QCOMPARE(upstream.lastRange, QStringLiteral("bytes=0-"));
+}
+
+void CoreLogicTest::streamProxyHandlesFailedRangePartWithoutCrash()
+{
+    RangePartFailServer upstream;
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+
+    const QUrl upstreamUrl(
+        QStringLiteral("http://127.0.0.1:%1/hls/0000002.ts").arg(upstream.serverPort()));
+    const QUrl local = proxy.proxyUrlFor(upstreamUrl);
+    QVERIFY(local.isValid());
+
+    QTcpSocket socket;
+    socket.connectToHost(local.host(), quint16(local.port()));
+    QVERIFY(socket.waitForConnected(3000));
+    socket.write("GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                 "Host: 127.0.0.1\r\n"
+                 "Range: bytes=0-\r\n"
+                 "Connection: close\r\n\r\n");
+    socket.flush();
+
+    // 首片探测成功后，代理会把播放器挂到 clients，再并发请求剩余 Range。
+    // 后续分片返回 500 时 failRangeEntry 必须在同步断连重入下仍安全。
+    QTRY_VERIFY_WITH_TIMEOUT(upstream.requestCount >= 3, 5000);
+    QTest::qWait(1500);
+
+    // 崩溃会在上面的异步回调里直接 abort；走到这里说明没有触发 QList 越界。
+    QVERIFY(proxy.cacheStats().entries <= 1);
+    proxy.shutdown();
 }
 
 void CoreLogicTest::hlsPlaylistParsesAndIndexes()
