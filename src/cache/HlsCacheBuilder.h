@@ -44,7 +44,9 @@ public:
 
     /// 开始缓存当前条目；非在线/非影视/非 HLS/已有完整缓存时直接返回 false。
     bool start(const MediaItem &item);
-    /// 切换播放条目或退出：中止任务并清掉未完成的分片/轨道，保留已完成正文。
+    /// 退出程序：中止任务并保留已下载分片/续传点，下次播放继续缓存。
+    void stopForExit();
+    /// 用户主动取消（如删除条目）：中止任务并清掉未完成的分片/轨道。
     void cancel();
     /// 删除播放列表条目：中止并移除这个条目的未完成与最终正文。
     void cancelAndRemove();
@@ -81,7 +83,7 @@ private:
     void onAudioPlaylistReady(const QByteArray &body, const QUrl &finalUrl,
                               const QString &error);
     void startDownloads();
-    bool startTrack(bool video, const QUrl &source, const QString &targetPath);
+    bool startTrack(bool video, const QUrl &source, const QString &basePath);
     void onTrackProgress(bool video, qint64 received, qint64 total);
     void onTrackFinished(bool video, const QString &path);
     void onTrackFailed(bool video, const QString &message);
@@ -89,11 +91,30 @@ private:
     void onRemuxFinished(bool success, const QString &outputPath, const QString &error);
     void finishFailed(const QString &message);
     void abortPlaylistFetch();
+    void stopTasksForExit();
     void cancelTasks();
     void cleanupTrackFiles();
     void cleanupPartial(bool removeBody);
     QString audioGroupForVariant(const QUrl &videoUrl) const;
     void emitProgress();
+
+    /// 单条轨道的续传现场；与 `.mvpdownload` 分开保存，退出/崩溃后都能恢复。
+    struct TrackResume
+    {
+        bool valid = false;
+        bool completed = false;
+        QString targetPath;
+        qint64 bytesWritten = 0;
+        int segmentIndex = 0;
+        int segmentCount = -1;
+        QString fingerprint;
+    };
+
+    /// 固定按轨道基名保存（`.video/.audio`），避免扩展名变化后找不到状态。
+    QString resumeStatePath(const QString &basePath) const;
+    TrackResume loadTrackResume(const QString &basePath) const;
+    void saveTrackResume(const QString &basePath, const TrackResume &resume);
+    void removeTrackResume(const QString &basePath);
 
     HttpClient *m_http = nullptr;
     MediaItem m_item;
@@ -129,6 +150,8 @@ private:
     QPointer<DownloadTask> m_audioTask;
     QString m_videoPath;
     QString m_audioPath;
+    TrackResume m_videoResume;
+    TrackResume m_audioResume;
     bool m_videoDone = false;
     bool m_audioDone = false;
     int m_videoPct = -1;

@@ -364,9 +364,9 @@ MainWindow::~MainWindow()
         if (m_player->mediaPlayer() != nullptr)
             m_player->mediaPlayer()->setVideoSink(nullptr);
     }
-    // 退出时中止 HLS 后台分片，删除半成品 TS，避免下次启动误续传旧列表。
+    // 退出时中止 HLS 后台分片，但保留已下载轨道和续传点；下次播放继续缓存。
     if (m_hlsCache != nullptr)
-        m_hlsCache->cancel();
+        m_hlsCache->stopForExit();
     if (m_fullscreen != nullptr)
         m_fullscreen->exitFullScreen();
     delete ui;

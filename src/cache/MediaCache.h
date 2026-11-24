@@ -42,6 +42,12 @@ QString directoryForItem(const MediaItem &item);
 /// 条目对应的缓存正文路径；正文不带后缀。
 QString filePathForItem(const MediaItem &item);
 QString metaPathForFile(const QString &cachePath);
+/// 未完成 HLS 缓存的归属标记：正文旁车 JSON 只在完成后写入，退出时还没有
+/// 完成元数据；没有这个标记，下次会因目录非空而错误跳到 " (2)" 新目录。
+QString partialStatePathForFile(const QString &cachePath);
+bool writePartialIdentity(const QString &cachePath, const QString &identity);
+QString readPartialIdentity(const QString &cachePath);
+bool removePartialIdentity(const QString &cachePath);
 
 /// 删除条目自己的缓存（音乐删正文与 JSON，影视删整个文件夹）；
 /// 不存在视为成功。Windows 上文件被播放器占用时会失败，调用方可延迟重试。

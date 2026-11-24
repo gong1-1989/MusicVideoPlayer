@@ -16,8 +16,11 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLoggingCategory>
 #include <QNetworkReply>
+#include <QSaveFile>
 #include <QStringList>
 #include <QTimer>
 
@@ -64,10 +67,10 @@ HlsCacheBuilder::HlsCacheBuilder(HttpClient *http, QObject *parent)
     connect(m_variantTimer, &QTimer::timeout, this, &HlsCacheBuilder::onVariantTick);
 }
 
-/// @brief 析构时中止所有网络请求、下载与转码，避免子任务回调访问已销毁对象。
+/// @brief 析构时中止所有网络请求、下载与转码，保留半成品供下次续传。
 HlsCacheBuilder::~HlsCacheBuilder()
 {
-    cancel();
+    stopForExit();
 }
 
 /// @brief 设置播放器当前实际打开的视频/音频播放列表查询函数。
@@ -82,11 +85,12 @@ void HlsCacheBuilder::setPlaybackTrackResolvers(UrlResolver video, UrlResolver a
 
 /// @brief 开始为指定在线 HLS 影视条目构建完整缓存。
 /// @param item 当前播放条目，必须是在线视频且是 HLS。
-/// @return 已启动返回 true；非 HLS、已有完整缓存或清理旧缓存失败返回 false。
-/// @note 已有完整缓存时直接跳过，避免重复占用磁盘和带宽。
+/// @return 已启动返回 true；非 HLS 或已有完整缓存返回 false。
+/// @note 已有完整缓存时直接跳过；未完成缓存保留现场，下次从续传点继续。
 bool HlsCacheBuilder::start(const MediaItem &item)
 {
-    cancel();
+    // 切换条目时保留上一条目的半成品，不再用 cancel() 删除它。
+    stopForExit();
 
     // HLS 影视才需要整段缓存；直链 MP4 已有 StreamProxy 的完整文件落盘。
     if (m_http == nullptr || !item.online || item.type != MediaType::Video
@@ -104,19 +108,20 @@ bool HlsCacheBuilder::start(const MediaItem &item)
     m_originUrl = item.sourceOrigin.isValid() && !item.sourceOrigin.host().isEmpty()
                       ? item.sourceOrigin
                       : HeaderPolicy::originFromHeaders(item.headers);
-    // 没命中完整缓存时可能残留上一次的半成品；先清掉再开始。
-    // 删除失败说明有文件仍被占用（例如播放器还在读），此时继续构建会
-    // 覆盖/争用同一路径；本次放弃，下一轮再试。
-    if (!MediaCache::removeForItem(item)) {
-        qCWarning(lcHlsCache) << "无法清理旧的 HLS 缓存文件，跳过本次后台缓存："
-                              << item.displayName();
-        return false;
-    }
+    // 未完成缓存不再提前删除：轨道文件和 `.mvpdownload` 就是续传现场，
+    // 是否真正可续由 DownloadTask 的分片指纹校验决定。
     m_bodyPath = MediaCache::filePathForItem(item);
     m_videoPath = m_bodyPath + QStringLiteral(".video");
     m_audioPath = m_bodyPath + QStringLiteral(".audio");
     if (!QDir().mkpath(QFileInfo(m_bodyPath).absolutePath()))
         return false;
+    // 完成前没有旁车 JSON，必须靠这个身份标记让下次启动找回同一目录；
+    // 否则非空目录会被当成冲突，改选 " (2)" 后从头下载。
+    if (!MediaCache::writePartialIdentity(m_bodyPath, MediaCache::cacheIdentity(item))) {
+        qCWarning(lcHlsCache) << "无法写入未完成缓存身份标记，跳过本次后台缓存："
+                              << item.displayName();
+        return false;
+    }
 
     m_active = true;
     m_stage = Stage::FetchingMaster;
@@ -508,26 +513,20 @@ void HlsCacheBuilder::onAudioPlaylistReady(const QByteArray &body, const QUrl &f
     startDownloads();
 }
 
-/// @brief 清理旧轨道临时文件并启动下载。
+/// @brief 读取轨道续传现场并启动下载。
 /// @note 视频轨和独立音轨并行下载；没有音轨时直接把 audioDone 置为 true，
-///       让 maybeRemux() 只等待视频轨。
+///       让 maybeRemux() 只等待视频轨。退出前已下完的轨道不再重下，直接进入转封装。
 void HlsCacheBuilder::startDownloads()
 {
     if (!m_active)
         return;
 
-    m_videoPath = m_bodyPath + QStringLiteral(".video");
-    m_audioPath = m_bodyPath + QStringLiteral(".audio");
-    QFile::remove(m_videoPath);
-    QFile::remove(m_videoPath + QStringLiteral(".ts"));
-    QFile::remove(m_videoPath + QStringLiteral(".mp4"));
-    QFile::remove(m_videoPath + QStringLiteral(".mvpdownload"));
-    QFile::remove(m_videoPath + QStringLiteral(".mp4.mvpdownload"));
-    QFile::remove(m_audioPath);
-    QFile::remove(m_audioPath + QStringLiteral(".ts"));
-    QFile::remove(m_audioPath + QStringLiteral(".mp4"));
-    QFile::remove(m_audioPath + QStringLiteral(".mvpdownload"));
-    QFile::remove(m_audioPath + QStringLiteral(".mp4.mvpdownload"));
+    const QString videoBase = m_bodyPath + QStringLiteral(".video");
+    const QString audioBase = m_bodyPath + QStringLiteral(".audio");
+    m_videoPath = videoBase;
+    m_audioPath = audioBase;
+    // 上次退出若停在 FFmpeg 转封装，只丢弃无用的转封装临时文件；两条轨道保留。
+    QFile::remove(m_bodyPath + QStringLiteral(".mvpremux"));
 
     m_stage = Stage::Downloading;
     m_videoDone = false;
@@ -544,27 +543,63 @@ void HlsCacheBuilder::startDownloads()
         finishFailed(tr("没有找到可下载的视频地址"));
         return;
     }
-    if (!startTrack(true, m_videoSource, m_videoPath))
+
+    m_videoResume = loadTrackResume(videoBase);
+    const QString videoTarget = m_videoResume.valid && !m_videoResume.targetPath.isEmpty()
+                                    ? m_videoResume.targetPath
+                                    : videoBase;
+    if (m_videoResume.valid && m_videoResume.completed && QFileInfo::exists(videoTarget)) {
+        // 退出发生在两条轨道都下完、FFmpeg 尚未收尾时：直接复用成品轨道。
+        m_videoPath = videoTarget;
+        m_videoDone = true;
+        m_videoPct = 100;
+        m_videoTotal = QFileInfo(videoTarget).size();
+        m_videoReceived = m_videoTotal;
+        qCInfo(lcHlsCache) << "复用上次已下载完成的视频轨：" << videoTarget;
+    } else if (!startTrack(true, m_videoSource, videoBase)) {
         return;
+    }
+
     if (m_hasAudio) {
         if (m_audioSource.isEmpty()) {
             finishFailed(tr("没有找到可下载的音轨地址"));
             return;
         }
-        if (!startTrack(false, m_audioSource, m_audioPath))
+        m_audioResume = loadTrackResume(audioBase);
+        const QString audioTarget = m_audioResume.valid && !m_audioResume.targetPath.isEmpty()
+                                        ? m_audioResume.targetPath
+                                        : audioBase;
+        if (m_audioResume.valid && m_audioResume.completed
+            && QFileInfo::exists(audioTarget)) {
+            m_audioPath = audioTarget;
+            m_audioDone = true;
+            m_audioPct = 100;
+            m_audioTotal = QFileInfo(audioTarget).size();
+            m_audioReceived = m_audioTotal;
+            qCInfo(lcHlsCache) << "复用上次已下载完成的音轨：" << audioTarget;
+        } else if (!startTrack(false, m_audioSource, audioBase)) {
             return;
+        }
     } else {
         m_audioDone = true;
     }
+
+    // 两条轨道都可能直接复用上次成果，此时不必等下载信号，立即转封装。
+    if (m_videoDone && m_audioDone)
+        maybeRemux();
 }
 
 /// @brief 为单条轨道创建 DownloadTask 并连接进度/完成/失败信号。
 /// @param video true 表示视频轨，false 表示独立音轨。
 /// @param source 轨道源地址（媒体列表或单文件 BYTERANGE 地址）。
-/// @param targetPath 下载目标路径。
+/// @param basePath 轨道固定基名（`.video` / `.audio`），续传状态按它保存。
 /// @return 任务启动成功返回 true；失败时已走 finishFailed()。
-bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &targetPath)
+bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &basePath)
 {
+    TrackResume resume = loadTrackResume(basePath);
+    const QString targetPath = resume.valid && !resume.targetPath.isEmpty()
+                                   ? resume.targetPath
+                                   : basePath;
     DownloadTask *task = DownloadTask::start(m_http, source, targetPath, m_item.headers, this);
     if (task == nullptr) {
         finishFailed(video ? tr("无法启动视频缓存任务") : tr("无法启动音轨缓存任务"));
@@ -578,26 +613,79 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
         m_audioPath = targetPath;
     }
 
+    // 先把固定基名对应的现场登记好，后续 checkpoint 不等同于内存里的路径。
+    resume.valid = true;
+    resume.completed = false;
+    resume.targetPath = targetPath;
+    if (video)
+        m_videoResume = resume;
+    else
+        m_audioResume = resume;
+    saveTrackResume(basePath, resume);
+
     task->setMaxBytes(std::numeric_limits<qint64>::max());
     task->setAllowIncompletePlaylist(false);
     task->setOriginUrl(m_originUrl);
     for (const QString &line : std::as_const(m_master.sessionKeyLines))
         task->setHlsSessionKey(line, m_masterBaseUrl);
+    // HLS 分片必须同时有指纹和分片序号；单文件 Range 轨道只续传字节偏移。
+    const bool hlsTrack = video ? !m_videoDirect : !m_audioDirect;
+    if (hlsTrack && (resume.bytesWritten > 0 || resume.segmentIndex > 0)
+        && !resume.fingerprint.isEmpty()) {
+        task->setResumeState(resume.bytesWritten, resume.segmentIndex, true);
+        task->setResumeFingerprint(resume.fingerprint);
+        qCInfo(lcHlsCache) << "HLS 轨道续传：" << basePath
+                           << "bytes=" << resume.bytesWritten
+                           << "segments=" << resume.segmentIndex << "/" << resume.segmentCount;
+    } else if (!hlsTrack && resume.bytesWritten > 0) {
+        task->setResumeState(resume.bytesWritten, 0, false);
+        qCInfo(lcHlsCache) << "单文件轨道续传：" << basePath
+                           << "bytes=" << resume.bytesWritten;
+    }
     connect(task, &DownloadTask::targetPathChanged, this,
-            [this, video](const QString &path, bool) {
-                if (!m_active)
-                    return;
+            [this, video, basePath](const QString &path, bool) {
                 if (video)
                     m_videoPath = path;
                 else
                     m_audioPath = path;
+                TrackResume &state = video ? m_videoResume : m_audioResume;
+                state.valid = true;
+                state.targetPath = path;
+                saveTrackResume(basePath, state);
+            });
+    connect(task, &DownloadTask::checkpoint, this,
+            [this, video, basePath](qint64 bytesWritten, int segmentIndex, int segmentCount) {
+                TrackResume &state = video ? m_videoResume : m_audioResume;
+                state.valid = true;
+                state.completed = false;
+                state.bytesWritten = qMax<qint64>(0, bytesWritten);
+                state.segmentIndex = qMax(0, segmentIndex);
+                if (segmentCount >= 0)
+                    state.segmentCount = segmentCount;
+                saveTrackResume(basePath, state);
+            });
+    connect(task, &DownloadTask::playlistFingerprint, this,
+            [this, video, basePath](const QString &fingerprint) {
+                TrackResume &state = video ? m_videoResume : m_audioResume;
+                state.valid = true;
+                state.fingerprint = fingerprint;
+                saveTrackResume(basePath, state);
             });
     connect(task, &DownloadTask::progress, this,
             [this, video](qint64 received, qint64 total) {
                 onTrackProgress(video, received, total);
             });
     connect(task, &DownloadTask::succeeded, this,
-            [this, video](const QString &path) { onTrackFinished(video, path); });
+            [this, video, basePath](const QString &path) {
+                TrackResume &state = video ? m_videoResume : m_audioResume;
+                state.valid = true;
+                state.completed = true;
+                state.targetPath = path;
+                state.bytesWritten = QFileInfo(path).size();
+                state.segmentCount = state.segmentIndex;
+                saveTrackResume(basePath, state);
+                onTrackFinished(video, path);
+            });
     connect(task, &DownloadTask::failed, this,
             [this, video](const QString &message) { onTrackFailed(video, message); });
     return true;
@@ -790,9 +878,138 @@ void HlsCacheBuilder::onRemuxFinished(bool success, const QString &outputPath,
     emit completed(item, cachePath);
 }
 
+/// @brief 退出程序时中止下载/转码，但保留轨道文件与续传状态。
+/// @note 与 cancel() 的区别：退出不是用户删除节目，已下载的分片必须留给
+///       下次播放续传，不能调用 cleanupPartial()。
+void HlsCacheBuilder::stopForExit()
+{
+    const bool hadWork = m_active || m_videoTask != nullptr || m_audioTask != nullptr
+                         || m_remux != nullptr;
+    m_active = false;
+    m_stage = Stage::Idle;
+    ++m_generation;
+    m_variantTimer->stop();
+    abortPlaylistFetch();
+    stopTasksForExit();
+
+    if (hadWork) {
+        qCInfo(lcHlsCache) << "退出中止 HLS 后台缓存，保留已下载分片："
+                           << m_item.displayName()
+                           << "videoBytes=" << m_videoResume.bytesWritten
+                           << "audioBytes=" << m_audioResume.bytesWritten;
+    }
+    m_item = MediaItem();
+    m_bodyPath.clear();
+    m_videoPath.clear();
+    m_audioPath.clear();
+    m_videoResume = TrackResume();
+    m_audioResume = TrackResume();
+    m_master = HlsCacheManifest::Master();
+}
+
+/// @brief 退出专用：DownloadTask 补精确检查点后保留 `.mvpdownload`，转码器直接终止。
+void HlsCacheBuilder::stopTasksForExit()
+{
+    if (m_videoTask != nullptr) {
+        DownloadTask *task = m_videoTask.data();
+        m_videoTask = nullptr;
+        // 不能 disconnect(this)：stopForExit() 还会同步发出最后一次 checkpoint，
+        // 续传状态正是靠这个信号写入的。
+        task->stopForExit();
+    }
+    if (m_audioTask != nullptr) {
+        DownloadTask *task = m_audioTask.data();
+        m_audioTask = nullptr;
+        task->stopForExit();
+    }
+    if (m_remux != nullptr) {
+        MediaRemux *remux = m_remux.data();
+        m_remux = nullptr;
+        remux->disconnect(this);
+        remux->cancel();
+        remux->deleteLater();
+    }
+}
+
+/// @brief 轨道续传状态文件：固定放在 `.video.resume.json` / `.audio.resume.json`。
+QString HlsCacheBuilder::resumeStatePath(const QString &basePath) const
+{
+    return basePath + QStringLiteral(".resume.json");
+}
+
+/// @brief 读取上次退出的轨道续传点；文件不存在或格式不合法时按不可续处理。
+HlsCacheBuilder::TrackResume HlsCacheBuilder::loadTrackResume(const QString &basePath) const
+{
+    TrackResume resume;
+    QFile file(resumeStatePath(basePath));
+    if (!file.open(QIODevice::ReadOnly))
+        return resume;
+
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) {
+        qCWarning(lcHlsCache) << "HLS 续传状态无法解析，将从头缓存：" << basePath
+                              << error.errorString();
+        return resume;
+    }
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("version")).toInt(-1) != 1)
+        return resume;
+
+    resume.targetPath = object.value(QStringLiteral("targetPath")).toString();
+    // 状态文件也在缓存目录里，必须限制目标与基名同目录，避免被篡改成任意写盘路径。
+    if (!resume.targetPath.isEmpty()) {
+        const QString baseDir = QDir::cleanPath(QFileInfo(basePath).absolutePath());
+        const QString targetDir =
+            QDir::cleanPath(QFileInfo(resume.targetPath).absolutePath());
+        if (baseDir != targetDir) {
+            qCWarning(lcHlsCache) << "HLS 续传目标越界，忽略状态：" << resume.targetPath;
+            resume.targetPath.clear();
+        }
+    }
+    resume.bytesWritten = qMax<qint64>(
+        0, object.value(QStringLiteral("bytesWritten")).toVariant().toLongLong());
+    resume.segmentIndex = qMax(
+        0, object.value(QStringLiteral("segmentIndex")).toInt(0));
+    resume.segmentCount = object.value(QStringLiteral("segmentCount")).toInt(-1);
+    resume.fingerprint = object.value(QStringLiteral("fingerprint")).toString();
+    resume.completed = object.value(QStringLiteral("completed")).toBool(false);
+    resume.valid = true;
+    return resume;
+}
+
+/// @brief 原子写入轨道续传点；写失败只记日志，不影响正在进行的缓存。
+void HlsCacheBuilder::saveTrackResume(const QString &basePath, const TrackResume &resume)
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("version"), 1);
+    object.insert(QStringLiteral("targetPath"), resume.targetPath);
+    object.insert(QStringLiteral("bytesWritten"),
+                  QJsonValue(double(resume.bytesWritten)));
+    object.insert(QStringLiteral("segmentIndex"), resume.segmentIndex);
+    object.insert(QStringLiteral("segmentCount"), resume.segmentCount);
+    object.insert(QStringLiteral("fingerprint"), resume.fingerprint);
+    object.insert(QStringLiteral("completed"), resume.completed);
+
+    QSaveFile file(resumeStatePath(basePath));
+    if (!file.open(QIODevice::WriteOnly)) {
+        qCWarning(lcHlsCache) << "无法写入 HLS 续传状态：" << file.errorString();
+        return;
+    }
+    const QByteArray body = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    if (file.write(body) != body.size() || !file.commit())
+        qCWarning(lcHlsCache) << "HLS 续传状态提交失败：" << file.errorString();
+}
+
+/// @brief 删除轨道续传状态；完成落盘或用户删除条目后调用。
+void HlsCacheBuilder::removeTrackResume(const QString &basePath)
+{
+    QFile::remove(resumeStatePath(basePath));
+}
+
 /// @brief 中止当前缓存流程，清理未完成的轨道与临时文件。
-/// @note 已完成正文不在 m_bodyPath 上，因此 cancel 不会误删完整缓存；
-///       递增 generation 可让所有在途回调失效。
+/// @note 仅用于用户明确删除条目；退出/切换条目走 stopForExit() 保留续传现场。
+///       已完成正文不在 m_bodyPath 上，因此 cancel 不会误删完整缓存。
 void HlsCacheBuilder::cancel()
 {
     m_active = false;
@@ -807,6 +1024,9 @@ void HlsCacheBuilder::cancel()
     m_bodyPath.clear();
     m_videoPath.clear();
     m_audioPath.clear();
+    m_videoResume = TrackResume();
+    m_audioResume = TrackResume();
+    m_master = HlsCacheManifest::Master();
 }
 
 /// @brief 取消当前缓存并删除该条目的所有缓存（含已完成正文）。
@@ -859,7 +1079,7 @@ void HlsCacheBuilder::cancelTasks()
     }
 }
 
-/// @brief 删除视频/音轨的中间文件，包括合并产物、转码产物和续传临时文件。
+/// @brief 删除视频/音轨的中间文件，包括合并产物、转码产物、续传临时文件与续传状态。
 void HlsCacheBuilder::cleanupTrackFiles()
 {
     const QString videoBase = m_bodyPath + QStringLiteral(".video");
@@ -867,6 +1087,7 @@ void HlsCacheBuilder::cleanupTrackFiles()
     for (const QString &path : { m_videoPath, videoBase, videoBase + QStringLiteral(".ts"),
                                  videoBase + QStringLiteral(".mp4"),
                                  videoBase + QStringLiteral(".mvpdownload"),
+                                 videoBase + QStringLiteral(".ts.mvpdownload"),
                                  videoBase + QStringLiteral(".mp4.mvpdownload") }) {
         if (!path.isEmpty())
             QFile::remove(path);
@@ -874,10 +1095,17 @@ void HlsCacheBuilder::cleanupTrackFiles()
     for (const QString &path : { m_audioPath, audioBase, audioBase + QStringLiteral(".ts"),
                                  audioBase + QStringLiteral(".mp4"),
                                  audioBase + QStringLiteral(".mvpdownload"),
+                                 audioBase + QStringLiteral(".ts.mvpdownload"),
                                  audioBase + QStringLiteral(".mp4.mvpdownload") }) {
         if (!path.isEmpty())
             QFile::remove(path);
     }
+    if (!videoBase.isEmpty())
+        removeTrackResume(videoBase);
+    if (!audioBase.isEmpty())
+        removeTrackResume(audioBase);
+    if (!m_bodyPath.isEmpty())
+        MediaCache::removePartialIdentity(m_bodyPath);
 }
 
 /// @brief 清理当前构建留下的半成品。

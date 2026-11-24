@@ -227,10 +227,14 @@ QString resolvedCachePath(const MediaItem &item)
             continue;
         }
 
-        // 没有旁车 JSON 的空目录可以复用；已有正文却缺 JSON 说明是异常残留，
-        // 换下一个名字，避免把别的条目数据覆盖掉。
-        if (item.type == MediaType::Video && !reusable
-            && QDir(QFileInfo(path).absolutePath()).isEmpty()) {
+        // 未完成缓存没有旁车 JSON，但有身份标记。命中同一条目时继续用原目录，
+        // 否则退出后重启会被当成“占用冲突”改选 " (2)"，已下好的分片白费。
+        if (item.type == MediaType::Video && !reusable) {
+            if (MediaCache::readPartialIdentity(path) == identity)
+                return path;
+            // 没有标记但目录为空，才是可复用的干净目录；非空残留不能覆盖。
+            if (!QDir(QFileInfo(path).absolutePath()).isEmpty())
+                continue;
             reusable = true;
         }
         if (reusable)
@@ -265,7 +269,8 @@ QString removalPathForItem(const MediaItem &item)
         } else {
             path = root + QLatin1Char('/') + name;
         }
-        if (!QFileInfo::exists(path))
+        if (!QFileInfo::exists(path)
+            && !QFileInfo::exists(MediaCache::partialStatePathForFile(path)))
             continue;
 
         const QFileInfo metaInfo(MediaCache::metaPathForFile(path));
@@ -353,6 +358,60 @@ QString metaPathForFile(const QString &cachePath)
     return cachePath + QStringLiteral(".json");
 }
 
+/// @brief 未完成缓存的身份标记路径；与完成后的旁车 JSON 分开。
+QString partialStatePathForFile(const QString &cachePath)
+{
+    return cachePath + QStringLiteral(".partial.json");
+}
+
+/// @brief 写入未完成缓存身份，供下次启动找回同一个条目目录。
+bool writePartialIdentity(const QString &cachePath, const QString &identity)
+{
+    if (cachePath.isEmpty() || identity.isEmpty())
+        return false;
+
+    QJsonObject object;
+    object.insert(QStringLiteral("version"), 1);
+    object.insert(QStringLiteral("identity"), identity);
+    object.insert(QStringLiteral("updatedAt"),
+                  static_cast<double>(QDateTime::currentMSecsSinceEpoch()));
+
+    QSaveFile file(partialStatePathForFile(cachePath));
+    if (!file.open(QIODevice::WriteOnly))
+        return false;
+    const QByteArray payload = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    if (file.write(payload) != payload.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
+}
+
+/// @brief 读取未完成缓存身份；标记缺失/损坏时返回空。
+QString readPartialIdentity(const QString &cachePath)
+{
+    QFile file(partialStatePathForFile(cachePath));
+    if (!file.open(QIODevice::ReadOnly))
+        return QString();
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject())
+        return QString();
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("version")).toInt(-1) != 1)
+        return QString();
+    return object.value(QStringLiteral("identity")).toString();
+}
+
+/// @brief 删除未完成缓存身份标记；完成/失败/用户删除后调用。
+bool removePartialIdentity(const QString &cachePath)
+{
+    if (cachePath.isEmpty())
+        return true;
+    return !QFileInfo::exists(partialStatePathForFile(cachePath))
+           || QFile::remove(partialStatePathForFile(cachePath));
+}
+
 /// @brief 删除单个条目的缓存，并清理旧版 `<hash>/` 布局。
 /// @param item 媒体条目。
 /// @return 全部删除成功返回 true；正文被占用或路径越界返回 false。
@@ -372,15 +431,17 @@ bool removeForItem(const MediaItem &item)
             || !dir.startsWith(cacheRoot + QLatin1Char('/'))) {
             return false;
         }
-        // 先删正文、再删 JSON、最后删空目录。正文被播放器短暂占用时保留
-        // JSON，下一次重试还能靠身份找到同一个文件。
+        // 先删正文；正文被播放器短暂占用时保留其余文件，下一次重试还能
+        // 靠身份标记找到同一个目录。正文删掉后整个条目目录都可回收。
         if (QFileInfo::exists(path))
             ok = QFile::remove(path) && ok;
         if (QFileInfo::exists(path))
             return false;
         if (QFileInfo::exists(meta))
             ok = QFile::remove(meta) && ok;
-        QDir().rmdir(dir);
+        removePartialIdentity(path);
+        if (QDir(dir).exists())
+            ok = QDir(dir).removeRecursively() && ok;
     } else {
         if (path.isEmpty() || path == cacheRoot
             || !path.startsWith(cacheRoot + QLatin1Char('/'))) {
@@ -430,12 +491,16 @@ bool removeCachePath(const QString &cachePath)
         return false;
     if (QFileInfo::exists(meta))
         ok = QFile::remove(meta) && ok;
+    removePartialIdentity(path);
 
-    // 影视正文在 media-cache/<条目名>/media，正文和 JSON 都删完后
-    // 顺手回收空目录；音乐正文直接在根目录，父目录等于 root，不处理。
+    // 影视正文在 media-cache/<条目名>/media，正文删掉后整个条目目录都是
+    // 本应用缓存（可能还有退出时保留的分片/续传状态），一并回收。
+    // 音乐正文直接在根目录，父目录等于 root，不处理。
     const QString parent = QFileInfo(path).absolutePath();
-    if (parent != cacheRoot && parent.startsWith(cacheRoot + QLatin1Char('/')))
-        QDir().rmdir(parent);
+    if (parent != cacheRoot && parent.startsWith(cacheRoot + QLatin1Char('/'))
+        && QDir(parent).exists()) {
+        ok = QDir(parent).removeRecursively() && ok;
+    }
 
     return ok;
 }
