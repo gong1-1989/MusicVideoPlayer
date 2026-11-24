@@ -15,6 +15,8 @@
 #include <QRegularExpression>
 #include <QUrl>
 
+#include <utility>
+
 #include "util/HeaderPolicy.h"
 #include "util/NetworkAddressPolicy.h"
 
@@ -417,6 +419,10 @@ void ConfigSearchProvider::launchDetails()
 {
     constexpr int kDetailConcurrency = 3;
 
+    // 每完成/失败一条详情都会补位，这里顺带发一次快照：先出的结果先显示，
+    // 慢详情只影响它自己那一条，不再拖住整个源。
+    emitProgress();
+
     while (m_activeDetails < kDetailConcurrency && m_nextDetail < m_pendingIds.size()) {
         const int index = m_nextDetail++;
         if (m_http == nullptr) {
@@ -553,6 +559,21 @@ void ConfigSearchProvider::onDetailFinished(QNetworkReply *reply, int index, qin
     else
         ++m_filtered;
     launchDetails();
+}
+
+/// @brief 把当前主结果与已完成的详情槽作为快照发出。
+/// @note 这是覆盖式快照：协调器按源覆盖槽位，不会把同一批结果重复累加；
+///       详情仍在跑时先让用户看到已解析出的条目，避免整源等最后一条才出结果。
+void ConfigSearchProvider::emitProgress()
+{
+    if (m_done)
+        return;
+    QVector<MediaItem> snapshot = m_result;
+    for (const QVector<MediaItem> &bucket : std::as_const(m_detailBuckets))
+        snapshot += bucket;
+    if (snapshot.isEmpty() && m_filtered == 0)
+        return;
+    emit itemsReady(m_config.id, snapshot, m_filtered);
 }
 
 /// @brief 收口一次搜索：按索引合并详情槽并发出 finished。

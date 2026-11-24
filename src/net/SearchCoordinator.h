@@ -52,10 +52,14 @@ private:
     };
 
     void startAll();
+    /// 最多同时跑 kMaxActiveSources 个源；源再多也只补位，不会一次把连接打满
+    void launchNextSources();
     void finishSearch();
     void onGlobalTimeout();
     void onProviderFinished(SearchProviderBase *provider, const QVector<MediaItem> &items,
                             int filtered, const QString &error);
+    void onProviderProgress(SearchProviderBase *provider, const QVector<MediaItem> &items,
+                            int filtered);
     void onSourceTimeout(SearchProviderBase *provider);
     int timeoutForSource(const SourceConfig &config) const;
     int globalBudgetForLimit() const;
@@ -77,6 +81,8 @@ private:
     int m_limit = 20;
     int m_total = 0;
     int m_done = 0;
+    /// 下一个待启动源在 m_queue 里的下标；已启动/已跳过的都算推进
+    int m_nextLaunchIndex = 0;
     bool m_busy = false;
     /// 正在批量启动：同步完成的源不能提前收尾，否则后面的源还没发出去
     bool m_launching = false;
@@ -84,6 +90,8 @@ private:
     QTimer *m_globalTimer = nullptr;
 
     static constexpr int kSourceTimeoutMs = 20000;
+    /// 16 路是安全上限：普通 10 来个源仍全部并发，源特别多时避免连接/线程一次性打满
+    static constexpr int kMaxActiveSources = 16;
 };
 
 #endif // SEARCHCOORDINATOR_H

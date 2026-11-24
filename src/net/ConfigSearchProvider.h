@@ -33,6 +33,8 @@ private:
     // 二次解析：搜索命中后取详情换直链，最多 3 路并发；结果按原索引缓存保证顺序
     void launchDetails();
     void onDetailFinished(QNetworkReply *reply, int index, qint64 elapsedMs);
+    /// 把“主结果 + 已完成的详情槽”作为快照发给协调器，慢详情不会拖住已解析出的条目
+    void emitProgress();
     void finishSearch();
     QVector<MediaItem> buildItems(const MediaItem &base, const QString &stream);
 

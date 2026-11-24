@@ -20,6 +20,7 @@
 #include <QUrlQuery>
 
 #include <algorithm>
+#include <utility>
 
 Q_LOGGING_CATEGORY(lcWeb, "mvp.net.webvideo")
 
@@ -1167,7 +1168,31 @@ void MaccmsWebProvider::finishJob(const QSharedPointer<Job> &job, bool ok, const
             m_firstFailure = reason;
         qCInfo(lcWeb) << "跳过" << job->candidate.title << reason;
     }
+    // 已完成一条就发一次当前快照：网页源详情/播放页并发抓取，
+    // 不能等最慢的那条线路结束才把已经拿到的直链交给界面。
+    emitProgress();
     startWorkers();
+}
+
+/// @brief 把当前已完成条目按搜索页候选序号排序后发快照。
+/// @note 只发成功条目；过滤计数一并带上，协调器按源覆盖，不会重复累加。
+void MaccmsWebProvider::emitProgress()
+{
+    if (m_done)
+        return;
+    if (m_slots.isEmpty() && m_filtered == 0)
+        return;
+
+    QVector<QPair<int, MediaItem>> sorted = m_slots;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const QPair<int, MediaItem> &left, const QPair<int, MediaItem> &right) {
+                  return left.first < right.first;
+              });
+    QVector<MediaItem> snapshot;
+    snapshot.reserve(sorted.size());
+    for (const QPair<int, MediaItem> &slot : std::as_const(sorted))
+        snapshot.append(slot.second);
+    emit itemsReady(m_config.id, snapshot, m_filtered);
 }
 
 /// @brief 结束本轮搜索（error 为空表示成功），并做去重与条数裁剪。

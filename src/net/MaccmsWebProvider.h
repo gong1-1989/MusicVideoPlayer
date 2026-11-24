@@ -72,6 +72,8 @@ private:
     void processPlay(const QSharedPointer<Job> &job);
     void finishJob(const QSharedPointer<Job> &job, bool ok, const MediaItem &item = MediaItem(),
                    const QString &reason = QString());
+    /// 把已完成条目按候选序号排序后作为快照发出，先出的直链先显示
+    void emitProgress();
     void finish(const QString &error);
 
     QUrl siteUrl(const QString &relative) const;

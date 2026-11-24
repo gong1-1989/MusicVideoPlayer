@@ -263,6 +263,7 @@ private slots:
     void externalAbortKillsProcessWithoutFinish();
     void externalProviderScopesCookieToConfiguredOrigin();
     void externalProviderHonorsLimit();
+    void configSearchEmitsPartialBeforeFinal();
     void searchJsonOverLimitFails();
     void responseLimitAbortsInflight();
     void responseLimitOnHttpErrorKeepsStatus();
@@ -2785,6 +2786,76 @@ void IntegrationTest::externalProviderHonorsLimit()
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QCOMPARE(items.size(), 1);
     QCOMPARE(items.first().title, QStringLiteral("one"));
+}
+
+void IntegrationTest::configSearchEmitsPartialBeforeFinal()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path.startsWith("/search")) {
+            // 搜索页没有直链，必须逐条请求详情；第 1 条快、第 2 条慢，
+            // 用来验证慢详情不会把已经解析出的第 1 条扣到最后才显示。
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("{\"items\":[{\"id\":\"1\",\"title\":\"第一首\"},"
+                                  "{\"id\":\"2\",\"title\":\"第二首\"}]}"),
+                "application/json");
+            return;
+        }
+        if (request.path.startsWith("/detail/1")) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("{\"url\":\"http://example.com/one.mp3\"}"),
+                "application/json", -1, {}, 120);
+            return;
+        }
+        if (request.path.startsWith("/detail/2")) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("{\"url\":\"http://example.com/two.mp3\"}"),
+                "application/json", -1, {}, 700);
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    SourceConfig config = makeSource(QUrl(QStringLiteral("http://127.0.0.1:%1/search")
+                                              .arg(server.serverPort())));
+    // QUrl::toString() 会把模板花括号编码成 %7Bkeyword%7D，renderTemplate 就替换不到；
+    // 这里直接给未编码的模板字符串，和真实源配置的保存形式一致。
+    config.urlTemplate = QStringLiteral("http://127.0.0.1:%1/search?q={keyword}")
+                             .arg(server.serverPort());
+    config.fields.insert(QStringLiteral("id"), QStringLiteral("id"));
+    config.detailUrlTemplate = QStringLiteral("http://127.0.0.1:%1/detail/{id}")
+                                   .arg(server.serverPort());
+    config.detailFields.insert(QStringLiteral("streamUrl"), QStringLiteral("url"));
+
+    HttpClient http;
+    ConfigSearchProvider provider(config, &http);
+
+    QVector<int> progressSizes;
+    QVector<MediaItem> finalItems;
+    bool finished = false;
+    connect(&provider, &SearchProviderBase::itemsReady, this,
+            [&progressSizes](const QString &, const QVector<MediaItem> &items, int) {
+                progressSizes.append(items.size());
+            });
+    connect(&provider, &SearchProviderBase::finished, this,
+            [&finished, &finalItems](const QString &, const QVector<MediaItem> &items, int,
+                                    const QString &) {
+                finalItems = items;
+                finished = true;
+            });
+
+    provider.search(QStringLiteral("测试"), 5);
+
+    // 第一条详情 120ms 完成，此时整源还没结束，必须已经能看到 1 条。
+    QTRY_VERIFY_WITH_TIMEOUT(progressSizes.contains(1), 2500);
+    QVERIFY(!finished);
+    QTRY_VERIFY_WITH_TIMEOUT(finished, 3500);
+    QCOMPARE(finalItems.size(), 2);
+    QCOMPARE(progressSizes.last(), 2);
 }
 
 void IntegrationTest::searchJsonOverLimitFails()

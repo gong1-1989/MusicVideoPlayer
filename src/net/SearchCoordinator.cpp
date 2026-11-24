@@ -76,6 +76,7 @@ void SearchCoordinator::search(const QString &keyword, int limitPerSource)
     m_limit = limitPerSource > 0 ? limitPerSource : 20;
     m_total = m_queue.size();
     m_done = 0;
+    m_nextLaunchIndex = 0;
     m_tasks.clear();
     m_buckets.clear();
     m_buckets.resize(m_total);
@@ -91,20 +92,33 @@ void SearchCoordinator::search(const QString &keyword, int limitPerSource)
     startAll();
 }
 
-/// @brief 实例化全部启用源并统一下发搜索。
-/// @note 先完成全部实例化再启动，避免某个源同步完成/报错时把尚未启动的源
-///       误判成“全部结束”；不支持的内置 provider 直接计为失败并跳过。
+/// @brief 启动源级并发调度：最多 kMaxActiveSources 个在跑，其余等空位补上。
+/// @note 以前一次性实例化并下发全部启用源；源特别多时连接/线程会一次性打满，
+///       慢源还会互相抢带宽。这里加 16 路安全上限，普通源数量下行为不变；
+///       每个源仍独立计时，总耗时取决于最慢源，不是所有源预算相加。
 void SearchCoordinator::startAll()
 {
-    // 先把所有源都实例化出来，再统一下发搜索；任何一个源同步报错/同步完成
-    // 都不会让后面的源还没启动就被误判成“全部结束”。
-    for (int i = 0; i < m_queue.size(); ++i) {
-        const SourceConfig &config = m_queue.at(i);
+    launchNextSources();
+}
+
+/// @brief 从 m_queue 补位启动，直到达到并发上限或没有待启动源。
+void SearchCoordinator::launchNextSources()
+{
+    // 同步完成的源会在 provider->search() 内回调 onProviderFinished；
+    // 该回调也会尝试补位，这里用 m_launching 防止递归重入，由外层 while 继续。
+    if (m_launching)
+        return;
+    m_launching = true;
+
+    while (m_busy && m_tasks.size() < kMaxActiveSources
+           && m_nextLaunchIndex < m_queue.size()) {
+        const int index = m_nextLaunchIndex++;
+        const SourceConfig &config = m_queue.at(index);
 
         SearchProviderBase *provider = createSearchProvider(config, m_http, this);
         if (provider == nullptr) {
             // 历史配置里残留的内置源（如已下线的 B站）没有实现类，跳过它并说明原因
-            m_errors[i] = QStringLiteral("%1（程序已不支持该内置源，已跳过）").arg(config.name);
+            m_errors[index] = QStringLiteral("%1（程序已不支持该内置源，已跳过）").arg(config.name);
             ++m_done;
             qCWarning(lcSearch) << "跳过不支持的内置源：" << config.name;
             continue;
@@ -117,10 +131,16 @@ void SearchCoordinator::startAll()
         task.provider = provider;
         task.timer = timer;
         task.name = config.name;
-        task.sourceIndex = i;
+        task.sourceIndex = index;
         task.timeoutMs = timeoutForSource(config);
         m_tasks.append(task);
 
+        connect(provider, &SearchProviderBase::itemsReady, this,
+                [this, provider](const QString &sourceId, const QVector<MediaItem> &items,
+                                 int filtered) {
+                    Q_UNUSED(sourceId)
+                    onProviderProgress(provider, items, filtered);
+                });
         connect(provider, &SearchProviderBase::finished, this,
                 [this, provider](const QString &sourceId, const QVector<MediaItem> &items,
                                  int filtered, const QString &error) {
@@ -128,27 +148,15 @@ void SearchCoordinator::startAll()
                     onProviderFinished(provider, items, filtered, error);
                 });
         connect(timer, &QTimer::timeout, this, [this, provider] { onSourceTimeout(provider); });
-    }
 
-    if (m_tasks.isEmpty()) {
-        finishSearch();
-        return;
-    }
-
-    // 每个源各自计时，总耗时取决于最慢的那个源，而不是所有源预算相加。
-    // 网页影视源按条数动态放宽，避免 20/30/50 条被统一的短预算截断。
-    const QVector<SourceTask> tasks = m_tasks;
-    m_launching = true;
-    for (const SourceTask &task : tasks) {
-        if (task.provider == nullptr || task.timer == nullptr)
-            continue;
         qCInfo(lcSearch) << "启动源：" << task.name << "预算" << task.timeoutMs << "ms";
-        task.timer->start(task.timeoutMs);
-        task.provider->search(m_keyword, m_limit);
+        timer->start(task.timeoutMs);
+        // 同步完成的源会在这里回调 onProviderFinished；m_launching 让回调不再递归补位。
+        provider->search(m_keyword, m_limit);
     }
-    m_launching = false;
 
-    if (m_done >= m_total)
+    m_launching = false;
+    if (m_busy && m_tasks.isEmpty() && m_done >= m_total)
         finishSearch();
 }
 
@@ -188,6 +196,29 @@ int SearchCoordinator::globalBudgetForLimit() const
     return budget;
 }
 
+/// @brief 接收单个源的源内快照，覆盖该源槽位并刷新可见结果。
+/// @param provider 仍在跑的提供者。
+/// @param items 该源“到目前为止”的完整快照，不是增量。
+/// @param filtered 该源累计过滤条数。
+/// @note 源还在跑时只更新槽位，不增加 m_done；这样首屏不必等最慢详情，
+///       仍由 finished/超时决定该源最终完成。
+void SearchCoordinator::onProviderProgress(SearchProviderBase *provider,
+                                            const QVector<MediaItem> &items, int filtered)
+{
+    if (!m_busy)
+        return;
+    const int index = taskIndexFor(provider);
+    if (index < 0)
+        return;
+
+    const int sourceIndex = m_tasks.at(index).sourceIndex;
+    if (sourceIndex >= 0 && sourceIndex < m_buckets.size()) {
+        m_buckets[sourceIndex] = items;
+        m_bucketFiltered[sourceIndex] = filtered;
+    }
+    emit searchPartial(mergedItems(), mergedFiltered(), m_done, m_total);
+}
+
 /// @brief 按提供者指针查找在途任务下标。
 /// @return 任务下标；已超时/取消/完成时返回 -1。
 int SearchCoordinator::taskIndexFor(SearchProviderBase *provider) const
@@ -225,6 +256,8 @@ void SearchCoordinator::onSourceTimeout(SearchProviderBase *provider)
                 .arg(task.timeoutMs / 1000);
     }
     ++m_done;
+    // 空出一个并发位就补下一个源；m_launching 期间由外层启动循环继续。
+    launchNextSources();
 
     qCWarning(lcSearch) << "源超时：" << task.name << "预算" << task.timeoutMs << "ms，累计"
                         << m_done << "/" << m_total;
@@ -242,6 +275,15 @@ void SearchCoordinator::onGlobalTimeout()
 
     const QVector<SourceTask> pending = m_tasks;
     m_tasks.clear();
+    // 因为 16 路上限还没轮到的源也要给出失败说明，否则 UI 只看到“源数变少”。
+    for (int i = m_nextLaunchIndex; i < m_queue.size(); ++i) {
+        if (i >= 0 && i < m_errors.size() && m_errors.at(i).isEmpty()) {
+            m_errors[i] = QStringLiteral("%1（整体超过 %2 秒，已跳过）")
+                              .arg(m_queue.at(i).name)
+                              .arg(globalBudgetForLimit() / 1000);
+        }
+    }
+    m_nextLaunchIndex = m_queue.size();
     for (const SourceTask &task : pending) {
         if (task.sourceIndex >= 0 && task.sourceIndex < m_errors.size()
             && m_errors.at(task.sourceIndex).isEmpty()) {
@@ -293,6 +335,7 @@ void SearchCoordinator::onProviderFinished(SearchProviderBase *provider,
         m_errors[task.sourceIndex] = error;
     }
     ++m_done;
+    launchNextSources();
 
     qCInfo(lcSearch) << "源完成：" << task.name << items.size() << "条，过滤" << filtered
                      << "条，累计" << m_done << "/" << m_total << "用时"
@@ -395,6 +438,7 @@ void SearchCoordinator::cancel()
     m_launching = false;
     m_done = 0;
     m_total = 0;
+    m_nextLaunchIndex = 0;
     m_buckets.clear();
     m_bucketFiltered.clear();
     m_errors.clear();

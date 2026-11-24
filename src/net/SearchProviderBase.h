@@ -24,6 +24,10 @@ public:
     virtual void abort() {}
 
 signals:
+    /// 源内增量：items 是“到目前为止”的完整快照，不是增量追加。
+    /// 协调器用快照覆盖该源的结果槽，最终 finished 仍会再发一次完整结果。
+    void itemsReady(const QString &sourceId, const QVector<MediaItem> &items, int filtered);
+
     /// error 为空表示成功；失败时 items 为空
     void finished(const QString &sourceId, const QVector<MediaItem> &items, int filtered,
                   const QString &error);
