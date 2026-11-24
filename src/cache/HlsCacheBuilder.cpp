@@ -719,6 +719,15 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
     connect(task, &DownloadTask::playlistFingerprint, this,
             [this, video, basePath](const QString &fingerprint) {
                 TrackResume &state = video ? m_videoResume : m_audioResume;
+                // 指纹变化意味着分片结构和旧合并文件不再对应，旧索引必须在
+                // 新分片登记前失效，不能只等 DownloadTask 稍后清零文件。
+                if (state.bytesWritten > 0 && !state.fingerprint.isEmpty()
+                    && state.fingerprint != fingerprint) {
+                    const QString target = state.targetPath.isEmpty()
+                                               ? (video ? m_videoPath : m_audioPath)
+                                               : state.targetPath;
+                    HlsPreloadIndex::instance().clearTrack(target);
+                }
                 state.valid = true;
                 state.fingerprint = fingerprint;
                 saveTrackResume(basePath, state);
