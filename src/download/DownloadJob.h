@@ -44,6 +44,9 @@ struct DownloadJob
     /// 删除会失败，记录到任务里，重启或空闲时继续尝试。
     QString cleanupCachePath;
     qint64 bytesReceived = 0;
+    /// 当前下载速度（字节/秒），只用于运行中的界面展示，不写入 downloads.json；
+    /// 重启后由 DownloadManager 重新采样，避免把退出前的瞬时速度当成续传状态。
+    qint64 bytesPerSecond = 0;
     qint64 bytesTotal = -1;
     qint64 maxBytes = 0;
     int segmentIndex = 0;

@@ -48,6 +48,19 @@ QString sizeText(const DownloadJob &job)
     return humanSize(job.bytesReceived);
 }
 
+/// @brief 把字节/秒格式化为下载速度文本。
+QString speedText(qint64 bytesPerSecond)
+{
+    if (bytesPerSecond <= 0)
+        return QStringLiteral("0 B/s");
+    if (bytesPerSecond < 1024)
+        return QStringLiteral("%1 B/s").arg(bytesPerSecond);
+    const double kb = double(bytesPerSecond) / 1024.0;
+    if (kb < 1024.0)
+        return QStringLiteral("%1 KB/s").arg(kb, 0, 'f', 1);
+    return QStringLiteral("%1 MB/s").arg(kb / 1024.0, 0, 'f', 2);
+}
+
 } // namespace
 
 /// @brief 构建下载管理器窗口并连接 DownloadManager 的变更信号。
@@ -60,15 +73,15 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
 {
     ui->setupUi(this);
     m_tree = ui->downloadManagerTree;
-    m_tree->setHeaderLabels({tr("名称"), tr("状态"), tr("进度"), tr("大小"),
-                             tr("保存位置")});
+    m_tree->setHeaderLabels({tr("名称"), tr("状态"), tr("进度"), tr("速度"),
+                             tr("大小"), tr("保存位置")});
     m_summary = ui->label_downloadSummary;
     m_statusLabel = ui->label_downloadStatus;
     m_openFile = ui->btn_openFile;
     m_openFolder = ui->btn_openFolder;
     m_retry = ui->btn_retry;
     m_pause = ui->btn_pause;
-    m_remove = ui->btn_remove;
+    m_remove = ui->btn_downloadRemove;
     m_clearCompleted = ui->btn_clearCompleted;
 
     // 标题字号仍按当前字体比例动态加粗，避免在 .ui 里写死字号后无法跟随字体缩放。
@@ -92,6 +105,8 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
     m_tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_tree->header()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_tree->header()->setSectionResizeMode(5, QHeaderView::Stretch);
     applyHeaderStyle();
 
     const QString baseHint =
@@ -212,9 +227,15 @@ void DownloadManagerDialog::rebuild()
             active.append(job);
     }
 
-    m_summary->setText(tr("未完成 %1 个 · 已完成 %2 个 · 普通任务退出后自动续传，快照任务不会")
+    qint64 totalSpeed = 0;
+    for (const DownloadJob &job : active) {
+        if (job.status == DownloadJob::Status::Downloading)
+            totalSpeed += job.bytesPerSecond;
+    }
+    m_summary->setText(tr("未完成 %1 个 · 已完成 %2 个 · 总速度 %3 · 普通任务退出后自动续传，快照任务不会")
                             .arg(active.size())
-                            .arg(completed.size()));
+                            .arg(completed.size())
+                            .arg(speedText(totalSpeed)));
 
     auto makeGroup = [this](const QString &text) {
         auto *group = new QTreeWidgetItem(m_tree);
@@ -235,9 +256,15 @@ void DownloadManagerDialog::rebuild()
         row->setToolTip(0, job.item.title);
         row->setText(1, job.statusText());
         row->setToolTip(1, job.statusText());
-        row->setText(3, sizeText(job));
-        row->setText(4, QFileInfo(job.filePath).absoluteFilePath());
-        row->setToolTip(4, QFileInfo(job.filePath).absoluteFilePath());
+        const QString speed = job.status == DownloadJob::Status::Downloading
+            ? speedText(job.bytesPerSecond)
+            : QStringLiteral("—");
+        row->setText(3, speed);
+        row->setToolTip(3, speed);
+        row->setText(4, sizeText(job));
+        const QString path = QFileInfo(job.filePath).absoluteFilePath();
+        row->setText(5, path);
+        row->setToolTip(5, path);
 
         auto *bar = new QProgressBar(m_tree);
         bar->setRange(0, 100);

@@ -11,6 +11,7 @@
 #include "storage/StoragePaths.h"
 #include "util/HeaderPolicy.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -72,6 +73,11 @@ DownloadManager::DownloadManager(HttpClient *http, QObject *parent)
     connect(m_notifyTimer, &QTimer::timeout, this, [this] {
         emit jobsChanged();
     });
+
+    m_speedTimer = new QTimer(this);
+    m_speedTimer->setInterval(500);
+    connect(m_speedTimer, &QTimer::timeout, this, &DownloadManager::sampleTransferSpeeds);
+    m_speedTimer->start();
 
     m_cacheCopyTimer = new QTimer(this);
     // 缓存复制每轮只搬固定大小，主线程不会因为大文件整段复制而卡住。
@@ -1129,6 +1135,87 @@ void DownloadManager::scheduleNotify()
         m_notifyTimer->start();
 }
 
+/// @brief 每 500ms 刷新一次各任务速度；没有新字节时逐步归零。
+/// @note 只处理正在下载的任务。暂停、完成、失败立即清零，避免界面继续显示
+///       退出前的旧速度。
+void DownloadManager::sampleTransferSpeeds()
+{
+    if (m_shuttingDown)
+        return;
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool changed = false;
+    QSet<QString> active;
+    for (DownloadJob &job : m_jobs) {
+        if (job.status != DownloadJob::Status::Downloading) {
+            m_speedStates.remove(job.id);
+            if (job.bytesPerSecond != 0) {
+                job.bytesPerSecond = 0;
+                changed = true;
+            }
+            continue;
+        }
+        active.insert(job.id);
+        if (noteTransferSample(job, job.bytesReceived, now))
+            changed = true;
+    }
+
+    for (auto it = m_speedStates.begin(); it != m_speedStates.end();) {
+        if (!active.contains(it.key()))
+            it = m_speedStates.erase(it);
+        else
+            ++it;
+    }
+
+    if (changed)
+        emit jobsChanged();
+}
+
+/// @brief 用累计字节和真实时间差估算速度，避免 HLS 整段落盘造成假尖峰。
+/// @return 任务速度字段是否发生变化。
+bool DownloadManager::noteTransferSample(DownloadJob &job, qint64 bytes, qint64 nowMs)
+{
+    SpeedState &state = m_speedStates[job.id];
+    if (state.lastMs == 0 || bytes < state.lastBytes) {
+        // 首次采样，或任务重置/续传点回退；只记录基线，不产生速度。
+        state.lastMs = nowMs;
+        state.lastBytes = bytes;
+        if (job.bytesPerSecond != 0) {
+            job.bytesPerSecond = 0;
+            return true;
+        }
+        return false;
+    }
+
+    const qint64 elapsedMs = nowMs - state.lastMs;
+    if (bytes == state.lastBytes) {
+        // 连续 5 秒没有任何新写入，认为传输已停住；保留太久会把旧速度
+        // 当成实时速度展示。
+        if (elapsedMs >= 5000 && job.bytesPerSecond != 0) {
+            job.bytesPerSecond = 0;
+            state.lastMs = nowMs;
+            return true;
+        }
+        return false;
+    }
+
+    // 网络 readyRead 可能在几毫秒内连续触发；不足 250ms 的采样先累积，
+    // 否则速度会在小分块之间剧烈跳动。
+    if (elapsedMs < 250)
+        return false;
+
+    const double instant = double(bytes - state.lastBytes) * 1000.0 / double(elapsedMs);
+    const qint64 next = job.bytesPerSecond > 0
+        ? qint64(double(job.bytesPerSecond) * 0.6 + instant * 0.4)
+        : qint64(instant);
+    state.lastMs = nowMs;
+    state.lastBytes = bytes;
+    if (next == job.bytesPerSecond)
+        return false;
+    job.bytesPerSecond = next;
+    return true;
+}
+
 /// @brief 延迟删除文件（Windows 上句柄释放可能滞后，按次数重试）。
 void DownloadManager::scheduleRemoveFile(const QString &path, int attempt)
 {
@@ -1428,6 +1515,8 @@ void DownloadManager::startJob(const QString &id)
                     j.bytesTotal = total;
                     j.message = tr("正在下载");
                 }
+                noteTransferSample(j, j.bytesReceived,
+                                   QDateTime::currentMSecsSinceEpoch());
                 scheduleNotify();
             });
 

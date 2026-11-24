@@ -85,6 +85,11 @@ private:
     void saveNow();
     void scheduleSave();
     void scheduleNotify();
+    /// 每 500ms 检查一次任务速度，并用相邻真实字节采样更新单任务速度；
+    /// 速度只是运行时数据，不进入持久化状态文件。
+    void sampleTransferSpeeds();
+    /// 用一次真实字节采样更新任务速度；返回速度是否变化。
+    bool noteTransferSample(DownloadJob &job, qint64 bytes, qint64 nowMs);
     void scheduleRemoveFile(const QString &path, int attempt = 0);
     /// 清理下载完成后标记了 cleanupCachePath 的播放缓存；被播放器占用时
     /// 定时重试，程序重启后也会继续。只删 media-cache，不碰歌词缓存。
@@ -143,6 +148,14 @@ private:
     QHash<QString, QString> m_pendingPublishMessages;
     QTimer *m_saveTimer = nullptr;
     QTimer *m_notifyTimer = nullptr;
+    QTimer *m_speedTimer = nullptr;
+    /// 单任务速度采样状态：上次采样时间/累计字节，用于计算相邻采样的增量。
+    struct SpeedState
+    {
+        qint64 lastMs = 0;
+        qint64 lastBytes = 0;
+    };
+    QHash<QString, SpeedState> m_speedStates;
     QTimer *m_cacheCopyTimer = nullptr;
     QTimer *m_seedTimer = nullptr;
     QTimer *m_publishTimer = nullptr;
