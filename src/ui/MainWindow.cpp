@@ -264,14 +264,12 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const MediaItem &item, int) {
                 const bool music = item.isValid() && item.type == MediaType::Music;
                 if (music) {
-                    // 码率栏只属于 HLS 视频。先收起并立即重排，再按新的
-                    // videoStage 尺寸铺满视觉层，否则音乐视图顶上会留一条
-                    // 码率栏高度，直到定时器下一次刷新才恢复。
+                    // 码率栏位于播放控制区，只属于 HLS 视频；切到音乐时立即
+                    // 收起并清空选项指纹，避免控制条保留上一部视频的码率。
                     if (ui->bitrateBar != nullptr) {
                         ui->bitrateBar->hide();
                         m_bitrateOptionsSignature.clear();
                     }
-                    ui->layout_stage->activate();
                     m_musicVisual->setTrack(item);
                     QString sourceName;
                     if (!item.sourceId.isEmpty() && item.sourceId != QLatin1String("link")) {
@@ -876,10 +874,14 @@ void MainWindow::refreshBitrateBar()
         QString bandwidth;
         if (option.bandwidth <= 0) {
             bandwidth = tr("未知码率");
+        } else if (option.bandwidth >= 1000000) {
+            // HLS 的 BANDWIDTH 单位是 bit/s；之前按 kbit/s 换算会把
+            // 1300000 显示成 1300.00 Mbps，必须按 1e6 折算。
+            bandwidth = QStringLiteral("%1 Mbps").arg(option.bandwidth / 1000000.0, 0, 'f', 2);
         } else if (option.bandwidth >= 1000) {
-            bandwidth = QStringLiteral("%1 Mbps").arg(option.bandwidth / 1000.0, 0, 'f', 2);
+            bandwidth = QStringLiteral("%1 kbps").arg(option.bandwidth / 1000.0, 0, 'f', 0);
         } else {
-            bandwidth = QStringLiteral("%1 kbps").arg(option.bandwidth);
+            bandwidth = QStringLiteral("%1 bps").arg(option.bandwidth);
         }
         return QStringLiteral("%1 · %2").arg(resolution, bandwidth);
     };
