@@ -25,6 +25,9 @@ const char kDownloadDir[] = "download/dir";
 const char kRemovePlaybackCacheAfterDownload[] = "download/removePlaybackCache";
 const char kProbePathsVideo[] = "search/probePaths/video";
 const char kProbePathsMusic[] = "search/probePaths/music";
+const char kSourceParserCommand[] = "search/sourceParser/command";
+const char kSourceParserArguments[] = "search/sourceParser/arguments";
+const char kSourceParserTimeoutMs[] = "search/sourceParser/timeoutMs";
 const char kLastDir[] = "paths/lastDir";
 const char kPlaylistMusic[] = "playlists/music";
 const char kPlaylistVideo[] = "playlists/video";
@@ -41,6 +44,11 @@ const int kDefaultVolume = 60;
 const int kDefaultSearchLimit = 20;
 const int kDefaultDownloadLimitMb = 8192;
 const int kDefaultMode = 0;
+/// 内置解析器与主程序一起发布；只写文件名，运行时按程序目录解析。
+const char kDefaultSourceParserCommand[] = "source-probe-cli.exe";
+const char kDefaultSourceParserArguments[] =
+    "--site {site} --type {type} --mode {mode}";
+const int kDefaultSourceParserTimeoutMs = 120000;
 
 /// @brief 每次读写都创建新的 QSettings，保证跨线程/多窗口看到最新值。
 QSettings settings()
@@ -302,6 +310,52 @@ void setProbePaths(MediaType type, const QStringList &paths)
             cleaned.append(trimmed);
     }
     settings().setValue(QLatin1String(key), cleaned);
+}
+
+QString sourceParserCommand()
+{
+    const QString command =
+        settings()
+            .value(QLatin1String(kSourceParserCommand),
+                   QString::fromLatin1(kDefaultSourceParserCommand))
+            .toString()
+            .trimmed();
+    return command.isEmpty() ? QString::fromLatin1(kDefaultSourceParserCommand) : command;
+}
+
+void setSourceParserCommand(const QString &command)
+{
+    settings().setValue(QLatin1String(kSourceParserCommand), command.trimmed());
+}
+
+QString sourceParserArguments()
+{
+    return settings()
+        .value(QLatin1String(kSourceParserArguments),
+               QString::fromLatin1(kDefaultSourceParserArguments))
+        .toString()
+        .trimmed();
+}
+
+void setSourceParserArguments(const QString &arguments)
+{
+    settings().setValue(QLatin1String(kSourceParserArguments), arguments.trimmed());
+}
+
+int sourceParserTimeoutMs()
+{
+    return qBound(5000,
+                  settings()
+                      .value(QLatin1String(kSourceParserTimeoutMs),
+                             kDefaultSourceParserTimeoutMs)
+                      .toInt(),
+                  600000);
+}
+
+void setSourceParserTimeoutMs(int timeoutMs)
+{
+    settings().setValue(QLatin1String(kSourceParserTimeoutMs),
+                        qBound(5000, timeoutMs, 600000));
 }
 
 /// @brief 读取指定快捷键动作当前保存的按键文本。

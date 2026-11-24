@@ -85,9 +85,18 @@ $env:PATH = 'D:\Qt\6.10.1\mingw_64\bin;' + $env:PATH
 
 `Data/sources.json` 是配置驱动的源列表：
 
+- 内置源只保留网易云音乐、大米星球、Audius 音乐三个长期可用源；旧版 `itunes`、`radio_browser`、`ccmixter`、`web_studioslob`、`movie_example` 会在加载时自动清理。
 - `kind=config`：HTTP 接口，按 `itemsPath` / `fields` 取字段，可选 `detailUrl` 做二次解析
 - `kind=builtin`：内置解析器（当前为 maccms 网页源）
 - `kind=external`：调用本机外部程序，默认关闭，需要显式开启
+
+搜索源管理只保留列表、新增、更新和外部解析器配置。新增/更新源时程序调用配置的解析器探测站点，只有解析器返回成功且用户确认后才回填列表。解析器通过参数占位符 `{site}`、`{type}`、`{mode}` 接收站点、媒体类型和调用场景，向 stdout 输出 JSON：
+
+```json
+{ "ok": true, "source": { "id": "demo", "name": "示例源", "url": "https://example.com/search?q={keyword}", "itemsPath": "items", "fields": { "title": "title", "streamUrl": "url" } } }
+```
+
+失败时输出 `{ "ok": false, "error": "原因" }`，或使用非 0 退出码。程序自带 `source-probe-cli.exe` 作为默认解析器，原有站点探测规则已移到这个独立进程。
 
 每个源实际抓取条数由系统设置“搜索条数”控制（配置键 `search/limit`，默认 20，范围 1–100；设置界面提供 10/20/30/50）。搜索结果每页条数按搜索列表当前可见高度和实际行高动态计算，分页条右侧显示当前“每页 N 条”。
 

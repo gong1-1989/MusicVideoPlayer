@@ -215,6 +215,19 @@ target_link_libraries(MusicVideoPlayer PRIVATE
 )
 mvp_enable_warnings(MusicVideoPlayer)
 
+# ---------------------------------------------------------------- 外部解析器
+# 原有 SourceProbe 探测规则移到独立进程，主程序只通过 QProcess 消费 JSON；
+# 用户也可以把“外部解析器”配置成自己的脚本或 exe。
+qt_add_executable(source-probe-cli
+    tools/source_probe_cli/main.cpp
+)
+target_link_libraries(source-probe-cli PRIVATE
+    mvp_core
+    Qt6::Core
+    Qt6::Network
+)
+mvp_enable_warnings(source-probe-cli)
+
 # ---------------------------------------------------------------- 回归测试
 # 只锁纯逻辑/序列化/解析；涉及网络、GUI、进程的路径放在下面的集成测试。
 if(BUILD_TESTING)
@@ -353,7 +366,7 @@ endif()
 option(MVP_INSTALL_TESTS "把 mvp_* 回归测试程序一并安装到发布目录（仅开发调试）" OFF)
 
 include(GNUInstallDirs)
-install(TARGETS MusicVideoPlayer
+install(TARGETS MusicVideoPlayer source-probe-cli
     BUNDLE DESTINATION .
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}

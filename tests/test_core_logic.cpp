@@ -931,7 +931,7 @@ private slots:
     void playlistModelUpdatesPlaybackPositionSeparately();
     void playbackModeTextMatchesCompactLabels();
     void sourceConfigJsonRoundTrip();
-    void sourceRegistryOptionalMusicSeedsDisabled();
+    void sourceRegistryKeepsLongTermSeedsOnly();
     void sourceConfigSecretsNotPlaintext();
     void sourceConfigRejectsIncompleteConfig();
     void sourceConfigNormalizesTimeout();
@@ -1440,7 +1440,7 @@ void CoreLogicTest::sourceConfigJsonRoundTrip()
     QCOMPARE(restored.timeoutMs, config.timeoutMs);
 }
 
-void CoreLogicTest::sourceRegistryOptionalMusicSeedsDisabled()
+void CoreLogicTest::sourceRegistryKeepsLongTermSeedsOnly()
 {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
@@ -1450,19 +1450,24 @@ void CoreLogicTest::sourceRegistryOptionalMusicSeedsDisabled()
     SourceRegistry registry;
     QVERIFY2(registry.load(), qPrintable(registry.lastError()));
 
-    // 这四个是公开可验证的音乐候选，但都有试听/电台/完整曲目差异或依赖公网，
-    // 不能默认开启；认证类源不进入种子。
-    const QStringList optionalIds = {
-        QStringLiteral("itunes"), QStringLiteral("audius"),
-        QStringLiteral("radio_browser"), QStringLiteral("ccmixter")
-    };
-    for (const QString &id : optionalIds) {
+    // 只保留三个长期可用源，全部作为受保护的内置源并默认启用。
+    const QStringList keptIds = {QStringLiteral("netease"), QStringLiteral("web_dmxq"),
+                                 QStringLiteral("audius")};
+    for (const QString &id : keptIds) {
         const SourceConfig config = registry.sourceById(id);
         QVERIFY2(!config.id.isEmpty(), qPrintable(id));
-        QVERIFY2(!config.enabled, qPrintable(id));
-        QVERIFY2(!config.builtin, qPrintable(id));
-        QVERIFY(config.mediaType == MediaType::Music);
+        QVERIFY2(config.enabled, qPrintable(id));
+        QVERIFY2(config.builtin, qPrintable(id));
         QVERIFY2(config.isValid(), qPrintable(config.validationError()));
+    }
+    QCOMPARE(registry.sources().size(), keptIds.size());
+
+    // 旧示例/试验源不再作为种子，也不能通过 upsert 重新加回来。
+    for (const QString &retired : {QStringLiteral("itunes"), QStringLiteral("radio_browser"),
+                                   QStringLiteral("ccmixter"),
+                                   QStringLiteral("web_studioslob"),
+                                   QStringLiteral("movie_example")}) {
+        QVERIFY2(registry.sourceById(retired).id.isEmpty(), qPrintable(retired));
     }
 
     if (oldDataDir.isEmpty())

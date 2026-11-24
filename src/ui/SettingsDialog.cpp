@@ -314,7 +314,7 @@ void SettingsDialog::openSourceManager()
         return;
 
     // 延迟提交：源管理只返回草稿，设置页确认后才真正写盘，取消可整体回滚
-    SourceManagerDialog dialog(m_registry, m_http, this, true);
+    SourceManagerDialog dialog(m_registry, this, true);
     if (m_sourcesDirty)
         dialog.setDraftSources(m_stagedSources);
     if (dialog.exec() == QDialog::Accepted) {

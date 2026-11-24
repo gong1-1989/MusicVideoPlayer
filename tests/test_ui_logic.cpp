@@ -13,15 +13,24 @@
 #include "ui/SeekSlider.h"
 #include "ui/SettingsController.h"
 #include "ui/SettingsDialog.h"
+#include "ui/SourceManagerDialog.h"
+#include "ui/SourceProbeDialog.h"
 #include "ui/ThemeManager.h"
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QDir>
 #include <QFile>
+#include <QLineEdit>
 #include <QListView>
+#include <QLabel>
+#include <QListWidget>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QPushButton>
 #include <QSlider>
+#include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTabWidget>
 #include <QSignalSpy>
@@ -97,6 +106,8 @@ private slots:
     void proprietaryVideoFilesAreRejectedWithHint();
     void settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault();
     void settingsRemoveCacheCheckboxReflectsSetting();
+    void sourceManagerOnlyKeepsCoreControls();
+    void sourceProbeDialogCallsExternalParser();
 };
 
 void UiLogicTest::lyricsClearCancelsPendingRequest()
@@ -485,6 +496,88 @@ void UiLogicTest::settingsRemoveCacheCheckboxReflectsSetting()
     }
 
     AppSettings::setRemovePlaybackCacheAfterDownload(original);
+}
+
+void UiLogicTest::sourceManagerOnlyKeepsCoreControls()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    qputenv("MVP_DATA_DIR", temp.path().toUtf8());
+
+    SourceRegistry registry;
+    QVERIFY2(registry.load(), qPrintable(registry.lastError()));
+    SourceManagerDialog dialog(&registry, nullptr, true);
+
+    QListWidget *list = dialog.findChild<QListWidget *>(QStringLiteral("list_sources"));
+    QVERIFY(list != nullptr);
+    QCOMPARE(list->count(), 3);
+
+    QVERIFY(dialog.findChild<QPushButton *>(QStringLiteral("btn_add")) != nullptr);
+    QVERIFY(dialog.findChild<QPushButton *>(QStringLiteral("btn_refresh")) != nullptr);
+    QVERIFY(dialog.findChild<QLineEdit *>(QStringLiteral("edit_command")) != nullptr);
+    QVERIFY(dialog.findChild<QLineEdit *>(QStringLiteral("edit_arguments")) != nullptr);
+    QVERIFY(dialog.findChild<QSpinBox *>(QStringLiteral("spin_timeout")) != nullptr);
+
+    // 旧界面的完整编辑表单、试搜、导入导出和示例入口必须全部移除。
+    for (const QString &name : {QStringLiteral("btn_remove"), QStringLiteral("btn_duplicate"),
+                                QStringLiteral("btn_import"), QStringLiteral("btn_export"),
+                                QStringLiteral("btn_example"), QStringLiteral("btn_addSite"),
+                                QStringLiteral("btn_test"), QStringLiteral("edit_url"),
+                                QStringLiteral("combo_kind")}) {
+        QVERIFY2(dialog.findChild<QWidget *>(name) == nullptr, qPrintable(name));
+    }
+
+    if (oldDataDir.isEmpty())
+        qunsetenv("MVP_DATA_DIR");
+    else
+        qputenv("MVP_DATA_DIR", oldDataDir);
+}
+
+void UiLogicTest::sourceProbeDialogCallsExternalParser()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QString scriptPath = QDir::fromNativeSeparators(temp.filePath(QStringLiteral("fake-parser.ps1")));
+    QFile script(scriptPath);
+    QVERIFY(script.open(QIODevice::WriteOnly | QIODevice::Text));
+    script.write(R"PS(
+param([string]$Site, [string]$Type)
+$payload = '{"ok":true,"siteName":"Fake Site","source":{"id":"fake_site","name":"Fake Site","mediaType":"video","kind":"builtin","provider":"maccms_web","url":"https://example.com/"}}'
+Write-Output $payload
+)PS");
+    script.close();
+
+    SourceParserSettings parser;
+    parser.command = QStringLiteral("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
+    parser.arguments =
+        QStringLiteral("-NoProfile -ExecutionPolicy Bypass -File %1 -Site {site} -Type {type}")
+            .arg(scriptPath);
+    parser.timeoutMs = 30000;
+
+    SourceProbeDialog dialog(MediaType::Video, QString(), QStringLiteral("测试解析器"), parser);
+    dialog.show();
+    QLineEdit *url = dialog.findChild<QLineEdit *>(QStringLiteral("edit_url"));
+    QPushButton *probe = dialog.findChild<QPushButton *>(QStringLiteral("btn_probe"));
+    QPushButton *confirm = dialog.findChild<QPushButton *>(QStringLiteral("btn_applyPrimary"));
+    QVERIFY(url != nullptr);
+    QVERIFY(probe != nullptr);
+    QVERIFY(confirm != nullptr);
+
+    url->setText(QStringLiteral("https://example.com/"));
+    probe->click();
+    QTest::qWait(500);
+    QLabel *status = dialog.findChild<QLabel *>(QStringLiteral("label_status"));
+    QPlainTextEdit *log = dialog.findChild<QPlainTextEdit *>(QStringLiteral("text_log"));
+    for (int i = 0; i < 300 && !confirm->isEnabled(); ++i)
+        QTest::qWait(100);
+    QVERIFY2(confirm->isEnabled(),
+             qPrintable(QStringLiteral("status=%1\nlog=%2")
+                            .arg(status != nullptr ? status->text() : QStringLiteral("<none>"),
+                                 log != nullptr ? log->toPlainText() : QStringLiteral("<none>"))));
+    QCOMPARE(dialog.probedConfig().id, QStringLiteral("fake_site"));
+    QCOMPARE(dialog.probedConfig().name, QStringLiteral("Fake Site"));
+    QVERIFY(dialog.probedConfig().isValid());
 }
 
 QTEST_MAIN(UiLogicTest)

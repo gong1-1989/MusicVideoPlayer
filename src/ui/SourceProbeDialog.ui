@@ -6,18 +6,18 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>900</width>
-    <height>560</height>
+    <width>760</width>
+    <height>540</height>
    </rect>
   </property>
   <property name="minimumSize">
-   <size>
-    <width>760</width>
-    <height>440</height>
-   </size>
-  </property>
+    <size>
+     <width>620</width>
+     <height>420</height>
+    </size>
+   </property>
   <property name="windowTitle">
-   <string>从网站添加搜索源</string>
+   <string>外部解析器探测</string>
   </property>
   <layout class="QVBoxLayout" name="layout_root">
    <property name="spacing">
@@ -43,7 +43,7 @@
      <item>
       <widget class="QLineEdit" name="edit_url">
        <property name="placeholderText">
-        <string>https://www.example.com（只填网站，其余自动探测）</string>
+        <string>https://www.example.com（输入要探测的网站）</string>
        </property>
       </widget>
      </item>
@@ -60,254 +60,126 @@
     </layout>
    </item>
    <item>
-    <widget class="QLabel" name="label_status">
+    <widget class="QLabel" name="label_parser">
      <property name="objectName">
-      <string>label_hint</string>
-     </property>
-     <property name="text">
-      <string>填一个网站地址，程序会试常见接口并自动推断字段。</string>
+      <string>label_parser</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
      </property>
+     <property name="text">
+      <string/>
+     </property>
     </widget>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="layout_columns">
-     <property name="spacing">
-      <number>14</number>
-     </property>
-     <item>
-      <widget class="QGroupBox" name="group_result">
-       <property name="title">
-        <string>探测结果</string>
-       </property>
-       <layout class="QVBoxLayout" name="layout_result">
-        <property name="spacing">
-         <number>6</number>
-        </property>
-        <item>
-         <layout class="QGridLayout" name="grid_result">
-          <property name="horizontalSpacing">
-           <number>12</number>
-          </property>
-          <property name="verticalSpacing">
-           <number>6</number>
-          </property>
-          <item row="0" column="0">
-           <widget class="QLabel" name="label_captionName">
-            <property name="text">
-             <string>站点名称</string>
-            </property>
-           </widget>
-          </item>
-          <item row="0" column="1">
-           <widget class="QLabel" name="label_name">
-            <property name="text">
-             <string/>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="0">
-           <widget class="QLabel" name="label_captionInterface">
-            <property name="text">
-             <string>接口地址</string>
-            </property>
-           </widget>
-          </item>
-          <item row="1" column="1">
-           <widget class="QLabel" name="label_interface">
-            <property name="textInteractionFlags">
-             <set>Qt::TextSelectableByMouse</set>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-            <property name="text">
-             <string/>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="0">
-           <widget class="QLabel" name="label_captionPath">
-            <property name="text">
-             <string>结果路径</string>
-            </property>
-           </widget>
-          </item>
-          <item row="2" column="1">
-           <widget class="QLabel" name="label_path">
-            <property name="text">
-             <string/>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="0">
-           <widget class="QLabel" name="label_captionKind">
-            <property name="text">
-             <string>地址形态</string>
-            </property>
-           </widget>
-          </item>
-          <item row="3" column="1">
-           <widget class="QLabel" name="label_kind">
-            <property name="text">
-             <string/>
-            </property>
-           </widget>
-          </item>
-          <item row="4" column="0">
-           <widget class="QLabel" name="label_captionFields">
-            <property name="text">
-             <string>字段对应</string>
-            </property>
-           </widget>
-          </item>
-          <item row="4" column="1">
-           <widget class="QLabel" name="label_fields">
-            <property name="textInteractionFlags">
-             <set>Qt::TextSelectableByMouse</set>
-            </property>
-            <property name="wordWrap">
-             <bool>true</bool>
-            </property>
-            <property name="text">
-             <string/>
-            </property>
-           </widget>
-          </item>
-          <item row="5" column="0">
-           <widget class="QLabel" name="label_captionSamples">
-            <property name="text">
-             <string>试搜样例</string>
-            </property>
-           </widget>
-          </item>
-          <item row="5" column="1">
-           <widget class="QListWidget" name="list_samples">
-            <property name="minimumSize">
-             <size>
-              <width>0</width>
-              <height>100</height>
-             </size>
-            </property>
-            <property name="horizontalScrollBarPolicy">
-             <enum>Qt::ScrollBarAlwaysOff</enum>
-            </property>
-            <property name="textElideMode">
-             <enum>Qt::ElideRight</enum>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </item>
-       </layout>
-      </widget>
-     </item>
-     <item>
-      <layout class="QVBoxLayout" name="layout_right">
-       <property name="spacing">
-        <number>10</number>
-       </property>
-       <item>
-        <widget class="QGroupBox" name="group_paths">
-         <property name="title">
-          <string>接口路径</string>
-         </property>
-         <layout class="QVBoxLayout" name="layout_paths">
-          <property name="spacing">
-           <number>8</number>
-          </property>
-          <item>
-           <widget class="QListWidget" name="list_paths">
-            <property name="minimumSize">
-             <size>
-              <width>0</width>
-              <height>80</height>
-             </size>
-            </property>
-            <property name="horizontalScrollBarPolicy">
-             <enum>Qt::ScrollBarAlwaysOff</enum>
-            </property>
-            <property name="textElideMode">
-             <enum>Qt::ElideRight</enum>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <layout class="QHBoxLayout" name="layout_pathRow">
-            <property name="spacing">
-             <number>8</number>
-            </property>
-            <item>
-             <widget class="QLineEdit" name="edit_customPath">
-              <property name="placeholderText">
-               <string>/api/search?kw={keyword}，也可直接填完整 URL；{keyword}=关键词，{limit}=条数</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="btn_addPath">
-              <property name="text">
-               <string>添加</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QPushButton" name="btn_removePath">
-              <property name="text">
-               <string>删除</string>
-              </property>
-             </widget>
-            </item>
-           </layout>
-          </item>
-         </layout>
-        </widget>
-       </item>
-       <item>
-        <widget class="QGroupBox" name="group_attempts">
-         <property name="title">
-          <string>探测记录</string>
-         </property>
-         <layout class="QVBoxLayout" name="layout_attempts">
-          <item>
-           <widget class="QPlainTextEdit" name="text_attempts">
-            <property name="readOnly">
-             <bool>true</bool>
-            </property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-      </layout>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <widget class="QPlainTextEdit" name="text_error">
+    <widget class="QLabel" name="label_status">
      <property name="objectName">
-      <string>label_error</string>
+      <string>label_status</string>
      </property>
-     <property name="minimumSize">
-      <size>
-       <width>0</width>
-       <height>58</height>
-      </size>
-     </property>
-     <property name="maximumSize">
-      <size>
-       <width>16777215</width>
-       <height>58</height>
-      </size>
-     </property>
-     <property name="readOnly">
+     <property name="wordWrap">
       <bool>true</bool>
      </property>
-     <property name="visible">
-      <bool>false</bool>
+     <property name="text">
+      <string>输入网站后点“开始探测”，由外部解析器返回可用配置。</string>
      </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_result">
+     <property name="title">
+      <string>解析结果</string>
+     </property>
+     <layout class="QVBoxLayout" name="layout_result">
+      <property name="spacing">
+       <number>6</number>
+      </property>
+      <item>
+       <layout class="QGridLayout" name="grid_result">
+        <property name="horizontalSpacing">
+         <number>12</number>
+        </property>
+        <property name="verticalSpacing">
+         <number>6</number>
+        </property>
+        <item row="0" column="0">
+         <widget class="QLabel" name="label_captionName">
+          <property name="text">
+           <string>名称</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QLabel" name="label_name">
+          <property name="textInteractionFlags">
+           <set>Qt::TextSelectableByMouse</set>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="label_captionType">
+          <property name="text">
+           <string>媒体类型</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QLabel" name="label_type">
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="label_captionUrl">
+          <property name="text">
+           <string>搜索地址</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QLabel" name="label_url">
+          <property name="textInteractionFlags">
+           <set>Qt::TextSelectableByMouse</set>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0">
+         <widget class="QLabel" name="label_captionKind">
+          <property name="text">
+           <string>实现方式</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QLabel" name="label_kind">
+          <property name="text">
+           <string/>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QPlainTextEdit" name="text_log">
+        <property name="readOnly">
+         <bool>true</bool>
+        </property>
+        <property name="placeholderText">
+         <string>解析器输出与探测记录</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
     </widget>
    </item>
    <item>
@@ -326,22 +198,22 @@
       </spacer>
      </item>
      <item>
+      <widget class="QPushButton" name="btn_cancel">
+       <property name="text">
+        <string>取消</string>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="btn_save">
        <property name="objectName">
         <string>btn_applyPrimary</string>
        </property>
        <property name="text">
-        <string>保存这个源</string>
+        <string>确认使用</string>
        </property>
        <property name="enabled">
         <bool>false</bool>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="btn_cancel">
-       <property name="text">
-        <string>取消</string>
        </property>
       </widget>
      </item>

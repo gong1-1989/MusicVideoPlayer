@@ -22,7 +22,8 @@ namespace {
 /// 源配置通常只有几十 KB；限制读取上限，避免误选/损坏文件把内存撑满。
 constexpr qint64 kMaxSourceFileBytes = 16 * 1024 * 1024;
 
-/// 预置源：网易云完全由配置描述，fee 过滤规则也在配置里，用户可自行修改
+/// 预置源：只保留长期可用的三个源；其余示例/试验源不再随版本补入。
+/// 网易云完全由配置描述，fee 过滤规则也在配置里，用户可自行修改。
 const char *kSeedSources = R"JSON(
 [
   {
@@ -60,30 +61,21 @@ const char *kSeedSources = R"JSON(
     }
   },
   {
-    "id": "itunes",
-    "name": "iTunes 音乐（试听片段，可选）",
-    "enabled": false,
-    "builtin": false,
-    "mediaType": "music",
-    "method": "GET",
-    "url": "https://itunes.apple.com/search?term={keyword}&media=music&limit={limit}",
-    "headers": { "User-Agent": "Mozilla/5.0" },
-    "itemsPath": "results",
-    "fields": {
-      "id": "trackId",
-      "title": "trackName",
-      "artist": "artistName",
-      "durationMs": "trackTimeMillis",
-      "streamUrl": "previewUrl",
-      "webUrl": "trackViewUrl"
-    },
-    "skipIf": { "any": [ { "path": "previewUrl", "op": "empty" } ] }
+    "id": "web_dmxq",
+    "name": "大米星球",
+    "enabled": true,
+    "builtin": true,
+    "kind": "builtin",
+    "provider": "maccms_web",
+    "mediaType": "video",
+    "url": "https://dmxq.info/",
+    "headers": { "Referer": "https://dmxq.info/" }
   },
   {
     "id": "audius",
-    "name": "Audius 音乐（完整曲目，可选）",
-    "enabled": false,
-    "builtin": false,
+    "name": "Audius 音乐",
+    "enabled": true,
+    "builtin": true,
     "mediaType": "music",
     "method": "GET",
     "url": "https://api.audius.co/v1/tracks/search?query={keyword}&app_name=MVP&limit={limit}",
@@ -100,90 +92,20 @@ const char *kSeedSources = R"JSON(
     "detailUrl": "https://api.audius.co/v1/tracks/{id}?app_name=MVP",
     "detailItemsPath": "data",
     "detailFields": { "streamUrl": "stream.url" }
-  },
-  {
-    "id": "radio_browser",
-    "name": "Radio Browser 电台（可选）",
-    "enabled": false,
-    "builtin": false,
-    "mediaType": "music",
-    "method": "GET",
-    "url": "https://de1.api.radio-browser.info/json/stations/search?name={keyword}&limit={limit}",
-    "headers": { "User-Agent": "Mozilla/5.0" },
-    "itemsPath": "",
-    "fields": {
-      "id": "stationuuid",
-      "title": "name",
-      "artist": "country",
-      "streamUrl": "url_resolved",
-      "webUrl": "homepage"
-    },
-    "skipIf": { "any": [ { "path": "url_resolved", "op": "empty" } ] }
-  },
-  {
-    "id": "ccmixter",
-    "name": "ccMixter 音乐（完整曲目，可选）",
-    "enabled": false,
-    "builtin": false,
-    "mediaType": "music",
-    "method": "GET",
-    "url": "https://ccmixter.org/api/query?f=json&search={keyword}&limit={limit}",
-    "headers": { "User-Agent": "Mozilla/5.0" },
-    "itemsPath": "",
-    "fields": {
-      "title": "upload_name",
-      "streamUrl": "files[0].download_url"
-    },
-    "skipIf": { "any": [ { "path": "files[0].download_url", "op": "empty" } ] }
-  },
-  {
-    "id": "web_dmxq",
-    "name": "网页源：大米星球（内置）",
-    "enabled": true,
-    "builtin": true,
-    "kind": "builtin",
-    "provider": "maccms_web",
-    "mediaType": "video",
-    "url": "https://dmxq.info/",
-    "headers": { "Referer": "https://dmxq.info/" }
-  },
-  {
-    "id": "web_studioslob",
-    "name": "网页源：studioslob（内置，默认停用）",
-    "enabled": false,
-    "builtin": true,
-    "kind": "builtin",
-    "provider": "maccms_web",
-    "mediaType": "video",
-    "url": "https://www.studioslob.com/",
-    "headers": { "Referer": "https://www.studioslob.com/" }
-  },
-  {
-    "id": "movie_example",
-    "name": "影视采集接口（示例，需自行填写）",
-    "enabled": false,
-    "builtin": false,
-    "mediaType": "video",
-    "streamKind": "episodes",
-    "method": "GET",
-    "url": "https://example.com/api.php/provide/vod/?ac=detail&wd={keyword}",
-    "headers": { "User-Agent": "Mozilla/5.0" },
-    "itemsPath": "list",
-    "fields": {
-      "id": "vod_id",
-      "title": "vod_name",
-      "year": "vod_year",
-      "area": "vod_area",
-      "genre": "vod_class",
-      "posterUrl": "vod_pic",
-      "description": "vod_content",
-      "streamUrl": "vod_play_url",
-      "webUrl": "@https://example.com/detail/{id}"
-    },
-    "skipIf": { "any": [ { "path": "vod_play_url", "op": "empty" } ] }
   }
 ]
 )JSON";
+
+/// 已下线的历史预置源：旧 sources.json 里可能仍留有这些条目。
+/// 只按 id 清理，避免用户升级后继续看到失效的示例/试验源。
+bool isRetiredSeedId(const QString &id)
+{
+    return id == QLatin1String("itunes")
+        || id == QLatin1String("radio_browser")
+        || id == QLatin1String("ccmixter")
+        || id == QLatin1String("web_studioslob")
+        || id == QLatin1String("movie_example");
+}
 
 /// @brief 返回解析后的预置源列表（只解析一次）。
 /// @note load() 在逐条校验和补入缺失内置源时会多次访问同一份 JSON，
@@ -460,6 +382,12 @@ bool SourceRegistry::load()
             dirty = true;
             continue;
         }
+        // 版本升级后只保留长期可用的三个内置源；旧 itunes/电台/示例源一并清理。
+        if (isRetiredSeedId(config.id)) {
+            qCInfo(lcRegistry) << "移除已下线示例源：" << config.id << config.name;
+            dirty = true;
+            continue;
+        }
         if (config.id.isEmpty() || seenIds.contains(config.id)) {
             qCWarning(lcRegistry) << "重复/空 sourceId，已剔除：" << config.id << config.name;
             dirty = true;
@@ -652,6 +580,11 @@ bool SourceRegistry::upsert(const SourceConfig &config)
         qCWarning(lcRegistry) << m_lastError;
         return false;
     }
+    if (isRetiredSeedId(config.id)) {
+        m_lastError = tr("示例源 %1 已下线，不能重新添加").arg(config.id);
+        qCWarning(lcRegistry) << m_lastError;
+        return false;
+    }
 
     // 与 load 同一套内置保护：按 id 命中预置源时只接受 enabled 变化，
     // 非预置源不能把自己的 builtin 改成 true。
@@ -746,6 +679,8 @@ bool SourceRegistry::replaceAll(const QVector<SourceConfig> &sources)
             qCWarning(lcRegistry) << m_lastError;
             return false;
         }
+        if (isRetiredSeedId(id))
+            continue;
         if (ids.contains(id)) {
             m_lastError = tr("源 id 重复：%1，整表未保存").arg(id);
             qCWarning(lcRegistry) << m_lastError;

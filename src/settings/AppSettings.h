@@ -55,6 +55,15 @@ void setSearchHistory(const QStringList &history);
 QStringList probePaths(MediaType type);
 void setProbePaths(MediaType type, const QStringList &paths);
 
+/// 新增/更新搜索源时调用的外部解析器。命令与参数支持占位符
+/// {site} {type} {mode}；解析器输出 JSON（成功给 source，失败给 error）。
+QString sourceParserCommand();
+void setSourceParserCommand(const QString &command);
+QString sourceParserArguments();
+void setSourceParserArguments(const QString &arguments);
+int sourceParserTimeoutMs();
+void setSourceParserTimeoutMs(int timeoutMs);
+
 // ---------------------------------------------------------------- 下载
 /// 单个下载任务允许落盘的最大体积（MB）。默认 8 GB，设置页可选 2/4/8/16 GB。
 int downloadLimitMb();

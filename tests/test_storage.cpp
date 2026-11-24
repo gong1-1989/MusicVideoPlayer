@@ -18,6 +18,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QTcpServer>
@@ -64,6 +65,7 @@ private slots:
     void playlistVideoProgressRoundTrip();
     void playlistVideoProgressRemovedWithItem();
     void sourceRegistrySeedsAndPersists();
+    void sourceRegistryRemovesRetiredSeeds();
     void sourceRegistryReloadUsesPrimary();
     void sourceRegistryCorruptFileBacksUp();
     void sourceRegistryRestoresSnapshot();
@@ -241,9 +243,8 @@ void StorageTest::sourceRegistrySeedsAndPersists()
     SourceRegistry registry;
     QVERIFY(registry.load());
     QVERIFY(registry.lastError().isEmpty());
-    // 默认启用的仍是网易云和网页影视源；iTunes/Audius/Radio Browser/ccMixter
-    // 改为默认关闭的可选模板，所以从 3 个降到 2 个。
-    QCOMPARE(registry.enabledCount(), 2);
+    // 现在只保留网易云、大米星球、Audius 三个长期可用内置源，默认全部启用。
+    QCOMPARE(registry.enabledCount(), 3);
     QVERIFY(QFile::exists(registry.storagePath()));
 
     SourceConfig custom;
@@ -284,6 +285,40 @@ void StorageTest::sourceRegistrySeedsAndPersists()
     }
 }
 
+void StorageTest::sourceRegistryRemovesRetiredSeeds()
+{
+    // 模拟旧版本 sources.json：历史示例/试验源仍留在文件里。
+    const QString path = StoragePaths::dataFile(QStringLiteral("sources.json"));
+    QJsonArray array;
+    for (const QString &id : {QStringLiteral("itunes"), QStringLiteral("radio_browser"),
+                              QStringLiteral("ccmixter"), QStringLiteral("web_studioslob"),
+                              QStringLiteral("movie_example")}) {
+        QJsonObject object;
+        object.insert(QStringLiteral("id"), id);
+        object.insert(QStringLiteral("name"), id);
+        object.insert(QStringLiteral("enabled"), true);
+        array.append(object);
+    }
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write(QJsonDocument(array).toJson());
+    file.close();
+
+    SourceRegistry registry;
+    QVERIFY(registry.load());
+    for (const QString &id : {QStringLiteral("itunes"), QStringLiteral("radio_browser"),
+                              QStringLiteral("ccmixter"), QStringLiteral("web_studioslob"),
+                              QStringLiteral("movie_example")}) {
+        QVERIFY2(registry.sourceById(id).id.isEmpty(), qPrintable(id));
+    }
+    QCOMPARE(registry.sources().size(), 3);
+
+    // 清理结果应回写，下一次启动不再出现旧示例源。
+    SourceRegistry reloaded;
+    QVERIFY(reloaded.load());
+    QCOMPARE(reloaded.sources().size(), 3);
+}
+
 void StorageTest::sourceRegistryReloadUsesPrimary()
 {
     const QString primary = StoragePaths::dataFile(QStringLiteral("sources.json"));
@@ -309,7 +344,7 @@ void StorageTest::sourceRegistryCorruptFileBacksUp()
     SourceRegistry registry;
     QVERIFY(registry.load());
     QVERIFY(!registry.lastError().isEmpty());
-    QCOMPARE(registry.enabledCount(), 2);
+    QCOMPARE(registry.enabledCount(), 3);
 
     const QStringList backups =
         QDir(StoragePaths::dataDir())
