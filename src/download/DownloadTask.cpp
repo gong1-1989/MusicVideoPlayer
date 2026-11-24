@@ -287,6 +287,8 @@ bool DownloadTask::openTargetFile()
         m_bytesWritten = 0;
         m_resumeSegmentIndex = 0;
         m_file->seek(0);
+        if (m_isHls)
+            emit targetResetted();
     } else if (actual > m_bytesWritten) {
         // 上次进程在写盘过程中退出，截掉没有记录进状态文件的尾部。
         if (!m_file->resize(m_bytesWritten)) {
@@ -314,6 +316,8 @@ void DownloadTask::resetTargetFile()
     if (m_file == nullptr) {
         m_bytesWritten = 0;
         m_resumeSegmentIndex = 0;
+        if (m_isHls)
+            emit targetResetted();
         return;
     }
     if (!m_file->resize(0)) {
@@ -323,6 +327,8 @@ void DownloadTask::resetTargetFile()
     m_file->seek(0);
     m_bytesWritten = 0;
     m_resumeSegmentIndex = 0;
+    if (m_isHls)
+        emit targetResetted();
 }
 
 /// @brief 设置续传状态。

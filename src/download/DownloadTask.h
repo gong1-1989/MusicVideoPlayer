@@ -83,6 +83,8 @@ signals:
     void segmentWritten(const QUrl &url, const QByteArray &range, qint64 offset, qint64 size);
     /// 成功解析媒体播放列表后发出结构指纹；续传前用它判断分片是否仍属于同一容器。
     void playlistFingerprint(const QString &fingerprint);
+    /// HLS 续传点被清零（指纹变化/文件长度不足），旧分片索引必须同步丢弃。
+    void targetResetted();
     /// 响应实际是 HLS 时，最终扩展名会从 .mp4/.mp3 改成 .ts
     void targetPathChanged(const QString &filePath, bool hls);
     /// 列表没有 ENDLIST 但已按 VOD 声明或用户授权继续下载；结果只是快照。

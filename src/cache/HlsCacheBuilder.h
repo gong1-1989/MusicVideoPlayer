@@ -146,6 +146,10 @@ private:
     bool m_videoDirect = false;
     bool m_audioDirect = false;
     bool m_hasAudio = false;
+    /// 分片自身带 EXT-X-BYTERANGE 时旧缓存的分片边界不能只按 URL 探测，
+    /// 这类轨道安全起见不迁移。
+    bool m_videoHasByteRange = false;
+    bool m_audioHasByteRange = false;
     HlsCacheManifest::Master m_master;
     HlsCacheManifest::MediaTrack m_videoTrack;
     HlsCacheManifest::MediaTrack m_audioTrack;

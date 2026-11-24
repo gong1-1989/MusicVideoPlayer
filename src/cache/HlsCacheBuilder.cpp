@@ -118,6 +118,8 @@ bool HlsCacheBuilder::start(const MediaItem &item)
     m_identity = MediaCache::cacheIdentity(item);
     m_videoSegments.clear();
     m_audioSegments.clear();
+    m_videoHasByteRange = false;
+    m_audioHasByteRange = false;
     if (!QDir().mkpath(QFileInfo(m_bodyPath).absolutePath()))
         return false;
     // 完成前没有旁车 JSON，必须靠这个身份标记让下次启动找回同一目录；
@@ -130,7 +132,25 @@ bool HlsCacheBuilder::start(const MediaItem &item)
 
     // 加载同一缓存目录上次留下的分片索引：播放代理据此把已下载字节直接
     // 当作分片响应，断点续传后的前半段也能在本次启动继续命中。
+    // 没有可续现场的那条轨道必须清掉旧索引：新任务会从 0 重写轨道文件，
+    // 旧偏移继续命中就会把错位字节当成该分片返回。
+    const TrackResume videoIndexResume =
+        loadTrackResume(m_bodyPath + QStringLiteral(".video"));
+    const TrackResume audioIndexResume =
+        loadTrackResume(m_bodyPath + QStringLiteral(".audio"));
     HlsPreloadIndex::instance().openJournal(m_bodyPath + QStringLiteral(".preload.jsonl"));
+    if (!(videoIndexResume.bytesWritten > 0 && !videoIndexResume.fingerprint.isEmpty())) {
+        const QString target = videoIndexResume.targetPath.isEmpty()
+                                   ? m_bodyPath + QStringLiteral(".video")
+                                   : videoIndexResume.targetPath;
+        HlsPreloadIndex::instance().clearTrack(target);
+    }
+    if (!(audioIndexResume.bytesWritten > 0 && !audioIndexResume.fingerprint.isEmpty())) {
+        const QString target = audioIndexResume.targetPath.isEmpty()
+                                   ? m_bodyPath + QStringLiteral(".audio")
+                                   : audioIndexResume.targetPath;
+        HlsPreloadIndex::instance().clearTrack(target);
+    }
 
     m_active = true;
     m_stage = Stage::FetchingMaster;
@@ -473,6 +493,15 @@ void HlsCacheBuilder::onVideoPlaylistReady(const QByteArray &body, const QUrl &f
     m_videoSegments.clear();
     if (const auto info = HlsPlaylist::parse(body, finalUrl))
         m_videoSegments = info->segments;
+    m_videoHasByteRange = body.contains(QByteArrayLiteral("#EXT-X-BYTERANGE:"));
+    if (track.encrypted) {
+        // DownloadTask 落盘的是解密后的明文分片，而播放列表仍带 EXT-X-KEY；
+        // 若播放代理用明文命中索引，FFmpeg 还会再解一次密，必须禁用该索引。
+        HlsPreloadIndex::instance().openJournal(QString());
+        if (!m_bodyPath.isEmpty())
+            QFile::remove(m_bodyPath + QStringLiteral(".preload.jsonl"));
+        qCInfo(lcHlsCache) << "加密视频轨不使用分片预加载索引";
+    }
 
     qCInfo(lcHlsCache) << "视频轨：" << trackSourceLabel(m_videoDirect)
                        << "分片数" << track.segmentCount
@@ -522,6 +551,13 @@ void HlsCacheBuilder::onAudioPlaylistReady(const QByteArray &body, const QUrl &f
     m_audioSegments.clear();
     if (const auto info = HlsPlaylist::parse(body, finalUrl))
         m_audioSegments = info->segments;
+    m_audioHasByteRange = body.contains(QByteArrayLiteral("#EXT-X-BYTERANGE:"));
+    if (track.encrypted) {
+        HlsPreloadIndex::instance().openJournal(QString());
+        if (!m_bodyPath.isEmpty())
+            QFile::remove(m_bodyPath + QStringLiteral(".preload.jsonl"));
+        qCInfo(lcHlsCache) << "加密音轨不使用分片预加载索引";
+    }
 
     qCInfo(lcHlsCache) << "音轨：" << trackSourceLabel(m_audioDirect)
                        << "分片数" << track.segmentCount
@@ -690,12 +726,21 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
                 // 才允许把旧合并文件按当前分片顺序建立索引。
                 maybeStartMigration(video, fingerprint);
             });
+    connect(task, &DownloadTask::targetResetted, this, [this, video] {
+        const QString trackPath = video ? m_videoPath : m_audioPath;
+        if (!trackPath.isEmpty() && !m_identity.isEmpty())
+            HlsPreloadIndex::instance().clearTrack(trackPath);
+    });
     connect(task, &DownloadTask::segmentWritten, this,
             [this, video](const QUrl &url, const QByteArray &range, qint64 offset, qint64 size) {
                 // DownloadTask 在完成分片时写的是 `.mvpdownload`；索引路径也要
                 // 指向临时文件，否则下载期间播放代理读不到刚下好的分片。
                 const QString trackPath = video ? m_videoPath : m_audioPath;
                 if (trackPath.isEmpty() || m_identity.isEmpty())
+                    return;
+                // 加密轨道落盘的是明文，播放列表却仍要求 FFmpeg 解密；
+                // 这类分片绝不能进索引，否则会被二次解密成坏数据。
+                if (video ? m_videoTrack.encrypted : m_audioTrack.encrypted)
                     return;
                 HlsPreloadEntry entry;
                 entry.url = url;
@@ -752,8 +797,9 @@ void HlsCacheBuilder::maybeStartMigration(bool video, const QString &fingerprint
                            << resume.segmentCount << segments.size();
         return;
     }
-    if (track.singleFile || track.encrypted) {
-        qCInfo(lcHlsCache) << "旧缓存迁移跳过：加密或单文件 BYTERANGE 无法取得"
+    if (track.singleFile || track.encrypted
+        || (video ? m_videoHasByteRange : m_audioHasByteRange)) {
+        qCInfo(lcHlsCache) << "旧缓存迁移跳过：加密、单文件或 BYTERANGE 无法取得"
                               "与落盘一致的分片边界"
                            << (video ? "视频轨" : "音轨");
         return;

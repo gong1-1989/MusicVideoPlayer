@@ -1,12 +1,18 @@
 #include "cache/HlsPreloadIndex.h"
 
+#include "media/MediaItem.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QLoggingCategory>
 #include <QMutexLocker>
+#include <QSaveFile>
+
+Q_LOGGING_CATEGORY(lcPreloadIndex, "mvp.cache.preloadindex")
 
 namespace {
 
@@ -46,8 +52,11 @@ QByteArray HlsPreloadIndex::normalizeRange(const QByteArray &range)
 
 QString HlsPreloadIndex::keyFor(const QString &identity, const QUrl &url, const QByteArray &range)
 {
-    return identity + QLatin1Char('|') + url.toString(QUrl::FullyEncoded) + QLatin1Char('|')
-           + QString::fromLatin1(normalizeRange(range).toBase64());
+    // CDN 直链会轮换 token/sign/expire；后端缓存与播放器拿到的签名往往不是
+    // 同一份。索引键只保留真正区分分片的稳定参数，否则已缓存前缀永远
+    // 查不中，播放仍会回源。
+    return identity + QLatin1Char('|') + identityUrlWithoutVolatileQuery(url)
+           + QLatin1Char('|') + QString::fromLatin1(normalizeRange(range).toBase64());
 }
 
 bool HlsPreloadIndex::fileHasSlice(const QString &path, qint64 offset, qint64 size)
@@ -138,6 +147,48 @@ void HlsPreloadIndex::recordMany(const QString &identity, const QList<HlsPreload
     file.write(payload);
 }
 
+void HlsPreloadIndex::clearTrack(const QString &targetPath)
+{
+    QString base = targetPath.trimmed();
+    if (base.endsWith(QLatin1String(".mvpdownload"), Qt::CaseInsensitive))
+        base.chop(int(QStringLiteral(".mvpdownload").size()));
+    if (base.isEmpty())
+        return;
+    const QString partial = base + QStringLiteral(".mvpdownload");
+
+    QMutexLocker lock(&m_mutex);
+    for (auto it = m_slices.begin(); it != m_slices.end();) {
+        const QString path = it.value().filePath;
+        if (path == base || path == partial)
+            it = m_slices.erase(it);
+        else
+            ++it;
+    }
+    if (m_journalPath.isEmpty())
+        return;
+
+    // 日志是视频/音轨共用的；重写时只删除目标轨道的行，另一条轨道仍可续用。
+    QFile source(m_journalPath);
+    if (!source.open(QIODevice::ReadOnly))
+        return;
+    QSaveFile target(m_journalPath);
+    if (!target.open(QIODevice::WriteOnly | QIODevice::Text))
+        return;
+    while (!source.atEnd()) {
+        const QByteArray line = source.readLine();
+        const QJsonDocument document = QJsonDocument::fromJson(line.trimmed());
+        if (document.isObject()) {
+            const QString path = document.object().value(QStringLiteral("p")).toString();
+            if (path == base || path == partial)
+                continue;
+        }
+        target.write(line);
+    }
+    source.close();
+    if (!target.commit())
+        qCWarning(lcPreloadIndex) << "重写 HLS 预加载索引失败：" << m_journalPath;
+}
+
 bool HlsPreloadIndex::find(const QString &identity, const QUrl &url, const QByteArray &range,
                            HlsPreloadSlice *slice) const
 {
@@ -145,21 +196,13 @@ bool HlsPreloadIndex::find(const QString &identity, const QUrl &url, const QByte
         return false;
     QMutexLocker lock(&m_mutex);
     auto it = m_slices.constFind(keyFor(identity, url, range));
-    // 播放器可能把整段请求写成 `bytes=0-<长度-1>`，而索引登记的是整片。
-    // 这种从 0 开始、终点正好覆盖整片长度的 Range 也视为命中。
+    // 播放器可能把整段请求写成 `bytes=0-<终点>`（含探测用的小范围），
+    // 而索引登记的是整片。只要从 0 开始且本地已有整片，就交给
+    // serveFromCache 按客户端 Range 再切一次，避免为同一分片回源。
     if (it == m_slices.constEnd()) {
         const QByteArray normalized = normalizeRange(range);
-        if (normalized.startsWith(QByteArrayLiteral("bytes=0-"))) {
-            const QByteArray tail = normalized.mid(8);
-            if (!tail.isEmpty()) {
-                const qint64 end = tail.toLongLong();
-                auto full = m_slices.constFind(keyFor(identity, url, QByteArray()));
-                if (full != m_slices.constEnd() && end >= 0
-                    && end + 1 == full.value().size) {
-                    it = full;
-                }
-            }
-        }
+        if (normalized.startsWith(QByteArrayLiteral("bytes=0-")))
+            it = m_slices.constFind(keyFor(identity, url, QByteArray()));
     }
     if (it == m_slices.constEnd())
         return false;

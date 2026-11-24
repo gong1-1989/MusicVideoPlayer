@@ -50,6 +50,9 @@ public:
               HlsPreloadSlice *slice) const;
     /// 当前身份已经登记的分片数量。
     int count(const QString &identity) const;
+    /// 丢弃某条轨道（`.video`/`.audio` 目标基名）的全部索引。
+    /// 分片结构变化、续传点被清零时必须调用，否则旧偏移会命中新文件里的错误字节。
+    void clearTrack(const QString &targetPath);
     void clear();
 
 private:

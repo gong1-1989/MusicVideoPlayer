@@ -3705,7 +3705,7 @@ void CoreLogicTest::hlsPreloadIndexPersistsAndFollowsRenamedTrack()
 
     HlsPreloadIndex::instance().openJournal(journal);
     HlsPreloadEntry entry;
-    entry.url = QUrl(QStringLiteral("https://cdn.example.com/hls/seg0.ts?token=a"));
+    entry.url = QUrl(QStringLiteral("https://cdn.example.com/hls/seg0.ts?token=a&seq=1"));
     entry.range = QByteArrayLiteral("bytes=0-");
     entry.filePath = partial;
     entry.offset = 10;
@@ -3721,6 +3721,21 @@ void CoreLogicTest::hlsPreloadIndexPersistsAndFollowsRenamedTrack()
     QCOMPARE(slice.size, qint64(20));
     QVERIFY(!HlsPreloadIndex::instance().find(QStringLiteral("item-b"), entry.url, QByteArray(), &slice));
 
+    // 同一分片换了 token/sign 也必须命中；换掉 seq 这类稳定参数不能命中。
+    const QUrl rotatedUrl(
+        QStringLiteral("https://cdn.example.com/hls/seg0.ts?token=b&sign=2&seq=1"));
+    const QUrl otherSegment(
+        QStringLiteral("https://cdn.example.com/hls/seg0.ts?token=b&seq=2"));
+    QVERIFY(HlsPreloadIndex::instance().find(QStringLiteral("item-a"), rotatedUrl,
+                                             QByteArrayLiteral("bytes=0-"), &slice));
+    QVERIFY(!HlsPreloadIndex::instance().find(QStringLiteral("item-a"), otherSegment,
+                                              QByteArrayLiteral("bytes=0-"), &slice));
+    // 从 0 开始的小范围探测也由整片本地数据切出，不因终点不是分片末尾而回源。
+    QVERIFY(HlsPreloadIndex::instance().find(QStringLiteral("item-a"), entry.url,
+                                             QByteArrayLiteral("bytes=0-9"), &slice));
+    QVERIFY(!HlsPreloadIndex::instance().find(QStringLiteral("item-a"), entry.url,
+                                              QByteArrayLiteral("bytes=5-9"), &slice));
+
     // 新进程重新打开日志必须还能命中；下载完成后临时文件改名也不能丢索引。
     HlsPreloadIndex::instance().openJournal(journal);
     QVERIFY(HlsPreloadIndex::instance().find(QStringLiteral("item-a"), entry.url,
@@ -3730,6 +3745,30 @@ void CoreLogicTest::hlsPreloadIndexPersistsAndFollowsRenamedTrack()
     QVERIFY(HlsPreloadIndex::instance().find(QStringLiteral("item-a"), entry.url,
                                              QByteArray(), &slice));
     QCOMPARE(slice.filePath, finalPath);
+
+    // 另一条轨道仍要保留；续传点清零只丢弃视频轨道。
+    const QString audioPartial = dir.path() + QStringLiteral("/track.audio.mvpdownload");
+    QFile audioFile(audioPartial);
+    QVERIFY(audioFile.open(QIODevice::WriteOnly));
+    QVERIFY(audioFile.write(bytes) == qint64(bytes.size()));
+    audioFile.close();
+    HlsPreloadEntry audioEntry;
+    audioEntry.url = QUrl(QStringLiteral("https://cdn.example.com/hls/audio0.ts"));
+    audioEntry.range = QByteArrayLiteral("bytes=0-");
+    audioEntry.filePath = audioPartial;
+    audioEntry.offset = 0;
+    audioEntry.size = 10;
+    HlsPreloadIndex::instance().record(QStringLiteral("item-a"), audioEntry);
+    QCOMPARE(HlsPreloadIndex::instance().count(QStringLiteral("item-a")), 2);
+
+    HlsPreloadIndex::instance().clearTrack(finalPath);
+    QCOMPARE(HlsPreloadIndex::instance().count(QStringLiteral("item-a")), 1);
+    QVERIFY(!HlsPreloadIndex::instance().find(QStringLiteral("item-a"), entry.url, QByteArray(),
+                                              &slice));
+    QVERIFY(HlsPreloadIndex::instance().find(QStringLiteral("item-a"), audioEntry.url, QByteArray(),
+                                             &slice));
+    HlsPreloadIndex::instance().openJournal(journal);
+    QCOMPARE(HlsPreloadIndex::instance().count(QStringLiteral("item-a")), 1);
     HlsPreloadIndex::instance().openJournal(QString());
 }
 
