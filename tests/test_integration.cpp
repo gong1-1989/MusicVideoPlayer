@@ -236,6 +236,7 @@ private slots:
     void downloadManagerKeepsExistingFinalFile();
     void downloadManagerSameNameGetsDistinctFiles();
     void downloadManagerImportsCompleteCache();
+    void downloadManagerCleansPreexistingCacheWithoutSeed();
     void downloadManagerStagesMusicAndReusesPlaybackCache();
     void downloadManagerPausesAndResumesMusic();
     void downloadManagerPublishesAcrossVolumes();
@@ -807,17 +808,83 @@ void IntegrationTest::downloadManagerImportsCompleteCache()
     QVERIFY(saved.open(QIODevice::ReadOnly));
     QCOMPARE(saved.readAll(), expected);
 
-    // 默认设置下，缓存正文和旁车 JSON 必须删掉；歌词缓存不能被连带删除。
+    // 默认设置下，播放缓存正文、旁车 JSON 和歌词缓存都必须删掉；
+    // 下载文件本身保留。
     QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(cacheBody), 3000);
     QVERIFY(!QFileInfo::exists(cacheBody + QStringLiteral(".json")));
     QByteArray cachedLyrics;
-    QVERIFY(LyricsCache::load(item, &cachedLyrics));
-    QCOMPARE(cachedLyrics, lyricPayload);
+    QVERIFY(!LyricsCache::load(item, &cachedLyrics));
 
     for (const DownloadJob &job : manager.jobs()) {
         if (job.id == id) {
             QCOMPARE(job.status, DownloadJob::Status::Completed);
             QVERIFY(job.cleanupCachePath.isEmpty());
+        }
+    }
+    manager.shutdownForExit();
+}
+
+void IntegrationTest::downloadManagerCleansPreexistingCacheWithoutSeed()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+
+    const QByteArray full(1000, 'c');
+    server.handler = [full](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 200, full, "audio/mpeg", full.size());
+    };
+
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("独立缓存清理");
+    item.url = server.url(QStringLiteral("/cleanup.mp3"));
+    item.lyricUrl = server.url(QStringLiteral("/cleanup.lrc"));
+    item.online = true;
+
+    // 预置一条完整播放缓存和歌词缓存，但下载时不传 CacheSeed，
+    // 模拟“缓存存在但本次下载没有复用它”的普通网络下载。
+    const QString cacheBody = MediaCache::filePathForItem(item);
+    QVERIFY(!cacheBody.isEmpty());
+    QVERIFY(QDir().mkpath(QFileInfo(cacheBody).absolutePath()));
+    {
+        QFile cache(cacheBody);
+        QVERIFY(cache.open(QIODevice::WriteOnly));
+        QCOMPARE(cache.write(full), qint64(full.size()));
+    }
+    QVERIFY(MediaCache::writeState(cacheBody, MediaCache::cacheIdentity(item), item.url,
+                                   "audio/mpeg", full.size(), true, ".mp3"));
+    QVERIFY(LyricsCache::store(item, QByteArrayLiteral("[00:01.00]cleaned")));
+
+    const QString dir = m_tempDir.filePath(QStringLiteral("dl-cache-sweep"));
+    QVERIFY(QDir().removeRecursively() || !QFileInfo::exists(dir));
+    QVERIFY(QDir().mkpath(dir));
+    const QString target = QDir(dir).filePath(QStringLiteral("独立缓存清理.mp3"));
+
+    AppSettings::setRemovePlaybackCacheAfterDownload(true);
+    HttpClient http;
+    DownloadManager manager(&http);
+    QStringList completed;
+    connect(&manager, &DownloadManager::jobCompleted,
+            [&completed](const MediaItem &, const QString &path) { completed.append(path); });
+    const QString id = manager.enqueue(item, item.url, {}, target, false,
+                                       NetLimits::kDownloadBytes);
+    QVERIFY(!id.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 6000);
+    QCOMPARE(completed.first(), target);
+
+    // 即使没有 cacheCopySourcePath / seedCacheBodyPath，也要按条目身份
+    // 清掉预置的播放缓存与歌词缓存；下载文件保留。
+    QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(cacheBody), 3000);
+    QVERIFY(!QFileInfo::exists(cacheBody + QStringLiteral(".json")));
+    QByteArray lyrics;
+    QVERIFY(!LyricsCache::load(item, &lyrics));
+    QVERIFY(QFileInfo::exists(target));
+
+    for (const DownloadJob &job : manager.jobs()) {
+        if (job.id == id) {
+            QCOMPARE(job.status, DownloadJob::Status::Completed);
+            QVERIFY(job.cleanupCachePath.isEmpty());
+            QVERIFY(!job.cleanupMediaAndLyrics);
         }
     }
     manager.shutdownForExit();

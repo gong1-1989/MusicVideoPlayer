@@ -43,6 +43,10 @@ struct DownloadJob
     /// 已完成下载、但对应播放缓存尚未删除的路径。播放器占用文件时
     /// 删除会失败，记录到任务里，重启或空闲时继续尝试。
     QString cleanupCachePath;
+    /// 下载成功后需要清理该条目的播放缓存与歌词缓存。不能只在“复用了缓存”
+    /// 时清理：普通网络下载也可能已经留下同名播放缓存。播放器占用文件时
+    /// 保留该标记，由 DownloadManager 定时重试并跨重启继续。
+    bool cleanupMediaAndLyrics = false;
     qint64 bytesReceived = 0;
     /// 当前下载速度（字节/秒），只用于运行中的界面展示，不写入 downloads.json；
     /// 重启后由 DownloadManager 重新采样，避免把退出前的瞬时速度当成续传状态。

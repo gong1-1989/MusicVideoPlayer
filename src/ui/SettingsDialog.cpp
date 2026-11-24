@@ -275,8 +275,8 @@ void SettingsDialog::loadValues()
 
     m_removePlaybackCache->setChecked(AppSettings::removePlaybackCacheAfterDownload());
     m_removePlaybackCache->setToolTip(
-        tr("默认开启。只删除 Data/media-cache 中命中缓存的这一条播放副本，"
-           "下载文件本身和 Data/lyrics-cache 里的歌词都不受影响。"));
+        tr("默认开启。删除 Data/media-cache 中该条目的播放缓存，同时删除 "
+           "Data/lyrics-cache 里的对应歌词；下载文件本身不受影响。"));
 
     m_sidebarAutoHide->setChecked(AppSettings::sidebarAutoHide());
     m_controlsAutoHide->setChecked(AppSettings::controlsAutoHide());

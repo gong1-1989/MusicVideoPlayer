@@ -65,8 +65,8 @@ void setDownloadLimitMb(int limitMb);
 QString downloadDir();
 void setDownloadDir(const QString &dir);
 
-/// 下载完成后是否删除该条目的播放缓存。默认开启，仅影响 media-cache，
-/// lyrics-cache 里的歌词始终保留；命中缓存复制的下载在完成后才清理。
+/// 下载完成后是否删除该条目的播放缓存与歌词缓存。默认开启。
+/// 歌词缓存与播放缓存一起清理，下载文件本身不受影响。
 bool removePlaybackCacheAfterDownload();
 void setRemovePlaybackCacheAfterDownload(bool enabled);
 

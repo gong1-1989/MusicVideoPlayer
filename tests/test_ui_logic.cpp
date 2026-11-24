@@ -471,7 +471,8 @@ void UiLogicTest::settingsRemoveCacheCheckboxReflectsSetting()
             QStringLiteral("checkbox_removePlaybackCache"));
         QVERIFY(box != nullptr);
         QVERIFY(box->isChecked());
-        QVERIFY(box->text().contains(QStringLiteral("歌词缓存保留")));
+        QVERIFY(box->text().contains(QStringLiteral("歌词缓存")));
+        QVERIFY(!box->text().contains(QStringLiteral("保留")));
     }
 
     AppSettings::setRemovePlaybackCacheAfterDownload(false);

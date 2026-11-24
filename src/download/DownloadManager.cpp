@@ -3,6 +3,7 @@
 #include "download/DownloadManager.h"
 
 #include "cache/MediaCache.h"
+#include "cache/LyricsCache.h"
 #include "download/DownloadPaths.h"
 #include "download/DownloadTask.h"
 #include "download/MediaRemux.h"
@@ -1089,21 +1090,40 @@ void DownloadManager::cleanupPendingCaches()
     bool pending = false;
 
     for (DownloadJob &job : m_jobs) {
-        if (job.cleanupCachePath.isEmpty())
+        if (job.cleanupCachePath.isEmpty() && !job.cleanupMediaAndLyrics)
             continue;
 
-        const QString path = job.cleanupCachePath;
-        // HLS 影视的正文是无后缀 MP4，退出时可能还没有正文，只剩
-        // media.ts/.mvpdownload 和续传状态。不能因为正文不存在就直接跳过，
-        // 否则下载完成后这些半成品会永久留在 media-cache。
-        if (MediaCache::removeCachePath(path)) {
-            job.cleanupCachePath.clear();
-            changed = true;
-            qCInfo(lcDownloadManager) << "已删除下载对应的播放缓存" << path;
-        } else {
-            // Windows 上播放器持有正文句柄时删除会失败；保留记录后定时重试，
-            // 不能用 removeForItem 重新扫描，否则可能删到另一条同名缓存。
-            pending = true;
+        if (!job.cleanupCachePath.isEmpty()) {
+            const QString path = job.cleanupCachePath;
+            // HLS 影视的正文是无后缀 MP4，退出时可能还没有正文，只剩
+            // media.ts/.mvpdownload 和续传状态。不能因为正文不存在就直接跳过，
+            // 否则下载完成后这些半成品会永久留在 media-cache。
+            if (MediaCache::removeCachePath(path)) {
+                job.cleanupCachePath.clear();
+                changed = true;
+                qCInfo(lcDownloadManager) << "已删除下载对应的播放缓存" << path;
+            } else {
+                // Windows 上播放器持有正文句柄时删除会失败；保留精确路径，
+                // 后面按条目身份补扫并配合定时重试。
+                pending = true;
+            }
+        }
+
+        if (job.cleanupMediaAndLyrics) {
+            // 按条目身份补扫一遍：普通网络下载没有 cacheCopySourcePath /
+            // seedCacheBodyPath，但播放时可能已经生成了完整或半成品缓存；
+            // 只依赖“本次是否复用缓存”会漏掉这种场景。歌词缓存与播放缓存
+            // 分属两个目录，必须分别删除。
+            const bool mediaOk = MediaCache::removeForItem(job.item);
+            const bool lyricsOk = LyricsCache::removeForItem(job.item);
+            if (mediaOk && lyricsOk) {
+                job.cleanupMediaAndLyrics = false;
+                changed = true;
+                qCInfo(lcDownloadManager) << "已清理下载条目对应的播放缓存与歌词缓存"
+                                          << job.item.displayName();
+            } else {
+                pending = true;
+            }
         }
     }
 
@@ -2449,9 +2469,13 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
         job.seedBytes = 0;
         job.seedSegmentIndex = 0;
         job.seedFingerprint.clear();
-        if (!cleanupSource.isEmpty()
-            && AppSettings::removePlaybackCacheAfterDownload()) {
-            job.cleanupCachePath = cleanupSource;
+        if (AppSettings::removePlaybackCacheAfterDownload()) {
+            // 不能只在 cleanupSource 非空时安排清理：直接网络下载没有复用
+            // 播放缓存，但播放器可能已经留下完整/半成品缓存。成功下载后
+            // 统一按条目身份清理播放缓存与歌词缓存。
+            job.cleanupMediaAndLyrics = true;
+            if (!cleanupSource.isEmpty())
+                job.cleanupCachePath = cleanupSource;
         }
         job.seedCacheBodyPath.clear();
     }
@@ -2471,7 +2495,7 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
         // 命中缓存复制时，下载文件已经完整落盘；此时删除播放缓存不会影响
         // 下载结果。若播放器仍占用缓存，cleanupPendingCaches 会失败并定时
         // 重试，剩余路径写进 downloads.json，下次启动继续清理。
-        if (!cleanupSource.isEmpty())
+        if (!cleanupSource.isEmpty() || job.cleanupMediaAndLyrics)
             cleanupPendingCaches();
         emit statusMessage(finalMessage);
         emit jobCompleted(completedItem, path);

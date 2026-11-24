@@ -482,10 +482,10 @@
             <item row="4" column="0" colspan="2">
              <widget class="QCheckBox" name="checkbox_removePlaybackCache">
               <property name="text">
-               <string>下载完成后删除该条播放缓存（歌词缓存保留）</string>
+               <string>下载完成后删除该条播放缓存和歌词缓存</string>
               </property>
               <property name="toolTip">
-               <string>默认开启。只删除 Data/media-cache 中命中缓存的这一条播放副本，下载文件本身和 Data/lyrics-cache 里的歌词都不受影响。</string>
+               <string>默认开启。删除 Data/media-cache 中该条目的播放副本，以及 Data/lyrics-cache 里的对应歌词；下载文件本身不受影响。</string>
               </property>
              </widget>
             </item>
