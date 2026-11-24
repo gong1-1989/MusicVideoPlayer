@@ -3469,9 +3469,9 @@ void CoreLogicTest::streamProxyEvictsPrefetchWithoutLeakingSlots()
     QTRY_VERIFY_WITH_TIMEOUT(proxy.cacheStats().bytes >= 1024, 3000);
     QTRY_VERIFY_WITH_TIMEOUT(upstream.slowRequests.size() >= 1, 3000);
 
-    // 再用 30 个普通媒体请求把缓存推过 24 条上限，淘汰最老的预取条目。
+    // 再用 260 个普通媒体请求把缓存推过 256 条上限，淘汰最老的预取条目。
     // 若预取槽位没有归还，队列里的 slow4.ts 永远不会被发起。
-    for (int i = 0; i < 30; ++i) {
+    for (int i = 0; i < 260; ++i) {
         const QString mediaUrl =
             QStringLiteral("http://127.0.0.1:%1/media/%2.mp3")
                 .arg(upstream.serverPort())
@@ -3484,8 +3484,22 @@ void CoreLogicTest::streamProxyEvictsPrefetchWithoutLeakingSlots()
     QTRY_VERIFY_WITH_TIMEOUT(upstream.slowRequests.contains(QStringLiteral("slow4.ts")),
                              5000);
     const StreamProxy::CacheStats stats = proxy.cacheStats();
-    QVERIFY2(stats.entries <= 24, qPrintable(QString::number(stats.entries)));
+    QVERIFY2(stats.entries <= 256, qPrintable(QString::number(stats.entries)));
     QVERIFY2(stats.activePrefetches <= 4, qPrintable(QString::number(stats.activePrefetches)));
+
+    // 最后一片应仍在缓存：再次读取不能打上游。
+    const QUrl newest = proxy.proxyUrlFor(
+        QUrl(QStringLiteral("http://127.0.0.1:%1/media/259.mp3").arg(upstream.serverPort())));
+    const int beforeNewest = upstream.mediaRequests;
+    QVERIFY(fetch(newest, &head, &body));
+    QCOMPARE(upstream.mediaRequests, beforeNewest);
+
+    // 最早一片应已被 LRU 淘汰：再次读取必须重新请求上游。
+    const QUrl oldest = proxy.proxyUrlFor(
+        QUrl(QStringLiteral("http://127.0.0.1:%1/media/0.mp3").arg(upstream.serverPort())));
+    const int beforeOldest = upstream.mediaRequests;
+    QVERIFY(fetch(oldest, &head, &body));
+    QCOMPARE(upstream.mediaRequests, beforeOldest + 1);
 }
 
 void CoreLogicTest::seekPrefetchWindowFollowsPlaylistIndex()

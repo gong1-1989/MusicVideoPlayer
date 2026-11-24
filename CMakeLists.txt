@@ -224,7 +224,9 @@ target_link_libraries(mvp_tests PRIVATE
     Qt6::Test
 )
 mvp_enable_warnings(mvp_tests)
-add_test(NAME mvp_core_logic COMMAND mvp_tests)
+# 核心测试里的 HLS 预取用例会故意制造不完整分片，Qt Test 达到默认
+# 警告上限后会中止后续断言；放宽上限，保证 260 条 LRU 容量断言完整执行。
+add_test(NAME mvp_core_logic COMMAND mvp_tests -maxwarnings 100000)
 
 # 跨模块集成：真实 QNetworkAccessManager + 本地 QTcpServer，验证重定向头、
 # 下载失败/超限、搜索超时中止、响应上限和日志脱敏。

@@ -54,7 +54,9 @@ constexpr qint64 kMaxCacheTotalBytes = 256LL * 1024 * 1024;
 // 数量与总容量交给用户管理；这里只保留内存缓存预算，避免 HLS 分片吃光内存。
 // HLS 深拖动时 FFmpeg 会先回退几十秒，再顺序读取目标前的分片；
 // 缓存条目要能同时放下这些分片，不能只有 6 条。
-constexpr int kMaxCacheEntries = 24;
+// 条数上限只防止大量十几 KB 的小分片把元数据撑大，真正的内存预算是
+// kMaxCacheTotalBytes；24 条会让几 MB 的分片就误判满额，放宽到 256 条。
+constexpr int kMaxCacheEntries = 256;
 constexpr int kCacheIdleMs = 30 * 60 * 1000;
 constexpr int kRangeWaitMs = 20 * 1000;
 // 网易云等 CDN 会在大约 2 分钟后重置长连接。整段缓存拿到一半就断流时，
@@ -2358,16 +2360,58 @@ bool StreamProxy::cacheHasRoom(qint64 bytes, const QString &keepKey, bool diskBa
     pruneCache(keepKey);
     if (diskBacked)
         return true;
-    if (m_cache.size() >= kMaxCacheEntries)
-        return false;
 
-    qint64 memoryBytes = 0;
-    for (const auto &entry : std::as_const(m_cache)) {
-        if (!entry->diskBacked)
-            memoryBytes += StreamCacheStore::bytes(*entry);
-    }
     const qint64 need = qMax<qint64>(bytes, 0);
-    return memoryBytes + need <= kMaxCacheTotalBytes;
+    auto memoryEntryCount = [this]() {
+        int count = 0;
+        for (const auto &entry : std::as_const(m_cache)) {
+            if (!entry->diskBacked)
+                ++count;
+        }
+        return count;
+    };
+    auto memoryBytes = [this]() {
+        qint64 total = 0;
+        for (const auto &entry : std::as_const(m_cache)) {
+            if (!entry->diskBacked)
+                total += StreamCacheStore::bytes(*entry);
+        }
+        return total;
+    };
+    auto evictOldestInactive = [this, &keepKey]() {
+        QString oldestKey;
+        qint64 oldest = std::numeric_limits<qint64>::max();
+        for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
+            if (it.key() == keepKey || it.value()->diskBacked)
+                continue;
+            bool active = false;
+            for (const QPointer<QTcpSocket> &client : std::as_const(it.value()->clients)) {
+                if (!client.isNull() && client->state() == QAbstractSocket::ConnectedState) {
+                    active = true;
+                    break;
+                }
+            }
+            if (active)
+                continue;
+            if (it.value()->lastUsedMs < oldest) {
+                oldest = it.value()->lastUsedMs;
+                oldestKey = it.key();
+            }
+        }
+        if (oldestKey.isEmpty())
+            return false;
+        dropCacheEntry(oldestKey);
+        return true;
+    };
+
+    // 满额时立即淘汰最久未使用的空闲分片，而不是拒绝新分片后干等 30 分钟。
+    // 30 分钟只负责清理长期不用的条目；所有条目都在被播放器读取时才放弃缓存。
+    while (memoryEntryCount() >= kMaxCacheEntries
+           || memoryBytes() + need > kMaxCacheTotalBytes) {
+        if (!evictOldestInactive())
+            return false;
+    }
+    return true;
 }
 
 /// @brief 按最久未使用顺序淘汰缓存，保留 keepKey。
@@ -2379,6 +2423,7 @@ void StreamProxy::pruneCache(const QString &keepKey)
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QStringList drop;
     qint64 totalBytes = 0;
+    int memoryEntries = 0;
     for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
         const QSharedPointer<CacheEntry> &entry = it.value();
         bool active = false;
@@ -2388,8 +2433,10 @@ void StreamProxy::pruneCache(const QString &keepKey)
                 break;
             }
         }
-        if (!entry->diskBacked)
+        if (!entry->diskBacked) {
             totalBytes += StreamCacheStore::bytes(*entry);
+            ++memoryEntries;
+        }
         if (entry->failed && !active) {
             drop.append(it.key());
             continue;
@@ -2399,12 +2446,14 @@ void StreamProxy::pruneCache(const QString &keepKey)
     }
     for (const QString &key : std::as_const(drop)) {
         const QSharedPointer<CacheEntry> entry = m_cache.value(key);
-        if (!entry.isNull() && !entry->diskBacked)
+        if (!entry.isNull() && !entry->diskBacked) {
             totalBytes -= StreamCacheStore::bytes(*entry);
+            --memoryEntries;
+        }
         dropCacheEntry(key);
     }
 
-    while (m_cache.size() > kMaxCacheEntries || totalBytes > kMaxCacheTotalBytes) {
+    while (memoryEntries > kMaxCacheEntries || totalBytes > kMaxCacheTotalBytes) {
         QString oldestKey;
         qint64 oldest = std::numeric_limits<qint64>::max();
         for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
@@ -2426,8 +2475,10 @@ void StreamProxy::pruneCache(const QString &keepKey)
         }
         if (oldestKey.isEmpty())
             break;
-        if (!m_cache.value(oldestKey)->diskBacked)
+        if (!m_cache.value(oldestKey)->diskBacked) {
             totalBytes -= StreamCacheStore::bytes(*m_cache.value(oldestKey));
+            --memoryEntries;
+        }
         dropCacheEntry(oldestKey);
     }
 }
