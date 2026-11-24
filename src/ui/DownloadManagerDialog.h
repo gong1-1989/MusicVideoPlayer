@@ -43,6 +43,7 @@ private:
     void openSelectedFile();
     void openSelectedFolder();
     void retrySelected();
+    void pauseOrResumeSelected();
     void removeSelected();
     void clearCompleted();
 
@@ -54,6 +55,7 @@ private:
     QPushButton *m_openFile = nullptr;
     QPushButton *m_openFolder = nullptr;
     QPushButton *m_retry = nullptr;
+    QPushButton *m_pause = nullptr;
     QPushButton *m_remove = nullptr;
     QPushButton *m_clearCompleted = nullptr;
     QString m_selectedId;

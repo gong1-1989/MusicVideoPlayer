@@ -53,6 +53,9 @@ struct DownloadJob
     /// 上次成功解析出的 HLS 分片结构指纹；续传必须匹配，否则从头下载。
     QString hlsFingerprint;
     bool snapshot = false;
+    /// 用户主动暂停。与队列里的“等待下载”共用 Paused 状态，但重启后
+    /// 不能自动续传，必须等用户点“继续下载”。
+    bool pausedByUser = false;
     /// 用户已明确授权无 ENDLIST 也下载（例如下载管理器里的“强制下载当前分片”）。
     bool allowIncomplete = false;
     /// 上次因缺少 ENDLIST 且未声明 VOD 被拒绝，界面据此提供强制下载入口。

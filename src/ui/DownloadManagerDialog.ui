@@ -131,14 +131,21 @@
      <item>
       <widget class="QPushButton" name="btn_retry">
        <property name="text">
-        <string>重试 / 续传</string>
+        <string>重试失败</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_pause">
+       <property name="text">
+        <string>暂停下载</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="btn_remove">
        <property name="text">
-        <string>移除记录</string>
+        <string>停止下载</string>
        </property>
       </widget>
      </item>

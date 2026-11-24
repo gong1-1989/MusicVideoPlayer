@@ -723,7 +723,6 @@ void StorageTest::downloadManagerDelayedRemoveSkipsReservedPath()
     // 旧半成品仍被本测试句柄占着，首次同步删除会失败，进入延迟重试。
     QVERIFY(manager.removeJob(QStringLiteral("old")));
     locked.close();
-    QVERIFY(QFile::remove(partial));
 
     // 延迟窗口内立刻发起同目标新任务；用挂起不响应的本地端口让任务保持 active。
     const QUrl hanging(QStringLiteral("http://127.0.0.1:%1/a.mp3").arg(server.serverPort()));
@@ -731,15 +730,25 @@ void StorageTest::downloadManagerDelayedRemoveSkipsReservedPath()
     newId = manager.enqueue(old.item, hanging, {}, target, false, 1024);
     QVERIFY(!newId.isEmpty());
 
-    // 模拟新任务已经落在同一半成品路径。旧任务的 25/50/75ms 重试不能删它。
-    QFile fresh(partial);
+    // 新架构下所有任务都写应用暂存区；延迟删除必须认这个真正在用的半成品。
+    QString freshPartial;
+    for (const DownloadJob &job : manager.jobs()) {
+        if (job.id == newId) {
+            freshPartial = job.partialPath();
+            break;
+        }
+    }
+    QVERIFY(!freshPartial.isEmpty());
+    QVERIFY(QDir().mkpath(QFileInfo(freshPartial).absolutePath()));
+    QFile fresh(freshPartial);
     QVERIFY(fresh.open(QIODevice::WriteOnly));
     QVERIFY(fresh.write("new partial") > 0);
     fresh.close();
 
-    QTest::ignoreMessage(QtInfoMsg, QRegularExpression(QStringLiteral("延迟删除跳过")));
+    // 旧任务延迟删除的是它自己的旧路径；新架构下新任务使用独立暂存目录，
+    // 不能被旧任务的延迟清理误删。
     QTest::qWait(140);
-    QVERIFY(QFile::exists(partial));
+    QVERIFY(QFile::exists(freshPartial));
 
     manager.shutdownForExit();
     server.close();

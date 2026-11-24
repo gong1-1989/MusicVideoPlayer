@@ -83,12 +83,20 @@ DownloadManager::DownloadManager(HttpClient *http, QObject *parent)
     m_seedTimer->setInterval(0);
     connect(m_seedTimer, &QTimer::timeout, this, &DownloadManager::copySeedChunks);
 
+    m_publishTimer = new QTimer(this);
+    // 跨盘发布同样按块搬运；直接 QFile::copy 会让界面在大文件收尾时卡住。
+    m_publishTimer->setInterval(0);
+    connect(m_publishTimer, &QTimer::timeout, this, &DownloadManager::copyPublishChunks);
+
     m_cacheCleanupTimer = new QTimer(this);
     m_cacheCleanupTimer->setInterval(10000);
     connect(m_cacheCleanupTimer, &QTimer::timeout,
             this, &DownloadManager::cleanupPendingCaches);
 
     load();
+    // 旧版本的暂存分片落在下载目录里；先清掉遗留目录，
+    // 让下载目录只剩用户可见的成品文件。
+    QTimer::singleShot(0, this, &DownloadManager::cleanLegacyDownloadCaches);
     // 上次退出时播放器仍占用缓存，删除会失败；这次启动先补清理。
     QTimer::singleShot(0, this, &DownloadManager::cleanupPendingCaches);
     QTimer::singleShot(0, this, &DownloadManager::resumePending);
@@ -112,10 +120,15 @@ DownloadManager::~DownloadManager()
     const QStringList seedIds = m_seedSources.keys();
     for (const QString &id : seedIds)
         cancelSeedCopy(id, false);
+    const QStringList publishIds = m_publishSources.keys();
+    for (const QString &id : publishIds)
+        cancelPublishCopy(id, true);
     if (m_cacheCopyTimer != nullptr)
         m_cacheCopyTimer->stop();
     if (m_seedTimer != nullptr)
         m_seedTimer->stop();
+    if (m_publishTimer != nullptr)
+        m_publishTimer->stop();
     if (m_cacheCleanupTimer != nullptr)
         m_cacheCleanupTimer->stop();
     const QStringList copyIds = m_cacheCopySources.keys();
@@ -241,15 +254,25 @@ QString DownloadManager::enqueue(const MediaItem &item, const QUrl &url,
     job.message = tr("等待下载");
     job.createdAt = QDateTime::currentDateTime();
 
-    // 影视 HLS 统一进暂存区：下载、合并、转封装都不在下载目录里产生半成品，
-    // 成功后才移动到 job.filePath。暂存目录按任务 id 隔离，退出后可直接续传。
-    if (hls && item.type == MediaType::Video)
-        job.stagingPath = stagingPathForJob(job);
-    if (seed != nullptr && job.stagingPath.isEmpty() && hls) {
-        // 只有暂存任务才需要种子；非影视 HLS 仍按原直写路径，不能把分片
-        // 拷到用户可见目录后再失败。
-        qCInfo(lcDownloadManager) << "忽略非暂存 HLS 任务的播放缓存种子";
-    } else if (seed != nullptr && seed->bytes > 0 && !seed->sourcePath.isEmpty()) {
+    // HLS 无论音乐还是影视，最终都以 MP4 入库：分片先后落在暂存区，
+    // 完成后由 FFmpeg 无损转封装；没有 FFmpeg 时才回退发布 TS。
+    if (hls && !job.filePath.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive)) {
+        const QFileInfo info(job.filePath);
+        const QString reserved = reserveFilePath(
+            info.absolutePath(), info.completeBaseName() + QStringLiteral(".mp4"));
+        if (reserved.isEmpty()) {
+            emit statusMessage(tr("无法为下载分配唯一文件名，请检查下载目录"));
+            return QString();
+        }
+        job.filePath = reserved;
+    }
+
+    // 所有下载统一进暂存区：音乐/影视、直链/HLS 都不在下载目录里产生半成品，
+    // 成功后才发布到 job.filePath。暂存目录按任务 id 隔离，退出后可直接续传。
+    const QString stagingSuffix =
+        hls ? QStringLiteral("ts") : QFileInfo(job.filePath).suffix();
+    job.stagingPath = stagingPathForJob(job, stagingSuffix);
+    if (seed != nullptr && seed->bytes > 0 && !seed->sourcePath.isEmpty()) {
         job.seedSourcePath = seed->sourcePath;
         job.seedBytes = seed->bytes;
         job.seedSegmentIndex = seed->segmentIndex;
@@ -309,13 +332,12 @@ QString DownloadManager::importFromCache(const MediaItem &item, const QString &c
     job.item = item;
     job.url = preferredPlaybackUrl(item);
     job.headers = item.headers;
-    const bool hlsVideo = item.type == MediaType::Video
-                          && DownloadTask::looksLikeHls(preferredPlaybackUrl(item));
+    const bool hlsJob = DownloadTask::looksLikeHls(preferredPlaybackUrl(item));
     QString targetPath = filePath;
-    if (hlsVideo
+    if (hlsJob
         && !targetPath.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive)) {
         // HLS 完整播放缓存正文本身就是 MP4；不能因为源地址是 m3u8 就把
-        // MP4 字节复制成 .ts 扩展名。
+        // MP4 字节复制成 .ts 扩展名。音乐 HLS 同样按 MP4 入库。
         const QFileInfo info(targetPath);
         targetPath = info.absolutePath() + QLatin1Char('/') + info.completeBaseName()
                      + QStringLiteral(".mp4");
@@ -326,8 +348,11 @@ QString DownloadManager::importFromCache(const MediaItem &item, const QString &c
         emit statusMessage(tr("无法为下载分配唯一文件名，请检查下载目录"));
         return QString();
     }
-    if (hlsVideo)
-        job.stagingPath = stagingPathForJob(job, QStringLiteral("mp4"));
+    // 完整缓存也要先落到应用暂存区，再统一发布到下载目录；这样下载目录里
+    // 不会出现任务中间态，也能在退出后按同一套暂存状态恢复。
+    const QString stagingSuffix =
+        hlsJob ? QStringLiteral("mp4") : QFileInfo(job.filePath).suffix();
+    job.stagingPath = stagingPathForJob(job, stagingSuffix);
     job.cacheCopySourcePath = cachePath;
     job.bytesTotal = sourceSize;
     job.bytesReceived = 0;
@@ -374,6 +399,12 @@ void DownloadManager::resumePending()
     for (DownloadJob &job : m_jobs) {
         if (job.status != DownloadJob::Status::Paused)
             continue;
+        if (job.pausedByUser) {
+            // 用户主动暂停的任务不能在下次启动时偷偷续传，必须等“继续下载”。
+            if (job.message.isEmpty())
+                job.message = tr("已暂停，点击继续下载");
+            continue;
+        }
         if (job.snapshot) {
             job.status = DownloadJob::Status::Failed;
             job.message = tr("快照任务不自动续传；请重新下载");
@@ -402,17 +433,24 @@ void DownloadManager::shutdownForExit()
     const QStringList seedIds = m_seedSources.keys();
     for (const QString &id : seedIds)
         cancelSeedCopy(id, false);
+    const QStringList publishIds = m_publishSources.keys();
+    for (const QString &id : publishIds)
+        cancelPublishCopy(id, true);
 
     for (DownloadJob &job : m_jobs) {
         if (job.status != DownloadJob::Status::Downloading)
             continue;
 
         job.status = DownloadJob::Status::Paused;
-        job.message = !job.cacheCopySourcePath.isEmpty()
-            ? tr("程序退出，已暂停；下次启动继续从播放缓存生成")
-            : (!job.seedSourcePath.isEmpty()
-               ? tr("程序退出，已暂停；下次启动继续复用播放缓存")
-               : tr("程序退出，已暂停；下次启动会自动续传"));
+        if (job.committed && !job.stagingPath.isEmpty()) {
+            job.message = tr("程序退出，已暂停；下次启动继续转封装或写入下载目录");
+        } else if (!job.cacheCopySourcePath.isEmpty()) {
+            job.message = tr("程序退出，已暂停；下次启动继续从播放缓存生成");
+        } else if (!job.seedSourcePath.isEmpty()) {
+            job.message = tr("程序退出，已暂停；下次启动继续复用播放缓存");
+        } else {
+            job.message = tr("程序退出，已暂停；下次启动会自动续传");
+        }
 
         auto taskIt = m_tasks.find(job.id);
         if (taskIt != m_tasks.end() && !taskIt.value().isNull()) {
@@ -451,6 +489,7 @@ bool DownloadManager::removeJob(const QString &id)
     // 缓存复制任务没有 DownloadTask，必须单独关句柄并清掉半成品。
     cancelCacheCopy(id, true);
     cancelSeedCopy(id, true);
+    cancelPublishCopy(id, true);
 
     // 先断信号、从表里摘掉，再取消：cancel() 会同步发 failed/finished，
     // 虽然已 disconnect，这个顺序也能避免以后加回调时重入 m_tasks/m_jobs。
@@ -511,6 +550,64 @@ bool DownloadManager::removeJob(const QString &id)
     return true;
 }
 
+/// @brief 暂停当前任务：中止网络/复制/转封装，但保留暂存半成品供继续。
+bool DownloadManager::pauseJob(const QString &id)
+{
+    const int index = indexOf(id);
+    if (index < 0 || m_shuttingDown)
+        return false;
+    DownloadJob &job = m_jobs[index];
+    if (job.status != DownloadJob::Status::Downloading)
+        return false;
+
+    // 三种中间阶段都可能正在占用 UI 背后的 I/O：播放缓存种子复制、
+    // 完整缓存复制、FFmpeg 转封装。先保留已写入部分并停掉它们。
+    cancelSeedCopy(id, false);
+    cancelCacheCopy(id, false);
+    // 正在跨盘发布时，源文件仍在暂存区；删掉下载目录里的临时副本，
+    // 继续后由 startStagedCompletion 重新发布。
+    cancelPublishCopy(id, true);
+
+    if (m_remuxes.contains(id)) {
+        MediaRemux *remux = m_remuxes.take(id);
+        m_remuxOutputs.remove(id);
+        if (remux != nullptr) {
+            remux->cancel();
+            remux->deleteLater();
+        }
+    }
+
+    // DownloadTask::stopForExit() 会补发最后一次 checkpoint 再关闭文件，
+    // 不发 failed；直接复用它可以保证暂停后的字节数与磁盘一致。
+    if (QPointer<DownloadTask> task = m_tasks.take(id); task != nullptr)
+        task->stopForExit();
+
+    job.status = DownloadJob::Status::Paused;
+    job.pausedByUser = true;
+    job.message = tr("已暂停，点击继续下载");
+    scheduleSave();
+    scheduleNotify();
+    QTimer::singleShot(0, this, &DownloadManager::pumpQueue);
+    return true;
+}
+
+/// @brief 继续已暂停任务；保留 bytesReceived/分片序号，不从头下载。
+bool DownloadManager::resumeJob(const QString &id)
+{
+    const int index = indexOf(id);
+    if (index < 0 || m_shuttingDown)
+        return false;
+    DownloadJob &job = m_jobs[index];
+    if (job.status != DownloadJob::Status::Paused)
+        return false;
+    job.pausedByUser = false;
+    job.message = tr("等待继续下载");
+    scheduleSave();
+    scheduleNotify();
+    pumpQueue();
+    return true;
+}
+
 /// @brief 重试失败任务；HLS 无 ENDLIST 时可用 allowIncomplete 快照下载。
 /// @return 已重新入队返回 true。
 bool DownloadManager::retryJob(const QString &id, bool allowIncomplete)
@@ -539,6 +636,7 @@ bool DownloadManager::retryJob(const QString &id, bool allowIncomplete)
         job.segmentCount = 0;
     }
     job.status = DownloadJob::Status::Paused;
+    job.pausedByUser = false;
     job.message = allowIncomplete ? tr("已授权按当前分片强制下载，等待开始")
                                   : tr("等待重试");
     pumpQueue();
@@ -785,6 +883,56 @@ void DownloadManager::saveNow()
         emit jobsChanged();
 }
 
+/// @brief 清掉旧版本遗留在下载目录里的 `.download-cache` 暂存目录。
+/// @note 只删除本应用固定命名的子目录，不扫描/删除用户下载的文件本身。
+void DownloadManager::cleanLegacyDownloadCaches()
+{
+    const QString root = AppSettings::downloadDir();
+    if (root.trimmed().isEmpty())
+        return;
+
+    QStringList parents;
+    parents << root
+            << DownloadPaths::mediaDirectory(root, false)
+            << DownloadPaths::mediaDirectory(root, true);
+    // 队列里可能还保留着用户以前改过下载目录时的任务路径。
+    for (const DownloadJob &job : m_jobs)
+        parents << QFileInfo(job.filePath).absolutePath();
+
+    // 升级前已经开始的任务，stagingPath 仍然指向下载目录里的旧暂存区；
+    // 直接整棵删除会丢掉续传进度。这里只清掉没有被任何任务引用的目录，
+    // 旧任务完成后会在发布阶段自行删除自己的暂存目录。
+    QSet<QString> preserved;
+    for (const DownloadJob &job : m_jobs) {
+        if (!job.stagingPath.isEmpty())
+            preserved.insert(QFileInfo(job.stagingPath).absolutePath());
+    }
+
+    parents.removeDuplicates();
+    for (const QString &parent : parents) {
+        const QString legacy = QDir(parent).filePath(QStringLiteral(".download-cache"));
+        if (!QFileInfo::exists(legacy))
+            continue;
+        const QDir legacyDir(legacy);
+        const QStringList children =
+            legacyDir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        bool removedAny = false;
+        for (const QString &child : children) {
+            const QString childPath = legacyDir.filePath(child);
+            if (preserved.contains(QDir::cleanPath(childPath)))
+                continue;
+            if (!QDir(childPath).removeRecursively()) {
+                qCWarning(lcDownloadManager) << "旧版下载暂存目录清理失败" << childPath;
+                continue;
+            }
+            removedAny = true;
+            qCInfo(lcDownloadManager) << "已清理旧版下载暂存目录" << childPath;
+        }
+        if (removedAny && legacyDir.isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot))
+            QDir().rmdir(legacy);
+    }
+}
+
 /// @brief 清理已完成任务遗留的播放缓存，避免缓存与下载各存一份。
 void DownloadManager::cleanupPendingCaches()
 {
@@ -871,7 +1019,7 @@ void DownloadManager::pumpQueue()
     while (activeCount() < kMaxConcurrentDownloads) {
         QString nextId;
         for (const DownloadJob &job : std::as_const(m_jobs)) {
-            if (job.status != DownloadJob::Status::Paused)
+            if (job.status != DownloadJob::Status::Paused || job.pausedByUser)
                 continue;
             if (m_tasks.contains(job.id) || m_remuxes.contains(job.id))
                 continue;
@@ -880,24 +1028,33 @@ void DownloadManager::pumpQueue()
         }
         if (nextId.isEmpty())
             return;
+        // 先占住“正在下载”状态，再启动；这样暂停后遗留的排队 startJob
+        // 看到 Paused 会直接退出，不会再偷偷把任务拉起来。
+        const int nextIndex = indexOf(nextId);
+        if (nextIndex >= 0)
+            m_jobs[nextIndex].status = DownloadJob::Status::Downloading;
         startJob(nextId);
         // startJob 可能因为文件已写完而立即 Completed，也可能转入 remux；
         // 继续循环直到达到并发上限为止。
     }
 }
 
-/// @brief 影视 HLS 下载的暂存路径；与最终文件同盘，成功后可直接原子改名。
+/// @brief 所有下载任务的暂存路径；统一放在应用数据目录，和下载目录分开。
+/// @note 暂存目录按任务 id 隔离；发布时若跨盘不能 rename，会走异步复制，
+///       避免把大文件复制卡在界面线程。
 QString DownloadManager::stagingPathForJob(const DownloadJob &job,
                                            const QString &suffix) const
 {
     const QFileInfo finalInfo(job.filePath);
     if (job.id.isEmpty() || finalInfo.absolutePath().isEmpty())
         return QString();
-    const QString dir = finalInfo.absolutePath() + QStringLiteral("/.download-cache/")
-                        + job.id;
+    const QString dir = StoragePaths::dataFile(QStringLiteral("download-cache"))
+                        + QLatin1Char('/') + job.id;
     QString tail = suffix.trimmed();
     if (!tail.isEmpty() && !tail.startsWith(QLatin1Char('.')))
         tail.prepend(QLatin1Char('.'));
+    if (tail == QLatin1String("."))
+        tail.clear();
     return dir + QLatin1Char('/') + finalInfo.completeBaseName() + tail;
 }
 
@@ -912,7 +1069,8 @@ void DownloadManager::startJob(const QString &id)
         return;
 
     DownloadJob &job = m_jobs[index];
-    if (job.status == DownloadJob::Status::Completed)
+    if (job.status == DownloadJob::Status::Completed
+        || job.status == DownloadJob::Status::Paused)
         return;
 
     // 旧状态文件里也可能留下两条指向同一目标的任务。真正启动前再校验一次，
@@ -1011,6 +1169,18 @@ void DownloadManager::startJob(const QString &id)
            ? tr("正在校验播放缓存并继续下载")
            : tr("正在解析播放列表"))
         : tr("正在下载");
+
+    // 暂存目录按任务 id 分离，首次启动前必须确保父目录存在，否则
+    // DownloadTask 打开半成品会直接失败。
+    if (!job.stagingPath.isEmpty()
+        && !QDir().mkpath(QFileInfo(job.stagingPath).absolutePath())) {
+        job.status = DownloadJob::Status::Failed;
+        job.message = tr("无法创建下载暂存目录");
+        scheduleSave();
+        scheduleNotify();
+        emit statusMessage(job.message);
+        return;
+    }
 
     DownloadTask *task = DownloadTask::start(m_http, job.url, job.workPath(),
                                              job.headers, this);
@@ -1144,6 +1314,9 @@ void DownloadManager::startJob(const QString &id)
                     j.stagingPath = path;
                     j.bytesReceived = downloadedBytes;
                     j.bytesTotal = downloadedBytes;
+                    // 暂存文件已经完整；发布可能是跨盘异步复制，期间退出
+                    // 必须能按 committed 直接重新发布，不能重新拉网络。
+                    j.committed = true;
                     if (j.hls) {
                         if (path.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive)) {
                             // fMP4 HLS 合并结果已经是 MP4；直接发布到下载目录。
@@ -1155,8 +1328,7 @@ void DownloadManager::startJob(const QString &id)
                                           tr("缓存已完成，但无法写入下载目录"));
                             return;
                         }
-                        // 先记 committed，转封装期间退出可直接恢复，不必重新下载。
-                        j.committed = true;
+                        // 转封装期间退出可直接恢复，不必重新下载。
                         j.status = DownloadJob::Status::Downloading;
                         j.message = j.snapshot
                             ? tr("正在无损转成 MP4（当前分片快照）")
@@ -1379,7 +1551,17 @@ void DownloadManager::startStagedCompletion(const QString &id)
         return;
     }
 
-    if (QFileInfo(work).size() > 0) {
+    // 普通直链（音乐/影视）下载到暂存区后不需要转封装，完整即发布。
+    if (!job.hls) {
+        if (QFileInfo(work).size() > 0) {
+            QString published;
+            if (publishStagedFile(id, work, &published))
+                finishJob(id, published, true, tr("下载完成"));
+            else
+                finishJob(id, job.filePath, false, tr("无法把下载文件写入下载目录"));
+            return;
+        }
+    } else if (QFileInfo(work).size() > 0) {
         job.status = DownloadJob::Status::Downloading;
         startRemux(id);
         return;
@@ -1433,21 +1615,17 @@ bool DownloadManager::publishStagedFile(const QString &id, const QString &source
     QDir().mkpath(QFileInfo(finalPath).absolutePath());
     bool moved = QFile::rename(sourcePath, finalPath);
     if (!moved) {
-        // 暂存目录与下载目录同盘时 rename 是原子的；只有路径权限异常或
-        // 被外部程序短暂锁住才会走到复制兜底。复制同样先写 .mvpdownload。
-        const QString copyTemp = finalPath + QStringLiteral(".mvpdownload");
-        QFile::remove(copyTemp);
-        if (QFile::copy(sourcePath, copyTemp)
-            && QFileInfo(copyTemp).size() == sourceInfo.size()
-            && QFile::rename(copyTemp, finalPath)) {
-            QFile::remove(sourcePath);
-            moved = true;
-        } else {
-            QFile::remove(copyTemp);
+        // 暂存区在应用数据目录，下载目录可能在另一个盘；跨盘不能 rename，
+        // 改为分块复制到下载目录的 .mvpdownload，再原子改名。大文件复制
+        // 期间 finishJob 会暂缓收尾，避免界面线程被一次性 QFile::copy 卡住。
+        if (startPublishCopy(id, sourcePath, finalPath)) {
+            job.filePath = finalPath;
+            if (publishedPath != nullptr)
+                *publishedPath = finalPath;
+            return true;
         }
-    }
-    if (!moved)
         return false;
+    }
     if (QFileInfo(finalPath).size() != sourceInfo.size()) {
         QFile::remove(finalPath);
         return false;
@@ -1461,6 +1639,159 @@ bool DownloadManager::publishStagedFile(const QString &id, const QString &source
     if (publishedPath != nullptr)
         *publishedPath = finalPath;
     return true;
+}
+
+/// @brief 跨盘发布：把暂存文件分块复制到下载目录的临时文件，完成后改名。
+bool DownloadManager::startPublishCopy(const QString &id, const QString &sourcePath,
+                                       const QString &finalPath)
+{
+    const int index = indexOf(id);
+    if (index < 0 || m_shuttingDown)
+        return false;
+    DownloadJob &job = m_jobs[index];
+    const QFileInfo sourceInfo(sourcePath);
+    if (!sourceInfo.isFile() || sourceInfo.size() <= 0)
+        return false;
+
+    const QString targetPath = finalPath + QStringLiteral(".mvpdownload");
+    cancelPublishCopy(id, true);
+    QFile *source = new QFile(sourcePath, this);
+    QFile *target = new QFile(targetPath, this);
+    if (!source->open(QIODevice::ReadOnly)) {
+        source->deleteLater();
+        target->deleteLater();
+        return false;
+    }
+    QFile::remove(targetPath);
+    if (!target->open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        source->close();
+        source->deleteLater();
+        target->deleteLater();
+        return false;
+    }
+
+    m_publishSources.insert(id, source);
+    m_publishTargets.insert(id, target);
+    m_publishFinalPaths.insert(id, finalPath);
+    m_publishStagingDirs.insert(id, sourceInfo.absolutePath());
+    job.filePath = finalPath;
+    job.status = DownloadJob::Status::Downloading;
+    job.message = tr("正在写入下载目录（%1）")
+                      .arg(sourceInfo.size() / (1024.0 * 1024.0), 0, 'f', 1);
+    scheduleSave();
+    scheduleNotify();
+    if (!m_publishTimer->isActive())
+        m_publishTimer->start();
+    return true;
+}
+
+/// @brief 分块搬运跨盘发布文件；每轮最多 4 MB，完成后再通知 finishJob。
+void DownloadManager::copyPublishChunks()
+{
+    if (m_shuttingDown) {
+        m_publishTimer->stop();
+        return;
+    }
+    if (m_publishSources.isEmpty()) {
+        m_publishTimer->stop();
+        return;
+    }
+
+    constexpr qint64 kChunk = 4 * 1024 * 1024;
+    const QStringList ids = m_publishSources.keys();
+    bool changed = false;
+    for (const QString &id : ids) {
+        QFile *source = m_publishSources.value(id);
+        QFile *target = m_publishTargets.value(id);
+        const int index = indexOf(id);
+        if (source == nullptr || target == nullptr || index < 0) {
+            cancelPublishCopy(id, true);
+            continue;
+        }
+        const QByteArray chunk = source->read(kChunk);
+        if (chunk.isEmpty()) {
+            if (source->error() != QFileDevice::NoError
+                || target->error() != QFileDevice::NoError) {
+                const QString error = source->error() != QFileDevice::NoError
+                                          ? source->errorString()
+                                          : target->errorString();
+                const QString finalPath = m_publishFinalPaths.value(id);
+                cancelPublishCopy(id, true);
+                finishJob(id, finalPath, false,
+                          tr("写入下载目录失败：%1").arg(error));
+                continue;
+            }
+            const QString targetPath = target->fileName();
+            const QString finalPath = m_publishFinalPaths.value(id);
+            const QString sourcePath = source->fileName();
+            const QString stagingDir = m_publishStagingDirs.value(id);
+            const QString pendingMessage = m_pendingPublishMessages.take(id);
+            if (!target->flush()) {
+                const QString error = target->errorString();
+                cancelPublishCopy(id, true);
+                finishJob(id, finalPath, false,
+                          tr("刷新下载文件失败：%1").arg(error));
+                continue;
+            }
+            target->close();
+            source->close();
+            cancelPublishCopy(id, false);
+
+            if (QFileInfo(targetPath).size() != QFileInfo(sourcePath).size()
+                || !QFile::rename(targetPath, finalPath)) {
+                QFile::remove(targetPath);
+                finishJob(id, finalPath, false, tr("无法写入下载目录"));
+                continue;
+            }
+            QFile::remove(sourcePath);
+            if (!stagingDir.isEmpty())
+                QDir(stagingDir).removeRecursively();
+            DownloadJob &job = m_jobs[index];
+            job.stagingPath.clear();
+            job.filePath = finalPath;
+            finishJob(id, finalPath, true,
+                      pendingMessage.isEmpty() ? tr("下载完成") : pendingMessage);
+            changed = true;
+            continue;
+        }
+        if (target->write(chunk) != chunk.size()) {
+            const QString error = target->errorString();
+            const QString finalPath = m_publishFinalPaths.value(id);
+            cancelPublishCopy(id, true);
+            finishJob(id, finalPath, false, tr("写入下载目录失败：%1").arg(error));
+            continue;
+        }
+        changed = true;
+    }
+    if (changed) {
+        scheduleSave();
+        scheduleNotify();
+    }
+    if (m_publishSources.isEmpty())
+        m_publishTimer->stop();
+}
+
+/// @brief 停止跨盘发布；removePartial 控制是否删下载目录里的临时副本。
+void DownloadManager::cancelPublishCopy(const QString &id, bool removePartial)
+{
+    QFile *source = m_publishSources.take(id);
+    QFile *target = m_publishTargets.take(id);
+    const QString targetPath = target != nullptr ? target->fileName() : QString();
+    m_publishFinalPaths.remove(id);
+    m_publishStagingDirs.remove(id);
+    m_pendingPublishMessages.remove(id);
+    if (source != nullptr) {
+        source->close();
+        source->deleteLater();
+    }
+    if (target != nullptr) {
+        target->close();
+        target->deleteLater();
+    }
+    if (removePartial && !targetPath.isEmpty())
+        QFile::remove(targetPath);
+    if (m_publishSources.isEmpty() && m_publishTimer != nullptr)
+        m_publishTimer->stop();
 }
 
 /// @brief 把播放缓存前缀分块复制到暂存区半成品，完成后再走网络 DownloadTask。
@@ -1500,8 +1831,11 @@ bool DownloadManager::startSeedCopy(const QString &id)
     m_seedRemaining.insert(id, job.seedBytes);
     job.bytesReceived = 0;
     job.status = DownloadJob::Status::Downloading;
-    job.message = tr("正在复用播放缓存已完成分片（%1 MB）")
-                      .arg(job.seedBytes / (1024.0 * 1024.0), 0, 'f', 1);
+    job.message = job.hls
+        ? tr("正在复用播放缓存已完成分片（%1 MB）")
+              .arg(job.seedBytes / (1024.0 * 1024.0), 0, 'f', 1)
+        : tr("正在复用播放缓存已下载部分（%1 MB）")
+              .arg(job.seedBytes / (1024.0 * 1024.0), 0, 'f', 1);
     scheduleSave();
     scheduleNotify();
     if (!m_seedTimer->isActive())
@@ -1587,8 +1921,10 @@ void DownloadManager::copySeedChunks()
             job.bytesReceived = job.seedBytes;
             job.segmentIndex = job.seedSegmentIndex;
             job.hlsFingerprint = job.seedFingerprint;
-            job.message = tr("已复用播放缓存 %1 个分片，继续网络下载")
-                              .arg(job.segmentIndex);
+            job.message = job.hls
+                ? tr("已复用播放缓存 %1 个分片，继续网络下载")
+                      .arg(job.segmentIndex)
+                : tr("已复用播放缓存已下载部分，继续网络下载");
             // 种子已落到暂存区，后续重启直接用暂存字节和指纹续传，
             // 不再重复复制。播放缓存正文路径保留到成功后再清理。
             job.seedSourcePath.clear();
@@ -1652,6 +1988,11 @@ bool DownloadManager::startCacheCopy(const QString &id, const QString &sourcePat
     }
 
     const QString partial = job.partialPath();
+    if (!QDir().mkpath(QFileInfo(partial).absolutePath())) {
+        emit statusMessage(tr("无法创建下载暂存目录：%1")
+                               .arg(QFileInfo(partial).absolutePath()));
+        return false;
+    }
     qint64 offset = QFileInfo(partial).size();
     if (offset > sourceInfo.size()) {
         // 状态文件里的续传字节不可信时从头复制。
@@ -1834,6 +2175,15 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
     if (index < 0)
         return;
     DownloadJob &job = m_jobs[index];
+    // 跨盘发布还在进行：调用方拿到的只是“发布已开始”，真正完成由
+    // copyPublishChunks 在改名成功后回调本函数。这里暂存收尾消息，
+    // 不能提前把任务标成 Completed。
+    if (success && m_publishSources.contains(id)) {
+        m_pendingPublishMessages.insert(id, message);
+        scheduleSave();
+        scheduleNotify();
+        return;
+    }
     job.filePath = path;
     const qint64 finalSize = QFileInfo(path).size();
     if (success) {
@@ -1861,6 +2211,7 @@ void DownloadManager::finishJob(const QString &id, const QString &path, bool suc
         : job.seedCacheBodyPath;
     if (success) {
         job.committed = true;
+        job.pausedByUser = false;
         job.cacheCopySourcePath.clear();
         job.seedSourcePath.clear();
         job.seedBytes = 0;

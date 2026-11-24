@@ -26,6 +26,7 @@
 #include "util/HeaderPolicy.h"
 
 #include <QDir>
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -235,6 +236,10 @@ private slots:
     void downloadManagerKeepsExistingFinalFile();
     void downloadManagerSameNameGetsDistinctFiles();
     void downloadManagerImportsCompleteCache();
+    void downloadManagerStagesMusicAndReusesPlaybackCache();
+    void downloadManagerPausesAndResumesMusic();
+    void downloadManagerPublishesAcrossVolumes();
+    void downloadManagerRemovesLegacyDownloadCache();
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
     void hlsCacheBuilderResumesAfterExit();
@@ -813,6 +818,265 @@ void IntegrationTest::downloadManagerImportsCompleteCache()
         }
     }
     manager.shutdownForExit();
+}
+
+void IntegrationTest::downloadManagerStagesMusicAndReusesPlaybackCache()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+
+    const QByteArray full(1000, 'm');
+    server.handler = [full](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        const QByteArray range = request.headers.value("range");
+        if (range == "bytes=300-") {
+            LocalHttpServer::respond(socket, 206, full.mid(300), "audio/mpeg", 700,
+                                     "Content-Range: bytes 300-999/1000\r\n");
+            return;
+        }
+        LocalHttpServer::respond(socket, 200, full, "audio/mpeg", full.size());
+    };
+
+    const QString dir = m_tempDir.filePath(QStringLiteral("music-staging"));
+    QVERIFY(QDir().mkpath(dir));
+    const QString target = QDir(dir).filePath(QStringLiteral("音乐暂存.mp3"));
+
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("音乐暂存");
+    item.url = server.url(QStringLiteral("/music.mp3"));
+    item.online = true;
+
+    // 模拟播放到 30% 后退出：缓存正文只有 300 字节，旁车元数据记录总长 1000。
+    const QString cacheBody = MediaCache::filePathForItem(item);
+    QVERIFY(!cacheBody.isEmpty());
+    QVERIFY(QDir().mkpath(QFileInfo(cacheBody).absolutePath()));
+    {
+        QFile cache(cacheBody);
+        QVERIFY(cache.open(QIODevice::WriteOnly));
+        QCOMPARE(cache.write(full.left(300)), qint64(300));
+    }
+    QVERIFY(MediaCache::writeState(cacheBody, MediaCache::cacheIdentity(item), item.url,
+                                   "audio/mpeg", full.size(), false, QStringLiteral(".mp3")));
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    DownloadManager::CacheSeed seed;
+    seed.sourcePath = cacheBody;
+    seed.bytes = 300;
+    seed.cacheBodyPath = cacheBody;
+
+    QStringList completed;
+    connect(&manager, &DownloadManager::jobCompleted,
+            [&completed](const MediaItem &, const QString &path) { completed.append(path); });
+    const QString id = manager.enqueue(item, item.url, {}, target, false,
+                                       NetLimits::kDownloadBytes, nullptr, nullptr, &seed);
+    QVERIFY(!id.isEmpty());
+
+    const DownloadJob *job = nullptr;
+    for (const DownloadJob &entry : manager.jobs()) {
+        if (entry.id == id)
+            job = &entry;
+    }
+    QVERIFY(job != nullptr);
+    // 暂存区必须在应用数据目录，下载目录里不能再出现 .download-cache。
+    const QString stagingPath = job->stagingPath;
+    QVERIFY(stagingPath.startsWith(StoragePaths::dataFile(QStringLiteral("download-cache"))));
+    QVERIFY(!QFileInfo::exists(QDir(dir).filePath(QStringLiteral(".download-cache"))));
+
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000);
+    QCOMPARE(completed.first(), target);
+    QCOMPARE(server.requests.size(), 1);
+    QCOMPARE(server.requests.first().headers.value("range"), QByteArray("bytes=300-"));
+
+    QFile saved(target);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QCOMPARE(saved.readAll(), full);
+    QVERIFY(!QFileInfo::exists(stagingPath));
+    QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(cacheBody), 3000);
+
+    manager.shutdownForExit();
+    server.close();
+}
+
+void IntegrationTest::downloadManagerPausesAndResumesMusic()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+
+    const QByteArray full(1000, 'p');
+    server.handler = [full](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        const QByteArray range = request.headers.value("range");
+        if (range == "bytes=200-") {
+            LocalHttpServer::respond(socket, 206, full.mid(200), "audio/mpeg", 800,
+                                     "Content-Range: bytes 200-999/1000\r\n");
+            return;
+        }
+        // 先只发 200 字节并保持连接，给测试留出暂停窗口。
+        socket->write("HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\n"
+                      "Content-Length: 1000\r\n\r\n");
+        socket->write(full.left(200));
+        socket->flush();
+        QTimer::singleShot(500, socket, [socket, full] {
+            if (socket->state() == QAbstractSocket::ConnectedState) {
+                socket->write(full.mid(200));
+                socket->disconnectFromHost();
+            }
+        });
+    };
+
+    const QString dir = m_tempDir.filePath(QStringLiteral("music-pause"));
+    QVERIFY(QDir().mkpath(dir));
+    const QString target = QDir(dir).filePath(QStringLiteral("暂停恢复.mp3"));
+
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("暂停恢复");
+    item.url = server.url(QStringLiteral("/pause.mp3"));
+    item.online = true;
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QStringList completed;
+    connect(&manager, &DownloadManager::jobCompleted,
+            [&completed](const MediaItem &, const QString &path) { completed.append(path); });
+
+    const QString id = manager.enqueue(item, item.url, {}, target, false,
+                                       NetLimits::kDownloadBytes);
+    QVERIFY(!id.isEmpty());
+
+    // 等首块数据落盘后暂停；暂停必须保留半成品而不是删除。
+    QTRY_VERIFY_WITH_TIMEOUT(manager.jobs().at(0).bytesReceived > 0, 5000);
+    QVERIFY(manager.pauseJob(id));
+    QCOMPARE(manager.jobs().at(0).status, DownloadJob::Status::Paused);
+    QVERIFY(manager.jobs().at(0).pausedByUser);
+    const QString partial = manager.jobs().at(0).partialPath();
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(partial), 1000);
+    QCOMPARE(completed.size(), 0);
+
+    // 暂停期间不能有后台任务继续写盘或偷偷完成。
+    QTest::qWait(600);
+    QCOMPARE(manager.jobs().at(0).status, DownloadJob::Status::Paused);
+    QCOMPARE(completed.size(), 0);
+
+    QVERIFY(manager.resumeJob(id));
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000);
+    QCOMPARE(completed.first(), target);
+    QCOMPARE(server.requests.size(), 2);
+    QCOMPARE(server.requests.at(1).headers.value("range"), QByteArray("bytes=200-"));
+
+    QFile saved(target);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QCOMPARE(saved.size(), qint64(full.size()));
+    QCOMPARE(saved.readAll(), full);
+
+    manager.shutdownForExit();
+    server.close();
+}
+
+void IntegrationTest::downloadManagerPublishesAcrossVolumes()
+{
+    // 真实机器上应用数据在程序盘（F:），默认下载目录在用户盘（C:）。
+    // 暂存完成后必须走分块复制，而不是同盘 rename；这里用测试数据盘
+    // 与程序目录盘构造跨盘场景。
+    const QString dataDir = StoragePaths::dataDir();
+    const QString targetDir =
+        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("mvp-cross-volume"));
+    QDir(targetDir).removeRecursively();
+    QVERIFY(QDir().mkpath(targetDir));
+    const QString target = QDir(targetDir).filePath(QStringLiteral("跨盘发布.mp3"));
+
+    const QFileInfo dataInfo(dataDir);
+    const QFileInfo targetInfo(targetDir);
+    if (dataInfo.absolutePath().left(2).compare(targetInfo.absolutePath().left(2),
+                                               Qt::CaseInsensitive) == 0) {
+        QDir(targetDir).removeRecursively();
+        QSKIP("测试数据目录与目标目录同盘，无法覆盖跨盘发布路径");
+    }
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray full(4096, 'v');
+    server.handler = [full](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        const QByteArray range = request.headers.value("range");
+        if (range.startsWith("bytes=")) {
+            bool ok = false;
+            const qint64 start = range.mid(6).split('-').value(0).toLongLong(&ok);
+            const int from = ok ? int(start) : 0;
+            const QByteArray contentRange =
+                "Content-Range: bytes " + QByteArray::number(from) + "-"
+                + QByteArray::number(full.size() - 1) + "/"
+                + QByteArray::number(full.size()) + "\r\n";
+            LocalHttpServer::respond(socket, 206, full.mid(from), "audio/mpeg",
+                                     full.size() - from, contentRange);
+            return;
+        }
+        LocalHttpServer::respond(socket, 200, full, "audio/mpeg");
+    };
+
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("跨盘发布");
+    item.url = server.url(QStringLiteral("/cross.mp3"));
+    item.online = true;
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QStringList completed;
+    connect(&manager, &DownloadManager::jobCompleted,
+            [&completed](const MediaItem &, const QString &path) { completed.append(path); });
+
+    const QString id = manager.enqueue(item, item.url, {}, target, false,
+                                       NetLimits::kDownloadBytes);
+    QVERIFY(!id.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 8000);
+    QCOMPARE(completed.first(), target);
+
+    QFile saved(target);
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    QCOMPARE(saved.size(), qint64(full.size()));
+    QCOMPARE(saved.readAll(), full);
+    saved.close();
+
+    // 发布会先写 `.mvpdownload` 再改名；收尾后不能留下任何临时文件。
+    QCOMPARE(QDir(targetDir).entryList(QStringList() << QStringLiteral("*.mvpdownload"),
+                                      QDir::Files).size(), 0);
+    QCOMPARE(manager.jobs().at(0).status, DownloadJob::Status::Completed);
+
+    manager.shutdownForExit();
+    server.close();
+    QDir(targetDir).removeRecursively();
+}
+
+void IntegrationTest::downloadManagerRemovesLegacyDownloadCache()
+{
+    const QString root = m_tempDir.filePath(QStringLiteral("legacy-root"));
+    const QString musicDir = QDir(root).filePath(QStringLiteral("音乐"));
+    const QString userFile = QDir(musicDir).filePath(QStringLiteral("保留的歌曲.mp3"));
+    const QString legacyDir = QDir(musicDir).filePath(
+        QStringLiteral(".download-cache/old-job"));
+    const QString legacyPiece = QDir(legacyDir).filePath(QStringLiteral("piece.ts"));
+
+    QVERIFY(QDir().mkpath(legacyDir));
+    QFile keep(userFile);
+    QVERIFY(keep.open(QIODevice::WriteOnly));
+    keep.write("keep");
+    keep.close();
+    QFile piece(legacyPiece);
+    QVERIFY(piece.open(QIODevice::WriteOnly));
+    piece.write("cache");
+    piece.close();
+
+    AppSettings::setDownloadDir(root);
+    HttpClient http;
+    DownloadManager manager(&http);
+
+    // 启动后的延迟清理只删应用自己的 .download-cache，用户文件必须保留。
+    QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(legacyDir), 3000);
+    QVERIFY(QFileInfo::exists(userFile));
+    QCOMPARE(QFileInfo(userFile).size(), qint64(4));
+
+    manager.shutdownForExit();
+    AppSettings::setDownloadDir(QString());
 }
 
 void IntegrationTest::downloadHlsMergesAndRemuxes()

@@ -140,6 +140,7 @@ QJsonObject DownloadJob::toJson() const
     object.insert(QStringLiteral("hls"), hls);
     object.insert(QStringLiteral("hlsFingerprint"), hlsFingerprint);
     object.insert(QStringLiteral("snapshot"), snapshot);
+    object.insert(QStringLiteral("pausedByUser"), pausedByUser);
     object.insert(QStringLiteral("allowIncomplete"), allowIncomplete);
     object.insert(QStringLiteral("needsSnapshotConsent"), needsSnapshotConsent);
     object.insert(QStringLiteral("committed"), committed);
@@ -222,6 +223,7 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     parsed.hls = object.value(QStringLiteral("hls")).toBool();
     parsed.hlsFingerprint = object.value(QStringLiteral("hlsFingerprint")).toString();
     parsed.snapshot = object.value(QStringLiteral("snapshot")).toBool(false);
+    parsed.pausedByUser = object.value(QStringLiteral("pausedByUser")).toBool(false);
     parsed.allowIncomplete = object.value(QStringLiteral("allowIncomplete")).toBool(false);
     parsed.needsSnapshotConsent =
         object.value(QStringLiteral("needsSnapshotConsent")).toBool(false);

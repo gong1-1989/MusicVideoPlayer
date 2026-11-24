@@ -80,7 +80,7 @@ void DownloadController::download(const MediaItem &item)
 
     const bool hls = DownloadTask::looksLikeHls(source);
     const bool hlsVideo = hls && resolved.type == MediaType::Video;
-    const QString suffix = hlsVideo
+    const QString suffix = hls
         ? QStringLiteral(".mp4")
         : DownloadPaths::suffixForDownload(source, hls,
                                            resolved.type == MediaType::Video);
@@ -134,6 +134,19 @@ void DownloadController::download(const MediaItem &item)
             seed.segmentIndex = cacheSeed.segmentIndex;
             seed.fingerprint = cacheSeed.fingerprint;
             seed.cacheBodyPath = cacheSeed.bodyPath;
+            hasSeed = true;
+        }
+    } else if (!hls) {
+        // 直链音乐/影视的播放缓存是连续写出的单文件，未完成时可以直接按
+        // 已有字节数做 Range 续传。先复制到暂存区，再让 DownloadTask 从
+        // 这个字节位置继续，避免同一首歌/同一段视频重复下载前缀。
+        const QString partial = MediaCache::partialFileForItem(resolved);
+        const qint64 partialBytes = partial.isEmpty() ? 0 : QFileInfo(partial).size();
+        if (partialBytes > 0) {
+            seed.sourcePath = partial;
+            seed.bytes = partialBytes;
+            seed.segmentIndex = 0;
+            seed.cacheBodyPath = partial;
             hasSeed = true;
         }
     }

@@ -61,6 +61,10 @@ public:
     void shutdownForExit();
 
     bool removeJob(const QString &id);
+    /// 暂停正在下载/转封装/暂存复制的任务：保留半成品，之后可继续。
+    bool pauseJob(const QString &id);
+    /// 继续已暂停任务；不重置续传字节。
+    bool resumeJob(const QString &id);
     /// allowIncomplete=true 是用户确认后的“按当前分片强制下载”，
     /// 仅对缺少 #EXT-X-ENDLIST 且未声明 VOD 的失败任务生效。
     bool retryJob(const QString &id, bool allowIncomplete = false);
@@ -85,22 +89,31 @@ private:
     /// 清理下载完成后标记了 cleanupCachePath 的播放缓存；被播放器占用时
     /// 定时重试，程序重启后也会继续。只删 media-cache，不碰歌词缓存。
     void cleanupPendingCaches();
+    /// 迁移遗留：旧版本把暂存分片放在下载目录下的 `.download-cache`，
+    /// 新版本统一放到应用数据目录；启动时清掉旧目录，避免用户误以为
+    /// 下载目录里还在持续产生缓存。
+    void cleanLegacyDownloadCaches();
     void pumpQueue();
     void startJob(const QString &id);
     bool startCacheCopy(const QString &id, const QString &sourcePath);
     void startRemux(const QString &id);
     void copyCacheChunks();
     void cancelCacheCopy(const QString &id, bool removePartial);
-    /// 影视 HLS 的暂存区工作路径；非影视 HLS 返回空，保持原直写行为。
+    /// 下载任务统一暂存路径；HLS 默认用 `ts`，音乐直链用最终后缀。
     QString stagingPathForJob(const DownloadJob &job,
                               const QString &suffix = QStringLiteral("ts")) const;
     /// 下载开始前把播放缓存前缀分块复制到暂存区，避免大文件阻塞 UI。
     bool startSeedCopy(const QString &id);
     void copySeedChunks();
     void cancelSeedCopy(const QString &id, bool removePartial);
-    /// 暂存文件完成后移动到下载目录；同盘 rename，目标冲突时重新分配唯一名。
+    /// 暂存文件发布到下载目录：同盘直接 rename；跨盘时启动分块复制，
+    /// 复制期间 finishJob 会暂缓收尾，避免大文件拷贝卡住界面。
     bool publishStagedFile(const QString &id, const QString &sourcePath,
                            QString *publishedPath);
+    bool startPublishCopy(const QString &id, const QString &sourcePath,
+                          const QString &finalPath);
+    void copyPublishChunks();
+    void cancelPublishCopy(const QString &id, bool removePartial);
     /// 上次退出时暂存区可能已有完整 TS 或 MP4，恢复时应先转封装/发布而不是重下。
     void startStagedCompletion(const QString &id);
     void finishJob(const QString &id, const QString &path, bool success,
@@ -116,10 +129,16 @@ private:
     QHash<QString, QFile *> m_seedSources;
     QHash<QString, QFile *> m_seedTargets;
     QHash<QString, qint64> m_seedRemaining;
+    QHash<QString, QFile *> m_publishSources;
+    QHash<QString, QFile *> m_publishTargets;
+    QHash<QString, QString> m_publishFinalPaths;
+    QHash<QString, QString> m_publishStagingDirs;
+    QHash<QString, QString> m_pendingPublishMessages;
     QTimer *m_saveTimer = nullptr;
     QTimer *m_notifyTimer = nullptr;
     QTimer *m_cacheCopyTimer = nullptr;
     QTimer *m_seedTimer = nullptr;
+    QTimer *m_publishTimer = nullptr;
     QTimer *m_cacheCleanupTimer = nullptr;
     QString m_statePath;
     bool m_shuttingDown = false;

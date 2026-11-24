@@ -67,6 +67,7 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
     m_openFile = ui->btn_openFile;
     m_openFolder = ui->btn_openFolder;
     m_retry = ui->btn_retry;
+    m_pause = ui->btn_pause;
     m_remove = ui->btn_remove;
     m_clearCompleted = ui->btn_clearCompleted;
 
@@ -95,10 +96,11 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
 
     const QString baseHint =
         MediaRemux::isAvailable()
-            ? tr("HLS 分片会合并成一个文件，再用内置 FFmpeg 无损转成 MP4；普通任务退出后会自动续传。")
-            : tr("HLS 分片会合并成一个 TS 文件；当前未找到 FFmpeg，因此不转 MP4；普通任务退出后会自动续传。");
+            ? tr("音乐和影视都先下载到应用暂存区，完成后发布到下载目录；HLS 分片会合并后用内置 FFmpeg 无损转成 MP4。")
+            : tr("音乐和影视都先下载到应用暂存区，完成后发布到下载目录；HLS 分片会合并成一个 TS 文件（当前未找到 FFmpeg，不转 MP4）。");
     ui->downloadManagerHint->setText(
-        baseHint + tr("没有结束标记的快照任务只按当前分片下载，不会自动续传。"));
+        baseHint
+        + tr("下载中可暂停并保留进度；“停止下载”会删除未完成部分。没有结束标记的快照任务不会自动续传。"));
 
     connect(m_tree, &QTreeWidget::itemSelectionChanged, this,
             &DownloadManagerDialog::updateButtons);
@@ -108,6 +110,8 @@ DownloadManagerDialog::DownloadManagerDialog(DownloadManager *manager, QWidget *
             &DownloadManagerDialog::openSelectedFolder);
     connect(m_retry, &QPushButton::clicked, this,
             &DownloadManagerDialog::retrySelected);
+    connect(m_pause, &QPushButton::clicked, this,
+            &DownloadManagerDialog::pauseOrResumeSelected);
     connect(m_remove, &QPushButton::clicked, this,
             &DownloadManagerDialog::removeSelected);
     connect(m_clearCompleted, &QPushButton::clicked, this,
@@ -269,21 +273,27 @@ void DownloadManagerDialog::rebuild()
 }
 
 /// @brief 按当前选中任务的状态启用/禁用操作按钮。
-/// @note 打开文件要求任务已完成且最终文件仍存在；重试只对失败/暂停任务开放；
-///       “清空已完成”只在至少存在一条完成记录时可用。
+/// @note 打开文件要求任务已完成且最终文件仍存在；重试只对失败任务开放；
+///       暂停/继续按钮在“正在下载”和“已暂停”之间切换；未完成任务的
+///       “停止下载”会同时删除半成品；“清空已完成”只在有完成记录时可用。
 void DownloadManagerDialog::updateButtons()
 {
     const DownloadJob *job = selectedJob();
     const bool hasJob = job != nullptr;
     const bool completed = hasJob && job->status == DownloadJob::Status::Completed;
-    const bool canRetry = hasJob
-                          && (job->status == DownloadJob::Status::Failed
-                              || job->status == DownloadJob::Status::Paused);
+    const bool downloading = hasJob && job->status == DownloadJob::Status::Downloading;
+    const bool paused = hasJob && job->status == DownloadJob::Status::Paused;
+    const bool canRetry = hasJob && job->status == DownloadJob::Status::Failed;
 
     m_openFile->setEnabled(completed && QFileInfo::exists(job->filePath));
     m_openFolder->setEnabled(hasJob && !job->filePath.isEmpty());
     m_retry->setEnabled(canRetry);
+    m_pause->setEnabled(downloading || paused);
+    // 没有选中任务时默认展示“暂停下载”，否则用户会误以为暂停入口不存在；
+    // 选中已暂停任务后才切换成“继续下载”。
+    m_pause->setText(paused ? tr("继续下载") : tr("暂停下载"));
     m_remove->setEnabled(hasJob);
+    m_remove->setText(completed || !hasJob ? tr("移除记录") : tr("停止下载"));
 
     bool hasCompleted = false;
     for (const DownloadJob &entry : m_manager->jobs()) {
@@ -364,6 +374,22 @@ void DownloadManagerDialog::retrySelected()
     rebuild();
 }
 
+/// @brief 在“正在下载”和“已暂停”之间切换，保留已下载字节。
+void DownloadManagerDialog::pauseOrResumeSelected()
+{
+    const DownloadJob *job = selectedJob();
+    if (job == nullptr || m_manager == nullptr)
+        return;
+
+    const QString id = job->id;
+    const DownloadJob::Status status = job->status;
+    if (status == DownloadJob::Status::Downloading)
+        m_manager->pauseJob(id);
+    else if (status == DownloadJob::Status::Paused)
+        m_manager->resumeJob(id);
+    rebuild();
+}
+
 /// @brief 移除选中的下载记录。
 /// @note 已完成任务只移除记录、不删磁盘文件；未完成任务会同时删除已下载
 ///       部分和 .mvpdownload 临时文件，因此必须二次确认。
@@ -377,8 +403,10 @@ void DownloadManagerDialog::removeSelected()
     const bool completed = job->status == DownloadJob::Status::Completed;
     const QString text = completed
         ? tr("只移除这条下载记录，磁盘上的文件不会删除。确定继续？")
-        : tr("该任务尚未完成，移除时已下载的部分和临时文件会一起删除。确定继续？");
-    if (QMessageBox::question(this, tr("移除下载记录"), text)
+        : tr("停止下载会删除尚未完成的部分和暂存文件，且不能继续。确定停止？");
+    if (QMessageBox::question(this,
+                              completed ? tr("移除下载记录") : tr("停止下载"),
+                              text)
         != QMessageBox::Yes) {
         return;
     }
