@@ -79,8 +79,11 @@ void DownloadController::download(const MediaItem &item)
     }
 
     const bool hls = DownloadTask::looksLikeHls(source);
-    const QString suffix =
-        DownloadPaths::suffixForDownload(source, hls, resolved.type == MediaType::Video);
+    const bool hlsVideo = hls && resolved.type == MediaType::Video;
+    const QString suffix = hlsVideo
+        ? QStringLiteral(".mp4")
+        : DownloadPaths::suffixForDownload(source, hls,
+                                           resolved.type == MediaType::Video);
     QString fileName = resolved.title.trimmed();
     if (fileName.isEmpty())
         fileName = tr("未命名");
@@ -118,8 +121,25 @@ void DownloadController::download(const MediaItem &item)
 
     QString queuedPath;
     bool alreadyQueued = false;
+    DownloadManager::CacheSeed seed;
+    bool hasSeed = false;
+    if (hlsVideo) {
+        // 半成品播放缓存按“已完成分片前缀”复用：先复制到下载暂存区，
+        // 由 DownloadTask 重新解析播放列表并用指纹校验；不是同一条时间线
+        // 时任务会自动丢弃这段前缀，不会把两段不同分片拼在一起。
+        MediaCache::HlsTrackSeed cacheSeed;
+        if (MediaCache::hlsTrackSeedForItem(resolved, &cacheSeed)) {
+            seed.sourcePath = cacheSeed.dataPath;
+            seed.bytes = cacheSeed.bytes;
+            seed.segmentIndex = cacheSeed.segmentIndex;
+            seed.fingerprint = cacheSeed.fingerprint;
+            seed.cacheBodyPath = cacheSeed.bodyPath;
+            hasSeed = true;
+        }
+    }
+
     m_manager->enqueue(resolved, source, resolved.headers, target, hls, limit,
-                       &queuedPath, &alreadyQueued);
+                       &queuedPath, &alreadyQueued, hasSeed ? &seed : nullptr);
     if (alreadyQueued) {
         // enqueue 已经发出“该条目已在下载队列中”；这里不能再拿预分配但
         // 未实际使用的 (1) 文件名去提示，否则用户会去找一个不存在的文件。
@@ -128,10 +148,15 @@ void DownloadController::download(const MediaItem &item)
     if (queuedPath.isEmpty())
         queuedPath = target;
 
-    emit statusMessage(hls
-                           ? tr("已加入下载：%1（HLS 完成后自动转 MP4）")
-                                 .arg(QFileInfo(queuedPath).fileName())
-                           : tr("已加入下载：%1").arg(QFileInfo(queuedPath).fileName()));
+    if (hasSeed) {
+        emit statusMessage(tr("已加入下载：%1（先复用播放缓存已完成分片，再补齐剩余部分）")
+                               .arg(QFileInfo(queuedPath).fileName()));
+    } else if (hls) {
+        emit statusMessage(tr("已加入下载：%1（下载暂存完成后自动整合为 MP4）")
+                               .arg(QFileInfo(queuedPath).fileName()));
+    } else {
+        emit statusMessage(tr("已加入下载：%1").arg(QFileInfo(queuedPath).fileName()));
+    }
 }
 
 /// @brief 打开下载管理器窗口；已打开时置顶并激活。

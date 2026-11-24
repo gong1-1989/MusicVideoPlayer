@@ -71,10 +71,18 @@ QString DownloadJob::statusText() const
     return message;
 }
 
-/// @brief 未完成文件的临时路径（正式文件名后追加 .mvpdownload）。
+/// @brief 未完成文件的临时路径（工作路径后追加 .mvpdownload）。
 QString DownloadJob::partialPath() const
 {
-    return filePath + QStringLiteral(".mvpdownload");
+    return workPath() + QStringLiteral(".mvpdownload");
+}
+
+/// @brief 暂存任务的工作目录；非暂存任务返回空。
+QString DownloadJob::stagingDirectory() const
+{
+    if (stagingPath.isEmpty())
+        return QString();
+    return QFileInfo(stagingPath).absolutePath();
 }
 
 /// @brief 序列化任务记录。
@@ -112,6 +120,15 @@ QJsonObject DownloadJob::toJson() const
         }
     }
     object.insert(QStringLiteral("filePath"), filePath);
+    object.insert(QStringLiteral("stagingPath"), stagingPath);
+    if (!seedSourcePath.isEmpty())
+        object.insert(QStringLiteral("seedSourcePath"), seedSourcePath);
+    object.insert(QStringLiteral("seedBytes"), double(seedBytes));
+    object.insert(QStringLiteral("seedSegmentIndex"), seedSegmentIndex);
+    if (!seedFingerprint.isEmpty())
+        object.insert(QStringLiteral("seedFingerprint"), seedFingerprint);
+    if (!seedCacheBodyPath.isEmpty())
+        object.insert(QStringLiteral("seedCacheBodyPath"), seedCacheBodyPath);
     object.insert(QStringLiteral("cacheCopySourcePath"), cacheCopySourcePath);
     if (!cleanupCachePath.isEmpty())
         object.insert(QStringLiteral("cleanupCachePath"), cleanupCachePath);
@@ -183,6 +200,13 @@ bool DownloadJob::fromJson(const QJsonObject &object, DownloadJob *job, QString 
     if (parsed.item.url.isEmpty())
         parsed.item.url = parsed.url;
     parsed.filePath = object.value(QStringLiteral("filePath")).toString();
+    parsed.stagingPath = object.value(QStringLiteral("stagingPath")).toString();
+    parsed.seedSourcePath = object.value(QStringLiteral("seedSourcePath")).toString();
+    parsed.seedBytes = qint64(object.value(QStringLiteral("seedBytes")).toDouble());
+    parsed.seedSegmentIndex = object.value(QStringLiteral("seedSegmentIndex")).toInt();
+    parsed.seedFingerprint = object.value(QStringLiteral("seedFingerprint")).toString();
+    parsed.seedCacheBodyPath =
+        object.value(QStringLiteral("seedCacheBodyPath")).toString();
     parsed.cacheCopySourcePath =
         object.value(QStringLiteral("cacheCopySourcePath")).toString();
     parsed.cleanupCachePath =

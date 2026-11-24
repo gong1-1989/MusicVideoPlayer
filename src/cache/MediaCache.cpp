@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QStringList>
 #include <QUrlQuery>
 
 namespace {
@@ -656,6 +657,78 @@ QString partialFileForItem(const MediaItem &item)
             return QString();
     }
     return path;
+}
+
+/// @brief 读取 HLS 视频轨续传现场，供手动下载从播放缓存已完成分片继续。
+/// @param item 在线影视条目。
+/// @param seed 输出种子信息，必须非空。
+/// @return 有可用前缀且指纹完整时返回 true。
+/// @note 只读取 `.video.resume.json`；独立音轨不参与，因为下载任务自己会按
+///       目标播放列表重新拉取音视频，不能把播放缓存的音轨结构硬塞给它。
+bool hlsTrackSeedForItem(const MediaItem &item, HlsTrackSeed *seed)
+{
+    if (seed == nullptr || !item.online || item.type != MediaType::Video)
+        return false;
+    *seed = HlsTrackSeed();
+
+    const QString bodyPath = filePathForItem(item);
+    if (bodyPath.isEmpty())
+        return false;
+    const QFileInfo bodyInfo(bodyPath);
+    const QString cacheRoot = QDir::cleanPath(rootDir());
+    const QString bodyDir = QDir::cleanPath(bodyInfo.absolutePath());
+    if (bodyDir != cacheRoot && !bodyDir.startsWith(cacheRoot + QLatin1Char('/')))
+        return false;
+
+    QFile stateFile(bodyPath + QStringLiteral(".video.resume.json"));
+    if (!stateFile.open(QIODevice::ReadOnly))
+        return false;
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(stateFile.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject())
+        return false;
+    const QJsonObject object = document.object();
+    if (object.value(QStringLiteral("version")).toInt(-1) != 1)
+        return false;
+
+    const QString targetPath = object.value(QStringLiteral("targetPath")).toString();
+    const qint64 checkpointBytes =
+        qMax<qint64>(0, object.value(QStringLiteral("bytesWritten")).toVariant().toLongLong());
+    const int segmentIndex = object.value(QStringLiteral("segmentIndex")).toInt(0);
+    const int segmentCount = object.value(QStringLiteral("segmentCount")).toInt(-1);
+    const QString fingerprint = object.value(QStringLiteral("fingerprint")).toString();
+    const bool completed = object.value(QStringLiteral("completed")).toBool(false);
+    if (checkpointBytes <= 0 || segmentIndex <= 0 || fingerprint.isEmpty())
+        return false;
+
+    // targetPath 必须仍在同一个条目缓存目录内，避免续传状态被篡改成任意路径。
+    const QString trackPath =
+        targetPath.isEmpty() ? bodyPath + QStringLiteral(".video") : targetPath;
+    const QString trackDir = QDir::cleanPath(QFileInfo(trackPath).absolutePath());
+    if (trackDir != bodyDir)
+        return false;
+
+    QStringList candidates;
+    if (completed)
+        candidates.append(trackPath);
+    else
+        candidates.append(trackPath + QStringLiteral(".mvpdownload"));
+    candidates.append(trackPath);
+    for (const QString &candidate : candidates) {
+        const QFileInfo info(candidate);
+        if (!info.exists() || !info.isFile() || info.size() < checkpointBytes)
+            continue;
+        seed->bodyPath = bodyPath;
+        seed->trackPath = trackPath;
+        seed->dataPath = info.absoluteFilePath();
+        seed->bytes = checkpointBytes;
+        seed->segmentIndex = segmentIndex;
+        seed->segmentCount = segmentCount;
+        seed->fingerprint = fingerprint;
+        seed->completed = completed;
+        return true;
+    }
+    return false;
 }
 
 } // namespace MediaCache

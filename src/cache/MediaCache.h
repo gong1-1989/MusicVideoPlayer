@@ -30,6 +30,24 @@ struct State
     qint64 updatedAtMs = 0;
 };
 
+/// HLS 播放缓存里可用于“下载续传”的视频轨现场。
+/// 下载入口只复用已完成分片的前缀，下载任务重新解析播放列表后还会用
+/// fingerprint 校验是不是同一份分片结构；不一致时丢弃这段种子重新下载。
+struct HlsTrackSeed
+{
+    /// 条目在 media-cache 中的正文路径，用于下载完成后清理整条播放缓存。
+    QString bodyPath;
+    /// 轨道固定目标路径（media.ts / media.mp4）。
+    QString trackPath;
+    /// 实际可复制的数据文件：未完成时是 `.mvpdownload`，完成时是轨道本体。
+    QString dataPath;
+    qint64 bytes = 0;
+    int segmentIndex = 0;
+    int segmentCount = 0;
+    QString fingerprint;
+    bool completed = false;
+};
+
 QString rootDir();
 /// 条目在缓存目录里的安全基础名（不含 (2)/(3) 冲突后缀）。
 /// 歌词缓存等旁车缓存复用它，保证同一首歌在音乐缓存和歌词缓存里名字一致。
@@ -72,6 +90,10 @@ bool writeState(const QString &cachePath, const QString &identity, const QUrl &u
 QString completeFileForItem(const MediaItem &item);
 /// 有部分数据但尚未完整时返回缓存路径；完整时返回空，让调用方优先用完整文件。
 QString partialFileForItem(const MediaItem &item);
+/// 读取 HLS 影视播放缓存的视频轨续传现场，供手动下载复用已完成分片。
+/// 没有续传状态、分片数量为 0 或缺少播放列表指纹时返回 false；缺少指纹
+/// 无法保证新旧分片属于同一条时间线，宁可从头下载也不能拼接。
+bool hlsTrackSeedForItem(const MediaItem &item, HlsTrackSeed *seed);
 
 } // namespace MediaCache
 

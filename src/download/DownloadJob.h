@@ -24,7 +24,20 @@ struct DownloadJob
     MediaItem item;
     QUrl url;
     QHash<QString, QString> headers;
+    /// 用户最终要拿到的下载路径。影视 HLS 为带 .mp4 的目标；完成前不会在
+    /// 下载目录里生成同名半成品。
     QString filePath;
+    /// 影视 HLS 的统一暂存路径。下载、合并、转封装都先在这里完成，成功后再
+    /// 原子移动到 filePath；非暂存任务为空。跨启动持久化，退出后可接着下。
+    QString stagingPath;
+    /// 从播放缓存复用已完成分片时，源文件与断点信息；下载开始前先异步复制
+    /// 这段前缀到暂存区，再由 DownloadTask 校验播放列表指纹并继续。
+    QString seedSourcePath;
+    qint64 seedBytes = 0;
+    int seedSegmentIndex = 0;
+    QString seedFingerprint;
+    /// 播放缓存正文路径，下载成功后按设置清理整条缓存。
+    QString seedCacheBodyPath;
     /// 缓存复制任务的源文件；持久化后重启可继续复制，而不是退回网络下载。
     QString cacheCopySourcePath;
     /// 已完成下载、但对应播放缓存尚未删除的路径。播放器占用文件时
@@ -55,7 +68,12 @@ struct DownloadJob
     int percent() const;
     QString statusText() const;
     bool isActive() const { return status == Status::Downloading; }
+    /// 当前实际写入的工作路径：暂存任务在 stagingPath，其他在 filePath。
+    QString workPath() const { return stagingPath.isEmpty() ? filePath : stagingPath; }
+    /// 当前任务半成品路径，固定跟在 workPath() 后。
     QString partialPath() const;
+    /// 暂存目录；不是暂存任务时为空。
+    QString stagingDirectory() const;
 
     QJsonObject toJson() const;
     static bool fromJson(const QJsonObject &object, DownloadJob *job, QString *error);

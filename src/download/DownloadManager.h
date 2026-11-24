@@ -27,10 +27,22 @@ public:
     explicit DownloadManager(HttpClient *http, QObject *parent = nullptr);
     ~DownloadManager() override;
 
+    /// 从播放缓存复用的 HLS 已完成分片。下载任务会先把这段前缀复制到暂存区，
+    /// 再用 fingerprint 校验播放列表；不一致时 DownloadTask 会丢弃并从头下载。
+    struct CacheSeed
+    {
+        QString sourcePath;
+        qint64 bytes = 0;
+        int segmentIndex = 0;
+        QString fingerprint;
+        QString cacheBodyPath;
+    };
+
     QString enqueue(const MediaItem &item, const QUrl &url,
                     const QHash<QString, QString> &headers,
                     const QString &filePath, bool hls, qint64 maxBytes,
-                    QString *queuedPath = nullptr, bool *alreadyQueued = nullptr);
+                    QString *queuedPath = nullptr, bool *alreadyQueued = nullptr,
+                    const CacheSeed *seed = nullptr);
     /// 命中完整播放缓存时，从无后缀缓存异步复制出带正确后缀的下载文件。
     /// 不占用下载并发槽位，但同样走 `.mvpdownload` 临时文件与完成信号。
     QString importFromCache(const MediaItem &item, const QString &cachePath,
@@ -79,6 +91,18 @@ private:
     void startRemux(const QString &id);
     void copyCacheChunks();
     void cancelCacheCopy(const QString &id, bool removePartial);
+    /// 影视 HLS 的暂存区工作路径；非影视 HLS 返回空，保持原直写行为。
+    QString stagingPathForJob(const DownloadJob &job,
+                              const QString &suffix = QStringLiteral("ts")) const;
+    /// 下载开始前把播放缓存前缀分块复制到暂存区，避免大文件阻塞 UI。
+    bool startSeedCopy(const QString &id);
+    void copySeedChunks();
+    void cancelSeedCopy(const QString &id, bool removePartial);
+    /// 暂存文件完成后移动到下载目录；同盘 rename，目标冲突时重新分配唯一名。
+    bool publishStagedFile(const QString &id, const QString &sourcePath,
+                           QString *publishedPath);
+    /// 上次退出时暂存区可能已有完整 TS 或 MP4，恢复时应先转封装/发布而不是重下。
+    void startStagedCompletion(const QString &id);
     void finishJob(const QString &id, const QString &path, bool success,
                    const QString &message);
 
@@ -89,9 +113,13 @@ private:
     QHash<QString, QString> m_remuxOutputs;
     QHash<QString, QFile *> m_cacheCopySources;
     QHash<QString, QFile *> m_cacheCopyTargets;
+    QHash<QString, QFile *> m_seedSources;
+    QHash<QString, QFile *> m_seedTargets;
+    QHash<QString, qint64> m_seedRemaining;
     QTimer *m_saveTimer = nullptr;
     QTimer *m_notifyTimer = nullptr;
     QTimer *m_cacheCopyTimer = nullptr;
+    QTimer *m_seedTimer = nullptr;
     QTimer *m_cacheCleanupTimer = nullptr;
     QString m_statePath;
     bool m_shuttingDown = false;

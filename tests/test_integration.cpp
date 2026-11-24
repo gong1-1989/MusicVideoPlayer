@@ -238,6 +238,7 @@ private slots:
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
     void hlsCacheBuilderResumesAfterExit();
+    void downloadManagerReusesPlaybackCacheThroughStaging();
     void hlsCacheBuilderMergesSingleFileAudio();
     void hlsCacheBuilderFollowsRealAppleStream();
     void lyricsServiceCachesOnlinePayload();
@@ -1132,6 +1133,144 @@ void IntegrationTest::hlsCacheBuilderResumesAfterExit()
     QVERIFY(!QFileInfo::exists(base + QStringLiteral(".video.ts.mvpdownload")));
 
     QVERIFY(MediaCache::removeForItem(item));
+}
+
+void IntegrationTest::downloadManagerReusesPlaybackCacheThroughStaging()
+{
+    if (!MediaRemux::isAvailable())
+        QSKIP("未找到 ffmpeg，跳过下载暂存与播放缓存复用测试");
+
+    const QString ffmpeg = MediaRemux::ffmpegExecutable();
+    const QString sourceTs = m_tempDir.filePath(QStringLiteral("download-seed-source.ts"));
+    QFile::remove(sourceTs);
+    QProcess generator;
+    generator.start(ffmpeg, {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                             QStringLiteral("-loglevel"), QStringLiteral("error"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("testsrc=size=160x90:rate=25"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("sine=frequency=440"),
+                             QStringLiteral("-t"), QStringLiteral("2"),
+                             QStringLiteral("-c:v"), QStringLiteral("mpeg2video"),
+                             QStringLiteral("-c:a"), QStringLiteral("mp2"),
+                             QStringLiteral("-f"), QStringLiteral("mpegts"), sourceTs});
+    QVERIFY(generator.waitForFinished(30000));
+    QCOMPARE(generator.exitCode(), 0);
+    QFile tsFile(sourceTs);
+    QVERIFY(tsFile.open(QIODevice::ReadOnly));
+    const QByteArray tsBytes = tsFile.readAll();
+    QVERIFY(tsBytes.size() > 1024);
+    const int split = tsBytes.size() / 2;
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "seg0.ts\n"
+        "#EXTINF:1.0,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n";
+    server.handler = [playlist, tsBytes, split](const LocalHttpServer::Request &request,
+                                                QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/download-seed/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+        } else if (request.path == QStringLiteral("/download-seed/seg0.ts")) {
+            LocalHttpServer::respond(socket, 200, tsBytes.left(split), "video/mp2t");
+        } else if (request.path == QStringLiteral("/download-seed/seg1.ts")) {
+            LocalHttpServer::respond(socket, 200, tsBytes.mid(split), "video/mp2t",
+                                     -1, {}, 1500);
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("下载暂存复用测试");
+    item.url = server.url(QStringLiteral("/download-seed/index.m3u8"));
+    item.online = true;
+    const QString base = MediaCache::filePathForItem(item);
+    MediaCache::removeForItem(item);
+
+    // 第一段模拟“看着视频缓存到一半就退出”：只完成 seg0。
+    HttpClient http;
+    HlsCacheBuilder builder(&http);
+    QVERIFY(builder.start(item));
+    const QString resumeState = base + QStringLiteral(".video.resume.json");
+    auto partialSegments = [&]() {
+        QFile state(resumeState);
+        if (!state.open(QIODevice::ReadOnly))
+            return -1;
+        QJsonParseError error;
+        const QJsonDocument document = QJsonDocument::fromJson(state.readAll(), &error);
+        if (error.error != QJsonParseError::NoError || !document.isObject())
+            return -1;
+        return document.object().value(QStringLiteral("segmentIndex")).toInt(-1);
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(partialSegments() >= 1, 5000);
+    builder.stopForExit();
+    QTest::qWait(100);
+
+    MediaCache::HlsTrackSeed cacheSeed;
+    QVERIFY(MediaCache::hlsTrackSeedForItem(item, &cacheSeed));
+    QVERIFY(cacheSeed.bytes >= split);
+    QCOMPARE(cacheSeed.segmentIndex, 1);
+    QVERIFY(!cacheSeed.fingerprint.isEmpty());
+
+    // 手动下载必须把播放缓存已完成分片复制到暂存区，再从 seg1 继续；
+    // 下载目录里不能提前出现最终文件或半成品。
+    const QString downloadDir = m_tempDir.filePath(QStringLiteral("download-seed-output"));
+    QVERIFY(QDir(downloadDir).removeRecursively() || !QFileInfo::exists(downloadDir));
+    QVERIFY(QDir().mkpath(downloadDir));
+    const QString target = QDir(downloadDir).filePath(QStringLiteral("下载暂存复用测试.mp4"));
+
+    DownloadManager manager(&http);
+    DownloadManager::CacheSeed seed;
+    seed.sourcePath = cacheSeed.dataPath;
+    seed.bytes = cacheSeed.bytes;
+    seed.segmentIndex = cacheSeed.segmentIndex;
+    seed.fingerprint = cacheSeed.fingerprint;
+    seed.cacheBodyPath = cacheSeed.bodyPath;
+    QStringList completed;
+    connect(&manager, &DownloadManager::jobCompleted, &manager,
+            [&completed](const MediaItem &, const QString &path) {
+                completed.append(path);
+            });
+    const QString id = manager.enqueue(item, item.url, {}, target, true,
+                                       NetLimits::kDownloadBytes, nullptr, nullptr, &seed);
+    QVERIFY(!id.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 30000);
+
+    const QString saved = completed.first();
+    QVERIFY(saved.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive));
+    QVERIFY(QFileInfo(saved).size() > 0);
+    QCOMPARE(QFileInfo(saved).absolutePath(), QDir(downloadDir).absolutePath());
+    // 暂存目录按任务 id 隔离，发布成功后必须整体清理。
+    const QString stagingDir =
+        QDir(downloadDir).filePath(QStringLiteral(".download-cache/") + id);
+    QVERIFY(!QDir(stagingDir).exists());
+
+    int firstSegmentRequests = 0;
+    for (const LocalHttpServer::Request &request : server.requests) {
+        if (request.path == QStringLiteral("/download-seed/seg0.ts"))
+            ++firstSegmentRequests;
+    }
+    // seg0 只由播放缓存下载过一次；手动下载必须从 seg1 开始。
+    QCOMPARE(firstSegmentRequests, 1);
+
+    // 默认设置下，最终 MP4 发布成功后清理播放缓存和轨道现场。
+    QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(resumeState), 3000);
+
+    QStringList finalJobs;
+    for (const DownloadJob &job : manager.jobs())
+        finalJobs.append(job.status == DownloadJob::Status::Completed ? "ok" : "bad");
+    QCOMPARE(finalJobs.size(), 1);
+    QCOMPARE(finalJobs.first(), QStringLiteral("ok"));
+    manager.shutdownForExit();
 }
 
 void IntegrationTest::hlsCacheBuilderMergesSingleFileAudio()
