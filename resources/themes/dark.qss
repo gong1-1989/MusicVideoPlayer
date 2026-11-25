@@ -595,6 +595,40 @@ QDialog#SourceManagerDialog, QDialog#SourceProbeDialog {
                                 stop:1 #101a33);
 }
 
+/* 外部解析器配置是源管理里的二级弹窗：它没有进入 SettingsDialog 的滚动区，
+   之前完全没命中任何对话框样式，会落回系统浅色底；深色主题下白底配浅色
+   文字几乎不可读。这里补齐与源管理一致的背景、文字和卡片。 */
+QDialog#SourceParserSettingsDialog {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                                stop:0 #0a0a1e,
+                                stop:1 #101a33);
+}
+
+QDialog#SourceParserSettingsDialog QLabel {
+    color: #cfd6ff;
+    background: transparent;
+}
+
+QDialog#SourceParserSettingsDialog QLineEdit {
+    background: rgba(255, 255, 255, 6%);
+    border: 1px solid rgba(150, 190, 255, 22%);
+    border-radius: 8px;
+    padding: 3px 8px;
+    color: #e6ecff;
+    selection-background-color: rgba(110, 92, 255, 45%);
+}
+
+QDialog#SourceParserSettingsDialog QLineEdit:focus {
+    background: rgba(255, 255, 255, 10%);
+    border: 1px solid rgba(150, 200, 255, 60%);
+}
+
+QDialog#SourceParserSettingsDialog QFrame#settingsCard {
+    background: #15162b;
+    border: 1px solid #29304c;
+    border-radius: 14px;
+}
+
 /* 搜索源管理 / 探源窗口里的表单控件：与主界面保持同一套玻璃质感 */
 QDialog#SourceManagerDialog QLineEdit,
 QDialog#SourceProbeDialog QLineEdit,
