@@ -1063,6 +1063,7 @@ private slots:
     void hlsPlaylistSameScopeRejectsSiblingDirectory();
     void hlsPlaylistSelectsBitrateVariant();
     void hlsPlaylistRejectsTooManySegments();
+    void hlsPlaylistSharedMediaMetadata();
     void streamTokensReuseByUrlAndHeaders();
     void streamTokensExpireByIdleClock();
     void streamProxyRejectsPrivateTargetFromPublicOrigin();
@@ -4363,6 +4364,63 @@ void CoreLogicTest::hlsPlaylistRejectsTooManySegments()
     QVERIFY(!info.isNull());
     QCOMPARE(info->segments.size(), NetLimits::kPlaylistSegments);
     QCOMPARE(info->totalMs, qint64(NetLimits::kPlaylistSegments) * 1000);
+}
+
+void CoreLogicTest::hlsPlaylistSharedMediaMetadata()
+{
+    const QUrl playlistUrl(QStringLiteral("https://cdn.test/a/list.m3u8"));
+    const QByteArray body =
+        "#EXTM3U\n"
+        "#EXT-X-MEDIA-SEQUENCE:7\n"
+        "#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"720@0\"\n"
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n"
+        "#EXT-X-BYTERANGE:1000@720\n"
+        "#EXTINF:4,\n"
+        "seg1.m4s\n"
+        "#EXT-X-BYTERANGE:1000\n"
+        "#EXTINF:4,\n"
+        "seg2.m4s\n"
+        "#EXT-X-ENDLIST\n";
+
+    HlsPlaylist::MediaParseOptions options;
+    options.strict = true;
+    options.keyParser = [](const QString &line, const QUrl &base) {
+        HlsPlaylist::Key key;
+        if (!line.contains(QLatin1String("AES-128")))
+            return key;
+        key.enabled = true;
+        key.method = QStringLiteral("AES-128");
+        key.url = base.resolved(QUrl(QStringLiteral("key.bin")));
+        return key;
+    };
+
+    QString error;
+    const auto media = HlsPlaylist::parseMedia(body, playlistUrl, options, &error);
+    QVERIFY2(!media.isNull(), qPrintable(error));
+    QCOMPARE(media->segments.size(), 3);
+    QVERIFY(media->hasEndList);
+    QVERIFY(media->fragmentedMp4);
+    QCOMPARE(media->totalMs, qint64(8000));
+    QCOMPARE(media->mediaSequence, qint64(9));
+
+    const auto &map = media->segments.at(0);
+    QVERIFY(map.initSegment);
+    QCOMPARE(map.range, QByteArray("bytes=0-719"));
+    QVERIFY(!map.key.enabled);
+
+    const auto &first = media->segments.at(1);
+    QVERIFY(!first.initSegment);
+    QCOMPARE(first.url, QUrl(QStringLiteral("https://cdn.test/a/seg1.m4s")));
+    QCOMPARE(first.range, QByteArray("bytes=720-1719"));
+    QVERIFY(first.key.enabled);
+    QCOMPARE(first.key.url, QUrl(QStringLiteral("https://cdn.test/a/key.bin")));
+    // 默认 IV 必须跟随 MEDIA-SEQUENCE：首段为 7。
+    QCOMPARE(first.key.iv, QByteArray(15, '\0') + QByteArray::fromHex("07"));
+
+    const auto &second = media->segments.at(2);
+    // 省略 @offset 的 BYTERANGE 从上段末尾继续。
+    QCOMPARE(second.range, QByteArray("bytes=1720-2719"));
+    QCOMPARE(second.key.iv, QByteArray(15, '\0') + QByteArray::fromHex("08"));
 }
 
 

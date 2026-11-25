@@ -39,9 +39,64 @@ public:
         QUrl uri;
     };
 
+    struct Key
+    {
+        bool enabled = false;
+        QString method;              ///< 已转大写的 METHOD；NONE 表示恢复明文
+        QUrl url;                    ///< 已按 BASE 解析的密钥地址
+        QByteArray iv;
+        QString unsupported;         ///< 非空表示 SAMPLE-AES 等不支持的方式
+        QString error;               ///< 结构错误；仅供严格解析模式使用
+    };
+
+    /// 媒体列表中的一个请求单元：普通分片，或 #EXT-X-MAP 初始化段。
+    struct MediaSegment
+    {
+        QUrl url;
+        QByteArray range;
+        bool initSegment = false;
+        qint64 startMs = -1;         ///< 普通分片的时间轴起点；初始化段为 -1
+        double durationSeconds = 0.0;
+        Key key;                     ///< 该分片生效的加密信息；初始化段始终为空
+    };
+
+    struct MediaInfo
+    {
+        QUrl source;
+        QUrl base;                   ///< 最终 #EXT-X-BASE 解析出的基准地址
+        QList<MediaSegment> segments;
+        qint64 totalMs = 0;
+        qint64 mediaSequence = 0;
+        bool hasEndList = false;
+        QString playlistType;        ///< VOD / EVENT / 空
+        bool fragmentedMp4 = false;
+        bool hasByteRange = false;
+        bool hasNonHttp = false;
+    };
+
+    struct MediaParseOptions
+    {
+        /// 播放器侧解析要求每个分片前必须有 EXTINF；下载侧为兼容旧行为可关闭。
+        bool requireExtinf = false;
+        /// 严格模式：BASE/KEY/BYTERANGE/MAP/非 HTTP 分片直接报错；
+        /// 非严格模式只跳过问题项，供播放代理尽力解析。
+        bool strict = false;
+        /// 主列表继承下来的 SESSION-KEY。
+        Key initialKey;
+        /// KEY/SESSION-KEY 解析回调；为空时忽略加密信息。
+        std::function<Key(const QString &line, const QUrl &base)> keyParser;
+    };
+
     /// 解析原始 m3u8，记录每个媒体分片及其起始时间；只处理完整媒体列表。
     /// 返回空指针表示这不是可预取的媒体列表（master 列表或分片为空）。
     static QSharedPointer<Info> parse(const QByteArray &body, const QUrl &playlistUrl);
+
+    /// 共享的媒体列表结构解析：BASE、EXTINF、BYTERANGE、MAP、KEY、ENDLIST。
+    /// 下载任务与播放代理都从这里取分片/时间轴，避免两套解析规则漂移。
+    static QSharedPointer<MediaInfo> parseMedia(const QByteArray &body,
+                                                const QUrl &playlistUrl,
+                                                const MediaParseOptions &options,
+                                                QString *error = nullptr);
 
     /// 按起始时间二分定位目标分片；空列表返回 -1。
     static int segmentIndexAt(const Info &info, qint64 positionMs);

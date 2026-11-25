@@ -202,7 +202,6 @@ private:
     int m_segmentIndex = 0;
     int m_resumeSegmentIndex = 0;
     int m_playlistHop = 0;
-    qint64 m_nextRangeOffset = 0;
 };
 
 #endif // DOWNLOADTASK_H

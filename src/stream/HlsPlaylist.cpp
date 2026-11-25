@@ -37,6 +37,42 @@ QString playlistAttribute(const QString &line, const QString &name)
 }
 } // namespace
 
+namespace {
+/// 解析 BYTERANGE 的值：`length@offset` 或只写 `length`（偏移由上一段推进）。
+bool parseByteRange(const QString &value, qint64 *length, qint64 *offset, bool *hasOffset)
+{
+    const QString trimmed = value.trimmed();
+    if (trimmed.isEmpty())
+        return false;
+    const int at = trimmed.indexOf(QLatin1Char('@'));
+    bool ok = false;
+    const qint64 parsedLength =
+        (at >= 0 ? trimmed.left(at) : trimmed).toLongLong(&ok);
+    if (!ok || parsedLength <= 0)
+        return false;
+    *length = parsedLength;
+    *hasOffset = at >= 0;
+    if (at >= 0) {
+        const qint64 parsedOffset = trimmed.mid(at + 1).toLongLong(&ok);
+        if (!ok || parsedOffset < 0)
+            return false;
+        *offset = parsedOffset;
+    }
+    return true;
+}
+
+/// 默认 IV：AES-128 未显式给出 IV 时，按 HLS 规范用媒体序号构造。
+QByteArray defaultIvForSequence(qint64 sequence)
+{
+    QByteArray iv(16, '\0');
+    for (int i = 15; i >= 0 && sequence > 0; --i) {
+        iv[i] = static_cast<char>(sequence & 0xFF);
+        sequence >>= 8;
+    }
+    return iv;
+}
+} // namespace
+
 /// @brief 解析媒体播放列表，建立分片地址与起始时间轴。
 /// @param body 播放列表原文。
 /// @param playlistUrl 播放列表 URL，用于解析相对地址和 BASE。
@@ -46,6 +82,43 @@ QString playlistAttribute(const QString &line, const QString &name)
 QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
                                                     const QUrl &playlistUrl)
 {
+    MediaParseOptions options;
+    options.requireExtinf = true;
+    auto media = parseMedia(body, playlistUrl, options);
+    if (!media)
+        return {};
+    QList<QUrl> segments;
+    QList<qint64> starts;
+    for (const MediaSegment &segment : std::as_const(media->segments)) {
+        if (segment.initSegment)
+            continue;
+        segments.append(segment.url);
+        starts.append(segment.startMs);
+    }
+    if (segments.isEmpty())
+        return {};
+
+    auto info = QSharedPointer<Info>::create();
+    info->source = playlistUrl;
+    info->segments = segments;
+    info->starts = starts;
+    info->totalMs = media->totalMs;
+    info->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+    // 带 BYTERANGE 的播放列表无法只靠 URL 缓存整段，直接关掉预取，避免重复下载。
+    info->prefetchable = !media->hasByteRange && !media->hasNonHttp;
+    return info;
+}
+
+/// @brief 共享的媒体列表结构解析，供播放代理与下载任务复用。
+/// @param options 控制是否要求 EXTINF、严格程度以及 KEY 解析回调。
+/// @param error 严格模式下返回失败原因。
+QSharedPointer<HlsPlaylist::MediaInfo> HlsPlaylist::parseMedia(
+    const QByteArray &body, const QUrl &playlistUrl, const MediaParseOptions &options,
+    QString *error)
+{
+    if (error != nullptr)
+        error->clear();
+
     const QString source = decodePlaylist(body);
     QStringList lines = source.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
     for (QString &line : lines) {
@@ -53,13 +126,21 @@ QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
             line.chop(1);
     }
 
-    QUrl base = playlistUrl;
-    QList<QUrl> segments;
-    QList<qint64> starts;
-    qint64 cumulativeMs = 0;
+    auto info = QSharedPointer<MediaInfo>::create();
+    info->source = playlistUrl;
+    info->base = playlistUrl;
+    Key currentKey = options.initialKey;
+    QByteArray pendingRange;
+    qint64 nextRangeOffset = 0;
+    bool hasPendingRange = false;
     double pendingDuration = -1.0;
-    bool hasByteRange = false;
-    bool hasNonHttp = false;
+    bool hasMediaSegment = false;
+
+    auto fail = [error](const QString &message) -> QSharedPointer<MediaInfo> {
+        if (error != nullptr)
+            *error = message;
+        return {};
+    };
 
     for (const QString &raw : std::as_const(lines)) {
         const QString line = raw.trimmed();
@@ -67,10 +148,21 @@ QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
             continue;
 
         if (line.startsWith(QLatin1String("#EXT-X-BASE:"))) {
-            const QString value = line.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
-            const QUrl next = base.resolved(QUrl(value));
-            if (next.isValid())
-                base = next;
+            QString value = line.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
+            if (value.size() >= 2 && value.startsWith(QLatin1Char('"'))
+                && value.endsWith(QLatin1Char('"'))) {
+                value = value.mid(1, value.size() - 2);
+            }
+            const QUrl next = info->base.resolved(QUrl(value));
+            const bool accepted = options.strict
+                ? (!value.isEmpty() && NetworkAddressPolicy::isHttpMediaUrl(next))
+                : next.isValid();
+            if (!accepted) {
+                if (options.strict)
+                    return fail(QObject::tr("播放列表的基础地址无效"));
+                continue;
+            }
+            info->base = next;
             continue;
         }
 
@@ -83,43 +175,175 @@ QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
             continue;
         }
 
+        if (line.startsWith(QLatin1String("#EXT-X-ENDLIST"))) {
+            info->hasEndList = true;
+            continue;
+        }
+
+        if (line.startsWith(QLatin1String("#EXT-X-PLAYLIST-TYPE:"))) {
+            info->playlistType =
+                line.mid(QStringLiteral("#EXT-X-PLAYLIST-TYPE:").size()).trimmed().toUpper();
+            continue;
+        }
+
+        if (line.startsWith(QLatin1String("#EXT-X-MEDIA-SEQUENCE:"))) {
+            const QString value =
+                line.mid(QStringLiteral("#EXT-X-MEDIA-SEQUENCE:").size()).trimmed();
+            bool ok = false;
+            const qint64 sequence = value.toLongLong(&ok);
+            if (!ok || sequence < 0) {
+                if (options.strict)
+                    return fail(QObject::tr("EXT-X-MEDIA-SEQUENCE 无效：%1").arg(value));
+                continue;
+            }
+            // 媒体序号只能出现在首个分片之前；分片开始后回改会导致默认 IV 错位。
+            if (!hasMediaSegment)
+                info->mediaSequence = sequence;
+            continue;
+        }
+
+        if (line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))
+            || line.startsWith(QLatin1String("#EXT-X-KEY"))) {
+            if (!options.keyParser)
+                continue;
+            const Key parsed = options.keyParser(line, info->base);
+            if (!parsed.error.isEmpty()) {
+                if (options.strict)
+                    return fail(parsed.error);
+                continue;
+            }
+            const QString method = parsed.method.trimmed().toUpper();
+            if (method == QLatin1String("NONE")) {
+                currentKey = Key();
+            } else if (parsed.enabled) {
+                currentKey = parsed;
+                currentKey.unsupported.clear();
+            } else if (!currentKey.enabled) {
+                // 多个 KEYFORMAT 并存时 identity AES-128 优先；只有当前段
+                // 没有可用 identity key 时才把不支持的方式留到分片处报错。
+                currentKey = Key();
+                currentKey.unsupported = method;
+            }
+            continue;
+        }
+
         if (line.startsWith(QLatin1String("#EXT-X-BYTERANGE:"))) {
-            hasByteRange = true;
+            const QString value =
+                line.mid(QStringLiteral("#EXT-X-BYTERANGE:").size()).trimmed();
+            qint64 length = 0;
+            qint64 offset = nextRangeOffset;
+            bool hasOffset = false;
+            if (!parseByteRange(value, &length, &offset, &hasOffset)) {
+                if (options.strict)
+                    return fail(QObject::tr("分片字节范围格式无效：%1").arg(value));
+                continue;
+            }
+            if (hasOffset)
+                nextRangeOffset = offset;
+            pendingRange = QByteArray("bytes=") + QByteArray::number(offset)
+                + QByteArray("-") + QByteArray::number(offset + length - 1);
+            hasPendingRange = true;
+            nextRangeOffset = offset + length;
+            continue;
+        }
+
+        if (line.startsWith(QLatin1String("#EXT-X-MAP:"))) {
+            const QString uri = playlistAttribute(line, QStringLiteral("URI")).trimmed();
+            if (uri.isEmpty())
+                continue;
+            const QUrl mapUrl = info->base.resolved(QUrl(uri));
+            const bool mapOk = options.strict
+                ? NetworkAddressPolicy::isHttpMediaUrl(mapUrl)
+                : mapUrl.isValid();
+            if (!mapOk) {
+                if (options.strict)
+                    return fail(QObject::tr("初始化分片地址无效"));
+                continue;
+            }
+            const QString rangeValue =
+                playlistAttribute(line, QStringLiteral("BYTERANGE")).trimmed();
+            QByteArray mapRange;
+            if (!rangeValue.isEmpty()) {
+                qint64 length = 0;
+                qint64 offset = 0;
+                bool hasOffset = false;
+                if (!parseByteRange(rangeValue, &length, &offset, &hasOffset)) {
+                    if (options.strict)
+                        return fail(QObject::tr("初始化分片字节范围无效：%1")
+                                        .arg(rangeValue));
+                } else {
+                    mapRange = QByteArray("bytes=") + QByteArray::number(offset)
+                        + QByteArray("-") + QByteArray::number(offset + length - 1);
+                }
+            }
+            if (info->segments.size() >= NetLimits::kPlaylistSegments) {
+                return fail(QObject::tr("分片数量超过 %1 上限").arg(NetLimits::kPlaylistSegments));
+            }
+            MediaSegment map;
+            map.url = mapUrl;
+            map.range = mapRange;
+            map.initSegment = true;
+            info->segments.append(map);
+            info->fragmentedMp4 = true;
             continue;
         }
 
         if (line.startsWith(QLatin1Char('#')))
             continue;
 
-        if (pendingDuration < 0.0)
+        if (options.requireExtinf && pendingDuration < 0.0)
             continue; // 这是 master playlist 的变体地址，不是媒体分片
 
-        const QUrl segment = base.resolved(QUrl(line));
-        if (!NetworkAddressPolicy::isHttpMediaUrl(segment)) {
-            hasNonHttp = true;
-        } else {
-            // 分片数量异常多时不做预取规划，播放仍可直接走代理列表，
-            // 避免为超大列表维护 starts/segments 两份数组。
-            if (segments.size() >= NetLimits::kPlaylistSegments)
-                return {};
-            segments.append(segment);
-            starts.append(cumulativeMs);
+        const QUrl segmentUrl = info->base.resolved(QUrl(line));
+        if (!NetworkAddressPolicy::isHttpMediaUrl(segmentUrl)) {
+            if (options.strict)
+                return fail(QObject::tr("分片地址无效：%1").arg(line));
+            info->hasNonHttp = true;
+            if (pendingDuration > 0.0)
+                info->totalMs += qRound64(pendingDuration * 1000.0);
+            pendingDuration = -1.0;
+            pendingRange.clear();
+            hasPendingRange = false;
+            continue;
         }
-        cumulativeMs += qRound64(pendingDuration * 1000.0);
+
+        if (!currentKey.unsupported.isEmpty()) {
+            return fail(QObject::tr("该播放列表使用了 %1 加密，当前版本仅支持 AES-128 解密；"
+                           "已取消，未生成损坏文件。")
+                            .arg(currentKey.unsupported));
+        }
+
+        if (info->segments.size() >= NetLimits::kPlaylistSegments) {
+            return fail(QObject::tr("分片数量超过 %1 上限").arg(NetLimits::kPlaylistSegments));
+        }
+
+        MediaSegment segment;
+        segment.url = segmentUrl;
+        segment.range = pendingRange;
+        segment.startMs = info->totalMs;
+        if (pendingDuration > 0.0)
+            segment.durationSeconds = pendingDuration;
+        segment.key = currentKey;
+        if (segment.key.enabled && segment.key.iv.isEmpty())
+            segment.key.iv = defaultIvForSequence(info->mediaSequence);
+        // 媒体序号按每个媒体分片递增；EXT-X-MAP 不计入序号，默认 IV 才能
+        // 与服务器端加密时使用的 sequence number 对齐。
+        ++info->mediaSequence;
+        hasMediaSegment = true;
+        if (segmentUrl.path().endsWith(QLatin1String(".m4s"), Qt::CaseInsensitive)
+            || segmentUrl.path().endsWith(QLatin1String(".m4f"), Qt::CaseInsensitive)) {
+            info->fragmentedMp4 = true;
+        }
+        if (hasPendingRange) {
+            info->hasByteRange = true;
+            hasPendingRange = false;
+        }
+        info->segments.append(segment);
+        if (pendingDuration > 0.0)
+            info->totalMs += qRound64(pendingDuration * 1000.0);
+        pendingRange.clear();
         pendingDuration = -1.0;
     }
-
-    if (segments.isEmpty())
-        return {};
-
-    auto info = QSharedPointer<Info>::create();
-    info->source = playlistUrl;
-    info->segments = segments;
-    info->starts = starts;
-    info->totalMs = cumulativeMs;
-    info->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
-    // 带 BYTERANGE 的播放列表无法只靠 URL 缓存整段，直接关掉预取，避免重复下载。
-    info->prefetchable = !hasByteRange && !hasNonHttp;
     return info;
 }
 
