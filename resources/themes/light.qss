@@ -38,29 +38,6 @@ QFrame#panelStage {
     border: 1px solid rgba(140, 150, 235, 30%);
 }
 
-/* 画质/音质选择栏位于播放控制区，只保留下拉框，不再单独占一行文字 */
-QWidget#bitrateBar {
-    background: transparent;
-    border: none;
-}
-
-QComboBox#combo_bitrate {
-    background: rgba(255, 255, 255, 78%);
-    border: 1px solid rgba(140, 150, 235, 30%);
-    border-radius: 8px;
-    padding: 2px 20px 2px 8px;
-    min-height: 24px;
-}
-
-QComboBox#combo_bitrate:hover {
-    border: 1px solid rgba(120, 110, 235, 55%);
-}
-
-QComboBox#combo_bitrate:disabled {
-    color: rgba(72, 78, 130, 70%);
-    border: 1px solid rgba(140, 150, 235, 20%);
-}
-
 /* 侧栏做成浮层时压在画面上，底色要更实才看得清；回布局时保持原来的淡玻璃 */
 QFrame#panelSidebar[floating="true"] {
     background: rgba(253, 252, 255, 92%);

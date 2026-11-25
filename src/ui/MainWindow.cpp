@@ -5,7 +5,6 @@
 
 #include "core/PlaylistModel.h"
 #include "cache/HlsCacheBuilder.h"
-#include "cache/MediaCache.h"
 #include "net/HttpClient.h"
 #include "net/SearchCoordinator.h"
 #include "net/SourceRegistry.h"
@@ -23,18 +22,15 @@
 #include "ui/SearchWindow.h"
 #include "ui/SettingsController.h"
 #include "ui/ThemeManager.h"
-#include "util/MediaExtensions.h"
 #include "util/NetworkAddressPolicy.h"
 #include "ui/UiIcons.h"
 #include "ui/VideoStage.h"
 
 #include <QAbstractItemView>
 #include <QCloseEvent>
-#include <QComboBox>
 #include <QDateTime>
 #include <QEvent>
 #include <QCoreApplication>
-#include <QFileInfo>
 #include <QFontMetrics>
 #include <QFrame>
 #include <QGuiApplication>
@@ -49,14 +45,11 @@
 #include <QSet>
 #include <QShortcut>
 #include <QShowEvent>
-#include <QSignalBlocker>
 #include <QSlider>
 #include <QTabBar>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
-
-#include <algorithm>
 
 #ifdef Q_OS_WIN
 #  ifndef NOMINMAX
@@ -294,8 +287,6 @@ MainWindow::MainWindow(QWidget *parent)
             [this](const MediaItem &item, int) {
                 const bool music = item.isValid() && item.type == MediaType::Music;
                 if (music) {
-                    // 控制区的画质/音质选择栏不再隐藏；音乐没有可选码率，
-                    // 由 refreshBitrateBar() 改成“音质：…”并禁用下拉。
                     m_musicVisual->setTrack(item);
                     QString sourceName;
                     if (!item.sourceId.isEmpty() && item.sourceId != QLatin1String("link")) {
@@ -307,7 +298,6 @@ MainWindow::MainWindow(QWidget *parent)
                     m_musicVisual->setGeometry(ui->videoStage->rect());
                     m_musicVisual->show();
                     m_musicVisual->raise();
-                    refreshBitrateBar();
                 } else {
                     m_musicVisual->hide();
                     ui->videoWidget->show();
@@ -349,7 +339,6 @@ MainWindow::MainWindow(QWidget *parent)
                    tr("下载任务"), 20);
     UiIcons::apply(ui->btn_volume, QStringLiteral("volume"), tr("音量"), 20);
     setupVolumePopup();
-    setupBitrateBar();
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
             [this] {
                 ThemeManager::instance().applyWindowChrome(this);
@@ -853,170 +842,6 @@ void MainWindow::clearPlaybackUi()
         ui->videoWidget->clearFrame();
         ui->videoWidget->show();
     }
-    // 当前条目被删后代理里还留着上一部的 master 变体；清空选项指纹并立即
-    // 刷新为“画质/音质：—”，但选择栏本身保持可见，不再隐藏。
-    m_bitrateOptionsSignature.clear();
-    refreshBitrateBar();
-}
-
-void MainWindow::setupBitrateBar()
-{
-    // 选择栏常驻控制条，不再按播放状态隐藏；初始内容由 refresh 统一填充。
-    ui->bitrateBar->show();
-    connect(ui->combo_bitrate, QOverload<int>::of(&QComboBox::activated), this,
-            [this](int comboIndex) {
-                const int target = ui->combo_bitrate->itemData(comboIndex).toInt();
-                if (m_player == nullptr)
-                    return;
-                m_player->selectBitrate(target);
-                // 切换是同步重载，下一次快照能立即反映锁定项；延时一拍是为了
-                // 让下拉框先收起，再按新状态刷新选项文本。
-                QTimer::singleShot(0, this, &MainWindow::refreshBitrateBar);
-            });
-
-    m_bitrateTimer = new QTimer(this);
-    m_bitrateTimer->setInterval(1000);
-    connect(m_bitrateTimer, &QTimer::timeout, this, &MainWindow::refreshBitrateBar);
-    m_bitrateTimer->start();
-    refreshBitrateBar();
-}
-
-void MainWindow::refreshBitrateBar()
-{
-    if (ui == nullptr || ui->bitrateBar == nullptr || ui->combo_bitrate == nullptr
-        || m_player == nullptr) {
-        return;
-    }
-
-    // 没有独立文字标签后，所有说明都必须落在下拉框自身：
-    // - HLS 视频列出可选码率，自动项带上当前实际码率；
-    // - 音乐显示音质；
-    // - 直链/已缓存视频显示固定画质；
-    // - 没有当前条目时显示占位内容。
-    // 选择栏始终可见，只按状态切换是否可展开。
-    const auto showSingle = [this](const QString &text, const QString &tip) {
-        QSignalBlocker blocker(ui->combo_bitrate);
-        if (ui->combo_bitrate->count() != 1 || ui->combo_bitrate->itemData(0).isValid()) {
-            ui->combo_bitrate->clear();
-            ui->combo_bitrate->addItem(text);
-        } else if (ui->combo_bitrate->itemText(0) != text) {
-            ui->combo_bitrate->setItemText(0, text);
-        }
-        ui->combo_bitrate->setEnabled(false);
-        ui->combo_bitrate->setToolTip(tip);
-        m_bitrateOptionsSignature.clear();
-        ui->bitrateBar->show();
-    };
-
-    const MediaItem item = m_player->currentItem();
-    if (!item.isValid()) {
-        showSingle(tr("画质/音质：—"), tr("播放音乐或视频后显示音质/可选码率"));
-        return;
-    }
-
-    if (item.type == MediaType::Music) {
-        // 在线音乐一般带 quality；本地文件此前没有品质字段，直接显示“标准”
-        // 会把 FLAC/APE 这类无损文件标错。按扩展名至少区分无损与有损格式。
-        QString quality = item.quality;
-        if (quality.isEmpty() && !item.online && item.url.isLocalFile()) {
-            const QString suffix = QFileInfo(item.url.toLocalFile()).suffix().toLower();
-            if (MediaExtensions::isLosslessAudioSuffix(suffix))
-                quality = tr("无损");
-            else if (!suffix.isEmpty())
-                quality = suffix.toUpper();
-        }
-        if (quality.isEmpty())
-            quality = tr("标准");
-        showSingle(tr("音质：%1").arg(quality), tr("当前音乐的播放音质"));
-        return;
-    }
-
-    const auto snapshot = m_player->bitrateSnapshot();
-    if (!snapshot.isVideo || snapshot.options.isEmpty()) {
-        QString text;
-        if (item.quality.isEmpty())
-            text = tr("画质：固定");
-        else
-            text = tr("画质：%1").arg(item.quality);
-        if (!MediaCache::completeFileForItem(item).isEmpty())
-            text += tr("（已缓存）");
-        showSingle(text, tr("当前视频没有可切换的 HLS 码率"));
-        return;
-    }
-
-    const auto labelFor = [this](const PlaybackController::BitrateOption &option) {
-        const QString resolution = option.resolution.isEmpty()
-                                       ? tr("未知分辨率")
-                                       : option.resolution;
-        QString bandwidth;
-        if (option.bandwidth <= 0) {
-            bandwidth = tr("未知码率");
-        } else if (option.bandwidth >= 1000000) {
-            // HLS 的 BANDWIDTH 单位是 bit/s；不能按 kbit/s 换算，否则
-            // 1300000 会显示成 1300.00 Mbps。
-            bandwidth = QStringLiteral("%1 Mbps").arg(option.bandwidth / 1000000.0, 0, 'f', 2);
-        } else if (option.bandwidth >= 1000) {
-            bandwidth = QStringLiteral("%1 kbps").arg(option.bandwidth / 1000.0, 0, 'f', 0);
-        } else {
-            bandwidth = QStringLiteral("%1 bps").arg(option.bandwidth);
-        }
-        return QStringLiteral("%1 · %2").arg(resolution, bandwidth);
-    };
-
-    // 高码率放前面，符合“清晰度优先”的直觉；序号仍来自原始 master，
-    // 排序不会影响锁定项和当前项的匹配。
-    QList<PlaybackController::BitrateOption> ordered = snapshot.options;
-    std::sort(ordered.begin(), ordered.end(),
-              [](const PlaybackController::BitrateOption &a,
-                 const PlaybackController::BitrateOption &b) {
-                  if (a.bandwidth != b.bandwidth)
-                      return a.bandwidth > b.bandwidth;
-                  return a.index < b.index;
-              });
-
-    QString currentLabel;
-    for (const PlaybackController::BitrateOption &option : std::as_const(ordered)) {
-        if (option.index == snapshot.currentIndex) {
-            currentLabel = labelFor(option);
-            break;
-        }
-    }
-
-    // 自动项直接显示“自动 · 当前码率”，让用户不点开下拉也能看到实际播放码率。
-    QString autoText = tr("自动");
-    if (!currentLabel.isEmpty())
-        autoText = tr("自动 · %1").arg(currentLabel);
-    else if (snapshot.selectedIndex >= 0)
-        autoText = tr("自动（切换中）");
-
-    QString signature = QStringLiteral("item:%1;").arg(item.url.toString());
-    for (const PlaybackController::BitrateOption &option : std::as_const(ordered)) {
-        signature += QStringLiteral("%1:%2:%3;").arg(option.index)
-                         .arg(option.bandwidth)
-                         .arg(option.resolution);
-    }
-
-    if (signature != m_bitrateOptionsSignature) {
-        QSignalBlocker blocker(ui->combo_bitrate);
-        ui->combo_bitrate->clear();
-        ui->combo_bitrate->addItem(autoText, -1);
-        for (const PlaybackController::BitrateOption &option : std::as_const(ordered))
-            ui->combo_bitrate->addItem(labelFor(option), option.index);
-        m_bitrateOptionsSignature = signature;
-    } else {
-        QSignalBlocker blocker(ui->combo_bitrate);
-        if (ui->combo_bitrate->count() > 0 && ui->combo_bitrate->itemText(0) != autoText)
-            ui->combo_bitrate->setItemText(0, autoText);
-    }
-
-    {
-        QSignalBlocker blocker(ui->combo_bitrate);
-        const int comboIndex = ui->combo_bitrate->findData(snapshot.selectedIndex);
-        ui->combo_bitrate->setCurrentIndex(comboIndex >= 0 ? comboIndex : 0);
-    }
-    ui->combo_bitrate->setEnabled(true);
-    ui->combo_bitrate->setToolTip(tr("选择码率后按所选码率重新播放，并尽量保留进度"));
-    ui->bitrateBar->show();
 }
 
 void MainWindow::setupVolumePopup()
