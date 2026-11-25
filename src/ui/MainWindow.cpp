@@ -1090,7 +1090,9 @@ void MainWindow::showVolumePopup()
 
     m_volumePopup->adjustSize();
     const QPoint buttonTop = ui->btn_volume->mapToGlobal(QPoint(0, 0));
-    int x = buttonTop.x() + ui->btn_volume->width() - m_volumePopup->width();
+    // 弹层比按钮宽，右边缘对齐会让弹层整体偏左；改为按按钮中心对齐，
+    // 窄窗口下再用屏幕边界夹住，避免弹层被裁掉。
+    int x = buttonTop.x() + (ui->btn_volume->width() - m_volumePopup->width()) / 2;
     int y = buttonTop.y() - m_volumePopup->height() - 6;
 
     // 控制条贴近屏幕顶端时向下弹，避免跑到屏幕外。
@@ -1099,7 +1101,8 @@ void MainWindow::showVolumePopup()
                                 : QRect(buttonTop, QSize(0, 0));
     if (y < available.top())
         y = buttonTop.y() + ui->btn_volume->height() + 6;
-    x = qBound(available.left(), x, available.right() - m_volumePopup->width());
+    const int maxX = qMax(available.left(), available.right() - m_volumePopup->width() + 1);
+    x = qBound(available.left(), x, maxX);
 
     m_volumePopup->move(x, y);
     m_volumePopup->show();
