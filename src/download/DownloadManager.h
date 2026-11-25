@@ -76,6 +76,24 @@ signals:
     void statusMessage(const QString &message);
 
 private:
+    /// 三类后台搬运共用一套状态：播放缓存复制、种子前缀复制、跨盘发布。
+    enum class ChunkCopyKind {
+        Cache,   ///< 播放缓存整文件复制到下载暂存区
+        Seed,    ///< 播放缓存前缀复制到下载暂存区
+        Publish  ///< 暂存文件跨盘复制到下载目录
+    };
+
+    struct ChunkCopy
+    {
+        ChunkCopyKind kind = ChunkCopyKind::Cache;
+        QFile *source = nullptr;
+        QFile *target = nullptr;
+        /// Seed 需要精确搬完的字节数；Cache/Publish 读到 EOF 为止。
+        qint64 remaining = -1;
+        QString finalPath;      ///< Publish 的最终目标
+        QString stagingDir;     ///< Publish 完成后可删除的暂存目录
+        QString pendingMessage; ///< Publish 期间 finishJob 暂存的收尾文案
+    };
     int indexOf(const QString &id) const;
     QString reserveFilePath(const QString &directory, const QString &fileName,
                             const QString &ignoreId) const;
@@ -109,14 +127,14 @@ private:
     void startJob(const QString &id);
     bool startCacheCopy(const QString &id, const QString &sourcePath);
     void startRemux(const QString &id);
-    void copyCacheChunks();
+    /// 三套复制共用的分块搬运循环，按 kind 走各自的完成/失败分支。
+    void copyChunks();
     void cancelCacheCopy(const QString &id, bool removePartial);
     /// 下载任务统一暂存路径；HLS 默认用 `ts`，音乐直链用最终后缀。
     QString stagingPathForJob(const DownloadJob &job,
                               const QString &suffix = QStringLiteral("ts")) const;
     /// 下载开始前把播放缓存前缀分块复制到暂存区，避免大文件阻塞 UI。
     bool startSeedCopy(const QString &id);
-    void copySeedChunks();
     void cancelSeedCopy(const QString &id, bool removePartial);
     /// 暂存文件发布到下载目录：同盘直接 rename；跨盘时启动分块复制，
     /// 复制期间 finishJob 会暂缓收尾，避免大文件拷贝卡住界面。
@@ -124,8 +142,11 @@ private:
                            QString *publishedPath);
     bool startPublishCopy(const QString &id, const QString &sourcePath,
                           const QString &finalPath);
-    void copyPublishChunks();
     void cancelPublishCopy(const QString &id, bool removePartial);
+    /// 共用取消入口；只处理与 kind 匹配的活动复制，避免误停同任务另一阶段。
+    void cancelChunkCopy(const QString &id, ChunkCopyKind kind, bool removePartial);
+    /// 启动共用计时器；已在运行时不重复 start。
+    void ensureChunkCopyTimer();
     /// 上次退出时暂存区可能已有完整 TS 或 MP4，恢复时应先转封装/发布而不是重下。
     void startStagedCompletion(const QString &id);
     void finishJob(const QString &id, const QString &path, bool success,
@@ -136,16 +157,7 @@ private:
     QHash<QString, QPointer<DownloadTask>> m_tasks;
     QHash<QString, MediaRemux *> m_remuxes;
     QHash<QString, QString> m_remuxOutputs;
-    QHash<QString, QFile *> m_cacheCopySources;
-    QHash<QString, QFile *> m_cacheCopyTargets;
-    QHash<QString, QFile *> m_seedSources;
-    QHash<QString, QFile *> m_seedTargets;
-    QHash<QString, qint64> m_seedRemaining;
-    QHash<QString, QFile *> m_publishSources;
-    QHash<QString, QFile *> m_publishTargets;
-    QHash<QString, QString> m_publishFinalPaths;
-    QHash<QString, QString> m_publishStagingDirs;
-    QHash<QString, QString> m_pendingPublishMessages;
+    QHash<QString, ChunkCopy> m_chunkCopies;
     QTimer *m_saveTimer = nullptr;
     QTimer *m_notifyTimer = nullptr;
     QTimer *m_speedTimer = nullptr;
@@ -156,9 +168,7 @@ private:
         qint64 lastBytes = 0;
     };
     QHash<QString, SpeedState> m_speedStates;
-    QTimer *m_cacheCopyTimer = nullptr;
-    QTimer *m_seedTimer = nullptr;
-    QTimer *m_publishTimer = nullptr;
+    QTimer *m_chunkCopyTimer = nullptr;
     QTimer *m_cacheCleanupTimer = nullptr;
     QString m_statePath;
     bool m_shuttingDown = false;
