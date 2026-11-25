@@ -996,6 +996,7 @@ private slots:
     void playlistModelRefreshesSignedUrlWithoutLosingProgress();
     void playlistModelUpdatesPlaybackPositionSeparately();
     void playbackModeTextMatchesCompactLabels();
+    void playbackSeekStepClampsToMediaBounds();
     void sourceConfigJsonRoundTrip();
     void sourceRegistryKeepsLongTermSeedsOnly();
     void sourceConfigSecretsNotPlaintext();
@@ -1519,6 +1520,18 @@ void CoreLogicTest::playbackModeTextMatchesCompactLabels()
              QStringLiteral("随机播放"));
     QCOMPARE(PlaybackController::modeDisplayText(Mode::Random, true),
              QStringLiteral("随机"));
+}
+
+void CoreLogicTest::playbackSeekStepClampsToMediaBounds()
+{
+    // 正常步进、开头与结尾夹取、未知时长保持原位。
+    QCOMPARE(PlaybackController::steppedSeekTarget(30000, 120000, 10000), 40000);
+    QCOMPARE(PlaybackController::steppedSeekTarget(30000, 120000, -10000), 20000);
+    QCOMPARE(PlaybackController::steppedSeekTarget(5000, 120000, -10000), 0);
+    QCOMPARE(PlaybackController::steppedSeekTarget(115000, 120000, 10000), 120000);
+    QCOMPARE(PlaybackController::steppedSeekTarget(30000, 0, 10000), 30000);
+    // 基准位置本身越界时也要先夹回媒体范围，不能让 UI 把负位置传下去。
+    QCOMPARE(PlaybackController::steppedSeekTarget(-5000, 120000, 0), 0);
 }
 
 void CoreLogicTest::sourceConfigJsonRoundTrip()

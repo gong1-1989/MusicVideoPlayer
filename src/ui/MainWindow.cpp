@@ -269,6 +269,8 @@ MainWindow::MainWindow(QWidget *parent)
     playbackUi.stop = ui->btn_stop;
     playbackUi.previous = ui->btn_prev;
     playbackUi.next = ui->btn_next;
+    playbackUi.seekBack = ui->btn_seekBack;
+    playbackUi.seekForward = ui->btn_seekForward;
     playbackUi.mode = ui->btn_mode;
     m_transport = new PlaybackUiController(m_player, m_playlists, ui->videoWidget,
                                            m_lyrics, playbackUi, this);
@@ -501,6 +503,12 @@ void MainWindow::executeShortcutAction(const QString &actionId)
         m_player->previous();
     } else if (actionId == QLatin1String("next")) {
         m_player->next();
+    } else if (actionId == QLatin1String("seekBack")) {
+        if (m_transport != nullptr)
+            m_transport->seekBySeconds(-10);
+    } else if (actionId == QLatin1String("seekForward")) {
+        if (m_transport != nullptr)
+            m_transport->seekBySeconds(10);
     } else if (actionId == QLatin1String("fullscreen")) {
         if (m_fullscreen != nullptr)
             m_fullscreen->toggle();

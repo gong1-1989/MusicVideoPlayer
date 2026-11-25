@@ -169,6 +169,22 @@ QPixmap builtinPixmap(const QString &name, const QColor &color, int pixelSize)
         QPolygonF triangle;
         triangle << QPointF(16, 14) << QPointF(16, 50) << QPointF(41, 32);
         painter->drawPolygon(triangle);
+    } else if (name == QLatin1String("seek-back")) {
+        // 双三角表示快退，不含竖线，避免和“上一首”的单三角+竖线混淆。
+        QPolygonF first;
+        first << QPointF(31, 14) << QPointF(31, 50) << QPointF(13, 32);
+        painter->drawPolygon(first);
+        QPolygonF second;
+        second << QPointF(52, 14) << QPointF(52, 50) << QPointF(34, 32);
+        painter->drawPolygon(second);
+    } else if (name == QLatin1String("seek-forward")) {
+        // 双三角表示快进，与“下一首”的三角+竖线保持区分。
+        QPolygonF first;
+        first << QPointF(12, 14) << QPointF(12, 50) << QPointF(30, 32);
+        painter->drawPolygon(first);
+        QPolygonF second;
+        second << QPointF(33, 14) << QPointF(33, 50) << QPointF(51, 32);
+        painter->drawPolygon(second);
     } else if (name == QLatin1String("mode-list")) {
         painter->setBrush(Qt::NoBrush);
         painter->drawArc(QRectF(14, 14, 36, 36), 45 * 16, 285 * 16);

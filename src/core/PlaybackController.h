@@ -74,6 +74,15 @@ public:
     int volumePercent() const { return m_volume; }
     void setVolumePercent(int percent);
 
+    /// 当前播放速率；默认 1.0。长按快进临时切 2×，松手恢复。
+    qreal playbackRate() const;
+    /// 设置播放速率；钳制在 0.25~4.0，避免异常值破坏音频输出。
+    void setPlaybackRate(qreal rate);
+
+    /// 计算相对跳转目标：先把基准位置夹进媒体范围，再加偏移并夹到总时长。
+    /// 纯函数供 UI 与测试复用；总时长未知时原样返回基准位置。
+    static qint64 steppedSeekTarget(qint64 position, qint64 duration, qint64 deltaMs);
+
     qint64 position() const;
     qint64 duration() const;
 

@@ -10,6 +10,8 @@
 #include "ui/VideoSurface.h"
 #include "util/TimeFormat.h"
 
+#include <QApplication>
+#include <QEvent>
 #include <QLabel>
 #include <QListView>
 #include <QMediaPlayer>
@@ -48,6 +50,8 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     Q_ASSERT(m_ui.stop != nullptr);
     Q_ASSERT(m_ui.previous != nullptr);
     Q_ASSERT(m_ui.next != nullptr);
+    Q_ASSERT(m_ui.seekBack != nullptr);
+    Q_ASSERT(m_ui.seekForward != nullptr);
     Q_ASSERT(m_ui.mode != nullptr);
 
     // 连续点击进度条时先把目标攒一下：每次点击都立刻 seek 会反复取消
@@ -56,6 +60,28 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     m_seekTimer->setSingleShot(true);
     m_seekTimer->setInterval(180);
     connect(m_seekTimer, &QTimer::timeout, this, &PlaybackUiController::flushSeek);
+
+    // 按住超过 350ms 才算长按：短按仍保持原来的 10 秒单步跳转。
+    m_forwardHoldTimer = new QTimer(this);
+    m_forwardHoldTimer->setSingleShot(true);
+    m_forwardHoldTimer->setInterval(350);
+    connect(m_forwardHoldTimer, &QTimer::timeout, this, &PlaybackUiController::beginForwardHold);
+
+    m_rewindHoldTimer = new QTimer(this);
+    m_rewindHoldTimer->setSingleShot(true);
+    m_rewindHoldTimer->setInterval(350);
+    connect(m_rewindHoldTimer, &QTimer::timeout, this, &PlaybackUiController::beginRewindHold);
+
+    // 快退长按按连续点击处理；500ms 间隔给 StreamProxy 留出预取切换时间，
+    // 比 180ms 防抖更保守，避免 HLS 每秒多次打断分片连接。
+    m_rewindRepeatTimer = new QTimer(this);
+    m_rewindRepeatTimer->setInterval(500);
+    connect(m_rewindRepeatTimer, &QTimer::timeout, this,
+            &PlaybackUiController::advanceRewindHold);
+
+    // 应用或主窗口失焦时鼠标释放不一定回到按钮，必须兜底恢复速率。
+    if (qApp != nullptr)
+        qApp->installEventFilter(this);
 
     connect(m_ui.previous, &QPushButton::clicked, this, [this] {
         m_playlists->ensurePlaylist();
@@ -67,6 +93,40 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
         m_playlists->ensurePlaylist();
         m_player->next();
     });
+
+    // 快退：短按 -10 秒；长按先退 10 秒，之后每 500ms 再退 10 秒。
+    connect(m_ui.seekBack, &QPushButton::pressed, this, [this] {
+        m_rewindPressConsumed = false;
+        m_rewindHoldTimer->start();
+    });
+    connect(m_ui.seekBack, &QPushButton::released, this, [this] {
+        if (m_rewindHoldTimer->isActive()) {
+            m_rewindHoldTimer->stop();
+            seekBySeconds(-10);
+        } else if (m_rewindHoldActive) {
+            endRewindHold();
+        }
+        // 其他情况说明长按已被停止/切歌/失焦提前收尾，松手不再补跳。
+    });
+
+    // 快进：短按 +10 秒；播放中长按切 2×，松手恢复原速率；暂停/停止时
+    // 长按无倍速意义，松手仍按一次普通快进处理。
+    connect(m_ui.seekForward, &QPushButton::pressed, this, [this] {
+        m_forwardPressConsumed = false;
+        m_forwardHoldTimer->start();
+    });
+    connect(m_ui.seekForward, &QPushButton::released, this, [this] {
+        if (m_forwardHoldActive) {
+            endForwardHold();
+        } else if (m_forwardHoldTimer->isActive()) {
+            m_forwardHoldTimer->stop();
+            seekBySeconds(10);
+        } else if (!m_forwardPressConsumed) {
+            // 定时器已触发但当时不是播放态，没进入 2×；松手补一次单步快进。
+            seekBySeconds(10);
+        }
+    });
+
     connect(m_ui.mode, &QPushButton::clicked, this, &PlaybackUiController::modePressed);
 
     // 音量：滑块是唯一入口；播放器音量变化时反向同步滑块，保证快捷键、
@@ -122,10 +182,15 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     connect(m_player, &PlaybackController::durationChanged, this, [this](qint64 duration) {
         QSignalBlocker blocker(m_ui.progress);
         m_ui.progress->setRange(0, static_cast<int>(qMax<qint64>(0, duration)));
+        refreshSeekButtons();
     });
     connect(m_player, &PlaybackController::playbackStateChanged, this,
             [this](QMediaPlayer::PlaybackState state) {
+                // 暂停/停止/切歌时先结束长按，避免 2× 速率在状态切换后残留。
+                if (state != QMediaPlayer::PlayingState)
+                    cancelHolds(false);
                 refreshPlayButton(state);
+                refreshSeekButtons();
                 if (state == QMediaPlayer::StoppedState) {
                     m_seekTarget = -1;
                     // 拖动中停止后鼠标可能不会再发 sliderReleased，必须复位，
@@ -140,6 +205,8 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
             });
     connect(m_player, &PlaybackController::currentItemChanged, this,
             [this](const MediaItem &item, int row) {
+                // 长按快进播到结尾自动切歌时必须先恢复 1×，否则下一首会继续 2×。
+                cancelHolds(false);
                 m_seekTarget = -1;
                 m_seekPendingTarget = -1;
                 m_seekTimer->stop();
@@ -150,14 +217,17 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
                 m_surface->clearFrame();
                 emit statusMessage(tr("正在播放：%1").arg(item.displayName()));
                 m_lyrics->setCurrentItem(item);
+                refreshSeekButtons();
                 emit currentItemChanged(item, row);
             });
     connect(m_player, &PlaybackController::modeChanged, this,
             &PlaybackUiController::refreshModeButton);
     connect(m_player, &PlaybackController::errorOccurred, this,
             [this](const QString &message) {
+                cancelHolds(false);
                 m_seekTarget = -1;
                 emit statusMessage(tr("播放失败：%1").arg(message));
+                refreshSeekButtons();
             });
 
     // 主题切换时内置图标需要按新强调色重画；外部自定义图标也重新解析。
@@ -169,11 +239,21 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
 
     refreshIcons();
     refreshPlayButton(m_player->mediaPlayer()->playbackState());
+    refreshSeekButtons();
+}
+
+PlaybackUiController::~PlaybackUiController()
+{
+    // 控制器销毁时不能把 2× 留在播放器里；窗口关闭路径也必须恢复。
+    cancelHolds(false);
+    if (qApp != nullptr)
+        qApp->removeEventFilter(this);
 }
 
 /// @brief 播放项被移除后的界面归零：停 seek、进度归零、歌词清空。
 void PlaybackUiController::clear()
 {
+    cancelHolds(false);
     m_seekTarget = -1;
     m_seekPendingTarget = -1;
     if (m_seekTimer != nullptr)
@@ -184,7 +264,165 @@ void PlaybackUiController::clear()
     m_ui.progress->setValue(0);
     m_ui.time->setText(QStringLiteral("00:00 / 00:00"));
     m_lyrics->clear();
+    refreshSeekButtons();
 }
+
+/// @brief 相对当前位置快进/快退指定秒数。
+/// @param seconds 正数为快进、负数为快退；单位为秒。
+/// @param announce 是否向状态栏播报本次跳转；长按连续快退只在第一步播报。
+/// @return 目标确实发生变化时返回 true；无条目、时长未知或已到边界返回 false。
+bool PlaybackUiController::seekBySeconds(int seconds, bool announce)
+{
+    if (seconds == 0 || !m_player->hasCurrentItem())
+        return false;
+
+    const qint64 duration = m_player->duration();
+    if (duration <= 0)
+        return false;
+
+    // 连续快速点击时位置信号还没追上，必须从待执行/最近一次目标继续累加，
+    // 否则三次 +10 秒会都从同一个旧位置算起，实际只前进 10 秒。
+    const qint64 base = seekBasePosition();
+    const qint64 target = PlaybackController::steppedSeekTarget(
+        base, duration, static_cast<qint64>(seconds) * 1000);
+    if (target == base)
+        return false;
+
+    // HLS 由 beginSeek() 统一提示“定位中”；本地文件没有那段等待，这里补一句。
+    if (announce && !isHlsItem()) {
+        emit statusMessage(seconds > 0
+                               ? tr("快进 %1 秒：%2")
+                                     .arg(seconds)
+                                     .arg(TimeFormat::formatMs(target))
+                               : tr("快退 %1 秒：%2")
+                                     .arg(-seconds)
+                                     .arg(TimeFormat::formatMs(target)));
+    }
+    beginSeek(target);
+    return true;
+}
+
+/// @brief 长按快进开始：仅播放态切到 2×，暂停/停止保持原速率。
+void PlaybackUiController::beginForwardHold()
+{
+    if (m_forwardHoldActive || !m_player->hasCurrentItem())
+        return;
+    if (m_player->mediaPlayer()->playbackState() != QMediaPlayer::PlayingState)
+        return;
+
+    m_rateBeforeHold = m_player->playbackRate();
+    m_player->setPlaybackRate(2.0);
+    m_forwardHoldActive = true;
+    // 长按已经接管本次按下，松手时不能再补一次 +10 秒。
+    m_forwardPressConsumed = true;
+    emit statusMessage(tr("快进 2×（松开恢复）"));
+}
+
+/// @brief 结束快进长按并恢复进入前的速率。
+/// @param announce 是否提示“已恢复”；切歌/失焦等被动收尾可静默。
+void PlaybackUiController::endForwardHold(bool announce)
+{
+    if (!m_forwardHoldActive)
+        return;
+
+    m_forwardHoldActive = false;
+    m_player->setPlaybackRate(m_rateBeforeHold);
+    if (announce) {
+        emit statusMessage(tr("已恢复 %1×")
+                               .arg(m_rateBeforeHold, 0, 'f', 1));
+    }
+}
+
+/// @brief 长按快退开始：先退 10 秒，然后按 500ms 间隔连续后退。
+void PlaybackUiController::beginRewindHold()
+{
+    if (m_rewindHoldActive)
+        return;
+
+    m_rewindHoldActive = true;
+    m_rewindPressConsumed = true;
+    if (!seekBySeconds(-10)) {
+        m_rewindHoldActive = false;
+        m_rewindRepeatTimer->stop();
+        return;
+    }
+    m_rewindRepeatTimer->start();
+}
+
+/// @brief 长按快退的后续步进；到达开头后自动停止重复。
+void PlaybackUiController::advanceRewindHold()
+{
+    if (!m_rewindHoldActive) {
+        m_rewindRepeatTimer->stop();
+        return;
+    }
+    if (!seekBySeconds(-10, false)) {
+        m_rewindHoldActive = false;
+        m_rewindRepeatTimer->stop();
+    }
+}
+
+/// @brief 松开/取消长按快退；不改变播放速率，只停止后续步进。
+void PlaybackUiController::endRewindHold()
+{
+    m_rewindHoldActive = false;
+    m_rewindPressConsumed = true;
+    if (m_rewindRepeatTimer != nullptr)
+        m_rewindRepeatTimer->stop();
+    if (m_rewindHoldTimer != nullptr)
+        m_rewindHoldTimer->stop();
+}
+
+/// @brief 统一取消所有长按状态并恢复原播放速率。
+void PlaybackUiController::cancelHolds(bool announce)
+{
+    if (m_forwardHoldTimer != nullptr)
+        m_forwardHoldTimer->stop();
+    if (m_rewindHoldTimer != nullptr)
+        m_rewindHoldTimer->stop();
+    if (m_rewindRepeatTimer != nullptr)
+        m_rewindRepeatTimer->stop();
+
+    // 两个按钮的本次按下都视为已被长按消费，避免取消后松手又补一次跳转。
+    m_forwardPressConsumed = true;
+    m_rewindPressConsumed = true;
+    m_rewindHoldActive = false;
+    if (m_forwardHoldActive)
+        endForwardHold(announce);
+}
+
+/// @brief 无当前条目、时长未知或已停止时禁用快进/快退。
+void PlaybackUiController::refreshSeekButtons()
+{
+    const bool mediaLoaded = m_player->hasCurrentItem() && m_player->duration() > 0;
+    const bool playingOrPaused =
+        m_player->mediaPlayer()->playbackState() != QMediaPlayer::StoppedState;
+    const bool enabled = mediaLoaded && playingOrPaused;
+    m_ui.seekBack->setEnabled(enabled);
+    m_ui.seekForward->setEnabled(enabled);
+}
+
+/// @brief 连点累加的基准位置：优先待执行目标，其次已确认目标，最后播放器位置。
+qint64 PlaybackUiController::seekBasePosition() const
+{
+    if (m_seekPendingTarget >= 0)
+        return m_seekPendingTarget;
+    if (m_seekTarget >= 0)
+        return m_seekTarget;
+    return m_player->position();
+}
+
+/// @brief 应用/窗口失焦时鼠标释放事件可能丢失，必须在这里恢复 1×。
+bool PlaybackUiController::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event != nullptr
+        && (event->type() == QEvent::ApplicationDeactivate
+            || event->type() == QEvent::WindowDeactivate)) {
+        cancelHolds(false);
+    }
+    return QObject::eventFilter(watched, event);
+}
+
 
 /// @brief 记录 seek 目标并启动 180ms 防抖，期间重复点击只覆盖目标。
 /// @param target 目标播放位置（毫秒）。
@@ -340,8 +578,10 @@ void PlaybackUiController::refreshPlayButton(QMediaPlayer::PlaybackState state)
 /// @note 主题切换时调用，内置图标需按新强调色重绘。
 void PlaybackUiController::refreshIcons()
 {
+    UiIcons::apply(m_ui.seekBack, QStringLiteral("seek-back"), tr("快退 10 秒"), 20);
     UiIcons::apply(m_ui.previous, QStringLiteral("prev"), tr("上一首 / 上一个视频"), 20);
     UiIcons::apply(m_ui.stop, QStringLiteral("stop"), tr("停止播放"), 20);
     UiIcons::apply(m_ui.next, QStringLiteral("next"), tr("下一首 / 下一个视频"), 20);
+    UiIcons::apply(m_ui.seekForward, QStringLiteral("seek-forward"), tr("快进 10 秒"), 20);
     refreshModeButton();
 }

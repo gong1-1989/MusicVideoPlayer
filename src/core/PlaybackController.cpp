@@ -441,6 +441,9 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     if (!m_playlist || row < 0 || row >= m_playlist->size())
         return;
 
+    // 每次换源都从 1× 开始；长按快进在结尾自动切下一首时不能把 2× 带过去。
+    m_player->setPlaybackRate(1.0);
+
     // 码率切换请求的“本次强行走网络”标记只消费一次，任何普通播放都恢复
     // 默认的“本地文件 > 完整缓存 > 网络”优先级。
     const bool forceStream = std::exchange(m_forceStreamOnce, false);
@@ -609,6 +612,8 @@ void PlaybackController::stop()
     // 停止后旧 source 的延迟定位目标必须清掉，否则下一次加载会先跳到旧位置。
     m_deferredSeekMs = -1;
     m_consecutiveErrors = 0;
+    // 停止会结束任何长按快进；速率必须回到 1×。
+    m_player->setPlaybackRate(1.0);
     // 已经停止的条目不再保留备用线路队列，避免下一轮播放误用旧地址。
     m_fallbackUrls.clear();
     m_fallbackIdentity.clear();
@@ -740,6 +745,26 @@ void PlaybackController::setVolumePercent(int percent)
     const float linear = static_cast<float>(m_volume) / 100.0f;
     m_audio->setVolume(linear * linear);
     emit volumePercentChanged(m_volume);
+}
+
+qreal PlaybackController::playbackRate() const
+{
+    return m_player->playbackRate();
+}
+
+void PlaybackController::setPlaybackRate(qreal rate)
+{
+    // 长按快进只允许受控倍速；异常值可能让音频设备输出失真或直接静音。
+    m_player->setPlaybackRate(qBound(0.25, rate, 4.0));
+}
+
+qint64 PlaybackController::steppedSeekTarget(qint64 position, qint64 duration,
+                                              qint64 deltaMs)
+{
+    if (duration <= 0)
+        return position;
+    const qint64 base = qBound<qint64>(0, position, duration);
+    return qBound<qint64>(0, base + deltaMs, duration);
 }
 
 void PlaybackController::onPlaylistRowRemoved(int row)
