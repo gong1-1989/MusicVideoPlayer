@@ -1164,7 +1164,7 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
     // 可能已经挂在这个条目上，删掉会让它一直等到 504。直接复用同一条目
     // 退回单路上游，clients 全部保留，后到者继续共享同一份缓存。
     auto fallbackToSingle = [this, entry, cacheKey, upstream, headers, request, client]() {
-        if (entry->prefetch) {
+        if (entry->prefetch && entry->clients.isEmpty()) {
             entry->pending = false;
             entry->failed = true;
             finishRangePrefetch(cacheKey, entry);
@@ -1174,11 +1174,22 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
         entry->pending = true;
         entry->failed = false;
         entry->multiRange = false;
+        entry->prefetch = false;
         entry->upstreamStarted = false;
         entry->total = -1;
         entry->reply = nullptr;
-        if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
-            startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
+        QTcpSocket *trigger = client;
+        if (trigger == nullptr) {
+            for (const QPointer<QTcpSocket> &candidate : std::as_const(entry->clients)) {
+                if (!candidate.isNull()
+                    && candidate->state() == QAbstractSocket::ConnectedState) {
+                    trigger = candidate.data();
+                    break;
+                }
+            }
+        }
+        if (trigger != nullptr && trigger->state() == QAbstractSocket::ConnectedState)
+            startUpstreamRequest(trigger, upstream, headers, request, true, cacheKey);
     };
 
     if (reply == nullptr) {
