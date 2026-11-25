@@ -60,12 +60,6 @@ bool isRedirectStatus(int status)
     return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 }
 
-/// @brief 只允许 http/https 协议。
-bool isAllowedScheme(const QUrl &url)
-{
-    return url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https");
-}
-
 /// 跨 host 或 https→http 降级时剥离鉴权头，避免 Cookie/Authorization
 /// 被带到第三方 CDN 或明文连接。
 QHash<QString, QString> headersForRedirect(const QHash<QString, QString> &headers,
@@ -319,7 +313,7 @@ void HttpClient::fetchInternal(const QUrl &url, const QByteArray &range,
                                const ReplyHandler &onReady, int hop, bool deliverOnHeaders,
                                qint64 maxBytes, const QUrl &sourceOrigin)
 {
-    if (hop > kMaxRedirects || !isAllowedScheme(url)) {
+    if (hop > kMaxRedirects || !NetworkAddressPolicy::isHttpMediaUrl(url)) {
         qCWarning(lcHttp) << "重定向链被拒绝：" << redactUrl(url) << "第" << hop << "跳";
         onReady(nullptr);
         return;

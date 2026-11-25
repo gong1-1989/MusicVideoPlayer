@@ -8,6 +8,7 @@
 #include "net/NetLimits.h"
 #include "util/Aes128Cbc.h"
 #include "util/HeaderPolicy.h"
+#include "util/MediaExtensions.h"
 #include "util/NetworkAddressPolicy.h"
 #include "util/PlaylistSniffer.h"
 
@@ -51,13 +52,6 @@ QString uriAttribute(const QString &line)
     // RFC 8216 的 URI 允许不加引号；只按引号解析会漏掉 fMP4 的 init 段。
     const QRegularExpressionMatch bare = kUriAttributeBare.match(line);
     return bare.hasMatch() ? bare.captured(1).trimmed() : QString();
-}
-
-bool isHttpUrl(const QUrl &url)
-{
-    return url.isValid() && !url.isEmpty()
-        && (url.scheme().compare(QLatin1String("http"), Qt::CaseInsensitive) == 0
-            || url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) == 0);
 }
 
 QUrl resolveUrl(const QUrl &base, const QString &raw)
@@ -163,7 +157,7 @@ ParsedKeyLine parseKeyLine(const QString &line, const QUrl &base)
         return result;
     }
     result.url = resolveUrl(base, uri);
-    if (!isHttpUrl(result.url)) {
+    if (!NetworkAddressPolicy::isHttpMediaUrl(result.url)) {
         result.error = QObject::tr("EXT-X-KEY 的 URI 不是 HTTP(S)：%1").arg(uri.left(160));
         return result;
     }
@@ -415,9 +409,7 @@ void DownloadTask::startRequest()
 {
     if (m_done)
         return;
-    if (m_http == nullptr || m_url.isEmpty()
-        || (m_url.scheme() != QLatin1String("http")
-            && m_url.scheme() != QLatin1String("https"))) {
+    if (m_http == nullptr || !NetworkAddressPolicy::isHttpMediaUrl(m_url)) {
         fail(tr("下载地址无效"), true);
         return;
     }
@@ -933,7 +925,7 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
                 value = value.mid(1, value.size() - 2);
             }
             const QUrl candidate = resolveUrl(mediaBase, value);
-            if (!isHttpUrl(candidate)) {
+            if (!NetworkAddressPolicy::isHttpMediaUrl(candidate)) {
                 if (error != nullptr)
                     *error = tr("播放列表的基础地址无效");
                 return false;
@@ -1027,7 +1019,7 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
             const QString uri = uriAttribute(line);
             if (!uri.isEmpty()) {
                 const QUrl mapUrl = resolveUrl(mediaBase, uri);
-                if (!isHttpUrl(mapUrl)) {
+                if (!NetworkAddressPolicy::isHttpMediaUrl(mapUrl)) {
                     if (error != nullptr)
                         *error = tr("初始化分片地址无效");
                     return false;
@@ -1081,7 +1073,7 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
             continue;
 
         const QUrl segmentUrl = resolveUrl(mediaBase, line);
-        if (!isHttpUrl(segmentUrl)) {
+        if (!NetworkAddressPolicy::isHttpMediaUrl(segmentUrl)) {
             if (error != nullptr)
                 *error = tr("分片地址无效：%1").arg(line);
             return false;
@@ -1124,7 +1116,6 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         // 可以安全地按当前分片下载；后者默认拒绝，避免静默产出残片。
         const bool declaredVod = playlistType == QLatin1String("VOD");
         if (!declaredVod && !m_allowIncomplete) {
-            m_needsSnapshotConsent = true;
             if (error != nullptr) {
                 *error = tr("播放列表没有 #EXT-X-ENDLIST，可能是直播/仍在更新的列表。"
                             "默认不下载；可在下载管理器中确认后按当前分片强制下载。");
@@ -1134,7 +1125,6 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
             return false;
         }
 
-        m_needsSnapshotConsent = false;
         const QString reason =
             declaredVod
                 ? tr("服务器声明 #EXT-X-PLAYLIST-TYPE:VOD 但没有 #EXT-X-ENDLIST，"
@@ -1332,7 +1322,7 @@ void DownloadTask::fetchSegmentKey(const Segment &segment,
 {
     if (m_done)
         return;
-    if (!isHttpUrl(segment.key.url)
+    if (!NetworkAddressPolicy::isHttpMediaUrl(segment.key.url)
         || !NetworkAddressPolicy::allowsMediaTarget(segment.key.url, m_originUrl)) {
         fail(tr("密钥地址不可访问（可能指向本机或内网），已取消下载"), true);
         return;
@@ -1900,17 +1890,7 @@ bool DownloadTask::isMediaContentType(const QString &contentType)
 /// @brief 按 URL 后缀判断是否常见媒体/播放列表。
 bool DownloadTask::isMediaExtension(const QUrl &url)
 {
-    static const QStringList suffixes = {
-        QStringLiteral("mp3"),  QStringLiteral("mp4"),  QStringLiteral("m4a"),
-        QStringLiteral("m4v"),  QStringLiteral("mov"),  QStringLiteral("flv"),
-        QStringLiteral("ts"),   QStringLiteral("m4s"),  QStringLiteral("aac"),
-        QStringLiteral("ogg"),  QStringLiteral("oga"),  QStringLiteral("opus"),
-        QStringLiteral("wav"),  QStringLiteral("flac"), QStringLiteral("webm"),
-        QStringLiteral("mkv"),  QStringLiteral("avi"),  QStringLiteral("wmv"),
-        QStringLiteral("mpg"),  QStringLiteral("mpeg"), QStringLiteral("m3u8"),
-    };
-    const QString suffix = QFileInfo(url.path()).suffix().toLower();
-    return suffixes.contains(suffix);
+    return MediaExtensions::isMediaContentSuffix(MediaExtensions::suffixFromUrl(url));
 }
 
 /// @brief 用首块字节判断内容是否音视频。

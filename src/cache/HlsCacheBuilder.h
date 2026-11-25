@@ -69,8 +69,6 @@ public:
     void cancel();
     /// 删除播放列表条目：中止并移除这个条目的未完成与最终正文。
     void cancelAndRemove();
-    bool isActive() const { return m_active; }
-    MediaItem currentItem() const { return m_item; }
 
 signals:
     void completed(const MediaItem &item, const QString &cachePath);

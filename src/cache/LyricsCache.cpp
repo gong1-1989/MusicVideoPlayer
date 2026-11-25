@@ -3,6 +3,7 @@
 #include "cache/LyricsCache.h"
 
 #include "cache/MediaCache.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -151,10 +152,9 @@ bool isEligible(const MediaItem &item)
     if (item.type != MediaType::Music || !item.online)
         return false;
     const QUrl url = item.lyricUrl;
-    if (url.isEmpty() || !url.isValid() || url.isRelative())
+    if (url.isRelative())
         return false;
-    const QString scheme = url.scheme().toLower();
-    return scheme == QLatin1String("http") || scheme == QLatin1String("https");
+    return NetworkAddressPolicy::isHttpMediaUrl(url);
 }
 
 /// @brief 读取当前条目的歌词正文。

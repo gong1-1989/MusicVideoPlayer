@@ -4,6 +4,7 @@
 #include "core/FileNameUtils.h"
 
 #include "storage/StoragePaths.h"
+#include "util/MediaExtensions.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -26,27 +27,20 @@ constexpr int kMetaVersion = 2;
 /// @note 只接受已知媒体后缀，避免把任意路径后缀直接拼到磁盘文件名上。
 QString safeExtensionFromUrl(const QUrl &url, const QByteArray &contentType = QByteArray())
 {
-    static const QStringList known = {
-        QStringLiteral("mp3"),  QStringLiteral("m4a"), QStringLiteral("aac"),
-        QStringLiteral("flac"), QStringLiteral("wav"), QStringLiteral("ogg"),
-        QStringLiteral("oga"),  QStringLiteral("opus"), QStringLiteral("mp4"),
-        QStringLiteral("m4v"),  QStringLiteral("flv"), QStringLiteral("webm"),
-        QStringLiteral("mov"),  QStringLiteral("mkv"), QStringLiteral("ts"),
-    };
     QString suffix = QFileInfo(url.path()).suffix().toLower();
-    if (!known.contains(suffix)) {
+    if (!MediaExtensions::isCacheSafeSuffix(suffix)) {
         // 网易云这类外链把真实文件名放在查询串里：
         // `.../outer/url?id=123.mp3`。只按 path 取后缀会得到 "url"。
         const QUrlQuery query(url);
         for (const auto &pair : query.queryItems(QUrl::FullyDecoded)) {
             const QString candidate = QFileInfo(pair.second).suffix().toLower();
-            if (known.contains(candidate)) {
+            if (MediaExtensions::isCacheSafeSuffix(candidate)) {
                 suffix = candidate;
                 break;
             }
         }
     }
-    if (!known.contains(suffix) && !contentType.isEmpty()) {
+    if (!MediaExtensions::isCacheSafeSuffix(suffix) && !contentType.isEmpty()) {
         // CDN 经常给无后缀签名地址；Content-Type 是最后一道可靠线索。
         const QString type = QString::fromLatin1(contentType).toLower();
         if (type.contains(QStringLiteral("mpeg")) && type.contains(QStringLiteral("audio")))
@@ -70,7 +64,7 @@ QString safeExtensionFromUrl(const QUrl &url, const QByteArray &contentType = QB
         else if (type.contains(QStringLiteral("quicktime")))
             suffix = QStringLiteral("mov");
     }
-    if (!known.contains(suffix))
+    if (!MediaExtensions::isCacheSafeSuffix(suffix))
         suffix = QStringLiteral("bin");
     return QLatin1Char('.') + suffix;
 }

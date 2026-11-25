@@ -192,12 +192,6 @@ QString SourceConfig::validationError() const
     return QString();
 }
 
-/// @brief 媒体类型显示名（视频/音乐）。
-QString SourceConfig::typeLabel() const
-{
-    return mediaType == MediaType::Video ? QObject::tr("视频") : QObject::tr("音乐");
-}
-
 /// @brief 源实现类型显示名（内置/外部解析器/配置）。
 QString SourceConfig::kindLabel() const
 {

@@ -23,8 +23,6 @@ const char kSearchHistory[] = "search/history";
 const char kDownloadLimitMb[] = "download/limitMb";
 const char kDownloadDir[] = "download/dir";
 const char kRemovePlaybackCacheAfterDownload[] = "download/removePlaybackCache";
-const char kProbePathsVideo[] = "search/probePaths/video";
-const char kProbePathsMusic[] = "search/probePaths/music";
 const char kSourceParserCommand[] = "search/sourceParser/command";
 const char kSourceParserArguments[] = "search/sourceParser/arguments";
 const char kSourceParserTimeoutMs[] = "search/sourceParser/timeoutMs";
@@ -283,33 +281,6 @@ bool removePlaybackCacheAfterDownload()
 void setRemovePlaybackCacheAfterDownload(bool enabled)
 {
     settings().setValue(QLatin1String(kRemovePlaybackCacheAfterDownload), enabled);
-}
-
-/// @brief 读取指定媒体类型的自定义探测路径。
-/// @return 去空白、去重后的路径列表；网页型影视源不使用这些路径时为空。
-QStringList probePaths(MediaType type)
-{
-    const char *key = type == MediaType::Video ? kProbePathsVideo : kProbePathsMusic;
-    QStringList paths = settings().value(QLatin1String(key)).toStringList();
-    QStringList cleaned;
-    for (const QString &path : paths) {
-        const QString trimmed = path.trimmed();
-        if (!trimmed.isEmpty() && !cleaned.contains(trimmed))
-            cleaned.append(trimmed);
-    }
-    return cleaned;
-}
-
-void setProbePaths(MediaType type, const QStringList &paths)
-{
-    const char *key = type == MediaType::Video ? kProbePathsVideo : kProbePathsMusic;
-    QStringList cleaned;
-    for (const QString &path : paths) {
-        const QString trimmed = path.trimmed();
-        if (!trimmed.isEmpty() && !cleaned.contains(trimmed))
-            cleaned.append(trimmed);
-    }
-    settings().setValue(QLatin1String(key), cleaned);
 }
 
 QString sourceParserCommand()

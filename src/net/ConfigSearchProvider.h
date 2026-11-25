@@ -22,8 +22,6 @@ class ConfigSearchProvider : public SearchProviderBase
 public:
     ConfigSearchProvider(const SourceConfig &config, HttpClient *http, QObject *parent = nullptr);
 
-    const SourceConfig &config() const { return m_config; }
-
     void search(const QString &keyword, int limit) override;
     void abort() override;
 

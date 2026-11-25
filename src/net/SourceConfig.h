@@ -64,7 +64,6 @@ struct SourceConfig
     bool isValid() const;
     /// 配置不完整时给出具体原因（界面标红和悬停提示用），有效则返回空
     QString validationError() const;
-    QString typeLabel() const;
     QString kindLabel() const;
 };
 

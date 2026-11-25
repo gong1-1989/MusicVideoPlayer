@@ -53,6 +53,10 @@ qt_add_library(mvp_core STATIC
     src/util/Aes128Cbc.h
     src/util/Aes128Cbc.cpp
     src/util/HeaderPolicy.h
+    src/util/HtmlText.h
+    src/util/HtmlText.cpp
+    src/util/MediaExtensions.h
+    src/util/MediaExtensions.cpp
     src/util/NetworkAddressPolicy.h
     src/util/NetworkAddressPolicy.cpp
     src/util/PlaylistSniffer.h

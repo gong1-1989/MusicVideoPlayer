@@ -48,9 +48,7 @@ QUrl normalizeExternalUrl(const QString &raw, const QUrl &base = QUrl())
         text.prepend(QStringLiteral("https:"));
 
     QUrl url(text);
-    const bool httpBase = base.isValid() && !base.isRelative()
-                          && (base.scheme() == QLatin1String("http")
-                              || base.scheme() == QLatin1String("https"));
+    const bool httpBase = NetworkAddressPolicy::isHttpMediaUrl(base);
     if (url.isRelative() && httpBase)
         url = base.resolved(url);
     return url;

@@ -2,11 +2,11 @@
 /// @brief 下载目录、去重文件名与扩展名选择实现。
 #include "download/DownloadPaths.h"
 
+#include "util/MediaExtensions.h"
 #include "util/PlaylistSniffer.h"
 
 #include <QDir>
 #include <QFileInfo>
-#include <QSet>
 #include <QUuid>
 
 namespace {
@@ -130,21 +130,10 @@ QString suffixForDownload(const QUrl &url, bool hls, bool video)
         return QStringLiteral("ts");
 
     const QString suffix = normalizedSuffix(url);
-    static const QSet<QString> videoSuffixes = {
-        QStringLiteral("mp4"), QStringLiteral("m4v"), QStringLiteral("mkv"),
-        QStringLiteral("webm"), QStringLiteral("mov"), QStringLiteral("flv"),
-        QStringLiteral("avi"), QStringLiteral("wmv"), QStringLiteral("mpg"),
-        QStringLiteral("mpeg"), QStringLiteral("ts"),
-    };
-    static const QSet<QString> audioSuffixes = {
-        QStringLiteral("mp3"), QStringLiteral("m4a"), QStringLiteral("aac"),
-        QStringLiteral("flac"), QStringLiteral("wav"), QStringLiteral("ogg"),
-        QStringLiteral("opus"), QStringLiteral("wma"),
-    };
-    if (videoSuffixes.contains(suffix))
+    if (MediaExtensions::isDownloadVideoSuffix(suffix)
+        || MediaExtensions::isDownloadAudioSuffix(suffix)) {
         return suffix;
-    if (audioSuffixes.contains(suffix))
-        return suffix;
+    }
     return video ? QStringLiteral("mp4") : QStringLiteral("mp3");
 }
 

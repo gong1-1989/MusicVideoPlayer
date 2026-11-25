@@ -56,8 +56,6 @@ public:
     /// 无 #EXT-X-ENDLIST 时是否允许按当前分片下载。默认只放行服务器显式声明
     /// PLAYLIST-TYPE:VOD 的列表；这里用于用户确认后的“强制下载当前分片”。
     void setAllowIncompletePlaylist(bool allow);
-    /// 是否因缺少 #EXT-X-ENDLIST 且未声明 VOD 而被拒绝；界面据此提供强制入口。
-    bool needsSnapshotConsent() const { return m_needsSnapshotConsent; }
     /// 目标路径冲突时由下载管理器重新分配，绝不覆盖已有文件。
     void setPathResolver(std::function<QString(const QString &)> resolver);
 
@@ -199,7 +197,6 @@ private:
     bool m_ambiguousTextResolved = false;
     bool m_verifyMediaMagic = false;
     bool m_allowIncomplete = false;
-    bool m_needsSnapshotConsent = false;
     QString m_resumeFingerprint;
     QVector<Segment> m_segments;
     int m_segmentIndex = 0;

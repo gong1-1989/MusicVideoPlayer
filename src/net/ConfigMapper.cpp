@@ -2,9 +2,11 @@
 /// @brief 配置驱动搜索源的 JSON 映射纯函数实现。
 #include "net/ConfigMapper.h"
 
+#include "util/HtmlText.h"
+#include "util/NetworkAddressPolicy.h"
+
 #include <QJsonArray>
 #include <QLoggingCategory>
-#include <QRegularExpression>
 #include <QStringList>
 
 Q_LOGGING_CATEGORY(lcMapper, "mvp.net.mapper")
@@ -190,15 +192,10 @@ QString mapString(const QJsonValue &node, const QHash<QString, QString> &fields,
 /// @brief 清理接口文本：去 HTML 标签、解码常见实体并压缩空白。
 QString cleanText(const QString &raw)
 {
-    QString text = raw;
-    text.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
-    text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
-    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
-    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
-    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
-    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
-    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
-    return text.simplified();
+    // 配置接口只做单轮、含 nbsp 的命名实体解码；这里不还原数字实体，
+    // 避免把接口正文里原本要保留的 `&#...;` 文本意外改成字符。
+    static const HtmlTextPolicy policy{1, true, false, false};
+    return HtmlText::stripTags(raw, policy);
 }
 
 /// @brief 年份归一：只接受 1888..2999 的四位数字，否则保留原文本。
@@ -228,10 +225,8 @@ QUrl normalizeUrl(const QString &raw, const QUrl &base)
         url = base.resolved(url);
     // 配置源返回的是远程数据，不能让远程 JSON 直接指定 file/UNC/smb 等本地资源。
     // 允许的相对地址已经按 base 解析成 http(s)；这里再做一次白名单兜底。
-    if (!url.isValid()
-        || (url.scheme() != QLatin1String("http") && url.scheme() != QLatin1String("https"))) {
+    if (!NetworkAddressPolicy::isHttpMediaUrl(url))
         return QUrl();
-    }
     return url;
 }
 

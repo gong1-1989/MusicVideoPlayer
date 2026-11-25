@@ -2,6 +2,7 @@
 /// @brief HLS 播放列表解析、分片时间轴定位与代理地址重写。
 #include "stream/HlsPlaylist.h"
 #include "net/NetLimits.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QDateTime>
 #include <QHash>
@@ -94,9 +95,7 @@ QSharedPointer<HlsPlaylist::Info> HlsPlaylist::parse(const QByteArray &body,
             continue; // 这是 master playlist 的变体地址，不是媒体分片
 
         const QUrl segment = base.resolved(QUrl(line));
-        if (!segment.isValid()
-            || (segment.scheme() != QLatin1String("http")
-                && segment.scheme() != QLatin1String("https"))) {
+        if (!NetworkAddressPolicy::isHttpMediaUrl(segment)) {
             hasNonHttp = true;
         } else {
             // 分片数量异常多时不做预取规划，播放仍可直接走代理列表，
@@ -259,9 +258,7 @@ QList<HlsPlaylist::Variant> HlsPlaylist::variants(const QByteArray &body,
             continue;
 
         const QUrl uri = base.resolved(QUrl(line));
-        if (uri.isValid()
-            && (uri.scheme() == QLatin1String("http")
-                || uri.scheme() == QLatin1String("https"))) {
+        if (NetworkAddressPolicy::isHttpMediaUrl(uri)) {
             current.uri = uri;
             result.append(current);
         }
@@ -369,9 +366,7 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
             return raw;
 
         const QUrl absolute = base.resolved(QUrl(uri));
-        if (!absolute.isValid()
-            || (absolute.scheme() != QLatin1String("http")
-                && absolute.scheme() != QLatin1String("https"))) {
+        if (!NetworkAddressPolicy::isHttpMediaUrl(absolute)) {
             failure = QObject::tr("播放列表包含非 HTTP(S) 资源：%1").arg(uri.left(160));
             return QString();
         }
@@ -421,9 +416,7 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
             const QString value =
                 trimmed.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
             const QUrl next = base.resolved(QUrl(value));
-            if (!next.isValid()
-                || (next.scheme() != QLatin1String("http")
-                    && next.scheme() != QLatin1String("https"))) {
+            if (!NetworkAddressPolicy::isHttpMediaUrl(next)) {
                 failure = QObject::tr("播放列表的 BASE 不是 HTTP(S)：%1").arg(value.left(160));
                 break;
             }

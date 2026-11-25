@@ -8,6 +8,7 @@
 #include "download/DownloadTask.h"
 #include "settings/AppSettings.h"
 #include "ui/DownloadManagerDialog.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -69,13 +70,10 @@ void DownloadController::download(const MediaItem &item)
         m_activeSourceResolver ? m_activeSourceResolver(resolved) : QUrl();
     const QUrl source =
         activeSource.isValid() && !activeSource.isEmpty()
-            && (activeSource.scheme() == QLatin1String("http")
-                || activeSource.scheme() == QLatin1String("https"))
+            && NetworkAddressPolicy::isHttpMediaUrl(activeSource)
             ? activeSource
             : preferredPlaybackUrl(resolved);
-    if (!source.isValid()
-        || (source.scheme() != QLatin1String("http")
-            && source.scheme() != QLatin1String("https"))) {
+    if (!NetworkAddressPolicy::isHttpMediaUrl(source)) {
         emit statusMessage(tr("该条目没有可下载的直链地址"));
         return;
     }

@@ -23,6 +23,8 @@
 #include "ui/SearchWindow.h"
 #include "ui/SettingsController.h"
 #include "ui/ThemeManager.h"
+#include "util/MediaExtensions.h"
+#include "util/NetworkAddressPolicy.h"
 #include "ui/UiIcons.h"
 #include "ui/VideoStage.h"
 
@@ -803,14 +805,13 @@ bool MainWindow::playSearchItem(const MediaItem &item)
     MediaItem playable = item;
     // 搜索源理论上都填了 online，但外部解析器/手工直链偶尔会漏；
     // 只要地址是 http(s) 就按网络条目走代理和请求头，别让签名直链裸奔。
-    const QString scheme = playable.url.scheme().toLower();
-    if (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
+    const bool httpUrl = NetworkAddressPolicy::isHttpMediaUrl(playable.url);
+    if (httpUrl)
         playable.online = true;
 
     // 搜索结果只能播放网络地址：file/data/ftp 等协议既不该由远程源返回，
     // 也会绕过代理的请求头与缓存边界。
-    if (!playable.isValid() || playable.url.isRelative()
-        || (scheme != QLatin1String("http") && scheme != QLatin1String("https"))) {
+    if (!playable.isValid() || playable.url.isRelative() || !httpUrl) {
         ui->label_status->setText(tr("搜索结果缺少可播放地址，换一个来源或重新搜索试试"));
         qCWarning(lcWindow) << "搜索结果地址无效" << playable.title
                             << playable.url.toString();
@@ -911,11 +912,7 @@ void MainWindow::refreshBitrateBar()
         QString quality = item.quality;
         if (quality.isEmpty() && !item.online && item.url.isLocalFile()) {
             const QString suffix = QFileInfo(item.url.toLocalFile()).suffix().toLower();
-            static const QStringList lossless = {
-                QStringLiteral("flac"), QStringLiteral("ape"), QStringLiteral("wav"),
-                QStringLiteral("aiff"), QStringLiteral("alac"), QStringLiteral("dsf")
-            };
-            if (lossless.contains(suffix))
+            if (MediaExtensions::isLosslessAudioSuffix(suffix))
                 quality = tr("无损");
             else if (!suffix.isEmpty())
                 quality = suffix.toUpper();

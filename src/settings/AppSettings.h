@@ -51,10 +51,6 @@ void setSearchLimit(int limit);
 QStringList searchHistory();
 void setSearchHistory(const QStringList &history);
 
-/// 探源时先试的用户自定义接口路径（相对站点，或完整 URL；支持 {keyword}/{limit}）
-QStringList probePaths(MediaType type);
-void setProbePaths(MediaType type, const QStringList &paths);
-
 /// 新增/更新搜索源时调用的外部解析器。命令与参数支持占位符
 /// {site} {type} {mode}；解析器输出 JSON（成功给 source，失败给 error）。
 QString sourceParserCommand();

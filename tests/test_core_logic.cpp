@@ -29,6 +29,8 @@
 #include "stream/StreamTokenRegistry.h"
 #include "util/Aes128Cbc.h"
 #include "util/HeaderPolicy.h"
+#include "util/HtmlText.h"
+#include "util/MediaExtensions.h"
 #include "util/NetworkAddressPolicy.h"
 #include "util/PlaylistSniffer.h"
 #include "util/SecretStore.h"
@@ -1022,6 +1024,8 @@ private slots:
     void headerPolicyFailsClosedWithoutOrigin();
     void headerPolicyMatchesCompactedNames();
     void networkAddressPolicyBlocksPrivateMediaTargets();
+    void htmlTextPoliciesPreserveSiteDifferences();
+    void mediaExtensionsKeepCategorySets();
     void playlistSnifferRecognizesBody();
     void downloadRejectsHtmlDisguisedAsOctetStream();
     void downloadUsesContentRangeEndWhenTotalUnknown();
@@ -2514,6 +2518,56 @@ void CoreLogicTest::networkAddressPolicyBlocksPrivateMediaTargets()
         QUrl(QStringLiteral("ftp://example.com/a.mp4")), publicSource));
     QVERIFY(!NetworkAddressPolicy::allowsMediaTarget(
         QUrl(QStringLiteral("file:///C:/a.mp4")), publicSource));
+
+    // 统一 URL 判断的边界：必须有 host，拒绝协议正确但 host 为空的异常地址。
+    QVERIFY(NetworkAddressPolicy::isHttpMediaUrl(
+        QUrl(QStringLiteral("https://cdn.example/a.mp4"))));
+    QVERIFY(!NetworkAddressPolicy::isHttpMediaUrl(QUrl(QStringLiteral("http:///a.mp4"))));
+    QVERIFY(!NetworkAddressPolicy::isHttpMediaUrl(QUrl(QStringLiteral("ftp://example.com/a.mp4"))));
+    QVERIFY(!NetworkAddressPolicy::isHttpMediaUrl(QUrl()));
+}
+
+void CoreLogicTest::htmlTextPoliciesPreserveSiteDifferences()
+{
+    // Maccms 网页源：双层转义、nbsp、数字实体都要还原。
+    const HtmlTextPolicy maccms{2, true, true, true};
+    QCOMPARE(HtmlText::decodeEntities(QStringLiteral("&amp;#39;"), maccms),
+             QStringLiteral("'"));
+    QCOMPARE(HtmlText::decodeEntities(QStringLiteral("&#x4E07;"), maccms),
+             QStringLiteral("万"));
+    QCOMPARE(HtmlText::decodeEntities(QStringLiteral("&#xD800;"), maccms),
+             QStringLiteral("&#xD800;"));
+
+    // 搜索链接属性：只解一轮，不把 nbsp 当成空格。
+    const HtmlTextPolicy attribute{1, false, true, true};
+    QCOMPARE(HtmlText::decodeEntities(QStringLiteral("&#x2F;"), attribute),
+             QStringLiteral("/"));
+    QCOMPARE(HtmlText::decodeEntities(QStringLiteral("&nbsp;"), attribute),
+             QStringLiteral("&nbsp;"));
+
+    // 配置映射：保留 nbsp，但不还原数字实体和 &apos;，避免改变接口正文。
+    const HtmlTextPolicy mapper{1, true, false, false};
+    QCOMPARE(HtmlText::stripTags(QStringLiteral("<b>A&nbsp;B</b>"), mapper),
+             QStringLiteral("A B"));
+    QCOMPARE(HtmlText::decodeEntities(QStringLiteral("&#x4E07;"), mapper),
+             QStringLiteral("&#x4E07;"));
+    QCOMPARE(HtmlText::decodeEntities(QStringLiteral("&apos;"), mapper),
+             QStringLiteral("&apos;"));
+}
+
+void CoreLogicTest::mediaExtensionsKeepCategorySets()
+{
+    QCOMPARE(MediaExtensions::suffixFromUrl(
+                 QUrl(QStringLiteral("https://cdn.example/a.MP3?next=.mp4"))),
+             QStringLiteral("mp3"));
+    QVERIFY(MediaExtensions::isCacheSafeSuffix(QStringLiteral("oga")));
+    QVERIFY(!MediaExtensions::isCacheSafeSuffix(QStringLiteral("m4s")));
+    QVERIFY(MediaExtensions::isMediaContentSuffix(QStringLiteral("m4s")));
+    QVERIFY(MediaExtensions::isDirectLinkSuffix(QStringLiteral("mpd")));
+    QVERIFY(!MediaExtensions::isCacheSafeSuffix(QStringLiteral("mpd")));
+    QVERIFY(MediaExtensions::isAudioSuffix(QStringLiteral("wma")));
+    QVERIFY(MediaExtensions::isLosslessAudioSuffix(QStringLiteral("ape")));
+    QVERIFY(!MediaExtensions::isLosslessAudioSuffix(QStringLiteral("mp3")));
 }
 
 void CoreLogicTest::downloadHlsVerifiesSegmentsAndMapRange()

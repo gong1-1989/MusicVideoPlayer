@@ -6,6 +6,7 @@
 #include "net/HttpClient.h"
 #include "net/MaccmsWebProvider.h"
 #include "net/NetLimits.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QCryptographicHash>
 #include <QHash>
@@ -867,9 +868,7 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     m_clock.start();
 
     m_site = site;
-    if (!m_site.isValid()
-        || (m_site.scheme() != QLatin1String("http")
-            && m_site.scheme() != QLatin1String("https"))) {
+    if (!NetworkAddressPolicy::isHttpMediaUrl(m_site)) {
         fail(tr("网址无效，必须以 http:// 或 https:// 开头"));
         return;
     }

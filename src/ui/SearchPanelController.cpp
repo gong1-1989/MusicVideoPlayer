@@ -12,6 +12,9 @@
 #include "ui/ThemeManager.h"
 #include "ui/UiIcons.h"
 #include "util/HeaderPolicy.h"
+#include "util/HtmlText.h"
+#include "util/MediaExtensions.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -321,59 +324,19 @@ private:
 /// 粘贴链接识别的常用媒体后缀：命中就直接当直链，不再发多源搜索。
 bool isDirectMediaPath(const QString &path)
 {
-    static const QStringList suffixes = {
-        QStringLiteral("mp3"), QStringLiteral("m4a"), QStringLiteral("aac"),
-        QStringLiteral("flac"), QStringLiteral("wav"), QStringLiteral("ogg"),
-        QStringLiteral("opus"), QStringLiteral("mp4"), QStringLiteral("m4v"),
-        QStringLiteral("mov"), QStringLiteral("webm"), QStringLiteral("mkv"),
-        QStringLiteral("flv"), QStringLiteral("ts"), QStringLiteral("m3u8"),
-        QStringLiteral("mpd")};
-    const QString suffix = path.section(QLatin1Char('.'), -1).toLower();
-    return suffixes.contains(suffix);
+    return MediaExtensions::isDirectLinkSuffix(MediaExtensions::suffixFromPath(path));
 }
 
 bool looksLikeHttpUrl(const QString &text)
 {
-    const QUrl url(text);
-    return url.isValid() && (url.scheme() == QLatin1String("http")
-                             || url.scheme() == QLatin1String("https"))
-           && !url.host().isEmpty();
+    return NetworkAddressPolicy::isHttpMediaUrl(QUrl(text));
 }
 
 QString decodeAttributeEntities(const QString &raw)
 {
-    QString text = raw;
-    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
-    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
-    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
-    text.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
-    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
-    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
     // 网页里的播放地址常写成 &#x2F; 这种数字实体；不还原会让 QUrl 解析出坏路径。
-    static const QRegularExpression numeric(
-        QStringLiteral("&#(?:[xX]([0-9a-fA-F]{1,6})|([0-9]{1,7}));"));
-    QString result;
-    int last = 0;
-    QRegularExpressionMatchIterator it = numeric.globalMatch(text);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch match = it.next();
-        bool ok = false;
-        const uint code = match.captured(1).isEmpty()
-                              ? match.captured(2).toUInt(&ok, 10)
-                              : match.captured(1).toUInt(&ok, 16);
-        const bool valid = ok && code > 0 && code <= 0x10FFFF
-                           && !(code >= 0xD800 && code <= 0xDFFF);
-        result += text.mid(last, match.capturedStart() - last);
-        if (valid) {
-            const char32_t point = static_cast<char32_t>(code);
-            result += QString::fromUcs4(&point, 1);
-        } else {
-            result += match.captured(0);
-        }
-        last = match.capturedEnd();
-    }
-    result += text.mid(last);
-    return result;
+    static const HtmlTextPolicy policy{1, false, true, true};
+    return HtmlText::decodeEntities(raw, policy);
 }
 
 QString directMediaTitle(const QUrl &url)
@@ -410,10 +373,7 @@ QString extractPageMediaUrl(const QString &html, const QUrl &base)
                                       .replace(QStringLiteral("\\u0026"), QStringLiteral("&"));
         const QUrl resolved = base.resolved(QUrl(candidate));
         // 只接受 http/https：网页里可能混入 javascript:/ftp:/data: 地址。
-        if (resolved.isValid()
-            && (resolved.scheme() == QLatin1String("http")
-                || resolved.scheme() == QLatin1String("https"))
-            && !resolved.host().isEmpty())
+        if (NetworkAddressPolicy::isHttpMediaUrl(resolved))
             return resolved.toString();
     }
     return QString();
@@ -846,11 +806,7 @@ bool SearchPanelController::tryHandlePastedLink(const QString &text)
 void SearchPanelController::handleDirectMediaLink(const QUrl &url)
 {
     const QString suffix = url.path().section(QLatin1Char('.'), -1).toLower();
-    const bool audio = QStringList{QStringLiteral("mp3"), QStringLiteral("m4a"),
-                                   QStringLiteral("aac"), QStringLiteral("flac"),
-                                   QStringLiteral("wav"), QStringLiteral("ogg"),
-                                   QStringLiteral("opus")}
-                           .contains(suffix);
+    const bool audio = MediaExtensions::isAudioSuffix(suffix);
 
     MediaItem item;
     item.type = audio ? MediaType::Music : MediaType::Video;

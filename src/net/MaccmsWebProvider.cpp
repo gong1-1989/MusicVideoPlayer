@@ -5,6 +5,7 @@
 #include "net/HttpClient.h"
 #include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
+#include "util/HtmlText.h"
 #include "util/NetworkAddressPolicy.h"
 
 #include <QJsonArray>
@@ -72,52 +73,14 @@ QString decodeEntities(const QString &raw)
 {
     // 采集站经常把同一段文字做两次 HTML 转义（&amp;#39; / &amp;quot;）。
     // 最多解两轮；数字实体也要还原，否则片名里会出现 &#x4E07; 这种原样文本。
-    QString text = raw;
-    static const QRegularExpression numeric(
-        QStringLiteral("&#(?:[xX]([0-9a-fA-F]{1,6})|([0-9]{1,7}));"));
-    for (int pass = 0; pass < 2; ++pass) {
-        const QString before = text;
-        text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
-        text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
-        text.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
-        text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
-        text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
-        text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
-        text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
-
-        QString decoded;
-        int last = 0;
-        QRegularExpressionMatchIterator it = numeric.globalMatch(text);
-        while (it.hasNext()) {
-            const QRegularExpressionMatch match = it.next();
-            bool ok = false;
-            const uint code = match.captured(1).isEmpty()
-                                  ? match.captured(2).toUInt(&ok, 10)
-                                  : match.captured(1).toUInt(&ok, 16);
-            const bool valid = ok && code > 0 && code <= 0x10FFFF
-                               && !(code >= 0xD800 && code <= 0xDFFF);
-            decoded += text.mid(last, match.capturedStart() - last);
-            if (valid) {
-                const char32_t codePoint = static_cast<char32_t>(code);
-                decoded += QString::fromUcs4(&codePoint, 1);
-            } else {
-                decoded += match.captured(0);
-            }
-            last = match.capturedEnd();
-        }
-        decoded += text.mid(last);
-        text = decoded;
-        if (text == before)
-            break;
-    }
-    return text;
+    static const HtmlTextPolicy policy{2, true, true, true};
+    return HtmlText::decodeEntities(raw, policy);
 }
 
 QString stripTags(const QString &raw)
 {
-    QString text = raw;
-    text.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
-    return decodeEntities(text).simplified();
+    static const HtmlTextPolicy policy{2, true, true, true};
+    return HtmlText::stripTags(raw, policy);
 }
 
 /// player_aaaa 里的地址是 JS 字符串：\u56fd 这种转义必须先还原成中文，
@@ -391,7 +354,7 @@ void MaccmsWebProvider::search(const QString &keyword, int limit)
     // 站点根只保留 scheme/host/port/path；直接字符串补 `/` 会把
     // `https://host/api.php?x=1` 变成 `...?x=1/`，后续拼路径全部失效。
     QUrl rootUrl(base);
-    if (rootUrl.scheme() != QLatin1String("http") && rootUrl.scheme() != QLatin1String("https")) {
+    if (!NetworkAddressPolicy::isHttpMediaUrl(rootUrl)) {
         finish(tr("站点地址不是 http/https：%1").arg(base));
         return;
     }
@@ -437,8 +400,7 @@ QUrl MaccmsWebProvider::siteUrl(const QString &relative) const
     if (relative.isEmpty())
         return QUrl();
     const QUrl parsed(relative);
-    if (parsed.isValid() && !parsed.scheme().isEmpty()
-        && (parsed.scheme() == QLatin1String("http") || parsed.scheme() == QLatin1String("https")))
+    if (NetworkAddressPolicy::isHttpMediaUrl(parsed))
         return parsed;
     QString path = relative;
     if (path.startsWith(QLatin1Char('/')))

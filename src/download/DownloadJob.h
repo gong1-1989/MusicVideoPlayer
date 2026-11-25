@@ -77,7 +77,6 @@ struct DownloadJob
 
     int percent() const;
     QString statusText() const;
-    bool isActive() const { return status == Status::Downloading; }
     /// 当前实际写入的工作路径：暂存任务在 stagingPath，其他在 filePath。
     QString workPath() const { return stagingPath.isEmpty() ? filePath : stagingPath; }
     /// 当前任务半成品路径，固定跟在 workPath() 后。

@@ -444,10 +444,7 @@ void ConfigSearchProvider::launchDetails()
         vars.insert(QStringLiteral("artist"), encoded(m_pendingArtists.value(index)));
 
         const QUrl requestUrl(renderTemplate(m_config.detailUrlTemplate, vars));
-        const QString detailScheme = requestUrl.scheme();
-        if (!requestUrl.isValid()
-            || (detailScheme != QLatin1String("http")
-                && detailScheme != QLatin1String("https"))) {
+        if (!NetworkAddressPolicy::isHttpMediaUrl(requestUrl)) {
             qCWarning(lcProvider) << m_config.id << "详情地址不是 HTTP(S)："
                                   << HttpClient::redactUrl(requestUrl);
             ++m_filtered;

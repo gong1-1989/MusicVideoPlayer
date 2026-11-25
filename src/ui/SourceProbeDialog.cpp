@@ -4,6 +4,7 @@
 
 #include "ui/ThemeManager.h"
 #include "ui_SourceProbeDialog.h"
+#include "util/NetworkAddressPolicy.h"
 
 #include <QComboBox>
 #include <QCoreApplication>
@@ -47,9 +48,7 @@ QUrl normalizeSite(const QString &text)
     if (!trimmed.contains(QStringLiteral("://")))
         trimmed.prepend(QStringLiteral("https://"));
     QUrl url(trimmed);
-    if (!url.isValid() || url.host().isEmpty())
-        return QUrl();
-    if (url.scheme() != QLatin1String("http") && url.scheme() != QLatin1String("https"))
+    if (!NetworkAddressPolicy::isHttpMediaUrl(url))
         return QUrl();
     return url;
 }
