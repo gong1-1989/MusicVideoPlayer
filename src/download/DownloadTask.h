@@ -99,28 +99,73 @@ signals:
     void finished();
 
 private:
+    /// HLS 分段会话：集中保存播放列表结构、密钥缓存和分片推进状态。
+    /// 网络请求、文件写入与信号仍由 DownloadTask 统一负责。
+    class HlsDownloadSession
+    {
+    public:
+        struct Key
+        {
+            bool enabled = false;
+            QString method;
+            QUrl url;
+            QByteArray iv;
+            /// 非空表示该段使用了当前不支持的加密方式（如 SAMPLE-AES）。
+            QString unsupported;
+        };
+
+        struct Segment
+        {
+            QUrl url;
+            QByteArray range;
+            Key key;
+        };
+
+        enum class Snapshot
+        {
+            None,
+            Accepted,
+            ConsentRequired
+        };
+
+        struct ParseResult
+        {
+            bool ok = false;
+            bool isMaster = false;
+            QUrl variantUrl;
+            QString error;
+            Snapshot snapshot = Snapshot::None;
+            QString snapshotReason;
+        };
+
+        /// 应用主列表带下来的 SESSION-KEY；解析失败按不支持记录。
+        void applySessionKeyLine(const QString &line, const QUrl &baseUrl);
+        ParseResult parsePlaylist(const QByteArray &body, const QUrl &baseUrl,
+                                  bool allowIncomplete);
+        QString fingerprint() const;
+        void clearKeyMaterial();
+
+        Key sessionKey;
+        bool fragmentedMp4 = false;
+        QVector<Segment> segments;
+        int segmentIndex = 0;
+        int resumeSegmentIndex = 0;
+        bool playlistFileReady = false;
+        int playlistHop = 0;
+        QHash<QString, QByteArray> keyCache;
+        QByteArray currentKey;
+        Segment currentSegment;
+        QByteArray segmentCipher;
+        qint64 segmentBytes = 0;
+        qint64 segmentExpected = -1;
+        qint64 segmentFileOffset = 0;
+    };
+
     DownloadTask(HttpClient *http,
                  const QUrl &url,
                  const QString &filePath,
                  const QHash<QString, QString> &headers,
                  QObject *parent);
-
-    struct HlsKey
-    {
-        bool enabled = false;
-        QString method;
-        QUrl url;
-        QByteArray iv;
-        /// 非空表示该段使用了当前不支持的加密方式（如 SAMPLE-AES）。
-        QString unsupported;
-    };
-
-    struct Segment
-    {
-        QUrl url;
-        QByteArray range;
-        HlsKey key;
-    };
 
     void startRequest();
     void startDirectRequest();
@@ -131,13 +176,15 @@ private:
     void onPlaylistFinished(QNetworkReply *reply);
     void startPlaylistFetch(const QUrl &url, int hop);
     void startNextSegment();
-    void startSegmentRequest(const Segment &segment);
+    void startSegmentRequest(const HlsDownloadSession::Segment &segment);
     void onSegmentFinished(QNetworkReply *reply);
     void onDirectFinished(QNetworkReply *reply);
     void writeReplyData(QNetworkReply *reply);
-    bool writeDecryptedSegment(const Segment &segment);
-    void fetchSegmentKey(const Segment &segment, const std::function<void()> &ready);
-    void onSegmentKeyFinished(QNetworkReply *reply, const Segment &segment,
+    bool writeDecryptedSegment(const HlsDownloadSession::Segment &segment);
+    void fetchSegmentKey(const HlsDownloadSession::Segment &segment,
+                         const std::function<void()> &ready);
+    void onSegmentKeyFinished(QNetworkReply *reply,
+                              const HlsDownloadSession::Segment &segment,
                               const QString &cacheKey, const std::function<void()> &ready);
     void clearKeyMaterial();
     bool openTargetFile();
@@ -176,32 +223,18 @@ private:
     /// 本次响应新写入的字节数；续传时 m_bytesWritten 含旧文件，不能用它判断
     /// “服务器这次是否真的返回了内容”。
     qint64 m_sessionBytesWritten = 0;
-    qint64 m_segmentBytes = 0;
-    qint64 m_segmentExpected = -1;
-    /// 当前分片在合并轨道文件里的起始偏移，完成时用于生成播放缓存切片。
-    qint64 m_segmentFileOffset = 0;
-    /// 加密分片必须整段收齐才能验 PKCS#7 填充，收完前只放内存、不写盘。
-    QByteArray m_segmentCipher;
-    /// 当前分片的明文密钥；只在单个分片生命周期内保留。
-    QByteArray m_currentKey;
-    QHash<QString, QByteArray> m_keyCache;
-    HlsKey m_sessionKey;
-    Segment m_currentSegment;
     qint64 m_maxBytes = NetLimits::kDownloadBytes;
     qint64 m_resumeBytes = 0;
     qint64 m_lastCheckpointMs = 0;
 
+    /// HLS 播放列表、密钥与分片推进状态统一收在这里。
+    HlsDownloadSession m_hls;
+
     bool m_isHls = false;
-    bool m_fragmentedMp4 = false;
-    bool m_playlistFileReady = false;
     bool m_ambiguousTextResolved = false;
     bool m_verifyMediaMagic = false;
     bool m_allowIncomplete = false;
     QString m_resumeFingerprint;
-    QVector<Segment> m_segments;
-    int m_segmentIndex = 0;
-    int m_resumeSegmentIndex = 0;
-    int m_playlistHop = 0;
 };
 
 #endif // DOWNLOADTASK_H

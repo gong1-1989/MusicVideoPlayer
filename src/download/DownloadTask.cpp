@@ -266,7 +266,7 @@ bool DownloadTask::openTargetFile()
             return false;
         }
         m_bytesWritten = 0;
-        m_resumeSegmentIndex = 0;
+        m_hls.resumeSegmentIndex = 0;
         m_file->seek(0);
         if (m_isHls)
             emit targetResetted();
@@ -296,7 +296,7 @@ void DownloadTask::resetTargetFile()
     // 即使文件尚未打开，也必须清空续传计数；否则后续 startRequest 会拿旧偏移。
     if (m_file == nullptr) {
         m_bytesWritten = 0;
-        m_resumeSegmentIndex = 0;
+        m_hls.resumeSegmentIndex = 0;
         if (m_isHls)
             emit targetResetted();
         return;
@@ -307,7 +307,7 @@ void DownloadTask::resetTargetFile()
     }
     m_file->seek(0);
     m_bytesWritten = 0;
-    m_resumeSegmentIndex = 0;
+    m_hls.resumeSegmentIndex = 0;
     if (m_isHls)
         emit targetResetted();
 }
@@ -319,7 +319,7 @@ void DownloadTask::resetTargetFile()
 void DownloadTask::setResumeState(qint64 bytesWritten, int segmentIndex, bool hls)
 {
     m_resumeBytes = qMax<qint64>(0, bytesWritten);
-    m_resumeSegmentIndex = qMax(0, segmentIndex);
+    m_hls.resumeSegmentIndex = qMax(0, segmentIndex);
     if (hls)
         m_isHls = true;
 }
@@ -339,7 +339,7 @@ void DownloadTask::setOriginUrl(const QUrl &origin)
 
 /// @brief 设置 HLS 分片请求的本地映射（通常指向本机流转代理）。
 /// @param mapper 输入原始分片地址，返回真正发起请求的地址；返回空地址时回退原地址。
-/// @note 只改变网络请求地址，不改变 m_currentSegment.url，因此分片索引、
+/// @note 只改变网络请求地址，不改变 m_hls.currentSegment.url，因此分片索引、
 ///       续传指纹和日志仍使用原始源站地址。
 void DownloadTask::setHlsSegmentUrlMapper(SegmentUrlMapper mapper)
 {
@@ -353,23 +353,29 @@ void DownloadTask::setHlsSessionKey(const QString &line, const QUrl &baseUrl)
 {
     if (line.trimmed().isEmpty())
         return;
-    const ParsedKeyLine parsed = parseKeyLine(line.trimmed(), baseUrl);
+    m_hls.applySessionKeyLine(line.trimmed(), baseUrl);
+}
+
+void DownloadTask::HlsDownloadSession::applySessionKeyLine(const QString &line,
+                                                           const QUrl &baseUrl)
+{
+    const ParsedKeyLine parsed = parseKeyLine(line, baseUrl);
     if (!parsed.error.isEmpty()) {
-        m_sessionKey = HlsKey();
-        m_sessionKey.unsupported = parsed.error;
+        sessionKey = Key();
+        sessionKey.unsupported = parsed.error;
         return;
     }
     if (parsed.kind == ParsedKeyLine::Kind::Supported) {
-        if (!m_sessionKey.enabled) {
-            m_sessionKey.enabled = true;
-            m_sessionKey.method = parsed.method;
-            m_sessionKey.url = parsed.url;
-            m_sessionKey.iv = parsed.iv;
-            m_sessionKey.unsupported.clear();
+        if (!sessionKey.enabled) {
+            sessionKey.enabled = true;
+            sessionKey.method = parsed.method;
+            sessionKey.url = parsed.url;
+            sessionKey.iv = parsed.iv;
+            sessionKey.unsupported.clear();
         }
     } else if (parsed.kind == ParsedKeyLine::Kind::Unsupported
-               && !m_sessionKey.enabled && m_sessionKey.unsupported.isEmpty()) {
-        m_sessionKey.unsupported = parsed.method;
+               && !sessionKey.enabled && sessionKey.unsupported.isEmpty()) {
+        sessionKey.unsupported = parsed.method;
     }
 }
 
@@ -412,7 +418,7 @@ void DownloadTask::startRequest()
         return;
 
     if (m_isHls) {
-        // 已知是 HLS：先重新拉播放列表，再按 m_resumeSegmentIndex 跳过已完成分片。
+        // 已知是 HLS：先重新拉播放列表，再按 m_hls.resumeSegmentIndex 跳过已完成分片。
         startPlaylistFetch(m_url, 0);
         return;
     }
@@ -691,25 +697,25 @@ void DownloadTask::onPlaylistFinished(QNetworkReply *reply)
     }
 
     if (isMaster) {
-        if (m_playlistHop >= 2) {
+        if (m_hls.playlistHop >= 2) {
             fail(tr("播放列表嵌套层级过深，无法确定码率"));
             return;
         }
-        startPlaylistFetch(variantUrl, m_playlistHop + 1);
+        startPlaylistFetch(variantUrl, m_hls.playlistHop + 1);
         return;
     }
 
-    if (m_segments.isEmpty()) {
+    if (m_hls.segments.isEmpty()) {
         fail(tr("播放列表里没有可下载的分片（可能是直播流或字段为空）"));
         return;
     }
 
-    qCInfo(lcDownload) << "HLS 播放列表解析完成，分片数：" << m_segments.size();
+    qCInfo(lcDownload) << "HLS 播放列表解析完成，分片数：" << m_hls.segments.size();
 
     const QString fingerprint = computePlaylistFingerprint();
     emit playlistFingerprint(fingerprint);
 
-    int resumeIndex = m_isHls ? m_resumeSegmentIndex : 0;
+    int resumeIndex = m_isHls ? m_hls.resumeSegmentIndex : 0;
     // 续传必须属于同一份分片结构。旧状态没有指纹时不能冒险拼接；
     // CDN 重新切片/换码率后，即使分片数没变，旧前缀和新分片也可能不是同一时间线。
     if (resumeIndex > 0 && m_resumeFingerprint != fingerprint) {
@@ -719,29 +725,29 @@ void DownloadTask::onPlaylistFinished(QNetworkReply *reply)
         if (m_done)
             return;
         resumeIndex = 0;
-        m_resumeSegmentIndex = 0;
-    } else if (resumeIndex > m_segments.size()) {
+        m_hls.resumeSegmentIndex = 0;
+    } else if (resumeIndex > m_hls.segments.size()) {
         qCWarning(lcDownload) << "播放列表分片数少于续传序号，改为从头下载 resume="
-                              << resumeIndex << "count=" << m_segments.size();
+                              << resumeIndex << "count=" << m_hls.segments.size();
         resetTargetFile();
         if (m_done)
             return;
         resumeIndex = 0;
-        m_resumeSegmentIndex = 0;
+        m_hls.resumeSegmentIndex = 0;
     }
-    m_segmentIndex = resumeIndex;
+    m_hls.segmentIndex = resumeIndex;
     m_resumeFingerprint = fingerprint;
 
     // 只有正文确认是播放列表后才改扩展名，避免 text/plain 的普通文本/MP3
     // 先把目标路径改成 .ts 后又失败，留下错误状态。
-    if (!m_playlistFileReady) {
-        m_playlistFileReady = true;
+    if (!m_hls.playlistFileReady) {
+        m_hls.playlistFileReady = true;
         if (!switchToHlsFile())
             return;
     }
 
-    emit progress(m_segmentIndex, m_segments.size());
-    if (m_segmentIndex >= m_segments.size()) {
+    emit progress(m_hls.segmentIndex, m_hls.segments.size());
+    if (m_hls.segmentIndex >= m_hls.segments.size()) {
         // 上次可能已经拉完所有分片，只差改名落盘。
         commitFile();
         return;
@@ -765,7 +771,7 @@ void DownloadTask::startPlaylistFetch(const QUrl &url, int hop)
         return;
     }
 
-    m_playlistHop = hop;
+    m_hls.playlistHop = hop;
     QPointer<DownloadTask> self(this);
     const QHash<QString, QString> headers =
         HeaderPolicy::sanitizedForTarget(url, m_headers, m_originUrl);
@@ -807,14 +813,31 @@ void DownloadTask::startPlaylistFetch(const QUrl &url, int hop)
 bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QUrl *variantUrl,
                                 bool *isMaster, QString *error)
 {
+    const HlsDownloadSession::ParseResult result =
+        m_hls.parsePlaylist(body, baseUrl, m_allowIncomplete);
+    if (variantUrl != nullptr)
+        *variantUrl = result.variantUrl;
     if (isMaster != nullptr)
-        *isMaster = false;
+        *isMaster = result.isMaster;
+    if (error != nullptr)
+        *error = result.error;
+    if (result.snapshot == HlsDownloadSession::Snapshot::ConsentRequired) {
+        emit snapshotConsentRequired(result.snapshotReason);
+    } else if (result.snapshot == HlsDownloadSession::Snapshot::Accepted) {
+        emit snapshotAccepted(result.snapshotReason);
+    }
+    return result.ok;
+}
 
+DownloadTask::HlsDownloadSession::ParseResult
+DownloadTask::HlsDownloadSession::parsePlaylist(const QByteArray &body, const QUrl &baseUrl,
+                                                bool allowIncomplete)
+{
+    ParseResult result;
     const QString text = QString::fromUtf8(body);
     if (!PlaylistSniffer::bodyIsPlaylist(body)) {
-        if (error != nullptr)
-            *error = tr("服务器返回的不是 m3u8 播放列表（可能是网页或错误页）");
-        return false;
+        result.error = QObject::tr("服务器返回的不是 m3u8 播放列表（可能是网页或错误页）");
+        return result;
     }
     const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
 
@@ -823,28 +846,27 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         // 主列表里的 SESSION-KEY 会作用到所有子列表，子列表可能不再重复写 KEY。
         // 优先使用 identity AES-128；遇到 SAMPLE-AES 等其它方式先记录，等真正
         // 有分片使用它时再明确失败，避免误伤子列表自己声明 AES-128 的情况。
-        m_sessionKey = HlsKey();
+        sessionKey = Key();
         for (const QString &rawLine : lines) {
             const QString line = rawLine.trimmed();
             if (!line.startsWith(QLatin1String("#EXT-X-SESSION-KEY")))
                 continue;
             const ParsedKeyLine parsed = parseKeyLine(line, baseUrl);
             if (!parsed.error.isEmpty()) {
-                if (error != nullptr)
-                    *error = parsed.error;
-                return false;
+                result.error = parsed.error;
+                return result;
             }
             if (parsed.kind == ParsedKeyLine::Kind::Supported) {
-                if (!m_sessionKey.enabled) {
-                    m_sessionKey.enabled = true;
-                    m_sessionKey.method = parsed.method;
-                    m_sessionKey.url = parsed.url;
-                    m_sessionKey.iv = parsed.iv;
-                    m_sessionKey.unsupported.clear();
+                if (!sessionKey.enabled) {
+                    sessionKey.enabled = true;
+                    sessionKey.method = parsed.method;
+                    sessionKey.url = parsed.url;
+                    sessionKey.iv = parsed.iv;
+                    sessionKey.unsupported.clear();
                 }
             } else if (parsed.kind == ParsedKeyLine::Kind::Unsupported
-                       && !m_sessionKey.enabled && m_sessionKey.unsupported.isEmpty()) {
-                m_sessionKey.unsupported = parsed.method;
+                       && !sessionKey.enabled && sessionKey.unsupported.isEmpty()) {
+                sessionKey.unsupported = parsed.method;
             }
         }
 
@@ -858,20 +880,18 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
                 best = &variant;
         }
         if (best == nullptr) {
-            if (error != nullptr)
-                *error = tr("主播放列表里没有找到可用的清晰度地址");
-            return false;
+            result.error = QObject::tr("主播放列表里没有找到可用的清晰度地址");
+            return result;
         }
-        if (variantUrl != nullptr)
-            *variantUrl = best->uri;
-        if (isMaster != nullptr)
-            *isMaster = true;
-        return true;
+        result.variantUrl = best->uri;
+        result.isMaster = true;
+        result.ok = true;
+        return result;
     }
 
-    m_segments.clear();
-    m_fragmentedMp4 = false;
-    m_segmentCipher.clear();
+    segments.clear();
+    fragmentedMp4 = false;
+    segmentCipher.clear();
 
     auto toPlaylistKey = [](const ParsedKeyLine &parsed) {
         HlsPlaylist::Key key;
@@ -891,16 +911,16 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     options.strict = true;
     options.requireExtinf = false;
     options.initialKey = toPlaylistKey(ParsedKeyLine{
-        m_sessionKey.enabled ? ParsedKeyLine::Kind::Supported
-                             : (m_sessionKey.unsupported.isEmpty()
-                                    ? ParsedKeyLine::Kind::None
-                                    : ParsedKeyLine::Kind::Unsupported),
-        m_sessionKey.method,
-        m_sessionKey.url,
-        m_sessionKey.iv,
+        sessionKey.enabled ? ParsedKeyLine::Kind::Supported
+                           : (sessionKey.unsupported.isEmpty()
+                                  ? ParsedKeyLine::Kind::None
+                                  : ParsedKeyLine::Kind::Unsupported),
+        sessionKey.method,
+        sessionKey.url,
+        sessionKey.iv,
         {}});
-    if (!m_sessionKey.unsupported.isEmpty())
-        options.initialKey.unsupported = m_sessionKey.unsupported;
+    if (!sessionKey.unsupported.isEmpty())
+        options.initialKey.unsupported = sessionKey.unsupported;
     options.keyParser = [toPlaylistKey](const QString &line, const QUrl &base) {
         return toPlaylistKey(parseKeyLine(line, base));
     };
@@ -908,9 +928,8 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
     QString parseError;
     const auto media = HlsPlaylist::parseMedia(body, baseUrl, options, &parseError);
     if (!media) {
-        if (error != nullptr)
-            *error = parseError;
-        return false;
+        result.error = parseError;
+        return result;
     }
 
     for (const HlsPlaylist::MediaSegment &parsed : std::as_const(media->segments)) {
@@ -922,34 +941,34 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
         segment.key.url = parsed.key.url;
         segment.key.iv = parsed.key.iv;
         segment.key.unsupported = parsed.key.unsupported;
-        m_segments.append(segment);
+        segments.append(segment);
     }
-    m_fragmentedMp4 = media->fragmentedMp4;
+    fragmentedMp4 = media->fragmentedMp4;
 
     if (!media->hasEndList) {
         // 没有 ENDLIST 有两种可能：静态 VOD 服务器偷懒没写结束标记，
         // 或者直播/EVENT 列表仍在追加。前者由 PLAYLIST-TYPE:VOD 明确声明，
         // 可以安全地按当前分片下载；后者默认拒绝，避免静默产出残片。
         const bool declaredVod = media->playlistType == QLatin1String("VOD");
-        if (!declaredVod && !m_allowIncomplete) {
-            if (error != nullptr) {
-                *error = tr("播放列表没有 #EXT-X-ENDLIST，可能是直播/仍在更新的列表。"
-                            "默认不下载；可在下载管理器中确认后按当前分片强制下载。");
-            }
-            emit snapshotConsentRequired(error != nullptr ? *error : QString());
-            m_segments.clear();
-            return false;
+        if (!declaredVod && !allowIncomplete) {
+            result.error = QObject::tr("播放列表没有 #EXT-X-ENDLIST，可能是直播/仍在更新的列表。"
+                                       "默认不下载；可在下载管理器中确认后按当前分片强制下载。");
+            result.snapshot = Snapshot::ConsentRequired;
+            result.snapshotReason = result.error;
+            segments.clear();
+            return result;
         }
 
-        const QString reason =
+        result.snapshot = Snapshot::Accepted;
+        result.snapshotReason =
             declaredVod
-                ? tr("服务器声明 #EXT-X-PLAYLIST-TYPE:VOD 但没有 #EXT-X-ENDLIST，"
-                     "按当前分片下载；文件可能不完整。")
-                : tr("已按当前分片强制下载；列表没有 #EXT-X-ENDLIST，"
-                     "文件可能不完整，且不会跨启动续传。");
-        emit snapshotAccepted(reason);
+                ? QObject::tr("服务器声明 #EXT-X-PLAYLIST-TYPE:VOD 但没有 #EXT-X-ENDLIST，"
+                              "按当前分片下载；文件可能不完整。")
+                : QObject::tr("已按当前分片强制下载；列表没有 #EXT-X-ENDLIST，"
+                              "文件可能不完整，且不会跨启动续传。");
     }
-    return true;
+    result.ok = true;
+    return result;
 }
 
 /// @brief 计算分片结构指纹，用于判断续传是否属于同一份播放列表。
@@ -957,14 +976,19 @@ bool DownloadTask::parsePlaylist(const QByteArray &body, const QUrl &baseUrl, QU
 ///       否则不同分片会得到相同指纹。
 QString DownloadTask::computePlaylistFingerprint() const
 {
+    return m_hls.fingerprint();
+}
+
+QString DownloadTask::HlsDownloadSession::fingerprint() const
+{
     QCryptographicHash hash(QCryptographicHash::Sha1);
     // 只剔除 token/sign/expire 这类会轮换的查询参数，保留 id/seq 等能区分
     // 分片的稳定参数；把整个 query 都丢掉会让 `segment.ts?seq=1` 和
     // `segment.ts?seq=2` 指纹相同，续传时把两份不同分片拼进一个文件。
-    hash.addData(m_fragmentedMp4 ? "fmp4|" : "ts|");
-    hash.addData(QByteArray::number(m_segments.size()));
+    hash.addData(fragmentedMp4 ? "fmp4|" : "ts|");
+    hash.addData(QByteArray::number(segments.size()));
     hash.addData("|");
-    for (const Segment &segment : m_segments) {
+    for (const Segment &segment : segments) {
         hash.addData(identityUrlWithoutVolatileQuery(segment.url).toUtf8());
         hash.addData("|");
         hash.addData(segment.range);
@@ -990,12 +1014,12 @@ void DownloadTask::startNextSegment()
 {
     if (m_done)
         return;
-    if (m_segmentIndex >= m_segments.size()) {
+    if (m_hls.segmentIndex >= m_hls.segments.size()) {
         commitFile();
         return;
     }
 
-    const Segment segment = m_segments.at(m_segmentIndex);
+    const HlsDownloadSession::Segment segment = m_hls.segments.at(m_hls.segmentIndex);
     // 播放列表本身可以来自公网，但其中的绝对分片地址仍可能是内网地址；
     // 每个分片发请求前都按同一个可信源站再校验一次。
     if (!NetworkAddressPolicy::allowsMediaTarget(segment.url, m_originUrl)) {
@@ -1003,17 +1027,17 @@ void DownloadTask::startNextSegment()
         return;
     }
 
-    m_segmentCipher.clear();
-    m_currentKey.clear();
+    m_hls.segmentCipher.clear();
+    m_hls.currentKey.clear();
     if (!segment.key.enabled) {
         startSegmentRequest(segment);
         return;
     }
 
     const QString cacheKey = keyCacheKey(segment.key.url);
-    const auto cached = m_keyCache.constFind(cacheKey);
-    if (cached != m_keyCache.constEnd()) {
-        m_currentKey = cached.value();
+    const auto cached = m_hls.keyCache.constFind(cacheKey);
+    if (cached != m_hls.keyCache.constEnd()) {
+        m_hls.currentKey = cached.value();
         startSegmentRequest(segment);
         return;
     }
@@ -1029,12 +1053,12 @@ void DownloadTask::startNextSegment()
 
 /// @brief 发起单个分片请求；加密分片在正文收完后统一解密。
 /// @param segment 已解析且 key 已就绪的分片。
-void DownloadTask::startSegmentRequest(const Segment &segment)
+void DownloadTask::startSegmentRequest(const HlsDownloadSession::Segment &segment)
 {
-    m_currentSegment = segment;
-    m_segmentFileOffset = m_bytesWritten;
-    m_segmentBytes = 0;
-    m_segmentExpected = expectedRangeBytes(segment.range);
+    m_hls.currentSegment = segment;
+    m_hls.segmentFileOffset = m_bytesWritten;
+    m_hls.segmentBytes = 0;
+    m_hls.segmentExpected = expectedRangeBytes(segment.range);
     QPointer<DownloadTask> self(this);
     const QHash<QString, QString> headers =
         HeaderPolicy::sanitizedForTarget(segment.url, m_headers, m_originUrl);
@@ -1083,7 +1107,7 @@ void DownloadTask::startSegmentRequest(const Segment &segment)
         if (segment.range.isEmpty()) {
             const QVariant length = reply->header(QNetworkRequest::ContentLengthHeader);
             const QByteArray encoding = reply->rawHeader(QByteArrayLiteral("Content-Encoding"));
-            self->m_segmentExpected =
+            self->m_hls.segmentExpected =
                 (length.isValid() && (encoding.isEmpty()
                                       || encoding.compare("identity", Qt::CaseInsensitive) == 0))
                 ? length.toLongLong()
@@ -1133,7 +1157,7 @@ void DownloadTask::startSegmentRequest(const Segment &segment)
 /// @brief 从 EXT-X-KEY 指定的地址取 16 字节 AES-128 密钥。
 /// @note 密钥请求与分片共用同一 HttpClient，但单独保存在 m_keyReply；
 ///       失败/退出时必须一起 abort，不能留下迟到的回调改状态。
-void DownloadTask::fetchSegmentKey(const Segment &segment,
+void DownloadTask::fetchSegmentKey(const HlsDownloadSession::Segment &segment,
                                    const std::function<void()> &ready)
 {
     if (m_done)
@@ -1164,7 +1188,8 @@ void DownloadTask::fetchSegmentKey(const Segment &segment,
 }
 
 /// @brief 处理密钥响应：必须恰好 16 字节，成功后才缓存并继续当前分片。
-void DownloadTask::onSegmentKeyFinished(QNetworkReply *reply, const Segment &segment,
+void DownloadTask::onSegmentKeyFinished(QNetworkReply *reply,
+                                        const HlsDownloadSession::Segment &segment,
                                         const QString &cacheKey,
                                         const std::function<void()> &ready)
 {
@@ -1204,8 +1229,8 @@ void DownloadTask::onSegmentKeyFinished(QNetworkReply *reply, const Segment &seg
         return;
     }
 
-    m_keyCache.insert(cacheKey, key);
-    m_currentKey = key;
+    m_hls.keyCache.insert(cacheKey, key);
+    m_hls.currentKey = key;
     qCInfo(lcDownload) << "已获取 AES-128 密钥："
                        << HttpClient::redactUrl(segment.key.url);
     ready();
@@ -1229,30 +1254,30 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
     if (m_done)
         return;
 
-    if (m_segmentExpected >= 0 && m_segmentBytes != m_segmentExpected) {
+    if (m_hls.segmentExpected >= 0 && m_hls.segmentBytes != m_hls.segmentExpected) {
         fail(tr("分片长度不完整：期望 %1 字节，实际 %2 字节")
-                 .arg(m_segmentExpected)
-                 .arg(m_segmentBytes));
+                 .arg(m_hls.segmentExpected)
+                 .arg(m_hls.segmentBytes));
         return;
     }
 
-    if (m_currentSegment.key.enabled && !writeDecryptedSegment(m_currentSegment))
+    if (m_hls.currentSegment.key.enabled && !writeDecryptedSegment(m_hls.currentSegment))
         return;
 
-    m_segmentCipher.clear();
-    m_currentKey.clear();
-    m_segmentExpected = -1;
-    m_segmentBytes = 0;
-    ++m_segmentIndex;
-    const qint64 segmentSize = m_bytesWritten - m_segmentFileOffset;
+    m_hls.segmentCipher.clear();
+    m_hls.currentKey.clear();
+    m_hls.segmentExpected = -1;
+    m_hls.segmentBytes = 0;
+    ++m_hls.segmentIndex;
+    const qint64 segmentSize = m_bytesWritten - m_hls.segmentFileOffset;
     if (segmentSize > 0) {
-        emit segmentWritten(m_currentSegment.url, m_currentSegment.range,
-                            m_segmentFileOffset, segmentSize);
+        emit segmentWritten(m_hls.currentSegment.url, m_hls.currentSegment.range,
+                            m_hls.segmentFileOffset, segmentSize);
     }
     // 只在完整分片边界记录续传点：进程中途退出时，状态文件里的字节数
     // 对应的一定是完整分片前缀，重启后可安全截断半截分片并重下该片。
-    emit checkpoint(m_bytesWritten, m_segmentIndex, m_segments.size());
-    emit progress(m_segmentIndex, m_segments.size());
+    emit checkpoint(m_bytesWritten, m_hls.segmentIndex, m_hls.segments.size());
+    emit progress(m_hls.segmentIndex, m_hls.segments.size());
     startNextSegment();
 }
 
@@ -1302,24 +1327,24 @@ void DownloadTask::onDirectFinished(QNetworkReply *reply)
 /// @return 成功返回 true；失败时已 emit failed，调用方直接返回。
 /// @note 只在 onSegmentFinished 收齐整段后调用，保证 CBC 的填充校验不会被
 ///       readyRead 的碎块打断。
-bool DownloadTask::writeDecryptedSegment(const Segment &segment)
+bool DownloadTask::writeDecryptedSegment(const HlsDownloadSession::Segment &segment)
 {
     if (m_file == nullptr) {
         fail(tr("解密分片时目标文件已失效"));
         return false;
     }
-    if (m_currentKey.size() != 16) {
+    if (m_hls.currentKey.size() != 16) {
         fail(tr("AES-128 密钥尚未就绪，已取消下载"));
         return false;
     }
-    if (m_segmentCipher.isEmpty()) {
+    if (m_hls.segmentCipher.isEmpty()) {
         fail(tr("加密分片为空，已取消下载"), true);
         return false;
     }
 
     QByteArray plain;
     QString error;
-    if (!Aes128Cbc::decrypt(m_segmentCipher, m_currentKey, segment.key.iv, &plain, &error)) {
+    if (!Aes128Cbc::decrypt(m_hls.segmentCipher, m_hls.currentKey, segment.key.iv, &plain, &error)) {
         fail(tr("分片解密失败：%1").arg(error), true);
         return false;
     }
@@ -1364,7 +1389,7 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
         m_verifyMediaMagic = false;
     }
 
-    if (m_isHls && m_currentSegment.key.enabled) {
+    if (m_isHls && m_hls.currentSegment.key.enabled) {
         // AES-128 必须收完整段才能验 PKCS#7 填充；先只放内存，解密成功后再写盘。
         const qint64 remainingForPlain = m_maxBytes - m_bytesWritten;
         // 缓存任务会把上限设成 qint64 最大值，直接 remaining + 16 会溢出成
@@ -1379,14 +1404,14 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
                      .arg(m_maxBytes / (1024 * 1024)), true);
             return;
         }
-        if (m_segmentCipher.size() + chunk.size() > bufferLimit) {
+        if (m_hls.segmentCipher.size() + chunk.size() > bufferLimit) {
             fail(tr("加密分片超过 %1 MB 的分片内存上限，已停止下载")
                      .arg(bufferLimit / (1024 * 1024)), true);
             return;
         }
-        m_segmentCipher.append(chunk);
-        m_segmentBytes += chunk.size();
-        emit progress(m_segmentIndex, m_segments.size());
+        m_hls.segmentCipher.append(chunk);
+        m_hls.segmentBytes += chunk.size();
+        emit progress(m_hls.segmentIndex, m_hls.segments.size());
         return;
     }
 
@@ -1406,11 +1431,11 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
     m_bytesWritten += payload.size();
     if (!m_isHls)
         m_sessionBytesWritten += payload.size();
-    m_segmentBytes += payload.size();
+    m_hls.segmentBytes += payload.size();
 
     if (m_isHls) {
         // HLS 的续传点按分片边界记录，避免把半截分片写进状态。
-        emit progress(m_segmentIndex, m_segments.size());
+        emit progress(m_hls.segmentIndex, m_hls.segments.size());
     } else {
         emit progress(m_bytesWritten, m_expectedBytes);
         // 普通下载每个 readyRead 都写状态会放大磁盘写；最多每秒一次，
@@ -1434,7 +1459,7 @@ void DownloadTask::writeReplyData(QNetworkReply *reply)
 bool DownloadTask::switchToHlsFile()
 {
     // fMP4（EXT-X-MAP/m4s）合并出来是 MP4，不是 MPEG-TS；扩展名必须跟随容器。
-    const QString desiredSuffix = m_fragmentedMp4 ? QStringLiteral("mp4")
+    const QString desiredSuffix = m_hls.fragmentedMp4 ? QStringLiteral("mp4")
                                                   : QStringLiteral("ts");
     if (m_filePath.endsWith(QLatin1Char('.') + desiredSuffix, Qt::CaseInsensitive)) {
         m_isHls = true;
@@ -1586,8 +1611,8 @@ void DownloadTask::stopForExit()
     clearKeyMaterial();
     if (m_file != nullptr) {
         // 退出前补一次精确检查点；普通下载的 readyRead 检查点有 1 秒节流。
-        emit checkpoint(m_bytesWritten, m_segmentIndex,
-                        m_isHls ? m_segments.size() : -1);
+        emit checkpoint(m_bytesWritten, m_hls.segmentIndex,
+                        m_isHls ? m_hls.segments.size() : -1);
         m_file->flush();
         m_file->close();
         m_file->deleteLater();
@@ -1640,9 +1665,14 @@ void DownloadTask::clearKeyMaterial()
         reply->abort();
         reply->deleteLater();
     }
-    m_keyCache.clear();
-    m_currentKey.clear();
-    m_segmentCipher.clear();
+    m_hls.clearKeyMaterial();
+}
+
+void DownloadTask::HlsDownloadSession::clearKeyMaterial()
+{
+    keyCache.clear();
+    currentKey.clear();
+    segmentCipher.clear();
 }
 
 /// @brief 设置单文件字节上限。
