@@ -301,7 +301,9 @@ QPushButton#btn_fullscreen,
 QPushButton#btn_downloads,
 QPushButton#btn_openSearch,
 QPushButton#btn_prev,
-QPushButton#btn_next {
+QPushButton#btn_next,
+QPushButton#btn_seekBack,
+QPushButton#btn_seekForward {
     min-width: 38px;
     max-width: 38px;
     min-height: 38px;
