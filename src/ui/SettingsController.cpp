@@ -1,5 +1,5 @@
 /// @file SettingsController.cpp
-/// @brief 设置的读取、回写与即时应用：音量/播放模式/窗口预设/主题。
+/// @brief 设置的读取、回写与即时应用：播放模式/窗口预设/主题。
 #include "ui/SettingsController.h"
 
 #include "core/PlaybackController.h"
@@ -11,8 +11,6 @@
 #include <QGuiApplication>
 #include <QMainWindow>
 #include <QScreen>
-#include <QSignalBlocker>
-#include <QSlider>
 
 namespace {
 
@@ -40,7 +38,7 @@ QSize availableWindowSize()
 
 } // namespace
 
-/// @brief 构造控制器并监听用户手动改音量。
+/// @brief 构造控制器。
 /// @param player 播放控制器，必须非空。
 /// @param registry 搜索源注册表，必须非空。
 /// @param http 搜索源管理复用的 HTTP 客户端，必须非空。
@@ -57,26 +55,14 @@ SettingsController::SettingsController(PlaybackController *player, SourceRegistr
     Q_ASSERT(m_registry != nullptr);
     Q_ASSERT(m_http != nullptr);
     Q_ASSERT(m_ui.window != nullptr);
-    Q_ASSERT(m_ui.volumeSlider != nullptr);
-    connect(m_player, &PlaybackController::volumePercentChanged, this, [this](int) {
-        if (!m_applyingVolume)
-            m_volumeTouchedByUser = true;
-    });
 }
 
 /// @brief 启动时恢复音量、播放模式与窗口几何。
-/// @note 音量/模式取自 AppSettings；窗口按预设策略处理，“记住上次”时才恢复几何。
+/// @note 音量只有播放控制条一个入口，这里仅把上次退出时保存的播放音量还原。
 void SettingsController::restore()
 {
     // 音量、播放模式、窗口尺寸全部来自设置，不再有散落的默认值
-    const int initialVolume = AppSettings::defaultVolume();
-    m_applyingVolume = true;
-    m_player->setVolumePercent(initialVolume);
-    // 真实窗口里滑块 valueChanged 连着 PlaybackController::setVolumePercent，
-    // 同步滑块也必须处于抑制窗口内，否则恢复动作会被记成“用户手动调过”。
-    m_ui.volumeSlider->setValue(m_player->volumePercent());
-    m_applyingVolume = false;
-    m_volumeTouchedByUser = false;
+    m_player->setVolumePercent(AppSettings::playbackVolume());
 
     const int modeValue = AppSettings::playbackMode();
     m_player->setMode(static_cast<PlaybackController::Mode>(qBound(0, modeValue, 2)));
@@ -132,12 +118,12 @@ void SettingsController::resizeToPreset()
         m_ui.window->resize(target);
 }
 
-/// @brief 退出或设置确认时回写默认音量、播放模式与窗口几何。
+/// @brief 退出或设置确认时回写播放音量、播放模式与窗口几何。
 /// @note 播放列表已改为只写 Data/playlists.json，这里不再双写 QSettings，
 ///       否则删除后的列表会“复活”。
 void SettingsController::save()
 {
-    AppSettings::setDefaultVolume(m_player->volumePercent());
+    AppSettings::setPlaybackVolume(m_player->volumePercent());
     AppSettings::setPlaybackMode(static_cast<int>(m_player->mode()));
     // 播放列表现只写 Data/playlists.json；QSettings 双写会让删除后的列表“复活”。
 
@@ -146,25 +132,12 @@ void SettingsController::save()
         AppSettings::setSavedGeometry(m_ui.window->saveGeometry());
 }
 
-/// @brief 设置确认后即时生效：主题、窗口尺寸、默认音量与联动信号。
-/// @note 仅当本轮用户没手动调过音量时才套用新默认值，避免覆盖用户操作。
+/// @brief 设置确认后即时生效：主题与窗口尺寸。
+/// @note 音量只剩播放控制条一个入口，不再由设置页写回。
 void SettingsController::apply()
 {
     ThemeManager::instance().apply(AppSettings::themeId());
     resizeToPreset();
-
-    // 设置页的“默认音量”只在用户本轮没有手动调过音量时即时生效。
-    // 不能再用“当前值是否等于旧默认值”判断：用户恰好调到旧默认值时会被误判。
-    const int newDefault = AppSettings::defaultVolume();
-    if (!m_volumeTouchedByUser) {
-        m_applyingVolume = true;
-        m_player->setVolumePercent(newDefault);
-        m_applyingVolume = false;
-    }
-    {
-        QSignalBlocker blocker(m_ui.volumeSlider);
-        m_ui.volumeSlider->setValue(m_player->volumePercent());
-    }
 
     // 侧栏 / 控制条的折叠策略、歌词高亮由窗口响应 applied() 处理
     emit applied();

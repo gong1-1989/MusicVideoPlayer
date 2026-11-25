@@ -39,8 +39,9 @@ bool controlsAutoHide();
 void setControlsAutoHide(bool enabled);
 
 // ---------------------------------------------------------------- 播放
-int defaultVolume();               ///< 0..100
-void setDefaultVolume(int percent);
+/// 上次退出时保存的播放音量，0..100；设置页不再单独提供默认音量入口。
+int playbackVolume();
+void setPlaybackVolume(int percent);
 int playbackMode();                ///< 对应 PlaybackController::Mode
 void setPlaybackMode(int mode);
 

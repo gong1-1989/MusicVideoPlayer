@@ -14,16 +14,15 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
-class QSlider;
 class SourceRegistry;
-
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class SettingsDialog;
 }
 QT_END_NAMESPACE
 
-/// 系统设置：外观主题、窗口尺寸、默认音量、搜索结果条数、下载上限、搜索源管理入口。
+/// 系统设置：外观主题、窗口尺寸、搜索结果条数、下载上限、搜索源管理入口。
+/// 音量只保留播放控制条一个入口，设置页不再提供默认音量。
 /// 所有可配置项都只在这里出现一次，值写入 AppSettings，调用方读回即可。
 /// 界面由 SettingsDialog.ui 描述，这里只做数据填充与读写。
 class SettingsDialog : public QDialog
@@ -59,8 +58,6 @@ private:
     QComboBox *m_theme = nullptr;
     QComboBox *m_fontSize = nullptr;
     QComboBox *m_windowSize = nullptr;
-    QSlider *m_volume = nullptr;
-    QLabel *m_volumeValue = nullptr;
     QComboBox *m_searchLimit = nullptr;
     QComboBox *m_downloadLimit = nullptr;
     QLineEdit *m_downloadDir = nullptr;

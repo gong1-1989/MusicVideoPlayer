@@ -69,9 +69,14 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     });
     connect(m_ui.mode, &QPushButton::clicked, this, &PlaybackUiController::modePressed);
 
-    // 音量：单向 slider -> controller，避免双向回环
+    // 音量：滑块是唯一入口；播放器音量变化时反向同步滑块，保证快捷键、
+    // 启动恢复和设置写回都不会让滑块停在旧数值。
     connect(m_ui.volume, &QSlider::valueChanged,
             m_player, &PlaybackController::setVolumePercent);
+    connect(m_player, &PlaybackController::volumePercentChanged, this, [this](int percent) {
+        QSignalBlocker blocker(m_ui.volume);
+        m_ui.volume->setValue(percent);
+    });
 
     // 进度条：拖动期间不回写，松手才 seek
     connect(m_ui.progress, &QSlider::sliderPressed, this,

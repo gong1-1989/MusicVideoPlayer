@@ -7,13 +7,11 @@ class PlaybackController;
 class SourceRegistry;
 class HttpClient;
 class QMainWindow;
-class QSlider;
 
-/// 设置面板依赖的控件：只给主窗与音量滑杆，其他布局仍归窗口。
+/// 设置面板依赖的控件：设置只负责窗口预设，音量已收敛到播放控制条。
 struct SettingsUi
 {
     QMainWindow *window = nullptr;
-    QSlider *volumeSlider = nullptr;
 };
 
 /// 设置读取、保存、主题/窗口预设应用与设置对话框入口。
@@ -31,7 +29,7 @@ public:
     void restore();
     /// 关闭时保存音量、播放模式和“记住上次”的窗口几何
     void save();
-    /// 设置被接受后重新应用主题、窗口尺寸和音量
+    /// 设置被接受后重新应用主题和窗口尺寸
     void apply();
     /// 打开设置对话框；接受后自动 apply()
     void openDialog();
@@ -48,11 +46,6 @@ private:
     SourceRegistry *m_registry = nullptr;
     HttpClient *m_http = nullptr;
     SettingsUi m_ui;
-    /// 用户是否在当前设置页会话中手动改过音量。不能只比较“当前值等于旧默认值”，
-    /// 否则用户恰好调到旧默认值时，再改默认值会被误判为未调整而覆盖。
-    bool m_volumeTouchedByUser = false;
-    /// 控制器自己写入音量时置位，避免把程序设置当成用户手动调整。
-    bool m_applyingVolume = false;
 };
 
 #endif // SETTINGSCONTROLLER_H

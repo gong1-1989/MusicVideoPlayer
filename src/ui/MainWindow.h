@@ -83,7 +83,7 @@ private:
     void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
     /// @brief 清空播放相关界面（标题、进度、视觉区）。
     void clearPlaybackUi();
-    /// 音量按钮改成右侧竖排悬浮条：滑块仍复用 ui->slider_volume，设置持久化不断链
+    /// 音量按钮改成右侧竖排悬浮条：slider_volume 是全局唯一音量入口
     void setupVolumePopup();
     /// @brief 在音量按钮上方弹出竖排滑块，并保持当前音量值。
     void showVolumePopup();

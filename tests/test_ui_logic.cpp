@@ -106,7 +106,7 @@ private slots:
     void previewItemNeverPersistsUnlessPromoted();
     void downloadedItemSwitchesPlaylistToLocalSource();
     void proprietaryVideoFilesAreRejectedWithHint();
-    void settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault();
+    void settingsVolumePersistsPlaybackValue();
     void settingsRemoveCacheCheckboxReflectsSetting();
     void settingsDialogUsesPagedTabs();
     void parserSettingsDialogKeepsParserConfiguration();
@@ -429,7 +429,7 @@ void UiLogicTest::proprietaryVideoFilesAreRejectedWithHint()
     QVERIFY2(!musicFilter.contains(QStringLiteral("*.bhd")), qPrintable(musicFilter));
 }
 
-void UiLogicTest::settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault()
+void UiLogicTest::settingsVolumePersistsPlaybackValue()
 {
     QTemporaryDir temp;
     QVERIFY(temp.isValid());
@@ -440,33 +440,23 @@ void UiLogicTest::settingsVolumeKeepsManualValueEvenWhenEqualToOldDefault()
     HttpClient http;
     SourceRegistry registry;
     QMainWindow window;
-    QSlider slider;
-    // 复刻真实窗口里 PlaybackUiController 的滑块联动；restore() 同步滑块时
-    // 不能被误记成用户手动调整音量。
-    QObject::connect(&slider, &QSlider::valueChanged, &player,
-                     &PlaybackController::setVolumePercent);
 
-    // QSettings 默认构造依赖应用名；测试进程没有设置时 setDefaultVolume 写不进去，
-    // restore() 会读回内置默认 60。
+    // QSettings 默认构造依赖应用名；测试进程没有设置时保存的值读不回来。
     QCoreApplication::setOrganizationName(QStringLiteral("MusicVideoPlayerTest"));
     QCoreApplication::setApplicationName(QStringLiteral("MusicVideoPlayerTestUi"));
-    AppSettings::setDefaultVolume(40);
-    SettingsController settings(&player, &registry, &http, SettingsUi{&window, &slider});
+    AppSettings::setPlaybackVolume(40);
+    SettingsController settings(&player, &registry, &http, SettingsUi{&window});
     settings.restore();
     QCOMPARE(player.volumePercent(), 40);
 
-    // 用户手动把音量调回旧默认值 40：旧实现会误判为“没调过”，
-    // 设置页改成 70 后被覆盖；这里必须保留用户当前音量。
-    player.setVolumePercent(40);
-    AppSettings::setDefaultVolume(70);
-    settings.apply();
-    QCOMPARE(player.volumePercent(), 40);
+    // 音量只剩播放控制条一个入口：退出时把当前音量写回，下次启动再恢复。
+    player.setVolumePercent(75);
+    settings.save();
+    QCOMPARE(AppSettings::playbackVolume(), 75);
 
-    // 重新恢复后没有手动调整，默认值仍应正常即时生效。
+    player.setVolumePercent(30);
     settings.restore();
-    AppSettings::setDefaultVolume(85);
-    settings.apply();
-    QCOMPARE(player.volumePercent(), 85);
+    QCOMPARE(player.volumePercent(), 75);
 
     if (oldDataDir.isEmpty())
         qunsetenv("MVP_DATA_DIR");
@@ -516,6 +506,8 @@ void UiLogicTest::settingsDialogUsesPagedTabs()
     QCOMPARE(tabs->tabText(4), QStringLiteral("系统信息"));
     QVERIFY(dialog.findChild<QWidget *>(QStringLiteral("page_update")) != nullptr);
     QVERIFY(dialog.findChild<QWidget *>(QStringLiteral("page_system_info")) != nullptr);
+    // 音量只保留播放控制条一个入口，设置页不应再有音量滑杆。
+    QVERIFY(dialog.findChild<QSlider *>(QStringLiteral("slider_volume")) == nullptr);
 }
 
 void UiLogicTest::parserSettingsDialogKeepsParserConfiguration()

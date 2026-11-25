@@ -373,7 +373,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // 设置读写、主题/窗口预设与设置对话框入口交给控制器
     m_settings = new SettingsController(m_player, m_registry, m_http,
-                                        SettingsUi{this, ui->slider_volume}, this);
+                                        SettingsUi{this}, this);
     connect(m_settings, &SettingsController::applied, this, [this] {
         // 侧栏 / 控制条的折叠策略改了要立刻生效；歌词高亮跟随主题刷新
         m_panels->applyVisibility();
@@ -1014,8 +1014,8 @@ void MainWindow::refreshBitrateBar()
 void MainWindow::setupVolumePopup()
 {
     // 控制条只保留一个音量图标；点开后在按钮上方弹出竖排滑块，避免横向
-    // 滑块长期占用控制条宽度。slider_volume 对象继续复用，
-    // PlaybackUiController 的音量联动和 SettingsController 的持久化接口不变。
+    // 滑块长期占用控制条宽度。slider_volume 是全局唯一音量入口，
+    // PlaybackUiController 负责滑块与播放器双向同步。
     ui->label_volume->hide();
     ui->layout_auxButtons->removeWidget(ui->label_volume);
     ui->label_volume->deleteLater();
@@ -1047,6 +1047,13 @@ void MainWindow::setupVolumePopup()
     layout->addWidget(ui->slider_volume, 0, Qt::AlignHCenter);
 
     connect(ui->slider_volume, &QSlider::valueChanged, this, [this](int value) {
+        if (m_volumeLabel != nullptr)
+            m_volumeLabel->setText(QStringLiteral("%1%").arg(value));
+        if (ui->btn_volume != nullptr)
+            ui->btn_volume->setToolTip(tr("音量 %1%").arg(value));
+    });
+    // 快捷键或播放器内部改动音量时，弹窗百分比和按钮提示也要跟随更新。
+    connect(m_player, &PlaybackController::volumePercentChanged, this, [this](int value) {
         if (m_volumeLabel != nullptr)
             m_volumeLabel->setText(QStringLiteral("%1%").arg(value));
         if (ui->btn_volume != nullptr)

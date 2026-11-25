@@ -386,53 +386,23 @@
               <number>8</number>
              </property>
              <item row="0" column="0">
-              <widget class="QLabel" name="label_volumeCaption">
-               <property name="text">
-                <string>默认音量</string>
-               </property>
-              </widget>
-             </item>
-             <item row="0" column="1">
-              <widget class="QSlider" name="slider_volume">
-               <property name="minimumWidth">
-                <number>160</number>
-               </property>
-               <property name="maximum">
-                <number>100</number>
-               </property>
-               <property name="orientation">
-                <enum>Qt::Horizontal</enum>
-               </property>
-              </widget>
-             </item>
-             <item row="0" column="2">
-              <widget class="QLabel" name="label_volumeValue">
-               <property name="minimumWidth">
-                <number>42</number>
-               </property>
-               <property name="text">
-                <string>60%</string>
-               </property>
-              </widget>
-             </item>
-             <item row="1" column="0">
               <widget class="QLabel" name="label_limitCaption">
                <property name="text">
                 <string>单源搜索条数</string>
                </property>
               </widget>
              </item>
-             <item row="1" column="1">
+             <item row="0" column="1">
               <widget class="QComboBox" name="combo_searchLimit"/>
              </item>
-             <item row="2" column="0">
+             <item row="1" column="0">
               <widget class="QLabel" name="label_downloadLimitCaption">
                <property name="text">
                 <string>单个下载上限</string>
                </property>
               </widget>
              </item>
-             <item row="2" column="1">
+             <item row="1" column="1">
               <widget class="QComboBox" name="combo_downloadLimit"/>
              </item>
             </layout>

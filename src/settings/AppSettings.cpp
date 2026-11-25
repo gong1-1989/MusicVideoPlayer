@@ -38,7 +38,7 @@ const char kDefaultWindowPreset[] = "auto";
 const int kDefaultFontSizePx = 13;
 const int kMinFontSizePx = 9;
 const int kMaxFontSizePx = 20;
-const int kDefaultVolume = 60;
+const int kFallbackVolume = 60;
 const int kDefaultSearchLimit = 20;
 const int kDefaultDownloadLimitMb = 8192;
 const int kDefaultMode = 0;
@@ -158,19 +158,19 @@ void setControlsAutoHide(bool enabled)
     settings().setValue(QLatin1String(kControlsAutoHide), enabled);
 }
 
-/// @brief 读取默认音量。
+/// @brief 读取上次退出时保存的播放音量。
 /// @return 0..100；优先 playback/volume，旧版顶层 volume 作为兼容回退。
-int defaultVolume()
+int playbackVolume()
 {
     // 兼容旧版本键名 "volume"
     QSettings store;
     const int value = store.contains(QLatin1String(kVolume))
                           ? store.value(QLatin1String(kVolume)).toInt()
-                          : store.value(QStringLiteral("volume"), kDefaultVolume).toInt();
+                          : store.value(QStringLiteral("volume"), kFallbackVolume).toInt();
     return qBound(0, value, 100);
 }
 
-void setDefaultVolume(int percent)
+void setPlaybackVolume(int percent)
 {
     settings().setValue(QLatin1String(kVolume), qBound(0, percent, 100));
 }

@@ -22,7 +22,6 @@
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
-#include <QSlider>
 #include <QStyle>
 
 Q_LOGGING_CATEGORY(lcSettings, "mvp.settings")
@@ -105,8 +104,6 @@ void SettingsDialog::bindUi()
     m_theme = ui->combo_theme;
     m_fontSize = ui->combo_fontSize;
     m_windowSize = ui->combo_windowSize;
-    m_volume = ui->slider_volume;
-    m_volumeValue = ui->label_volumeValue;
     m_searchLimit = ui->combo_searchLimit;
     m_downloadLimit = ui->combo_downloadLimit;
     m_downloadDir = ui->edit_downloadDir;
@@ -156,7 +153,6 @@ void SettingsDialog::bindUi()
     }
 
     // ---------------------------------------------------------- 播放与搜索
-    m_volume->setRange(0, 100);
     for (int limit : {10, 20, 30, 50})
         m_searchLimit->addItem(tr("%1 条").arg(limit), limit);
     m_searchLimit->setToolTip(
@@ -175,9 +171,6 @@ void SettingsDialog::bindUi()
     m_downloadDir->setToolTip(
         tr("下载任务直接保存到这个目录，不再弹路径选择；同名文件会自动加序号。"));
 
-    connect(m_volume, &QSlider::valueChanged, this, [this](int value) {
-        m_volumeValue->setText(QStringLiteral("%1%").arg(value));
-    });
     connect(m_sourcesButton, &QPushButton::clicked, this,
             &SettingsDialog::openSourceManager);
     connect(ui->btn_shortcuts, &QPushButton::clicked, this,
@@ -215,9 +208,6 @@ void SettingsDialog::loadValues()
     const int windowIndex = m_windowSize->findData(AppSettings::windowPresetId());
     if (windowIndex >= 0)
         m_windowSize->setCurrentIndex(windowIndex);
-
-    m_volume->setValue(AppSettings::defaultVolume());
-    m_volumeValue->setText(QStringLiteral("%1%").arg(m_volume->value()));
 
     const int limitIndex = m_searchLimit->findData(AppSettings::searchLimit());
     if (limitIndex >= 0) {
@@ -319,12 +309,12 @@ void SettingsDialog::openShortcutSettings()
 }
 
 /// @brief 确认保存：先创建/校验下载目录，再提交源配置、设置与快捷键。
-/// @note 下载目录是唯一可能失败的外部副作用，必须先校验，避免先写源/音量后
+/// @note 下载目录是唯一可能失败的外部副作用，必须先校验，避免先写源后
 ///       目录失败导致无法整体回滚；源配置写失败则停留在本页。
 void SettingsDialog::accept()
 {
     // 先校验唯一可能失败的外部副作用（下载目录），再提交源配置和设置。
-    // 目录失败时不会留下已写一半的源/音量设置。
+    // 目录失败时不会留下已写一半的源设置。
     QString downloadDir = m_downloadDir->text().trimmed();
     if (downloadDir.isEmpty())
         downloadDir = AppSettings::downloadDir();
@@ -363,7 +353,6 @@ void SettingsDialog::accept()
     AppSettings::setThemeId(m_theme->currentData().toString());
     AppSettings::setUiFontSizePx(m_fontSize->currentData().toInt());
     AppSettings::setWindowPresetId(m_windowSize->currentData().toString());
-    AppSettings::setDefaultVolume(m_volume->value());
     AppSettings::setSearchLimit(m_searchLimit->currentData().toInt());
     AppSettings::setDownloadLimitMb(m_downloadLimit->currentData().toInt());
 
@@ -378,8 +367,8 @@ void SettingsDialog::accept()
 
     qCInfo(lcSettings) << "系统设置已保存：主题" << m_theme->currentData().toString()
                        << "字号" << m_fontSize->currentData().toInt() << "px"
-                       << "窗口" << m_windowSize->currentData().toString() << "音量"
-                       << m_volume->value() << "单源条数" << m_searchLimit->currentData().toInt()
+                       << "窗口" << m_windowSize->currentData().toString()
+                       << "单源条数" << m_searchLimit->currentData().toInt()
                        << "下载上限" << m_downloadLimit->currentData().toInt() << "MB"
                        << "下载后清缓存" << m_removePlaybackCache->isChecked();
     QDialog::accept();
