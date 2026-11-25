@@ -698,6 +698,12 @@ QDialog#SourceProbeDialog QLabel {
     color: #3a3a58;
 }
 
+/* 源列表启用了交替行，显式给浅色主题一个淡紫交替底色，避免落回系统默认色 */
+QDialog#SourceManagerDialog QListWidget#list_sources {
+    alternate-background-color: rgba(123, 91, 255, 6%);
+    color: #2b2b45;
+}
+
 QDialog#SourceProbeDialog QListWidget {
     background: #ffffff;
     border: 1px solid rgba(140, 130, 220, 20%);

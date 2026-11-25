@@ -698,6 +698,12 @@ QDialog#SourceProbeDialog QLabel {
     color: #cfd6ff;
 }
 
+/* 源列表启用了交替行，默认交替底色在深色主题下是白色，偶数行会变成白底浅字 */
+QDialog#SourceManagerDialog QListWidget#list_sources {
+    alternate-background-color: rgba(255, 255, 255, 5%);
+    color: #dfe4ff;
+}
+
 QDialog#SourceProbeDialog QListWidget {
     background: rgba(255, 255, 255, 5%);
     border: 1px solid rgba(160, 190, 255, 14%);
