@@ -65,6 +65,13 @@ struct StreamCacheEntry
     QSet<qint64> rangePending;
     QSet<qint64> rangeRetried;
     QList<QPointer<QNetworkReply>> rangeReplies;
+
+    /// 已拿到上游总长且没有失败，可以作为缓存命中候选继续服务/等待。
+    bool isUsableCache() const { return total >= 0 && !failed; }
+    /// 已登记但还没真正发出上游请求的 HLS 分片占位。
+    bool isPendingPlaceholder() const { return pending && !upstreamStarted; }
+    /// 多连接 Range 分片仍在拼接，失败后不再接受新的分片回调。
+    bool isMultiRangeActive() const { return multiRange && !failed; }
 };
 
 /// 缓存条目容器。只负责存取和统计，网络回调与 socket 转发仍由 StreamProxy 管。

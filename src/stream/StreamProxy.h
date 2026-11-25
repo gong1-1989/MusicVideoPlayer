@@ -142,6 +142,37 @@ private:
         int index = -1;
     };
 
+    /// 磁盘整段缓存的一次快照，读取后即使文件再次变化也按同一份判断。
+    struct DiskCacheSnapshot
+    {
+        bool hasState = false;
+        qint64 size = 0;
+        qint64 totalBytes = -1;
+        bool complete = false;
+        QString contentType;
+    };
+
+    /// 单路上游请求的不可变上下文；响应回调只读它，避免十几个松散捕获。
+    struct UpstreamStreamContext
+    {
+        QPointer<QTcpSocket> client;
+        QUrl upstream;
+        QHash<QString, QString> headers;
+        bool isHead = false;
+        bool hasRange = false;
+        QString cacheKey;
+        Request request;
+        QByteArray range;
+        QString cachePath;
+        QString cacheIdentity;
+        QUrl sourceOrigin;
+        bool diskRequested = false;
+        qint64 resumeOffset = 0;
+        bool singleFileHlsSegment = false;
+        bool boundedRangeRequest = false;
+        QSharedPointer<CacheEntry> pendingEntry;
+    };
+
     void handleClient(QTcpSocket *client, const QByteArray &payload);
     void startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                               const QHash<QString, QString> &headers,
@@ -150,6 +181,21 @@ private:
                               const QString &cachePath = QString(),
                               const QString &cacheIdentity = QString(),
                               const QUrl &sourceOrigin = QUrl());
+    /// 磁盘上已有完整缓存时直接建条目供流；已服务返回 true。
+    bool serveCompleteDiskCache(QTcpSocket *client, const QUrl &upstream,
+                                const Request &request, bool hasRange,
+                                const QString &cacheKey, const QString &cachePath,
+                                const DiskCacheSnapshot &snapshot);
+    /// 有界 Range 落在已有半截文件前缀内时，用临时条目切片响应；已服务返回 true。
+    bool servePartialDiskRange(QTcpSocket *client, const QUrl &upstream,
+                               const Request &request, const QString &cacheKey,
+                               const QString &cachePath, const QString &cacheIdentity,
+                               qint64 resumeOffset, qint64 partialTotal,
+                               const QString &partialContentType);
+    /// 发起单路上游 stream，并在回调里完成缓存/播放列表/透传分流。
+    void startUpstreamStream(const UpstreamStreamContext &context);
+    void onUpstreamStreamReply(const UpstreamStreamContext &context,
+                               QNetworkReply *reply);
     /// HLS 分片请求命中时，用多路 Range 并发拉取并在缓存里按偏移拼接。
     /// 只对已知媒体分片、`bytes=0-` 且总长受限的请求启用。
     bool tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream,
