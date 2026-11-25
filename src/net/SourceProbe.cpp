@@ -753,6 +753,113 @@ bool subsonicAuthFailure(const QJsonValue &root)
                .compare(QLatin1String("failed"), Qt::CaseInsensitive) == 0;
 }
 
+/// @brief 根据已识别出的结果数组、字段与播放地址形态组装建议配置。
+/// @note 站点 id 使用域名 + 输入路径的截断哈希，避免同一 host 的多个接口互相覆盖。
+SourceConfig buildSuggestedConfig(const QString &tpl,
+                                 const QVector<FieldSample> &samples,
+                                 const QString &itemsPath,
+                                 const QString &titleKey,
+                                 const StreamPick &stream,
+                                 const QString &subsonicIdKey,
+                                 const QString &subsonicStreamSpec,
+                                 MediaType detected,
+                                 const QUrl &origin,
+                                 const QUrl &site,
+                                 const QString &siteName)
+{
+    SourceConfig config;
+    // 同一个 host 上可能挂多个接口（例如 /api.php 与 /index.php），
+    // 只用 host 生成 id 会互相覆盖；把站点路径一起算进 8 位哈希。
+    const QByteArray identity = (origin.toString() + site.path()).toUtf8();
+    const QString suffix = QString::fromLatin1(
+        QCryptographicHash::hash(identity, QCryptographicHash::Sha1).toHex().left(8));
+    config.id = QStringLiteral("site_")
+                + origin.host().replace(QLatin1Char('.'), QLatin1Char('_'))
+                + QLatin1Char('_') + suffix;
+    config.name = siteName.isEmpty() ? origin.host() : siteName;
+    config.enabled = true;
+    config.kind = QStringLiteral("config");
+    config.method = QStringLiteral("GET");
+    config.mediaType = detected;
+    config.urlTemplate = tpl;
+    config.itemsPath = itemsPath;
+    config.streamKind = stream.kind.isEmpty() ? QStringLiteral("direct") : stream.kind;
+    config.headers.insert(QStringLiteral("Referer"),
+                          origin.toString() + QLatin1Char('/'));
+    config.fields.insert(QStringLiteral("title"), titleKey);
+    config.fields.insert(QStringLiteral("streamUrl"),
+                         subsonicStreamSpec.isEmpty() ? stream.key : subsonicStreamSpec);
+
+    QSet<QString> used{titleKey};
+    if (!stream.key.isEmpty())
+        used.insert(stream.key);
+    else if (!subsonicIdKey.isEmpty())
+        used.insert(subsonicIdKey);
+
+    const QString artistKey =
+        pickKey(samples, {QStringLiteral("artistname"), QStringLiteral("artist"),
+                          QStringLiteral("artist.name"), QStringLiteral("uploader"),
+                          QStringLiteral("singer"), QStringLiteral("author"),
+                          QStringLiteral("vod_actor"), QStringLiteral("performer")}, used, true);
+    if (!artistKey.isEmpty()) {
+        config.fields.insert(QStringLiteral("artist"), artistKey);
+        used.insert(artistKey);
+    }
+
+    const QString posterKey =
+        pickKey(samples, {QStringLiteral("vod_pic"), QStringLiteral("pic"),
+                          QStringLiteral("cover"), QStringLiteral("cover_xl"),
+                          QStringLiteral("album.cover"), QStringLiteral("artworkurl100"),
+                          QStringLiteral("artwork_url"), QStringLiteral("image_url"),
+                          QStringLiteral("poster"), QStringLiteral("thumb"),
+                          QStringLiteral("thumbnail"), QStringLiteral("image")}, used);
+    if (!posterKey.isEmpty()) {
+        config.fields.insert(QStringLiteral("posterUrl"), posterKey);
+        used.insert(posterKey);
+    }
+
+    const QString yearKey =
+        pickKey(samples, {QStringLiteral("vod_year"), QStringLiteral("year")}, used);
+    if (!yearKey.isEmpty()) {
+        config.fields.insert(QStringLiteral("year"), yearKey);
+        used.insert(yearKey);
+    }
+
+    const QString areaKey =
+        pickKey(samples, {QStringLiteral("vod_area"), QStringLiteral("area"),
+                          QStringLiteral("region"), QStringLiteral("country")}, used);
+    if (!areaKey.isEmpty()) {
+        config.fields.insert(QStringLiteral("area"), areaKey);
+        used.insert(areaKey);
+    }
+
+    const QString genreKey =
+        pickKey(samples, {QStringLiteral("vod_class"), QStringLiteral("class"),
+                          QStringLiteral("cate"), QStringLiteral("category"),
+                          QStringLiteral("genre"), QStringLiteral("type")}, used);
+    if (!genreKey.isEmpty()) {
+        config.fields.insert(QStringLiteral("genre"), genreKey);
+        used.insert(genreKey);
+    }
+
+    const QString descKey =
+        pickKey(samples, {QStringLiteral("vod_content"), QStringLiteral("content"),
+                          QStringLiteral("intro"), QStringLiteral("desc"),
+                          QStringLiteral("description"), QStringLiteral("summary")}, used);
+    if (!descKey.isEmpty())
+        config.fields.insert(QStringLiteral("description"), descKey);
+
+    const QString webKey =
+        pickKey(samples, {QStringLiteral("detail"), QStringLiteral("weburl"),
+                          QStringLiteral("web_url"), QStringLiteral("pageurl"),
+                          QStringLiteral("page_url"), QStringLiteral("permalink"),
+                          QStringLiteral("file_page_url"), QStringLiteral("link")}, used);
+    if (!webKey.isEmpty())
+        config.fields.insert(QStringLiteral("webUrl"), webKey);
+
+    return config;
+}
+
 } // namespace
 
 namespace SourceProbe {
@@ -1172,81 +1279,12 @@ void Prober::probeNextCandidate()
         bool tooLarge = false;
         const QByteArray payload =
             HttpClient::readAllLimited(reply, NetLimits::kJsonBytes, &tooLarge);
-        const bool success = HttpClient::isHttpSuccess(reply);
-        const QString errorText = success ? QString() : HttpClient::describeError(reply);
-        reply->deleteLater();
-
-        if (!success) {
-            if (status == 0)
-                ++m_connFail;
-            else if (status == 401 || status == 403)
-                ++m_denied;
-            else if (status == 404)
-                ++m_notFound;
-            recordAttempt(probeUrl, status, errorText.isEmpty() ? tr("HTTP 失败") : errorText);
-            probeNextCandidate();
-            return;
-        }
-
-        if (tooLarge) {
-            // 超限只对 2xx 正文成立；404/500 的大错误页已在上面按 HTTP 状态
-            // 记录，不能把真实的 404/403 覆盖成“响应过大”。
-            recordAttempt(probeUrl, status, tr("响应超过 2 MB 上限"));
-            probeNextCandidate();
-            return;
-        }
-
-        // 先按正文形态归类，避免把所有非 JSON 响应都笼统说成“返回网页”。
-        const QString prefix = QString::fromUtf8(payload.left(512)).trimmed();
-        const QString lowerPrefix = prefix.toLower();
-        if (prefix.contains(QStringLiteral("未授权"))
-            || prefix.contains(QStringLiteral("已到期"))
-            || prefix.contains(QStringLiteral("授权已到期"))) {
-            ++m_unauthorized;
-            recordAttempt(probeUrl, status, tr("接口提示 IP 未授权/已到期"));
-            probeNextCandidate();
-            return;
-        }
-        const bool looksXml = lowerPrefix.startsWith(QLatin1String("<?xml"))
-                           || lowerPrefix.startsWith(QLatin1String("<rss"))
-                           || lowerPrefix.startsWith(QLatin1String("<list"))
-                           || (lowerPrefix.startsWith(QLatin1Char('<'))
-                               && !lowerPrefix.startsWith(QLatin1String("<html"))
-                               && !lowerPrefix.startsWith(QLatin1String("<!doctype")));
-        if (looksXml) {
-            ++m_xml;
-            recordAttempt(probeUrl, status, tr("返回 XML 接口（当前只解析 JSON）"));
-            probeNextCandidate();
-            return;
-        }
-
-        QJsonParseError parseError{};
-        const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
-        if (parseError.error != QJsonParseError::NoError) {
-            ++m_notJson;
-            recordAttempt(probeUrl, status, tr("返回的不是 JSON"));
-            probeNextCandidate();
-            return;
-        }
-
-        const QJsonValue root =
-            document.isArray() ? QJsonValue(document.array()) : QJsonValue(document.object());
-
-        if (subsonicAuthFailure(root)) {
-            ++m_authRequired;
-            recordAttempt(probeUrl, status, tr("Subsonic/Navidrome 返回认证失败"));
-            probeNextCandidate();
-            return;
-        }
-
         QJsonArray items;
         QString itemsPath;
-        int itemsScore = -1;
-        int nodeBudget = 4096;
-        scanArrays(root, QString(), 0, &itemsScore, &items, &itemsPath, &nodeBudget);
-        if (items.isEmpty()) {
-            ++m_jsonNoItems;
-            recordAttempt(probeUrl, status, tr("JSON 里没有结果数组"));
+        const ReplyClass replyClass =
+            classifyReply(reply, probeUrl, status, payload, tooLarge, &items, &itemsPath);
+        reply->deleteLater();
+        if (replyClass != ReplyClass::Usable) {
             probeNextCandidate();
             return;
         }
@@ -1286,96 +1324,10 @@ void Prober::probeNextCandidate()
 
         // 组装建议配置
         const MediaType detected = detectType(samples, stream, candidateType);
-        SourceConfig config;
-        // 同一个 host 上可能挂多个接口（例如 /api.php 与 /index.php），
-        // 只用 host 生成 id 会互相覆盖；把站点路径一起算进 8 位哈希。
-        const QByteArray identity =
-            (m_origin.toString() + m_site.path()).toUtf8();
-        const QString suffix = QString::fromLatin1(
-            QCryptographicHash::hash(identity, QCryptographicHash::Sha1).toHex().left(8));
-        config.id = QStringLiteral("site_")
-                    + m_origin.host().replace(QLatin1Char('.'), QLatin1Char('_'))
-                    + QLatin1Char('_') + suffix;
-        config.name = m_siteName.isEmpty() ? m_origin.host() : m_siteName;
-        config.enabled = true;
-        config.kind = QStringLiteral("config");
-        config.method = QStringLiteral("GET");
-        config.mediaType = detected;
-        config.urlTemplate = tpl;
-        config.itemsPath = itemsPath;
-        config.streamKind = stream.kind.isEmpty() ? QStringLiteral("direct") : stream.kind;
-        config.headers.insert(QStringLiteral("Referer"),
-                              m_origin.toString() + QLatin1Char('/'));
-        config.fields.insert(QStringLiteral("title"), titleKey);
-        config.fields.insert(QStringLiteral("streamUrl"),
-                             subsonicStreamSpec.isEmpty() ? stream.key : subsonicStreamSpec);
-
-        QSet<QString> used{titleKey};
-        if (!stream.key.isEmpty())
-            used.insert(stream.key);
-        else if (!subsonicIdKey.isEmpty())
-            used.insert(subsonicIdKey);
-
-        const QString artistKey =
-            pickKey(samples, {QStringLiteral("artistname"), QStringLiteral("artist"),
-                              QStringLiteral("artist.name"), QStringLiteral("uploader"),
-                              QStringLiteral("singer"), QStringLiteral("author"),
-                              QStringLiteral("vod_actor"), QStringLiteral("performer")}, used, true);
-        if (!artistKey.isEmpty()) {
-            config.fields.insert(QStringLiteral("artist"), artistKey);
-            used.insert(artistKey);
-        }
-
-        const QString posterKey =
-            pickKey(samples, {QStringLiteral("vod_pic"), QStringLiteral("pic"),
-                              QStringLiteral("cover"), QStringLiteral("cover_xl"),
-                              QStringLiteral("album.cover"), QStringLiteral("artworkurl100"),
-                              QStringLiteral("artwork_url"), QStringLiteral("image_url"),
-                              QStringLiteral("poster"), QStringLiteral("thumb"),
-                              QStringLiteral("thumbnail"), QStringLiteral("image")}, used);
-        if (!posterKey.isEmpty()) {
-            config.fields.insert(QStringLiteral("posterUrl"), posterKey);
-            used.insert(posterKey);
-        }
-
-        const QString yearKey =
-            pickKey(samples, {QStringLiteral("vod_year"), QStringLiteral("year")}, used);
-        if (!yearKey.isEmpty()) {
-            config.fields.insert(QStringLiteral("year"), yearKey);
-            used.insert(yearKey);
-        }
-
-        const QString areaKey =
-            pickKey(samples, {QStringLiteral("vod_area"), QStringLiteral("area"),
-                              QStringLiteral("region"), QStringLiteral("country")}, used);
-        if (!areaKey.isEmpty()) {
-            config.fields.insert(QStringLiteral("area"), areaKey);
-            used.insert(areaKey);
-        }
-
-        const QString genreKey =
-            pickKey(samples, {QStringLiteral("vod_class"), QStringLiteral("class"),
-                              QStringLiteral("cate"), QStringLiteral("category"),
-                              QStringLiteral("genre"), QStringLiteral("type")}, used);
-        if (!genreKey.isEmpty()) {
-            config.fields.insert(QStringLiteral("genre"), genreKey);
-            used.insert(genreKey);
-        }
-
-        const QString descKey =
-            pickKey(samples, {QStringLiteral("vod_content"), QStringLiteral("content"),
-                              QStringLiteral("intro"), QStringLiteral("desc"),
-                              QStringLiteral("description"), QStringLiteral("summary")}, used);
-        if (!descKey.isEmpty())
-            config.fields.insert(QStringLiteral("description"), descKey);
-
-        const QString webKey =
-            pickKey(samples, {QStringLiteral("detail"), QStringLiteral("weburl"),
-                              QStringLiteral("web_url"), QStringLiteral("pageurl"),
-                              QStringLiteral("page_url"), QStringLiteral("permalink"),
-                              QStringLiteral("file_page_url"), QStringLiteral("link")}, used);
-        if (!webKey.isEmpty())
-            config.fields.insert(QStringLiteral("webUrl"), webKey);
+        const SourceConfig config =
+            buildSuggestedConfig(tpl, samples, itemsPath, titleKey, stream,
+                                 subsonicIdKey, subsonicStreamSpec, detected,
+                                 m_origin, m_site, m_siteName);
 
         recordAttempt(probeUrl, status,
                       subsonicStreamSpec.isEmpty()
@@ -1383,6 +1335,88 @@ void Prober::probeNextCandidate()
                           : tr("接口可用，已把歌曲 id 映射为 /rest/stream，正在试搜校验"));
         validate(config, keyword);
     });
+}
+
+/// @brief 按 HTTP 状态与正文形态归类候选响应；失败时同步计数并记录尝试。
+Prober::ReplyClass Prober::classifyReply(QNetworkReply *reply, const QString &probeUrl,
+                                         int status, const QByteArray &payload,
+                                         bool tooLarge, QJsonArray *items,
+                                         QString *itemsPath)
+{
+    if (!HttpClient::isHttpSuccess(reply)) {
+        if (status == 0)
+            ++m_connFail;
+        else if (status == 401 || status == 403)
+            ++m_denied;
+        else if (status == 404)
+            ++m_notFound;
+        const QString errorText = HttpClient::describeError(reply);
+        recordAttempt(probeUrl, status, errorText.isEmpty() ? tr("HTTP 失败") : errorText);
+        return ReplyClass::HttpFailure;
+    }
+
+    if (tooLarge) {
+        // 超限只对 2xx 正文成立；404/500 的大错误页已在上面按 HTTP 状态
+        // 记录，不能把真实的 404/403 覆盖成“响应过大”。
+        recordAttempt(probeUrl, status, tr("响应超过 2 MB 上限"));
+        return ReplyClass::TooLarge;
+    }
+
+    // 先按正文形态归类，避免把所有非 JSON 响应都笼统说成“返回网页”。
+    const QString prefix = QString::fromUtf8(payload.left(512)).trimmed();
+    const QString lowerPrefix = prefix.toLower();
+    if (prefix.contains(QStringLiteral("未授权"))
+        || prefix.contains(QStringLiteral("已到期"))
+        || prefix.contains(QStringLiteral("授权已到期"))) {
+        ++m_unauthorized;
+        recordAttempt(probeUrl, status, tr("接口提示 IP 未授权/已到期"));
+        return ReplyClass::Unauthorized;
+    }
+    const bool looksXml = lowerPrefix.startsWith(QLatin1String("<?xml"))
+                       || lowerPrefix.startsWith(QLatin1String("<rss"))
+                       || lowerPrefix.startsWith(QLatin1String("<list"))
+                       || (lowerPrefix.startsWith(QLatin1Char('<'))
+                           && !lowerPrefix.startsWith(QLatin1String("<html"))
+                           && !lowerPrefix.startsWith(QLatin1String("<!doctype")));
+    if (looksXml) {
+        ++m_xml;
+        recordAttempt(probeUrl, status, tr("返回 XML 接口（当前只解析 JSON）"));
+        return ReplyClass::Xml;
+    }
+
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        ++m_notJson;
+        recordAttempt(probeUrl, status, tr("返回的不是 JSON"));
+        return ReplyClass::NotJson;
+    }
+
+    const QJsonValue root =
+        document.isArray() ? QJsonValue(document.array()) : QJsonValue(document.object());
+
+    if (subsonicAuthFailure(root)) {
+        ++m_authRequired;
+        recordAttempt(probeUrl, status, tr("Subsonic/Navidrome 返回认证失败"));
+        return ReplyClass::AuthRequired;
+    }
+
+    QJsonArray foundItems;
+    QString foundPath;
+    int itemsScore = -1;
+    int nodeBudget = 4096;
+    scanArrays(root, QString(), 0, &itemsScore, &foundItems, &foundPath, &nodeBudget);
+    if (foundItems.isEmpty()) {
+        ++m_jsonNoItems;
+        recordAttempt(probeUrl, status, tr("JSON 里没有结果数组"));
+        return ReplyClass::NoItems;
+    }
+
+    if (items != nullptr)
+        *items = foundItems;
+    if (itemsPath != nullptr)
+        *itemsPath = foundPath;
+    return ReplyClass::Usable;
 }
 
 /// @brief 用示例关键词试搜，确认生成的源能真正返回条目。

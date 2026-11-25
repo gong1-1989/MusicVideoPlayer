@@ -17,6 +17,7 @@ class HttpClient;
 class QNetworkReply;
 class ConfigSearchProvider;
 class MaccmsWebProvider;
+class QJsonArray;
 
 /// 网站探测：用户只给一个网址，程序试几条常见接口路径，
 /// 从返回的 JSON 里反推「结果路径 + 字段对应 + 播放地址形态」，再试搜一次做校验。
@@ -82,6 +83,22 @@ signals:
     void finished(const SourceProbe::Result &result);
 
 private:
+    /// 一次候选响应的分类结果；失败分类已由 classifyReply 计入统计并记录尝试。
+    enum class ReplyClass
+    {
+        Usable,
+        HttpFailure,
+        TooLarge,
+        Unauthorized,
+        Xml,
+        NotJson,
+        AuthRequired,
+        NoItems
+    };
+    ReplyClass classifyReply(QNetworkReply *reply, const QString &probeUrl, int status,
+                             const QByteArray &payload, bool tooLarge,
+                             QJsonArray *items, QString *itemsPath);
+
     void fetchHome();
     void probeNextCandidate();
     void analyze(const QUrl &url, const QJsonValue &root, int status);
