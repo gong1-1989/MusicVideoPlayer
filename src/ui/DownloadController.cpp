@@ -45,6 +45,12 @@ void DownloadController::setMediaItemResolver(std::function<MediaItem(const Medi
     m_itemResolver = std::move(resolver);
 }
 
+/// @brief 设置“当前实际播放线路”查询回调，用于下载跟随备用线路。
+void DownloadController::setActiveSourceResolver(std::function<QUrl(const MediaItem &)> resolver)
+{
+    m_activeSourceResolver = std::move(resolver);
+}
+
 /// @brief 把在线条目加入下载队列，或从已有播放缓存直接生成下载文件。
 /// @param item 用户请求下载的条目。
 /// @note 只接受 http/https 直链；下载目录按音乐/影视拆分，文件名走唯一化；
@@ -57,7 +63,16 @@ void DownloadController::download(const MediaItem &item)
         return;
     }
 
-    const QUrl source = preferredPlaybackUrl(resolved);
+    // 当前正在播放的同一条目可能已经从主线路切到备用线路；下载必须跟随
+    // 实际可用地址，否则会重新请求主线路的分享页/403 地址。
+    const QUrl activeSource =
+        m_activeSourceResolver ? m_activeSourceResolver(resolved) : QUrl();
+    const QUrl source =
+        activeSource.isValid() && !activeSource.isEmpty()
+            && (activeSource.scheme() == QLatin1String("http")
+                || activeSource.scheme() == QLatin1String("https"))
+            ? activeSource
+            : preferredPlaybackUrl(resolved);
     if (!source.isValid()
         || (source.scheme() != QLatin1String("http")
             && source.scheme() != QLatin1String("https"))) {

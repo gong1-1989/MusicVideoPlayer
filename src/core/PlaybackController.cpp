@@ -102,7 +102,10 @@ PlaybackController::PlaybackController(QObject *parent)
             return;
         const MediaItem modelItem = currentItem();
         const MediaItem item = m_itemResolver ? m_itemResolver(modelItem) : modelItem;
-        const QUrl playbackUrl = preferredPlaybackUrl(item);
+        // 换过备用线路后，预取必须跟随正在播放的那条；继续拿主线路地址
+        // 会让代理去重试已经 403/HTML 的旧线路，拖慢实际播放。
+        const QUrl playbackUrl =
+            m_activeUpstreamUrl.isValid() ? m_activeUpstreamUrl : preferredPlaybackUrl(item);
         if (!item.online || !isHlsUrl(playbackUrl))
             return;
         // 每 3 秒提交一次就够了；分片时长通常 3-7 秒，太频繁只会反复覆盖队列。
@@ -535,6 +538,9 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
             m_player->stop();
         return;
     }
+    // 通过安全校验后才记录为本轮实际上游；后台缓存/下载都以它为准。
+    // 备用线路切换会再次走到这里并覆盖主线路地址。
+    m_activeUpstreamUrl = playbackItem.online ? playbackUrl : QUrl();
     QUrl source = playbackUrl;
     QString sourceKind = playbackItem.online ? QStringLiteral("在线代理")
                                              : QStringLiteral("本地文件");
@@ -607,6 +613,7 @@ void PlaybackController::stop()
     m_fallbackUrls.clear();
     m_fallbackIdentity.clear();
     m_forcedNextUrl = QUrl();
+    m_activeUpstreamUrl = QUrl();
     m_player->stop();
 }
 

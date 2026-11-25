@@ -84,6 +84,10 @@ public:
     QUrl lastHlsVideoPlaylistUrl() const;
     QUrl lastHlsAudioPlaylistUrl() const;
 
+    /// 当前这一轮播放实际使用的上游地址（不是代理地址）。启动失败换过
+    /// 备用线路时，后台缓存和下载必须跟随这里，不能再回到主线路。
+    QUrl activeUpstreamUrl() const { return m_activeUpstreamUrl; }
+
     /// 后台 HLS 整段缓存把单个分片请求交给同一条流转代理，与播放共用分片缓存。
     /// 返回空表示代理尚未就绪，调用方应回退到直连；必须在主线程调用。
     QUrl proxyUrlForHlsCache(const QUrl &upstream,
@@ -186,6 +190,8 @@ private:
     QString m_fallbackIdentity;
     /// tryNextFallback() 选中的下一条地址，由紧接着的 playRowInternal() 消费。
     QUrl m_forcedNextUrl;
+    /// 当前实际送入播放/代理的上游地址；换备用线路时同步更新。
+    QUrl m_activeUpstreamUrl;
 };
 
 #endif // PLAYBACKCONTROLLER_H

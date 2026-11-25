@@ -1233,10 +1233,21 @@ void DownloadTask::startSegmentRequest(const Segment &segment)
     const QHash<QString, QString> headers =
         HeaderPolicy::sanitizedForTarget(segment.url, m_headers, m_originUrl);
     QUrl requestUrl = segment.url;
+    bool mappedToLocalProxy = false;
     if (m_segmentUrlMapper) {
         const QUrl mapped = m_segmentUrlMapper(segment.url);
-        if (mapped.isValid() && !mapped.isEmpty())
+        if (mapped.isValid() && !mapped.isEmpty()) {
             requestUrl = mapped;
+            // 只有本进程生成的本地代理地址才跳过源站校验；mapper 若返回
+            // 其它公网地址仍按原源站策略处理，避免扩大放行范围。
+            mappedToLocalProxy = requestUrl != segment.url
+                                 && NetworkAddressPolicy::isLocalOrPrivateHost(requestUrl);
+        }
+    }
+    const QUrl policyOrigin = mappedToLocalProxy ? QUrl() : m_originUrl;
+    if (mappedToLocalProxy) {
+        qCDebug(lcDownload) << "HLS 分片改走本机流转代理，跳过代理地址的源站校验："
+                            << HttpClient::redactUrl(requestUrl);
     }
     m_http->stream(requestUrl, segment.range, headers, [self, segment](QNetworkReply *reply) {
         if (self.isNull()) {
@@ -1310,7 +1321,7 @@ void DownloadTask::startSegmentRequest(const Segment &segment)
             self->writeReplyData(reply);
         if (reply->isFinished())
             self->onSegmentFinished(reply);
-    }, m_originUrl);
+    }, policyOrigin);
 }
 
 /// @brief 从 EXT-X-KEY 指定的地址取 16 字节 AES-128 密钥。

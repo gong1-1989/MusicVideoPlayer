@@ -140,6 +140,16 @@ MainWindow::MainWindow(QWidget *parent)
     };
     m_player->setMediaItemResolver(credentialResolver);
     m_downloads->setMediaItemResolver(credentialResolver);
+    // 下载入口也跟随当前实际播放线路：主线路 403/分享页、备用 m3u8 已播放时，
+    // 不能再用 preferredPlaybackUrl(item) 去下载已经失败的主线路。
+    m_downloads->setActiveSourceResolver([this](const MediaItem &item) {
+        if (!m_player->hasCurrentItem())
+            return QUrl();
+        const MediaItem current = m_player->currentItem();
+        if (mediaIdentity(current) != mediaIdentity(item))
+            return QUrl();
+        return m_player->activeUpstreamUrl();
+    });
 
     // 搜索整体从左侧拆成独立窗口：主界面只保留播放列表，
     // 搜索窗口在点搜索结果播放时自动隐藏，由侧栏搜索按钮再次打开。
@@ -301,10 +311,10 @@ MainWindow::MainWindow(QWidget *parent)
                 // HLS 影视开始在后台补齐整段缓存。切到音乐/直链视频时不再主动
                 // 取消：后台缓存应继续跑完，真正需要让位时由下一次 HLS start()
                 // 自己取消上一个条目，避免“切歌即丢缓存”。
-                if (m_hlsCache != nullptr && item.type == MediaType::Video && item.online
-                    && playbackIsHls(item)) {
-                    m_hlsCache->start(item);
-                }
+                // 必须把播放器实际打开的上游地址交给缓存器：主线路失败换到
+                // 备用 m3u8 时，条目原始 URL 仍可能是分享页/失效线路。
+                if (m_hlsCache != nullptr && item.type == MediaType::Video && item.online)
+                    m_hlsCache->start(item, m_player->activeUpstreamUrl());
             });
     connect(m_player, &PlaybackController::playbackStateChanged, this,
             [this](QMediaPlayer::PlaybackState state) {

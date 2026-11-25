@@ -60,7 +60,9 @@ public:
     void setRetainCompletedTrackFiles(bool retain);
 
     /// 开始缓存当前条目；非在线/非影视/非 HLS/已有完整缓存时直接返回 false。
-    bool start(const MediaItem &item);
+    /// sourceUrl 必须是播放器当前实际打开的上游地址；启动失败换过备用线路时
+    /// 不能再用 preferredPlaybackUrl(item) 去缓存已经失败的主线路。
+    bool start(const MediaItem &item, const QUrl &sourceUrl = QUrl());
     /// 退出程序：中止任务并保留已下载分片/续传点，下次播放继续缓存。
     void stopForExit();
     /// 用户主动取消（如删除条目）：中止任务并清掉未完成的分片/轨道。

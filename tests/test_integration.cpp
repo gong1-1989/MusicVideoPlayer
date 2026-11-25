@@ -231,6 +231,8 @@ private slots:
     void downloadFailsOnShortContentLength();
     void downloadStopsAtInjectedByteLimit();
     void downloadRejectsShortHlsSegmentRange();
+    void downloadTaskUsesMappedProxyDespitePublicOrigin();
+    void hlsCacheBuilderUsesActualFallbackSource();
     void downloadResumesFromPartialFileWithRange();
     void downloadCancelLeavesExistingFinalFile();
     void downloadManagerKeepsExistingFinalFile();
@@ -591,6 +593,98 @@ void IntegrationTest::downloadRejectsShortHlsSegmentRange()
     QCOMPARE(failed.count(), 1);
     QVERIFY(failed.first().first().toString().contains(QStringLiteral("分片长度不完整")));
     QVERIFY(!QFile::exists(m_tempDir.filePath(QStringLiteral("short-list.ts"))));
+}
+
+void IntegrationTest::downloadTaskUsesMappedProxyDespitePublicOrigin()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray segmentBytes(512, 'p');
+    // 分片地址故意写成公网主机，实际请求由 mapper 改到本机代理；这正是
+    // 播放缓存链路的形式。旧实现会用公网源站再校验代理地址并直接拒绝。
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "https://cdn.example.com/seg0.ts\n"
+        "#EXT-X-ENDLIST\n";
+    server.handler = [playlist, segmentBytes](const LocalHttpServer::Request &request,
+                                               QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/hls/mapped.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+        } else if (request.path == QStringLiteral("/segment.ts")) {
+            LocalHttpServer::respond(socket, 200, segmentBytes, "video/mp2t");
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    HttpClient http;
+    const QString path = m_tempDir.filePath(QStringLiteral("mapped-proxy.mp4"));
+    QFile::remove(path);
+    QFile::remove(m_tempDir.filePath(QStringLiteral("mapped-proxy.ts")));
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/hls/mapped.m3u8")), path);
+    QVERIFY(task != nullptr);
+    task->setHlsSegmentUrlMapper(
+        [url = server.url(QStringLiteral("/segment.ts"))](const QUrl &) { return url; });
+    // 播放列表先按本机地址正常解析；解析完成后切换到公网源站，复现
+    // “播放列表公网、分片被映射到本机代理”的校验路径。
+    connect(task, &DownloadTask::playlistFingerprint, task, [task](const QString &) {
+        task->setOriginUrl(QUrl(QStringLiteral("https://cdn.example.com/")));
+    });
+
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 6000);
+    QVERIFY2(failed.count() == 0, qPrintable(failed.isEmpty()
+                                                 ? QString()
+                                                 : failed.first().first().toString()));
+    QCOMPARE(succeeded.count(), 1);
+    const QString completed = succeeded.first().first().toString();
+    QFile result(completed);
+    QVERIFY(result.open(QIODevice::ReadOnly));
+    QCOMPARE(result.readAll(), segmentBytes);
+    QVERIFY(server.requests.size() >= 2);
+}
+
+void IntegrationTest::hlsCacheBuilderUsesActualFallbackSource()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "seg0.ts\n"
+        "#EXT-X-ENDLIST\n";
+    server.handler = [playlist](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/fallback/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+            return;
+        }
+        LocalHttpServer::respond(socket, 200, QByteArray(256, 'f'), "video/mp2t");
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("HLS 备用线路缓存测试");
+    // 条目首选地址是分享页（HTML）；播放器实际换到了备用 m3u8。
+    item.url = server.url(QStringLiteral("/share/page.html"));
+    item.online = true;
+    MediaCache::removeForItem(item);
+
+    HttpClient http;
+    HlsCacheBuilder builder(&http);
+    // 不传实际地址时必须拒绝缓存 HTML；传备用 m3u8 后应启动。
+    QVERIFY(!builder.start(item));
+    QVERIFY(builder.start(item, server.url(QStringLiteral("/fallback/index.m3u8"))));
+    builder.stopForExit();
+    MediaCache::removeForItem(item);
 }
 
 void IntegrationTest::downloadResumesFromPartialFileWithRange()

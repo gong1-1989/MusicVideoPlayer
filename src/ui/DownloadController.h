@@ -26,6 +26,10 @@ public:
     /// 下载前按 sourceId 从源配置补回内存态 Cookie；不改变落盘内容。
     void setMediaItemResolver(std::function<MediaItem(const MediaItem &)> resolver);
 
+    /// 当前正在播放的同一条目如果换过备用线路，下载应跟随实际线路，
+    /// 不能重新去请求已经失败的主线路。返回空表示没有可用覆盖地址。
+    void setActiveSourceResolver(std::function<QUrl(const MediaItem &)> resolver);
+
     void download(const MediaItem &item);
     void openManager();
 
@@ -43,6 +47,7 @@ private:
     DownloadManager *m_manager = nullptr;
     QPointer<DownloadManagerDialog> m_dialog;
     std::function<MediaItem(const MediaItem &)> m_itemResolver;
+    std::function<QUrl(const MediaItem &)> m_activeSourceResolver;
     QString m_lastStatus;
 };
 

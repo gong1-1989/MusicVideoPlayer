@@ -106,9 +106,10 @@ void HlsCacheBuilder::setRetainCompletedTrackFiles(bool retain)
 
 /// @brief 开始为指定在线 HLS 影视条目构建完整缓存。
 /// @param item 当前播放条目，必须是在线视频且是 HLS。
+/// @param sourceUrl 播放器实际使用的上游地址；空时回退到条目的首选地址。
 /// @return 已启动返回 true；非 HLS 或已有完整缓存返回 false。
 /// @note 已有完整缓存时直接跳过；未完成缓存保留现场，下次从续传点继续。
-bool HlsCacheBuilder::start(const MediaItem &item)
+bool HlsCacheBuilder::start(const MediaItem &item, const QUrl &sourceUrl)
 {
     // 上一条目如果已经生成完整 MP4，但当前会话仍可能从轨道分片索引继续读，
     // 只有切换到不同条目时才清理。同一部视频缓存完成后再次 start() 不能把
@@ -124,10 +125,17 @@ bool HlsCacheBuilder::start(const MediaItem &item)
     stopForExit();
 
     // HLS 影视才需要整段缓存；直链 MP4 已有 StreamProxy 的完整文件落盘。
+    // 必须看播放器实际地址：主线路失败换到备用 mp4 时，不能继续按条目的
+    // 首选 m3u8 去缓存。
     if (m_http == nullptr || !item.online || item.type != MediaType::Video
-        || !playbackIsHls(item) || !item.isValid()) {
+        || !item.isValid()) {
         return false;
     }
+    const QUrl actualSource = sourceUrl.isValid() && !sourceUrl.isEmpty()
+                                  ? sourceUrl
+                                  : preferredPlaybackUrl(item);
+    if (!DownloadTask::looksLikeHls(actualSource))
+        return false;
 
     if (!MediaCache::completeFileForItem(item).isEmpty()) {
         qCDebug(lcHlsCache) << "HLS 完整缓存已存在，跳过：" << item.displayName();
@@ -135,10 +143,15 @@ bool HlsCacheBuilder::start(const MediaItem &item)
     }
 
     m_item = item;
-    m_sourceUrl = preferredPlaybackUrl(item);
-    m_originUrl = item.sourceOrigin.isValid() && !item.sourceOrigin.host().isEmpty()
+    m_sourceUrl = actualSource;
+    QUrl origin = item.sourceOrigin.isValid() && !item.sourceOrigin.host().isEmpty()
                       ? item.sourceOrigin
                       : HeaderPolicy::originFromHeaders(item.headers);
+    // 条目没有记录源站时，用真实播放地址补上；否则公网 HLS 的 m_originUrl
+    // 为空，HttpClient 会把“无源站”当成兼容模式，内网分片就失去防护。
+    if (origin.isEmpty() || origin.host().isEmpty())
+        origin = HeaderPolicy::originOnly(actualSource);
+    m_originUrl = origin;
     // 未完成缓存不再提前删除：轨道文件和 `.mvpdownload` 就是续传现场，
     // 是否真正可续由 DownloadTask 的分片指纹校验决定。
     m_bodyPath = MediaCache::filePathForItem(item);
