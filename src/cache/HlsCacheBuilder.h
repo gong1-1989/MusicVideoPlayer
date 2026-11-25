@@ -37,6 +37,11 @@ class HlsCacheBuilder : public QObject
 
 public:
     using UrlResolver = std::function<QUrl()>;
+    /// 把一个真实 HLS 分片地址换成本机流转代理地址；空返回值表示回退直连。
+    using ProxyUrlResolver = std::function<QUrl(
+        const QUrl &url, const QHash<QString, QString> &headers,
+        const QString &cachePath, const QString &cacheIdentity,
+        const QUrl &sourceOrigin)>;
 
     explicit HlsCacheBuilder(HttpClient *http, QObject *parent = nullptr);
     ~HlsCacheBuilder() override;
@@ -44,6 +49,15 @@ public:
     /// 后台缓存选码率时查询播放器最近实际打开的视频/音频播放列表。
     /// 不设置时回退到主列表里的第一个码率，而不是盲选最高码率。
     void setPlaybackTrackResolvers(UrlResolver video, UrlResolver audio);
+
+    /// 让后台整段缓存的 HLS 分片请求走同一条流转代理，和播放共享分片缓存。
+    /// 只在播放代理已就绪时设置；未设置或返回空时自动回退为直连下载。
+    void setProxyUrlResolver(ProxyUrlResolver resolver);
+
+    /// 缓存完成后是否保留轨道文件与分片索引，直到切换条目/退出。
+    /// 主窗口播放会话必须开启，避免 100% 瞬间当前播放重新回源；
+    /// 无播放会话的独立缓存任务保持关闭，完成后立即清理中间文件。
+    void setRetainCompletedTrackFiles(bool retain);
 
     /// 开始缓存当前条目；非在线/非影视/非 HLS/已有完整缓存时直接返回 false。
     bool start(const MediaItem &item);
@@ -103,6 +117,12 @@ private:
     void stopTasksForExit();
     void cancelTasks();
     void cleanupTrackFiles();
+    void cleanupTrackFilesAt(const QString &bodyPath, const QString &videoPath,
+                             const QString &audioPath);
+    /// 缓存完成后当前播放仍可能继续读分片索引；轨道文件和索引延迟到
+    /// 切换条目/退出时再清理，避免“缓存 100% 的瞬间当前会话重新回源”。
+    void retainCurrentTrackFiles();
+    void cleanupRetainedTracks();
     void cleanupPartial(bool removeBody);
     QString audioGroupForVariant(const QUrl &videoUrl) const;
     void emitProgress();
@@ -134,6 +154,8 @@ private:
 
     UrlResolver m_videoResolver;
     UrlResolver m_audioResolver;
+    ProxyUrlResolver m_proxyUrlResolver;
+    bool m_retainCompletedTrackFiles = false;
 
     QUrl m_sourceUrl;
     QUrl m_originUrl;
@@ -183,6 +205,11 @@ private:
     qint64 m_lastProgressMs = 0;
 
     QPointer<MediaRemux> m_remux;
+
+    /// 已生成 MP4 但当前播放会话仍可能需要读取的轨道/索引现场。
+    QString m_retainedBasePath;
+    QString m_retainedVideoPath;
+    QString m_retainedAudioPath;
 };
 
 #endif // HLSCACHEBUILDER_H

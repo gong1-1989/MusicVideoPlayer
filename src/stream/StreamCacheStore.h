@@ -44,6 +44,9 @@ struct StreamCacheEntry
     // 预取请求已占位但响应头还没到。播放器这时命中缓存不能另开一条上游，
     // 否则同一片会重复下载，反而把刚腾出的带宽又吃掉。
     bool pending = false;
+    /// 分片占位是否已经真正发起了上游请求。占位插入和 `m_http->stream`
+    /// 之间没有事件循环，用它区分“先到者已开请求”与“后来者只拿到占位”。
+    bool upstreamStarted = false;
     QByteArray contentType;
     qint64 lastUsedMs = 0;
     QNetworkReply *reply = nullptr;

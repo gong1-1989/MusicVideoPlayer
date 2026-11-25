@@ -103,6 +103,18 @@ MainWindow::MainWindow(QWidget *parent)
     m_hlsCache->setPlaybackTrackResolvers(
         [this] { return m_player->lastHlsVideoPlaylistUrl(); },
         [this] { return m_player->lastHlsAudioPlaylistUrl(); });
+    // 后台整段缓存不再自己直连分片：每个 HLS 分片都登记到播放器同一个流转
+    // 代理，已经由播放/预取下载过的片直接复用，未下载的片也由代理统一排队。
+    m_hlsCache->setProxyUrlResolver(
+        [this](const QUrl &url, const QHash<QString, QString> &headers,
+               const QString &cachePath, const QString &cacheIdentity,
+               const QUrl &sourceOrigin) {
+            return m_player->proxyUrlForHlsCache(url, headers, cachePath, cacheIdentity,
+                                                 sourceOrigin);
+        });
+    // 当前播放仍拿着代理地址时，缓存完成不能立刻删轨道/索引，否则播放会
+    // 在 100% 的瞬间退回直连；延迟到切换条目或程序退出再回收。
+    m_hlsCache->setRetainCompletedTrackFiles(true);
     connect(m_hlsCache, &HlsCacheBuilder::progressChanged, this,
             [this](const MediaItem &, int percent, const QString &detail) {
                 // 只影响状态栏，不碰播放控制；percent 已包含在 detail 文案里。

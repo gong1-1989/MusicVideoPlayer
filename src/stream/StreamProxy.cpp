@@ -46,6 +46,8 @@ const char *const kMethod = "proxyMethod";
 const char *const kCacheNext = "proxyCacheNext";
 const char *const kCacheEnd = "proxyCacheEnd";
 const char *const kCacheRequested = "proxyCacheRequested";
+/// 标记本次响应必须等整个 HLS 分片进入缓存后再发响应头/正文。
+const char *const kCacheOnlySegment = "proxyCacheOnlySegment";
 
 // 上游忽略 Range 时，把整段音视频留在内存里按需切片。
 // 单条 128MB、总量 256MB，覆盖常见歌曲和短片，避免无上限吃内存。
@@ -73,6 +75,10 @@ constexpr int kRangeMaxConnections = kStreamCacheDefaultRangeConnections;
 constexpr qint64 kRangeProbeBytes = 16LL * 1024;
 constexpr qint64 kRangeMinPartBytes = 24LL * 1024;
 constexpr qint64 kRangeMaxSegmentBytes = 8LL * 1024 * 1024;
+/// HLS 普通媒体分片整片门控的上限。超过这个长度的“分片”通常是单文件
+/// BYTERANGE 或异常源，继续整片等待会把首帧拖到不可接受；这类请求保留
+/// 原来的流式透传，不冒充“分片缓存”。
+constexpr qint64 kCacheOnlySegmentMaxBytes = 16LL * 1024 * 1024;
 
 // 预取窗口：用播放列表索引而不是文件名推算。实测索引 152 对应分片文件
 // 0000143.ts，FFmpeg 深拖动后会打开索引 152..161（文件 143..152），
@@ -645,6 +651,44 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
     // 普通 HLS 每片 URL 唯一，仍保留原来的分片缓存/深拖动预取。
     bool singleFileHlsSegment = isSingleFileHlsSegment(upstream);
 
+    // 普通 HLS 分片在拿到上游响应头之前就先放一个 pending 占位。播放器和
+    // 后台整段缓存经常同时请求同一片；没有占位时两边都会走到这里，各自发
+    // 一条上游请求，共享缓存就退化成“各下一份”。占位后后到者直接挂在
+    // 同一个条目上，由先到者完成下载并唤醒所有客户端。
+    QSharedPointer<CacheEntry> pendingEntry;
+    const bool dedupeSegment = !isHead && !singleFileHlsSegment
+                               && isHlsSegmentUrl(upstream)
+                               && (!hasRange || isOpenEndedRange(request.range));
+    if (dedupeSegment) {
+        pendingEntry = m_cache.value(cacheKey);
+        const bool createdPlaceholder = pendingEntry.isNull();
+        if (createdPlaceholder) {
+            pendingEntry = QSharedPointer<CacheEntry>::create();
+            pendingEntry->pending = true;
+            pendingEntry->upstream = upstream;
+            pendingEntry->contentType = guessContentType(upstream);
+            pendingEntry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+            m_cache.insert(cacheKey, pendingEntry);
+        }
+        // 占位只是“已有请求在路上”，不是可读缓存；serveFromCache 会挂住
+        // 客户端，等完整分片到齐后再发响应头。
+        if (!serveFromCache(client, pendingEntry, cacheKey, request.range, hasRange)) {
+            if (createdPlaceholder) {
+                m_cache.remove(cacheKey);
+                pendingEntry.clear();
+            } else {
+                return;
+            }
+        }
+        // 已经有别的请求负责这条上游，本次只挂客户端，不能再开第二条。
+        // 刚插入的占位还没标 upstreamStarted，由本次调用负责发起。
+        if (!createdPlaceholder && pendingEntry->upstreamStarted)
+            return;
+        pendingEntry->upstreamStarted = true;
+        qCDebug(lcProxy) << "HLS 分片上游接管" << HttpClient::redactUrl(upstream)
+                         << "新建占位" << createdPlaceholder;
+    }
+
     // 整段落盘只在“主地址本身就是一个可按字节读取的文件”时启用。
     // HLS 主地址是播放列表，必须留给 attachPlaylist 改写，不能写入媒体文件。
     const bool diskRequested = !cachePath.isEmpty() && !isHlsUrl(upstream);
@@ -741,7 +785,7 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
     m_http->stream(upstream, range, headers,
                    [this, guard, upstream, headers, isHead, hasRange, cacheKey, request,
                     cachePath, cacheIdentity, sourceOrigin, diskRequested, resumeOffset,
-                    singleFileHlsSegment, boundedRangeRequest](QNetworkReply *reply) {
+                    singleFileHlsSegment, boundedRangeRequest, pendingEntry](QNetworkReply *reply) {
         if (guard.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -751,12 +795,22 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         }
         QTcpSocket *client = guard.data();
         if (reply == nullptr) {
-            replyError(client, 502, QStringLiteral("Upstream redirect rejected"));
+            if (!pendingEntry.isNull()) {
+                pendingEntry->pending = false;
+                pendingEntry->failed = true;
+                pendingEntry->reply = nullptr;
+                pumpCache(cacheKey, pendingEntry);
+                m_cache.remove(cacheKey);
+            } else {
+                replyError(client, 502, QStringLiteral("Upstream redirect rejected"));
+            }
             return;
         }
         if (client->state() != QAbstractSocket::ConnectedState) {
             reply->abort();
             reply->deleteLater();
+            if (!pendingEntry.isNull() && pendingEntry->clients.isEmpty())
+                m_cache.remove(cacheKey);
             return;
         }
         if (!looksLikeMedia(reply)) {
@@ -769,7 +823,15 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
             qCWarning(lcProxy) << "上游返回的不是音视频：" << HttpClient::redactUrl(reply->url())
                               << "状态" << status << "类型" << type;
             emit sourceUnavailable(upstream, type, status);
-            replyError(client, 404, QStringLiteral("no audio source"));
+            if (!pendingEntry.isNull()) {
+                pendingEntry->pending = false;
+                pendingEntry->failed = true;
+                pendingEntry->reply = nullptr;
+                pumpCache(cacheKey, pendingEntry);
+                m_cache.remove(cacheKey);
+            } else {
+                replyError(client, 404, QStringLiteral("no audio source"));
+            }
             reply->abort();
             reply->deleteLater();
             return;
@@ -861,7 +923,11 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                 }
             }
 
-            auto entry = QSharedPointer<CacheEntry>::create();
+            auto entry = !pendingEntry.isNull()
+                             && m_cache.value(cacheKey) == pendingEntry
+                         ? pendingEntry
+                         : QSharedPointer<CacheEntry>::create();
+            entry->pending = false;
             entry->total = cacheTotal;
             entry->reservedBytes = cacheTotal;
             entry->contentType =
@@ -888,11 +954,19 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
                 closeCacheFile(*entry);
                 qCInfo(lcProxy) << "流转缓存跳过：配额已满" << HttpClient::redactUrl(upstream)
                                 << cacheTotal << "字节";
-                attachUpstream(client, reply, upstream);
-                flushUpstream(client, reply, upstream);
-                if (reply->isFinished()) {
-                    client->disconnectFromHost();
-                    reply->deleteLater();
+                if (!pendingEntry.isNull()) {
+                    pendingEntry->pending = false;
+                    pendingEntry->failed = true;
+                    pendingEntry->reply = nullptr;
+                    pumpCache(cacheKey, pendingEntry);
+                    m_cache.remove(cacheKey);
+                } else {
+                    attachUpstream(client, reply, upstream);
+                    flushUpstream(client, reply, upstream);
+                    if (reply->isFinished()) {
+                        client->disconnectFromHost();
+                        reply->deleteLater();
+                    }
                 }
                 return;
             }
@@ -926,6 +1000,20 @@ void StreamProxy::startUpstreamRequest(QTcpSocket *client, const QUrl &upstream,
         } else if (cacheTotal > kMaxCacheEntryBytes) {
             qCInfo(lcProxy) << "流转缓存跳过：文件过大" << HttpClient::redactUrl(upstream)
                             << cacheTotal << "字节";
+        }
+
+        // 已经为普通 HLS 分片建立了待响应占位，但这条响应不能整片缓存
+        // （无总长/过大/区间不支持）时，不能只把首客户端直连、让其他客户端
+        // 一直挂在占位上。统一失败并唤醒，避免播放与后台缓存状态分叉。
+        if (!pendingEntry.isNull()) {
+            pendingEntry->pending = false;
+            pendingEntry->failed = true;
+            pendingEntry->reply = nullptr;
+            pumpCache(cacheKey, pendingEntry);
+            m_cache.remove(cacheKey);
+            reply->abort();
+            reply->deleteLater();
+            return;
         }
 
         attachUpstream(client, reply, upstream);
@@ -1007,6 +1095,7 @@ bool StreamProxy::tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream
     auto entry = QSharedPointer<CacheEntry>::create();
     entry->pending = true;
     entry->multiRange = true;
+    entry->upstreamStarted = true;
     // 探测阶段只知道首片大小；按整片上限预留会让 2 条预取就吃满 256MB 配额，
     // 把后面排队的 HLS 分片全部挡住。未知总长时只登记真实在途的首片。
     entry->reservedBytes = kRangeProbeBytes;
@@ -1071,15 +1160,31 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
 
     entry->rangePending.remove(requestedStart);
 
-    if (reply == nullptr) {
-        if (probe) {
-            qCWarning(lcProxy) << "HLS 分片首片请求失败，回退单路";
+    // 多连接首片失败时，不能把条目删掉再只重开播放器那一路：后台整段缓存
+    // 可能已经挂在这个条目上，删掉会让它一直等到 504。直接复用同一条目
+    // 退回单路上游，clients 全部保留，后到者继续共享同一份缓存。
+    auto fallbackToSingle = [this, entry, cacheKey, upstream, headers, request, client]() {
+        if (entry->prefetch) {
             entry->pending = false;
             entry->failed = true;
             finishRangePrefetch(cacheKey, entry);
             m_cache.remove(cacheKey);
-            if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
-                startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
+            return;
+        }
+        entry->pending = true;
+        entry->failed = false;
+        entry->multiRange = false;
+        entry->upstreamStarted = false;
+        entry->total = -1;
+        entry->reply = nullptr;
+        if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
+            startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
+    };
+
+    if (reply == nullptr) {
+        if (probe) {
+            qCWarning(lcProxy) << "HLS 分片首片请求失败，回退单路";
+            fallbackToSingle();
             return;
         }
         if (!entry->rangeRetried.contains(requestedStart)) {
@@ -1100,14 +1205,10 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
             qCWarning(lcProxy) << "HLS 分片首片未返回 206，回退单路"
                                << HttpClient::redactUrl(upstream) << "状态" << status
                                << reply->errorString();
-            if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
-                startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
             reply->abort();
             reply->deleteLater();
-            entry->pending = false;
-            entry->failed = true;
-            finishRangePrefetch(cacheKey, entry);
-            m_cache.remove(cacheKey);
+            // 复用同一缓存条目回退单路，保留已经挂上来的播放/后台客户端。
+            fallbackToSingle();
             return;
         }
         failRangeEntry(cacheKey, entry, QStringLiteral("分片未返回 206"));
@@ -1124,14 +1225,9 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
         if (probe) {
             qCWarning(lcProxy) << "HLS 分片首片 Content-Range 无效，回退单路"
                                << reply->rawHeader("Content-Range");
-            if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
-                startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
             reply->abort();
             reply->deleteLater();
-            entry->pending = false;
-            entry->failed = true;
-            finishRangePrefetch(cacheKey, entry);
-            m_cache.remove(cacheKey);
+            fallbackToSingle();
             return;
         }
         failRangeEntry(cacheKey, entry, QStringLiteral("分片 Content-Range 无效"));
@@ -1142,14 +1238,9 @@ void StreamProxy::onRangePartReply(const QSharedPointer<CacheEntry> &entry,
     if (probe) {
         if (total > kRangeMaxSegmentBytes) {
             qCInfo(lcProxy) << "HLS 分片过大，回退单路" << total << "字节";
-            if (client != nullptr && client->state() == QAbstractSocket::ConnectedState)
-                startUpstreamRequest(client, upstream, headers, request, true, cacheKey);
             reply->abort();
             reply->deleteLater();
-            entry->pending = false;
-            entry->failed = true;
-            finishRangePrefetch(cacheKey, entry);
-            m_cache.remove(cacheKey);
+            fallbackToSingle();
             return;
         }
 
@@ -1572,6 +1663,7 @@ bool StreamProxy::startRangePrefetch(const PrefetchJob &job)
     auto entry = QSharedPointer<CacheEntry>::create();
     entry->pending = true;
     entry->multiRange = true;
+    entry->upstreamStarted = true;
     entry->prefetch = true;
     entry->reservedBytes = kRangeProbeBytes;
     entry->rangeConnections = qMin(kRangeMaxConnections, 4);
@@ -2008,6 +2100,23 @@ bool StreamProxy::serveFromCache(QTcpSocket *client, const QSharedPointer<CacheE
         return true;
     }
 
+    // 同一个客户端可能先挂在“分片占位”上，响应头到达后上层又调一次
+    // serveFromCache。重复 append 会让 bytesWritten/disconnected 信号挂两遍，
+    // 播放器断开时也会被清理两次；这里只更新并泵一次。
+    for (const QPointer<QTcpSocket> &existing : std::as_const(entry->clients)) {
+        if (!existing.isNull() && existing.data() == client) {
+            pumpCache(cacheKey, entry);
+            return true;
+        }
+    }
+
+    // 普通 HLS 媒体分片严格等整片落进缓存后再放行。播放器和后台整段缓存
+    // 都走这里：先到者下载，后到者挂在同一个条目上，不会各自回源；分片
+    // 未完整时宁可让播放器等，也不把半片当成分片交出去。
+    const bool cacheOnlySegment = !isSingleFileHlsSegment(entry->upstream)
+                                  && isHlsSegmentUrl(entry->upstream);
+    client->setProperty(kCacheOnlySegment, cacheOnlySegment);
+
     qCInfo(lcProxy) << "流转缓存服务播放器，范围" << start << end
                     << "已缓存" << cacheDataSize(*entry) << "/" << entry->total
                     << (hasRange ? "206" : "200");
@@ -2040,9 +2149,13 @@ bool StreamProxy::serveFromCache(QTcpSocket *client, const QSharedPointer<CacheE
                 }
             });
 
-    // 缓存已经覆盖起始位置才发响应头；否则让播放器等数据到齐。
+    // 缓存已经覆盖起始位置才发响应头；HLS 分片还要求整片完整。
     // 不在“无数据”时先发 206 头，是为了超时还能合法地回 504。
-    if (cacheDataSize(*entry) > start || entry->complete) {
+    const bool waitWholeSegment =
+        cacheOnlySegment
+        && (entry->total < 0 || entry->total <= kCacheOnlySegmentMaxBytes)
+        && !entry->complete;
+    if (!waitWholeSegment && (cacheDataSize(*entry) > start || entry->complete)) {
         const int status = hasRange ? 206 : 200;
         client->write(buildCacheHead(*entry, status, start, end));
         client->setProperty(kHeaderSent, true);
@@ -2119,6 +2232,11 @@ void StreamProxy::pumpCache(const QString &key, const QSharedPointer<CacheEntry>
         }
 
         if (!client->property(kHeaderSent).toBool()) {
+            const bool cacheOnly = client->property(kCacheOnlySegment).toBool()
+                                   && (entry->total < 0
+                                       || entry->total <= kCacheOnlySegmentMaxBytes);
+            if (cacheOnly && !entry->complete)
+                continue;
             if (cacheDataSize(*entry) <= next && !entry->complete)
                 continue;
             const int status = requested ? 206 : 200;

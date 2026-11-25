@@ -45,6 +45,11 @@ public:
 
     /// 源站地址只用于裁剪 Cookie/Authorization 的作用域，不是流地址本身。
     void setOriginUrl(const QUrl &origin);
+    /// HLS 分片请求的本地化映射。播放代理已经缓存同一分片时，后台整段缓存
+    /// 通过该回调把真实分片地址换成代理地址，让两条链路共用一次上游下载；
+    /// 分片索引与续传指纹仍记录原始地址，避免代理 token 变化破坏续传。
+    using SegmentUrlMapper = std::function<QUrl(const QUrl &)>;
+    void setHlsSegmentUrlMapper(SegmentUrlMapper mapper);
     /// 主列表的 SESSION-KEY 需要传递给只拿到子列表的缓存任务；line 是原始
     /// `#EXT-X-SESSION-KEY`，baseUrl 是主列表最终地址，用于解析相对密钥地址。
     void setHlsSessionKey(const QString &line, const QUrl &baseUrl);
@@ -157,6 +162,7 @@ private:
     bool switchToHlsFile();
 
     HttpClient *m_http;
+    SegmentUrlMapper m_segmentUrlMapper;
     QUrl m_url;
     QUrl m_originUrl;
     std::function<QString(const QString &)> m_pathResolver;

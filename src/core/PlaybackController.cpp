@@ -246,6 +246,31 @@ QUrl PlaybackController::lastHlsAudioPlaylistUrl() const
     return m_proxy->lastPlaybackAudioPlaylist();
 }
 
+/// @brief 让后台 HLS 缓存按分片登记同一个流转代理，和播放共用上游缓存。
+/// @note 只在代理线程已启动时阻塞取一次代理 URL；注册本身很轻，分片按需
+///       登记，未实际请求的分片不会产生上游连接。代理未就绪时返回空，
+///       DownloadTask 会自动回退为原始分片地址。
+QUrl PlaybackController::proxyUrlForHlsCache(
+    const QUrl &upstream, const QHash<QString, QString> &headers,
+    const QString &cachePath, const QString &cacheIdentity,
+    const QUrl &sourceOrigin) const
+{
+    if (m_proxy == nullptr || !m_proxyReady || m_proxyThread == nullptr
+        || !m_proxyThread->isRunning()) {
+        return QUrl();
+    }
+    QUrl proxied;
+    const bool invoked = QMetaObject::invokeMethod(
+        m_proxy,
+        [proxy = m_proxy, upstream, headers, cachePath, cacheIdentity, sourceOrigin,
+         &proxied] {
+            proxied = proxy->proxyUrlFor(upstream, headers, cachePath, cacheIdentity,
+                                         sourceOrigin);
+        },
+        Qt::BlockingQueuedConnection);
+    return invoked ? proxied : QUrl();
+}
+
 /// @brief 读取代理线程维护的码率快照，并转换成播放层无关的轻量结构。
 /// @note 变体列表只在代理线程更新；这里用阻塞队列取一次拷贝，
 ///       主线程后续刷新只操作本地副本，不再反复跨线程读代理容器。

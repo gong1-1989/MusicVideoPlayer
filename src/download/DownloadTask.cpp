@@ -356,6 +356,15 @@ void DownloadTask::setOriginUrl(const QUrl &origin)
         m_originUrl = origin;
 }
 
+/// @brief 设置 HLS 分片请求的本地映射（通常指向本机流转代理）。
+/// @param mapper 输入原始分片地址，返回真正发起请求的地址；返回空地址时回退原地址。
+/// @note 只改变网络请求地址，不改变 m_currentSegment.url，因此分片索引、
+///       续传指纹和日志仍使用原始源站地址。
+void DownloadTask::setHlsSegmentUrlMapper(SegmentUrlMapper mapper)
+{
+    m_segmentUrlMapper = std::move(mapper);
+}
+
 /// @brief 接收 HlsCacheBuilder 从主列表提取的 SESSION-KEY。
 /// @note 缓存任务只拿子列表地址，子列表若省略 KEY 就会把密文当明文；
 ///       这里复用与 parsePlaylist 相同的解析，保证两条路径一致。
@@ -1223,7 +1232,13 @@ void DownloadTask::startSegmentRequest(const Segment &segment)
     QPointer<DownloadTask> self(this);
     const QHash<QString, QString> headers =
         HeaderPolicy::sanitizedForTarget(segment.url, m_headers, m_originUrl);
-    m_http->stream(segment.url, segment.range, headers, [self, segment](QNetworkReply *reply) {
+    QUrl requestUrl = segment.url;
+    if (m_segmentUrlMapper) {
+        const QUrl mapped = m_segmentUrlMapper(segment.url);
+        if (mapped.isValid() && !mapped.isEmpty())
+            requestUrl = mapped;
+    }
+    m_http->stream(requestUrl, segment.range, headers, [self, segment](QNetworkReply *reply) {
         if (self.isNull()) {
             if (reply != nullptr) {
                 reply->abort();

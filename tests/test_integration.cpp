@@ -255,6 +255,7 @@ private slots:
     void downloadManagerForcesSnapshotOnlyAfterConsent();
     void streamProxyPreservesEncodedSegmentQuery();
     void streamProxyServesFirstSegmentOfLongPlaylist();
+    void streamProxyDeduplicatesConcurrentHlsSegments();
     void streamProxySelectsBitrateVariant();
     void playbackControllerSelectsHlsVariant();
     void streamProxyReleaseCacheFileClosesEntry();
@@ -2262,6 +2263,50 @@ void IntegrationTest::streamProxyServesFirstSegmentOfLongPlaylist()
 
     QCOMPARE(server.requests.size(), 1);
     QCOMPARE(server.requests.first().path, QByteArray("/hls/seg0.ts"));
+    proxy.shutdown();
+}
+
+void IntegrationTest::streamProxyDeduplicatesConcurrentHlsSegments()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray payload(4096, 'h');
+    server.handler = [payload](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path == QByteArray("/hls/shared-seg.ts")) {
+            // 故意延迟完整响应，让播放器和后台缓存两个客户端在响应头之前
+            // 同时到达代理，覆盖最容易各自回源的竞态窗口。
+            LocalHttpServer::respond(socket, 200, payload, "video/mp2t", -1, {}, 250);
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+    const QUrl proxied = proxy.proxyUrlFor(server.url(QStringLiteral("/hls/shared-seg.ts")));
+    QVERIFY(proxied.isValid());
+
+    HttpClient first;
+    HttpClient second;
+    QNetworkReply *one = first.get(proxied);
+    QNetworkReply *two = second.get(proxied);
+    QVERIFY(one != nullptr);
+    QVERIFY(two != nullptr);
+    QSignalSpy firstFinished(one, &QNetworkReply::finished);
+    QSignalSpy secondFinished(two, &QNetworkReply::finished);
+    QTRY_VERIFY_WITH_TIMEOUT(firstFinished.count() > 0, 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(secondFinished.count() > 0, 5000);
+
+    // 两个客户端共用同一个代理分片条目，上游只能被请求一次。
+    QCOMPARE(server.requests.size(), 1);
+    QCOMPARE(server.requests.first().path, QByteArray("/hls/shared-seg.ts"));
+    QVERIFY(HttpClient::isHttpSuccess(one));
+    QVERIFY(HttpClient::isHttpSuccess(two));
+    QCOMPARE(one->readAll(), payload);
+    QCOMPARE(two->readAll(), payload);
+
+    one->deleteLater();
+    two->deleteLater();
     proxy.shutdown();
 }
 

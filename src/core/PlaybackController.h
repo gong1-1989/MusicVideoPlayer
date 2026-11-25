@@ -5,11 +5,13 @@
 #include "media/MediaItem.h"
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QList>
 #include <QMediaPlayer>
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QUrl>
 
 #include <functional>
 
@@ -81,6 +83,13 @@ public:
     /// 代理方法内部加锁，可从主线程安全读取。
     QUrl lastHlsVideoPlaylistUrl() const;
     QUrl lastHlsAudioPlaylistUrl() const;
+
+    /// 后台 HLS 整段缓存把单个分片请求交给同一条流转代理，与播放共用分片缓存。
+    /// 返回空表示代理尚未就绪，调用方应回退到直连；必须在主线程调用。
+    QUrl proxyUrlForHlsCache(const QUrl &upstream,
+                             const QHash<QString, QString> &headers,
+                             const QString &cachePath, const QString &cacheIdentity,
+                             const QUrl &sourceOrigin) const;
 
     /// 播放区域码率栏需要的快照：可用变体、用户锁定项和实际播放项。
     /// currentIndex/selectedIndex 为 -1 时分别表示“自动选择”和“尚未解析到”。

@@ -73,6 +73,9 @@ HlsCacheBuilder::HlsCacheBuilder(HttpClient *http, QObject *parent)
 HlsCacheBuilder::~HlsCacheBuilder()
 {
     stopForExit();
+    // 进程正常退出时，当前会话已经结束；完成缓存后特意保留的轨道/索引
+    // 可以安全回收，避免磁盘上长期留下双份影视文件。
+    cleanupRetainedTracks();
 }
 
 /// @brief 设置播放器当前实际打开的视频/音频播放列表查询函数。
@@ -85,12 +88,38 @@ void HlsCacheBuilder::setPlaybackTrackResolvers(UrlResolver video, UrlResolver a
     m_audioResolver = std::move(audio);
 }
 
+/// @brief 设置后台 HLS 分片的本地流转地址解析器。
+/// @note 仅在代理已就绪时设置；回调返回空地址表示本次回退直连。分片索引
+///       仍记录原始源地址，所有续传指纹也仍按原播放列表计算。
+void HlsCacheBuilder::setProxyUrlResolver(ProxyUrlResolver resolver)
+{
+    m_proxyUrlResolver = std::move(resolver);
+}
+
+/// @brief 控制完成后是否延迟清理轨道/索引。
+/// @note 主窗口的播放会话需要保留，否则当前播放会在缓存完成瞬间失去本地分片；
+///       测试或离线缓存任务没有播放会话，保持默认 false 立即清理中间文件。
+void HlsCacheBuilder::setRetainCompletedTrackFiles(bool retain)
+{
+    m_retainCompletedTrackFiles = retain;
+}
+
 /// @brief 开始为指定在线 HLS 影视条目构建完整缓存。
 /// @param item 当前播放条目，必须是在线视频且是 HLS。
 /// @return 已启动返回 true；非 HLS 或已有完整缓存返回 false。
 /// @note 已有完整缓存时直接跳过；未完成缓存保留现场，下次从续传点继续。
 bool HlsCacheBuilder::start(const MediaItem &item)
 {
+    // 上一条目如果已经生成完整 MP4，但当前会话仍可能从轨道分片索引继续读，
+    // 只有切换到不同条目时才清理。同一部视频缓存完成后再次 start() 不能把
+    // 正在使用的索引删掉，否则播放会立刻退回直连。
+    const QString nextBody = item.isValid() ? MediaCache::filePathForItem(item) : QString();
+    if (!m_retainedBasePath.isEmpty()
+        && (nextBody != m_retainedBasePath
+            || MediaCache::completeFileForItem(item).isEmpty())) {
+        cleanupRetainedTracks();
+    }
+
     // 切换条目时保留上一条目的半成品，不再用 cancel() 删除它。
     stopForExit();
 
@@ -652,10 +681,22 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
     const QString targetPath = resume.valid && !resume.targetPath.isEmpty()
                                    ? resume.targetPath
                                    : basePath;
+    const bool hlsTrack = video ? !m_videoDirect : !m_audioDirect;
     DownloadTask *task = DownloadTask::start(m_http, source, targetPath, m_item.headers, this);
     if (task == nullptr) {
         finishFailed(video ? tr("无法启动视频缓存任务") : tr("无法启动音轨缓存任务"));
         return false;
+    }
+    // HLS 媒体分片不再由后台任务直接回源，而是登记到播放器同一个流转代理：
+    // 播放已经拉过的分片直接复用代理缓存，尚未拉过的分片也由代理统一排队，
+    // 从根源上避免播放和整段缓存各自下载同一片、互抢带宽。
+    // 单文件 BYTERANGE 轨道（m_*Direct）保留整段 Range 直下，不走分片映射。
+    if (hlsTrack && m_proxyUrlResolver) {
+        task->setHlsSegmentUrlMapper(
+            [resolver = m_proxyUrlResolver, headers = m_item.headers,
+             identity = m_identity, origin = m_originUrl](const QUrl &segmentUrl) {
+                return resolver(segmentUrl, headers, QString(), identity, origin);
+            });
     }
     if (video) {
         m_videoTask = task;
@@ -681,7 +722,6 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
     for (const QString &line : std::as_const(m_master.sessionKeyLines))
         task->setHlsSessionKey(line, m_masterBaseUrl);
     // HLS 分片必须同时有指纹和分片序号；单文件 Range 轨道只续传字节偏移。
-    const bool hlsTrack = video ? !m_videoDirect : !m_audioDirect;
     if (hlsTrack && (resume.bytesWritten > 0 || resume.segmentIndex > 0)
         && !resume.fingerprint.isEmpty()) {
         task->setResumeState(resume.bytesWritten, resume.segmentIndex, true);
@@ -1066,7 +1106,13 @@ void HlsCacheBuilder::onRemuxFinished(bool success, const QString &outputPath,
         return;
     }
 
-    cleanupTrackFiles();
+    // 缓存完成不等于当前播放已经改走本地 MP4：本轮播放仍然拿着代理地址，
+    // 后面的分片只能靠 `.preload.jsonl` 指向轨道文件读取。主窗口会话保留
+    // 现场，等切换条目/退出时清理；独立缓存任务仍按原契约立即清理。
+    if (m_retainCompletedTrackFiles)
+        retainCurrentTrackFiles();
+    else
+        cleanupTrackFiles();
     QFile::remove(m_bodyPath + QStringLiteral(".mvpremux"));
     m_active = false;
     m_stage = Stage::Idle;
@@ -1293,12 +1339,55 @@ void HlsCacheBuilder::cancelTasks()
     }
 }
 
+/// @brief 记录完成后的轨道/索引现场，供当前播放会话继续命中。
+/// @note 只保存路径，不删除任何文件；下一次 start() 切换条目或 stopForExit()
+///       时由 cleanupRetainedTracks() 统一回收。
+void HlsCacheBuilder::retainCurrentTrackFiles()
+{
+    m_retainedBasePath = m_bodyPath;
+    m_retainedVideoPath = m_videoPath;
+    m_retainedAudioPath = m_audioPath;
+    if (!m_retainedBasePath.isEmpty()) {
+        qCInfo(lcHlsCache) << "缓存完成，保留当前会话分片索引："
+                           << m_retainedBasePath;
+    }
+}
+
+/// @brief 回收上一次完成时保留的轨道文件与分片索引。
+void HlsCacheBuilder::cleanupRetainedTracks()
+{
+    if (m_retainedBasePath.isEmpty())
+        return;
+    cleanupTrackFilesAt(m_retainedBasePath, m_retainedVideoPath, m_retainedAudioPath);
+    qCInfo(lcHlsCache) << "清理延迟保留的缓存轨道：" << m_retainedBasePath;
+    m_retainedBasePath.clear();
+    m_retainedVideoPath.clear();
+    m_retainedAudioPath.clear();
+}
+
 /// @brief 删除视频/音轨的中间文件，包括合并产物、转码产物、续传临时文件与续传状态。
 void HlsCacheBuilder::cleanupTrackFiles()
 {
-    const QString videoBase = m_bodyPath + QStringLiteral(".video");
-    const QString audioBase = m_bodyPath + QStringLiteral(".audio");
-    for (const QString &path : { m_videoPath, videoBase, videoBase + QStringLiteral(".ts"),
+    cleanupTrackFilesAt(m_bodyPath, m_videoPath, m_audioPath);
+}
+
+/// @brief 按指定条目基名清理轨道文件；缓存完成后的延迟清理也走这里。
+void HlsCacheBuilder::cleanupTrackFilesAt(const QString &bodyPath, const QString &videoPath,
+                                          const QString &audioPath)
+{
+    const QString videoBase = bodyPath + QStringLiteral(".video");
+    const QString audioBase = bodyPath + QStringLiteral(".audio");
+    // 先清内存索引再删文件：否则当前进程里仍可能命中指向已删除轨道的切片，
+    // 播放器会收到空响应或错位字节。
+    if (!videoPath.isEmpty())
+        HlsPreloadIndex::instance().clearTrack(videoPath);
+    if (!videoBase.isEmpty())
+        HlsPreloadIndex::instance().clearTrack(videoBase);
+    if (!audioPath.isEmpty())
+        HlsPreloadIndex::instance().clearTrack(audioPath);
+    if (!audioBase.isEmpty())
+        HlsPreloadIndex::instance().clearTrack(audioBase);
+    for (const QString &path : { videoPath, videoBase, videoBase + QStringLiteral(".ts"),
                                  videoBase + QStringLiteral(".mp4"),
                                  videoBase + QStringLiteral(".mvpdownload"),
                                  videoBase + QStringLiteral(".ts.mvpdownload"),
@@ -1306,7 +1395,7 @@ void HlsCacheBuilder::cleanupTrackFiles()
         if (!path.isEmpty())
             QFile::remove(path);
     }
-    for (const QString &path : { m_audioPath, audioBase, audioBase + QStringLiteral(".ts"),
+    for (const QString &path : { audioPath, audioBase, audioBase + QStringLiteral(".ts"),
                                  audioBase + QStringLiteral(".mp4"),
                                  audioBase + QStringLiteral(".mvpdownload"),
                                  audioBase + QStringLiteral(".ts.mvpdownload"),
@@ -1317,12 +1406,12 @@ void HlsCacheBuilder::cleanupTrackFiles()
     if (!videoBase.isEmpty())
         removeTrackResume(videoBase);
     // 删除条目时同步删除分片索引日志，避免下次同名身份重新打开时残留旧偏移。
-    if (!m_bodyPath.isEmpty())
-        QFile::remove(m_bodyPath + QStringLiteral(".preload.jsonl"));
+    if (!bodyPath.isEmpty())
+        QFile::remove(bodyPath + QStringLiteral(".preload.jsonl"));
     if (!audioBase.isEmpty())
         removeTrackResume(audioBase);
-    if (!m_bodyPath.isEmpty())
-        MediaCache::removePartialIdentity(m_bodyPath);
+    if (!bodyPath.isEmpty())
+        MediaCache::removePartialIdentity(bodyPath);
 }
 
 /// @brief 清理当前构建留下的半成品。
