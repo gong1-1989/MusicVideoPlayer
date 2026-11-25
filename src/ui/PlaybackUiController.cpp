@@ -182,7 +182,6 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
     connect(m_player, &PlaybackController::durationChanged, this, [this](qint64 duration) {
         QSignalBlocker blocker(m_ui.progress);
         m_ui.progress->setRange(0, static_cast<int>(qMax<qint64>(0, duration)));
-        refreshSeekButtons();
     });
     connect(m_player, &PlaybackController::playbackStateChanged, this,
             [this](QMediaPlayer::PlaybackState state) {
@@ -190,7 +189,6 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
                 if (state != QMediaPlayer::PlayingState)
                     cancelHolds(false);
                 refreshPlayButton(state);
-                refreshSeekButtons();
                 if (state == QMediaPlayer::StoppedState) {
                     m_seekTarget = -1;
                     // 拖动中停止后鼠标可能不会再发 sliderReleased，必须复位，
@@ -217,7 +215,6 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
                 m_surface->clearFrame();
                 emit statusMessage(tr("正在播放：%1").arg(item.displayName()));
                 m_lyrics->setCurrentItem(item);
-                refreshSeekButtons();
                 emit currentItemChanged(item, row);
             });
     connect(m_player, &PlaybackController::modeChanged, this,
@@ -227,7 +224,6 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
                 cancelHolds(false);
                 m_seekTarget = -1;
                 emit statusMessage(tr("播放失败：%1").arg(message));
-                refreshSeekButtons();
             });
 
     // 主题切换时内置图标需要按新强调色重画；外部自定义图标也重新解析。
@@ -239,7 +235,6 @@ PlaybackUiController::PlaybackUiController(PlaybackController *player,
 
     refreshIcons();
     refreshPlayButton(m_player->mediaPlayer()->playbackState());
-    refreshSeekButtons();
 }
 
 PlaybackUiController::~PlaybackUiController()
@@ -264,7 +259,6 @@ void PlaybackUiController::clear()
     m_ui.progress->setValue(0);
     m_ui.time->setText(QStringLiteral("00:00 / 00:00"));
     m_lyrics->clear();
-    refreshSeekButtons();
 }
 
 /// @brief 相对当前位置快进/快退指定秒数。
@@ -389,17 +383,6 @@ void PlaybackUiController::cancelHolds(bool announce)
     m_rewindHoldActive = false;
     if (m_forwardHoldActive)
         endForwardHold(announce);
-}
-
-/// @brief 无当前条目、时长未知或已停止时禁用快进/快退。
-void PlaybackUiController::refreshSeekButtons()
-{
-    const bool mediaLoaded = m_player->hasCurrentItem() && m_player->duration() > 0;
-    const bool playingOrPaused =
-        m_player->mediaPlayer()->playbackState() != QMediaPlayer::StoppedState;
-    const bool enabled = mediaLoaded && playingOrPaused;
-    m_ui.seekBack->setEnabled(enabled);
-    m_ui.seekForward->setEnabled(enabled);
 }
 
 /// @brief 连点累加的基准位置：优先待执行目标，其次已确认目标，最后播放器位置。

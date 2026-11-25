@@ -77,7 +77,6 @@ private:
     void endRewindHold();
     /// 统一取消两个长按并恢复原速率，避免状态残留到下一首
     void cancelHolds(bool announce = true);
-    void refreshSeekButtons();
     qint64 seekBasePosition() const;
 
     PlaybackUi m_ui;
