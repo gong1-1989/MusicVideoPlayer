@@ -2,6 +2,7 @@
 
 #include "cache/MediaCache.h"
 #include "net/HttpClient.h"
+#include "net/MediaPageResolver.h"
 #include "stream/HlsPlaylist.h"
 #include "stream/StreamProxy.h"
 #include "util/NetworkAddressPolicy.h"
@@ -372,6 +373,11 @@ void PlaybackController::setMediaItemResolver(
     m_itemResolver = std::move(resolver);
 }
 
+void PlaybackController::setPageMediaResolver(MediaPageResolver *resolver)
+{
+    m_pageResolver = resolver;
+}
+
 void PlaybackController::setPlaylist(PlaylistModel *playlist)
 {
     if (m_playlist.data() == playlist)
@@ -405,7 +411,59 @@ int PlaybackController::rowCount() const
 
 void PlaybackController::playRow(int row)
 {
-    playRowInternal(row, false);
+    startPlayback(row, false);
+}
+
+void PlaybackController::startPlayback(int row, bool autoAdvance)
+{
+    // 每次用户点播/自动切歌都更新序号，之前还没回来的播放页解析结果作废。
+    const int serial = ++m_pageResolveSerial;
+    if (tryResolvePageMedia(row, serial, autoAdvance))
+        return;
+    playRowInternal(row, autoAdvance);
+}
+
+/// @brief 播放前把网页播放页解析为真实媒体地址。
+/// @return true 表示已发起异步解析，调用方不要再启动播放器。
+bool PlaybackController::tryResolvePageMedia(int row, int serial, bool autoAdvance)
+{
+    if (m_pageResolver == nullptr || m_playlist == nullptr || row < 0
+        || row >= m_playlist->size())
+        return false;
+
+    const MediaItem item = m_playlist->itemAt(row);
+    const MediaItem requestItem = m_itemResolver ? m_itemResolver(item) : item;
+    if (!MediaPageResolver::needsResolution(requestItem))
+        return false;
+
+    // 已经解析过的页面直接进入 playRowInternal；那里会把缓存地址替换上去。
+    QUrl cached;
+    if (m_pageResolver->cachedMediaUrl(requestItem.url, &cached))
+        return false;
+
+    qCInfo(lcPlayer) << "播放前解析网页播放页" << requestItem.displayName()
+                     << HttpClient::redactUrl(requestItem.url);
+    m_pageResolver->resolve(requestItem, [this, serial, row, autoAdvance](
+                                                const MediaItem &resolved,
+                                                const QString &error) {
+        if (serial != m_pageResolveSerial)
+            return;
+        if (!error.isEmpty()) {
+            qCWarning(lcPlayer) << "网页播放页解析失败" << error
+                                << HttpClient::redactUrl(resolved.url);
+            // 失败时不能继续把 HTML 当视频流交给播放器：先切到该行并清空
+            // source，错误弹窗才能按“刚点的条目”匹配到，而不是沿用上一首。
+            m_row = row;
+            m_player->setSource(QUrl());
+            m_player->stop();
+            emit errorOccurred(tr("无法播放：%1").arg(error));
+            return;
+        }
+        qCInfo(lcPlayer) << "网页播放页解析完成" << resolved.displayName()
+                         << HttpClient::redactUrl(resolved.url);
+        playRowInternal(row, autoAdvance);
+    });
+    return true;
 }
 
 /// @brief 启动失败时切到下一条备用线路。
@@ -478,7 +536,18 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
 
     // 播放列表落盘时不保存 Cookie；播放这一份副本按 sourceId 从源配置
     // 恢复内存态凭据，模型本身仍保持脱敏内容。
-    const MediaItem playbackItem = m_itemResolver ? m_itemResolver(item) : item;
+    MediaItem playbackItem = m_itemResolver ? m_itemResolver(item) : item;
+
+    // 网页播放页的解析结果只缓存在运行期，不写回播放列表；这里把副本的
+    // 主地址替换成真实 m3u8/MP4，后续代理、备用线路和缓存都按直链处理。
+    if (m_pageResolver != nullptr) {
+        QUrl resolvedMedia;
+        if (MediaPageResolver::needsResolution(playbackItem)
+            && m_pageResolver->cachedMediaUrl(playbackItem.url, &resolvedMedia)) {
+            playbackItem.url = resolvedMedia;
+            playbackItem.alternateUrls.removeAll(resolvedMedia.toString());
+        }
+    }
 
     // 备用线路队列只为“当前条目”的一次启动流程服务：
     // - 新条目/用户重新点播：重建候选队列；
@@ -644,7 +713,9 @@ void PlaybackController::next()
     } else {
         row = (m_row + 1) % count;
     }
-    playRowInternal(row, true);
+    // 自动下一集同样可能落到网页播放页，必须复用统一点播入口解析；
+    // 这里保留 autoAdvance=true，连续失败计数才能继续累加并停止跳集。
+    startPlayback(row, true);
 }
 
 void PlaybackController::previous()

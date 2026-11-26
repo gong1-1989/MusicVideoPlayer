@@ -14,6 +14,7 @@
 #include "media/MediaItem.h"
 #include "net/ConfigMapper.h"
 #include "net/HttpClient.h"
+#include "net/MediaPageResolver.h"
 #include "net/SourceConfig.h"
 #include "net/SourceProbe.h"
 #include "net/SourceRegistry.h"
@@ -32,6 +33,7 @@
 #include "util/HtmlText.h"
 #include "util/MediaExtensions.h"
 #include "util/NetworkAddressPolicy.h"
+#include "util/PageMediaExtractor.h"
 #include "util/PlaylistSniffer.h"
 #include "util/SecretStore.h"
 #include "util/TimeFormat.h"
@@ -1026,6 +1028,7 @@ private slots:
     void headerPolicyMatchesCompactedNames();
     void networkAddressPolicyBlocksPrivateMediaTargets();
     void htmlTextPoliciesPreserveSiteDifferences();
+    void pageMediaExtractorReadsPlayerConfig();
     void mediaExtensionsKeepCategorySets();
     void playlistSnifferRecognizesBody();
     void downloadRejectsHtmlDisguisedAsOctetStream();
@@ -2567,6 +2570,48 @@ void CoreLogicTest::htmlTextPoliciesPreserveSiteDifferences()
              QStringLiteral("&#x4E07;"));
     QCOMPARE(HtmlText::decodeEntities(QStringLiteral("&apos;"), mapper),
              QStringLiteral("&apos;"));
+}
+
+void CoreLogicTest::pageMediaExtractorReadsPlayerConfig()
+{
+    // 红牛资源的真实播放页结构：DPlayer 把直链放在 const vid 里。
+    const QUrl page(QStringLiteral("https://hn.bfvvs.com/play/oQeZw2ap"));
+    const QString playerHtml = QStringLiteral(
+        "<script>const vid = 'https://hn.bfvvs.com/play/oQeZw2ap/index.m3u8';</script>");
+    const QUrl media = PageMediaExtractor::extractMediaUrl(playerHtml, page);
+    QCOMPARE(media.toString(),
+             QStringLiteral("https://hn.bfvvs.com/play/oQeZw2ap/index.m3u8"));
+
+    // 传统 MacCMS 播放器配置里是 JSON，斜杠和 & 可能被转义。
+    const QString escaped = QStringLiteral(
+        "{\"url\":\"https:\\/\\/cdn.example.com\\/hls\\/index.m3u8?token=1\\u0026e=2\"}");
+    QCOMPARE(PageMediaExtractor::extractMediaUrl(escaped,
+                                                 QUrl(QStringLiteral("https://site.example/")))
+                 .toString(),
+             QStringLiteral("https://cdn.example.com/hls/index.m3u8?token=1&e=2"));
+
+    // 相对路径按播放页地址补全；非 HTTP 协议必须拒绝。
+    QCOMPARE(PageMediaExtractor::extractMediaUrl(
+                 QStringLiteral("<source src=\"../video/a.mp4\">"),
+                 QUrl(QStringLiteral("https://cdn.example.com/play/1/index.html")))
+                 .toString(),
+             QStringLiteral("https://cdn.example.com/play/video/a.mp4"));
+    QVERIFY(PageMediaExtractor::extractMediaUrl(
+                QStringLiteral("var url = 'javascript:alert(1)'"), page)
+                .isEmpty());
+
+    QVERIFY(MediaPageResolver::isPlaybackPage(page));
+    QVERIFY(MediaPageResolver::isPlaybackPage(
+        QUrl(QStringLiteral("https://site.example/vodplay/123-1-1.html"))));
+    QVERIFY(!MediaPageResolver::isPlaybackPage(
+        QUrl(QStringLiteral("https://site.example/hls/index.m3u8"))));
+
+    MediaItem video;
+    video.type = MediaType::Video;
+    video.url = page;
+    QVERIFY(MediaPageResolver::needsResolution(video));
+    video.url = QUrl(QStringLiteral("https://site.example/hls/index.m3u8"));
+    QVERIFY(!MediaPageResolver::needsResolution(video));
 }
 
 void CoreLogicTest::mediaExtensionsKeepCategorySets()

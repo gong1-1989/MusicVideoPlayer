@@ -6,6 +6,7 @@
 #include "core/PlaylistModel.h"
 #include "cache/HlsCacheBuilder.h"
 #include "net/HttpClient.h"
+#include "net/MediaPageResolver.h"
 #include "net/SearchCoordinator.h"
 #include "net/SourceRegistry.h"
 #include "settings/AppShortcuts.h"
@@ -68,11 +69,15 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_http(new HttpClient(this))
+    , m_pageResolver(new MediaPageResolver(m_http, this))
     , m_registry(new SourceRegistry(this))
     , m_coordinator(nullptr)
     , m_player(new PlaybackController(this))
 {
     ui->setupUi(this);
+    // 播放器只管取流；网页播放页的二次解析交给共享解析器，搜索、播放和下载
+    // 用同一份缓存，避免同一集被反复请求播放页。
+    m_player->setPageMediaResolver(m_pageResolver);
     // 控制条改成三列：左右等宽、中间播放键固定，播放键组始终落在整条面板中线。
     ui->layout_controls->setColumnStretch(0, 1);
     ui->layout_controls->setColumnStretch(1, 0);
@@ -170,7 +175,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
             this, &MainWindow::addSearchItemsToPlaylist);
     connect(m_searchPanel, &SearchPanelController::downloadRequested, this,
-            [this](const MediaItem &item) { m_downloads->download(item); });
+            &MainWindow::startDownload);
     connect(m_downloads, &DownloadController::itemDownloaded, this,
             [this](const MediaItem &item, const QString &localPath) {
                 m_playlists->updateDownloadedItem(item, localPath);
@@ -195,7 +200,7 @@ MainWindow::MainWindow(QWidget *parent)
                 clearPlaybackUi();
             });
     connect(m_playlists, &PlaylistController::downloadRequested, this,
-            [this](const MediaItem &item) { m_downloads->download(item); });
+            &MainWindow::startDownload);
     // 视频进度落盘由 PlaylistController 统一防抖处理，这里不再重复连接，
     // 否则一次停止会整份保存两次。
     connect(m_player, &PlaybackController::currentItemChanged, this,
@@ -826,6 +831,24 @@ bool MainWindow::playSearchItem(const MediaItem &item)
 void MainWindow::addSearchItemsToPlaylist(const QVector<MediaItem> &items, MediaType type)
 {
     m_playlists->addSearchItems(items, type);
+}
+
+/// @brief 下载前解析网页播放页。
+/// 不是网页地址时 resolver 会同步回调，不改变原有下载流程。
+void MainWindow::startDownload(const MediaItem &item)
+{
+    if (m_pageResolver == nullptr || m_downloads == nullptr) {
+        return;
+    }
+    m_pageResolver->resolve(item, [this](const MediaItem &resolved, const QString &error) {
+        if (!error.isEmpty()) {
+            qCWarning(lcWindow) << "下载前解析播放页失败" << resolved.displayName()
+                                << error;
+            ui->label_status->setText(tr("无法解析下载地址：%1").arg(error));
+            return;
+        }
+        m_downloads->download(resolved);
+    });
 }
 
 void MainWindow::clearPlaybackUi()

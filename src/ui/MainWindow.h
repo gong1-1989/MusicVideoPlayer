@@ -23,6 +23,7 @@ class PlaybackUiController;
 class SettingsController;
 class SourceRegistry;
 class HttpClient;
+class MediaPageResolver;
 class QCloseEvent;
 class QResizeEvent;
 class QShowEvent;
@@ -80,6 +81,8 @@ private:
     bool playSearchItem(const MediaItem &item);
     /// @brief 把搜索结果加入对应类型播放列表；多集剧整组传入一次写盘。
     void addSearchItemsToPlaylist(const QVector<MediaItem> &items, MediaType type);
+    /// @brief 下载前先解析网页播放页，避免把 HTML 播放页当媒体文件下载。
+    void startDownload(const MediaItem &item);
     /// @brief 清空播放相关界面（标题、进度、视觉区）。
     void clearPlaybackUi();
     /// 音量按钮改成右侧竖排悬浮条：slider_volume 是全局唯一音量入口
@@ -97,6 +100,7 @@ private:
 
     Ui::MainWindow *ui;
     HttpClient *m_http;
+    MediaPageResolver *m_pageResolver;
     SourceRegistry *m_registry;
     SearchCoordinator *m_coordinator;
     SearchPanelController *m_searchPanel = nullptr;

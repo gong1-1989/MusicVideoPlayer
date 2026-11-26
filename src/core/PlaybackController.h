@@ -19,6 +19,7 @@ class QAudioOutput;
 class QThread;
 class QTimer;
 class StreamProxy;
+class MediaPageResolver;
 
 /// 播放状态机：持有 QMediaPlayer，负责"上一首/下一首/循环模式/媒体结束"，
 /// 界面只通过信号观察状态，不再自己数列表下标。
@@ -42,6 +43,10 @@ public:
     /// 播放前从 SourceRegistry 恢复内存态 Cookie；只影响播放副本，
     /// 不回写播放列表模型，避免凭据再次落盘。
     void setMediaItemResolver(std::function<MediaItem(const MediaItem &)> resolver);
+
+    /// 影视站配置源经常把网页播放页当成“直链”返回；播放前用这个解析器
+    /// 把页面里的 m3u8/MP4 取出来。为空时保持原有行为。
+    void setPageMediaResolver(MediaPageResolver *resolver);
 
     void playRow(int row);
     void togglePlayPause();
@@ -138,7 +143,12 @@ signals:
     void currentItemPositionUpdated(int row);
 
 private:
+    /// 统一播放入口：自动切集与用户点播都先解析网页播放页，再决定是否
+    /// 同步进入播放器；autoAdvance 只影响连续失败计数，不影响解析。
+    void startPlayback(int row, bool autoAdvance);
     void playRowInternal(int row, bool autoAdvance);
+    /// 播放前检查网页播放页并异步解析；返回 true 表示本轮播放已交给解析回调。
+    bool tryResolvePageMedia(int row, int serial, bool autoAdvance);
     /// 启动阶段失败时切到下一条备用线路；没有备用或已经出声后返回 false。
     bool tryNextFallback();
     int rowCount() const;
@@ -158,6 +168,9 @@ private:
     bool m_proxyReady = false;
     QPointer<PlaylistModel> m_playlist;
     std::function<MediaItem(const MediaItem &)> m_itemResolver;
+    MediaPageResolver *m_pageResolver = nullptr;
+    /// 每次 playRow 递增；异步解析返回时用它丢弃已经过期的点击。
+    int m_pageResolveSerial = 0;
     int m_row = -1;
     Mode m_mode = Mode::ListLoop;
     int m_volume = 60;

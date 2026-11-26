@@ -59,6 +59,8 @@ qt_add_library(mvp_core STATIC
     src/util/MediaExtensions.cpp
     src/util/NetworkAddressPolicy.h
     src/util/NetworkAddressPolicy.cpp
+    src/util/PageMediaExtractor.h
+    src/util/PageMediaExtractor.cpp
     src/util/PlaylistSniffer.h
     src/util/PlaylistSniffer.cpp
     src/util/SecretStore.h
@@ -67,6 +69,8 @@ qt_add_library(mvp_core STATIC
     src/util/TimeFormat.cpp
     src/net/HttpClient.h
     src/net/HttpClient.cpp
+    src/net/MediaPageResolver.h
+    src/net/MediaPageResolver.cpp
     src/net/NetLimits.h
     src/net/SourceConfig.h
     src/net/SourceConfig.cpp

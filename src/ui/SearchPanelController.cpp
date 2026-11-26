@@ -15,6 +15,7 @@
 #include "util/HtmlText.h"
 #include "util/MediaExtensions.h"
 #include "util/NetworkAddressPolicy.h"
+#include "util/PageMediaExtractor.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -333,13 +334,6 @@ bool looksLikeHttpUrl(const QString &text)
     return NetworkAddressPolicy::isHttpMediaUrl(QUrl(text));
 }
 
-QString decodeAttributeEntities(const QString &raw)
-{
-    // 网页里的播放地址常写成 &#x2F; 这种数字实体；不还原会让 QUrl 解析出坏路径。
-    static const HtmlTextPolicy policy{1, false, true, true};
-    return HtmlText::decodeEntities(raw, policy);
-}
-
 QString directMediaTitle(const QUrl &url)
 {
     QString name = QUrl::fromPercentEncoding(url.fileName().toUtf8());
@@ -351,35 +345,8 @@ QString directMediaTitle(const QUrl &url)
     return name;
 }
 
-/// 从网页里找最常见的可播放地址：og:video、<video>/<source>、以及播放器
-/// 配置里的 m3u8/mp4 字符串。只做静态解析，不执行网页脚本。
-QString extractPageMediaUrl(const QString &html, const QUrl &base)
-{
-    const QRegularExpression::PatternOptions options =
-        QRegularExpression::CaseInsensitiveOption;
-    const QStringList patterns = {
-        QStringLiteral("property=[\"']og:video(?::url)?[\"'][^>]*content=[\"']([^\"']+)[\"']"),
-        QStringLiteral("content=[\"']([^\"']+)[\"'][^>]*property=[\"']og:video(?::url)?[\"']"),
-        QStringLiteral("<video[^>]+src=[\"']([^\"']+)[\"']"),
-        QStringLiteral("<source[^>]+src=[\"']([^\"']+)[\"']"),
-        QStringLiteral("[\"'](?:playUrl|videoUrl|url|src)[\"']\\s*:\\s*[\"']([^\"']+\\.(?:m3u8|mp4|flv|webm)[^\"']*)[\"']"),
-    };
-    for (const QString &pattern : patterns) {
-        const QRegularExpression re(pattern, options);
-        const QRegularExpressionMatch match = re.match(html);
-        if (!match.hasMatch())
-            continue;
-        const QString candidate = decodeAttributeEntities(match.captured(1))
-                                      .replace(QStringLiteral("\\/"), QStringLiteral("/"))
-                                      .replace(QStringLiteral("\\u0026"), QStringLiteral("&"));
-        const QUrl resolved = base.resolved(QUrl(candidate));
-        // 只接受 http/https：网页里可能混入 javascript:/ftp:/data: 地址。
-        if (NetworkAddressPolicy::isHttpMediaUrl(resolved))
-            return resolved.toString();
-    }
-    return QString();
-}
-
+/// 网页播放页解析统一走 PageMediaExtractor：这里只处理用户粘贴的链接，
+/// 和配置源播放时的解析保持同一套匹配规则，避免两处结果不一致。
 QString pageTitle(const QString &html)
 {
     const QRegularExpression re(QStringLiteral("<title[^>]*>([^<]{1,120})</title>"),
@@ -946,14 +913,13 @@ void SearchPanelController::handleWebPageLink(const QUrl &url)
             }
 
             const QString html = QString::fromUtf8(body);
-            const QString media = extractPageMediaUrl(html, url);
-            if (media.isEmpty()) {
+            const QUrl mediaUrl = PageMediaExtractor::extractMediaUrl(html, url);
+            if (mediaUrl.isEmpty()) {
                 emit self->statusMessage(
                     tr("没有在网页里找到可直接播放的地址，可改用直链或搜索关键词"));
                 return;
             }
 
-            const QUrl mediaUrl(media);
             MediaItem item;
             item.type = MediaType::Video;
             item.title = pageTitle(html);
@@ -966,7 +932,8 @@ void SearchPanelController::handleWebPageLink(const QUrl &url)
             item.sourceId = QStringLiteral("link");
             item.headers.insert(QStringLiteral("Referer"),
                                 HeaderPolicy::refererHeaderValue(url));
-            item.quality = inferQuality(item.title + QLatin1Char(' ') + media, item.type);
+            item.quality = inferQuality(item.title + QLatin1Char(' ')
+                                            + mediaUrl.toString(), item.type);
             if (item.quality.isEmpty())
                 item.quality = tr("标准");
 
@@ -1387,13 +1354,16 @@ void SearchPanelController::handleContextMenu(const QPoint &pos)
         return;
 
     if (chosen == playAction) {
-        emit mediaActivated(item);
+        // 折叠行只是展示用的“整部剧”条目，真正能播的是背后的第 1 集；
+        // 直接把展示条目送进播放列表会把它当成一部单片，标题和地址都不对。
+        const MediaItem playable = entries.isEmpty() ? item : entries.first();
+        emit mediaActivated(playable);
     } else if (chosen == addMusicAction) {
         emit addToPlaylistRequested(entries, MediaType::Music);
     } else if (chosen == addVideoAction) {
         emit addToPlaylistRequested(entries, MediaType::Video);
     } else if (chosen == downloadAction) {
-        emit downloadRequested(item);
+        emit downloadRequested(entries.isEmpty() ? item : entries.first());
     }
 }
 
@@ -1404,6 +1374,10 @@ void SearchPanelController::handleActivated(const QModelIndex &index)
     if (!index.isValid())
         return;
     const MediaItem item = m_model->itemAt(index.row());
-    if (item.isValid())
-        emit mediaActivated(item);
+    if (!item.isValid())
+        return;
+
+    // 与右键“播放第 1 集”保持同一语义：多集折叠行先展开再取第一条真实剧集。
+    const QVector<MediaItem> entries = itemsForSearchEntry(item);
+    emit mediaActivated(entries.isEmpty() ? item : entries.first());
 }
