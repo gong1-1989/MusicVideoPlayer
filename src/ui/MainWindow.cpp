@@ -168,7 +168,7 @@ MainWindow::MainWindow(QWidget *parent)
                 activateWindow();
             });
     connect(m_searchPanel, &SearchPanelController::addToPlaylistRequested,
-            this, &MainWindow::addSearchItemToPlaylist);
+            this, &MainWindow::addSearchItemsToPlaylist);
     connect(m_searchPanel, &SearchPanelController::downloadRequested, this,
             [this](const MediaItem &item) { m_downloads->download(item); });
     connect(m_downloads, &DownloadController::itemDownloaded, this,
@@ -823,9 +823,9 @@ bool MainWindow::playSearchItem(const MediaItem &item)
     return true;
 }
 
-void MainWindow::addSearchItemToPlaylist(const MediaItem &item, MediaType type)
+void MainWindow::addSearchItemsToPlaylist(const QVector<MediaItem> &items, MediaType type)
 {
-    m_playlists->addSearchItem(item, type);
+    m_playlists->addSearchItems(items, type);
 }
 
 void MainWindow::clearPlaybackUi()

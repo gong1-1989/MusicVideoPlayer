@@ -139,6 +139,14 @@ struct MediaItem
     /// 普通播放列表和落盘数据保持空，避免把界面分组文案写进条目。
     QString searchSectionLabel;
 
+    /// 同一次剧集解析产生的多集结果共享该键。搜索面板据此把整部剧折叠成
+    /// 一行展示，右键“加入列表”时再按该键取回全部集数；普通列表不持久化。
+    QString collectionKey;
+    /// 折叠前的基础剧名（不含“· 第 N 集”），用于生成“XXX（共 N 集）”标题。
+    QString collectionTitle;
+    /// 仅折叠后的展示行记录总集数；单条结果和播放列表条目保持 0。
+    int collectionSize = 0;
+
     bool isValid() const { return !url.isEmpty() && url.isValid(); }
 
     QString displayName() const

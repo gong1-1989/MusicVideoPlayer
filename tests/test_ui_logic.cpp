@@ -104,6 +104,7 @@ private slots:
     void themeFontScaleChangesFixedPixelSizes();
     void playlistSaveFailureKeepsDirtyAndRetries();
     void previewItemNeverPersistsUnlessPromoted();
+    void addSearchItemsAddsWholeCollectionInOneBatch();
     void downloadedItemSwitchesPlaylistToLocalSource();
     void proprietaryVideoFilesAreRejectedWithHint();
     void settingsVolumePersistsPlaybackValue();
@@ -307,6 +308,53 @@ void UiLogicTest::previewItemNeverPersistsUnlessPromoted()
     const QVector<MediaItem> latest = PlaylistStore::load(MediaType::Music);
     QCOMPARE(latest.size(), 1);
     QCOMPARE(latest.first().url, refreshed.url);
+
+    if (oldDataDir.isEmpty())
+        qunsetenv("MVP_DATA_DIR");
+    else
+        qputenv("MVP_DATA_DIR", oldDataDir);
+}
+
+void UiLogicTest::addSearchItemsAddsWholeCollectionInOneBatch()
+{
+    QTemporaryDir temp;
+    QVERIFY(temp.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    qputenv("MVP_DATA_DIR", temp.path().toUtf8());
+
+    PlaybackController player;
+    QTabWidget tabs;
+    QListView *musicView = new QListView;
+    QListView *videoView = new QListView;
+    tabs.addTab(musicView, QStringLiteral("音乐"));
+    tabs.addTab(videoView, QStringLiteral("视频"));
+    PlaylistController controller(&player, PlaylistUi{musicView, videoView, &tabs});
+
+    QVector<MediaItem> episodes;
+    for (int i = 1; i <= 3; ++i) {
+        MediaItem episode;
+        episode.type = MediaType::Video;
+        episode.title = QStringLiteral("测试剧 第 %1 集").arg(i);
+        episode.url = QUrl(QStringLiteral("https://example.com/episode-%1.m3u8").arg(i));
+        episode.webUrl = QUrl(QStringLiteral("https://example.com/detail"));
+        episode.online = true;
+        episode.collectionKey = QStringLiteral("test-collection");
+        episode.collectionTitle = QStringLiteral("测试剧");
+        episodes.append(episode);
+    }
+
+    controller.addSearchItems(episodes, MediaType::Video);
+    QCOMPARE(controller.videoModel()->size(), 3);
+    QCOMPARE(PlaylistStore::load(MediaType::Video).size(), 3);
+    // 折叠键只服务于搜索结果，不能跟着单集写进播放列表。
+    for (const MediaItem &saved : PlaylistStore::load(MediaType::Video))
+        QVERIFY(saved.collectionKey.isEmpty());
+    QVERIFY(!controller.hasUnsavedChanges());
+
+    // 重复整组加入不能产生重复条目，也不能把已保存的内容再写一遍。
+    controller.addSearchItems(episodes, MediaType::Video);
+    QCOMPARE(controller.videoModel()->size(), 3);
+    QCOMPARE(PlaylistStore::load(MediaType::Video).size(), 3);
 
     if (oldDataDir.isEmpty())
         qunsetenv("MVP_DATA_DIR");

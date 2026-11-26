@@ -53,7 +53,7 @@ SearchWindow::SearchWindow(SearchCoordinator *coordinator, SourceRegistry *regis
     panelUi.prevButton = ui->btn_searchPrev;
     panelUi.nextButton = ui->btn_searchNext;
     panelUi.titleLabel = ui->label_searchTitle;
-    panelUi.pageLabel = ui->label_searchPage;
+    panelUi.pageEdit = ui->edit_searchPage;
     panelUi.pageInfoLabel = ui->label_searchPageInfo;
     panelUi.filterHost = m_filterHost;
     // 布局顺序：搜索行、筛选行、提示、结果标题、结果列表、状态、分页。

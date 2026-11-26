@@ -35,7 +35,8 @@ struct SearchPanelUi
     QPushButton *prevButton = nullptr;
     QPushButton *nextButton = nullptr;
     QLabel *titleLabel = nullptr;
-    QLabel *pageLabel = nullptr;
+    /// 页码输入框：平时只读显示“当前 / 总页数”，点击后切到可编辑并回车跳转。
+    QLineEdit *pageEdit = nullptr;
     QLabel *pageInfoLabel = nullptr;
     /// 搜索框下方的历史/热门联想列表，作为搜索窗子控件内嵌显示
     QListWidget *suggestList = nullptr;
@@ -66,7 +67,8 @@ protected:
 signals:
     void statusMessage(const QString &text);
     void mediaActivated(const MediaItem &item);
-    void addToPlaylistRequested(const MediaItem &item, MediaType type);
+    /// 多集结果折叠后一次传入整组条目，播放列表只写盘一次并给出汇总提示。
+    void addToPlaylistRequested(const QVector<MediaItem> &items, MediaType type);
     void downloadRequested(const MediaItem &item);
 
 private:
@@ -91,6 +93,12 @@ private:
     void schedulePageSizeRefresh();
     void refreshPageSize();
     int pageCount() const;
+    /// 按 collectionKey 取回折叠行背后的全部剧集；单条结果原样返回。
+    QVector<MediaItem> itemsForSearchEntry(const MediaItem &entry) const;
+    /// 页码输入框的进入/提交/取消，统一维护只读态与跳转边界。
+    void beginPageJump();
+    void commitPageJump();
+    void cancelPageJump();
     void handleContextMenu(const QPoint &pos);
     void handleActivated(const QModelIndex &index);
 
@@ -112,10 +120,15 @@ private:
     /// 另一个链接；旧的网页回调必须丢弃，不能覆盖新结果。
     int m_linkParseSerial = 0;
 
-    /// 完整结果留在内存，筛选后的可见结果再按页切片
+    /// 完整结果留在内存，筛选并折叠多集剧后按页切片
     QVector<MediaItem> m_results;
+    /// 当前筛选条件命中的原始条目；折叠行的全部集数从这里展开
+    QVector<MediaItem> m_filteredResults;
+    /// 搜索列表实际展示的条目：多集剧已折叠成一行
     QVector<MediaItem> m_visibleResults;
     int m_page = 0;
+    /// 页号输入框是否处于手动输入状态；回车/失焦后回到只读显示
+    bool m_pageJumpEditing = false;
     /// 每页条数按列表视口高度动态计算，不再从设置/下拉框读取
     int m_pageSize = 20;
     int m_pageSizeSerial = 0;

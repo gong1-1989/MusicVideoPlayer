@@ -230,12 +230,33 @@
        </widget>
       </item>
       <item>
-       <widget class="QLabel" name="label_searchPage">
+       <widget class="QLineEdit" name="edit_searchPage">
+        <property name="minimumSize">
+         <size>
+          <width>76</width>
+          <height>26</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>88</width>
+          <height>26</height>
+         </size>
+        </property>
+        <property name="toolTip">
+         <string>点击页码输入要跳转的页，回车确认</string>
+        </property>
         <property name="text">
          <string>0 / 0</string>
         </property>
         <property name="alignment">
          <set>Qt::AlignCenter</set>
+        </property>
+        <property name="readOnly">
+         <bool>true</bool>
+        </property>
+        <property name="frame">
+         <bool>false</bool>
         </property>
        </widget>
       </item>

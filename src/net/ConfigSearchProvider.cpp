@@ -110,6 +110,7 @@ void ConfigSearchProvider::search(const QString &keyword, int limit)
     m_nextDetail = 0;
     m_activeDetails = 0;
     m_detailBuckets.clear();
+    m_collectionSerial = 0;
     m_searchTimer.start();
 
     if (m_http == nullptr) {
@@ -370,8 +371,18 @@ QVector<MediaItem> ConfigSearchProvider::buildItems(const MediaItem &base, const
             ++m_filtered;
             return items;
         }
+        // 同一次结果解析出的多集共享 collectionKey：搜索面板据此折叠成
+        // “剧名（共 N 集）”，右键加入列表时再展开为每集条目。键只在本轮
+        // 搜索内有效，不写入播放列表，避免把临时分组关系持久化。
+        const QString collectionKey =
+            parts.size() > 1
+                ? QStringLiteral("%1#%2").arg(m_config.id).arg(++m_collectionSerial)
+                : QString();
+        const QString collectionTitle = parts.size() > 1 ? base.title : QString();
         for (const EpisodePart &part : parts) {
             MediaItem item = base;
+            item.collectionKey = collectionKey;
+            item.collectionTitle = collectionTitle;
             const QStringList candidates = filterMediaTargets(
                 collectNormalizedUrls(part.url, part.altUrls, m_baseUrl),
                 base.sourceOrigin);

@@ -404,36 +404,66 @@ void PlaylistController::playItem(const MediaItem &item)
 
 void PlaylistController::addSearchItem(const MediaItem &item, MediaType type)
 {
-    MediaItem copy = item;
-    copy.type = type;
-    copy.previewOnly = false;
+    addSearchItems({item}, type);
+}
+
+/// @brief 批量加入搜索结果：同一部剧的几十集只触发一次保存。
+/// @note 单条仍沿用原来的“已存在则刷新地址/提升试听”语义；批量模式额外
+///       汇总新增、刷新、重复数量，避免 129 集逐条写盘并覆盖状态栏 129 次。
+void PlaylistController::addSearchItems(const QVector<MediaItem> &items, MediaType type)
+{
+    if (items.isEmpty())
+        return;
+
     PlaylistModel *model = modelFor(type);
-    if (!model->addItem(copy)) {
-        const int existing = model->indexOf(copy);
-        if (existing >= 0) {
-            const bool wasPreview = model->itemAt(existing).previewOnly;
-            // 同一条内容可能先是试听条目，也可能已持久化但直链签名过期。
-            // 统一刷新可变字段：前者提升为永久条目，后者写回新地址。
-            if (model->refreshItem(existing, copy)) {
-                if (save()) {
-                    if (type == MediaType::Music) {
-                        emit statusMessage(wasPreview ? tr("已加入音乐列表")
-                                                      : tr("已更新音乐列表的播放地址"));
-                    } else {
-                        emit statusMessage(wasPreview ? tr("已加入视频列表")
-                                                      : tr("已更新视频列表的播放地址"));
-                    }
-                }
-                return;
-            }
+    int added = 0;
+    int refreshed = 0;
+    int skipped = 0;
+    for (const MediaItem &original : items) {
+        MediaItem copy = original;
+        copy.type = type;
+        copy.previewOnly = false;
+        // 折叠键只服务于当前搜索面板；进入播放列表后按真实单集保存。
+        copy.collectionKey.clear();
+        copy.collectionTitle.clear();
+        copy.collectionSize = 0;
+
+        if (model->addItem(copy)) {
+            ++added;
+            continue;
         }
+        const int existing = model->indexOf(copy);
+        if (existing >= 0 && model->refreshItem(existing, copy)) {
+            ++refreshed;
+            continue;
+        }
+        ++skipped;
+    }
+
+    if (added == 0 && refreshed == 0) {
         emit statusMessage(type == MediaType::Music ? tr("音乐列表中已存在")
                                                     : tr("视频列表中已存在"));
         return;
     }
-    if (save())
+
+    if (!save())
+        return;
+
+    if (items.size() == 1 && added == 1) {
         emit statusMessage(type == MediaType::Music ? tr("已加入音乐列表")
                                                     : tr("已加入视频列表"));
+        return;
+    }
+    QString text = type == MediaType::Music
+                       ? tr("已加入音乐列表：新增 %1 首").arg(added)
+                       : tr("已加入视频列表：新增 %1 集").arg(added);
+    if (refreshed > 0)
+        text += type == MediaType::Music ? tr("，更新 %1 首").arg(refreshed)
+                                         : tr("，更新 %1 集").arg(refreshed);
+    if (skipped > 0)
+        text += type == MediaType::Music ? tr("，跳过重复 %1 首").arg(skipped)
+                                         : tr("，跳过重复 %1 集").arg(skipped);
+    emit statusMessage(text);
 }
 
 /// @brief 逐个导入本地文件；专用/加密格式统一拦截并汇总提示。

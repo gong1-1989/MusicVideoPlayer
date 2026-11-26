@@ -44,6 +44,7 @@
 #include <QPoint>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QStyledItemDelegate>
@@ -387,6 +388,63 @@ QString pageTitle(const QString &html)
     return match.hasMatch() ? match.captured(1).trimmed() : QString();
 }
 
+/// 把同一次剧集解析出的多条结果折叠成一行展示。
+/// 原始条目仍保留在控制器里，右键加入列表时按 collectionKey 展开全部集数；
+/// 这里只改展示副本的标题/计数，不回写搜索结果，避免丢失真实播放地址。
+QVector<MediaItem> collapseSearchCollections(const QVector<MediaItem> &items)
+{
+    QVector<MediaItem> rows;
+    rows.reserve(items.size());
+    QHash<QString, int> rowIndexByKey;
+    QHash<QString, int> countByKey;
+
+    for (const MediaItem &original : items) {
+        if (original.collectionKey.isEmpty()) {
+            rows.append(original);
+            continue;
+        }
+        ++countByKey[original.collectionKey];
+        const auto existing = rowIndexByKey.constFind(original.collectionKey);
+        if (existing == rowIndexByKey.cend()) {
+            rowIndexByKey.insert(original.collectionKey, rows.size());
+            rows.append(original);
+        }
+    }
+
+    const QString countSuffix =
+        QCoreApplication::translate("SearchPanelController", "（共 %1 集）");
+    for (MediaItem &row : rows) {
+        if (row.collectionKey.isEmpty())
+            continue;
+        const int count = countByKey.value(row.collectionKey);
+        row.collectionSize = count;
+        if (count <= 1)
+            continue;
+        const QString baseTitle =
+            row.collectionTitle.isEmpty() ? row.title : row.collectionTitle;
+        row.title = baseTitle + countSuffix.arg(count);
+        // 折叠行代表整部剧，不再拼第一集的演员/歌手，否则标题会混入单集信息。
+        row.artist.clear();
+    }
+    return rows;
+}
+
+/// 统计影视结果的行数：多集剧按一部计，单条结果各计一个。
+int countVideoEntries(const QVector<MediaItem> &items)
+{
+    QSet<QString> collections;
+    int singles = 0;
+    for (const MediaItem &item : items) {
+        if (item.type != MediaType::Video)
+            continue;
+        if (item.collectionKey.isEmpty())
+            ++singles;
+        else
+            collections.insert(item.collectionKey);
+    }
+    return singles + collections.size();
+}
+
 } // namespace
 
 /// @brief 构造搜索面板控制器并搭建界面。
@@ -430,6 +488,11 @@ void SearchPanelController::setupUi()
 
     m_ui.list->viewport()->installEventFilter(this);
     m_ui.edit->installEventFilter(this);
+    // 页码框平时只读；点击时切到编辑态并全选当前页号，回车提交、Esc/失焦还原。
+    if (m_ui.pageEdit != nullptr) {
+        m_ui.pageEdit->setReadOnly(true);
+        m_ui.pageEdit->installEventFilter(this);
+    }
     // 字体缩放会改变行高，主题重新应用后要重新算一页能放几行。
     connect(&ThemeManager::instance(), &ThemeManager::themeChanged, this,
             [this](const ThemeInfo &) {
@@ -496,13 +559,14 @@ void SearchPanelController::setupUi()
                 // showResults 已按 URL 去重，状态栏统计必须用去重后的 m_results；
                 // 否则“共 N 条”会比列表实际条数多。
                 int musicCount = 0;
-                int videoCount = 0;
+                int videoEpisodes = 0;
                 for (const MediaItem &item : std::as_const(m_results)) {
                     if (item.type == MediaType::Video)
-                        ++videoCount;
+                        ++videoEpisodes;
                     else
                         ++musicCount;
                 }
+                const int videoEntries = countVideoEntries(m_results);
 
                 QString text;
                 if (m_results.isEmpty()) {
@@ -512,8 +576,10 @@ void SearchPanelController::setupUi()
                 } else {
                     text = tr("搜索完成：音乐 %1 首，视频 %2 个，共 %3 页")
                                .arg(musicCount)
-                               .arg(videoCount)
+                               .arg(videoEntries)
                                .arg(pageCount());
+                    if (videoEpisodes > videoEntries)
+                        text += tr("（影视共 %1 集）").arg(videoEpisodes);
                     if (filtered > 0)
                         text += tr("（已过滤 %1 条）").arg(filtered);
                 }
@@ -756,7 +822,8 @@ void SearchPanelController::rememberKeyword(const QString &keyword)
 void SearchPanelController::applyFilters(bool resetPage)
 {
     if (m_typeFilter == nullptr || m_sourceFilter == nullptr || m_qualityFilter == nullptr) {
-        m_visibleResults = m_results;
+        m_filteredResults = m_results;
+        m_visibleResults = collapseSearchCollections(m_filteredResults);
         if (resetPage)
             m_page = 0;
         applyPage();
@@ -767,7 +834,7 @@ void SearchPanelController::applyFilters(bool resetPage)
     const QString sourceId = m_sourceFilter->currentData().toString();
     const QString quality = m_qualityFilter->currentData().toString();
 
-    m_visibleResults.clear();
+    m_filteredResults.clear();
     for (const MediaItem &item : std::as_const(m_results)) {
         if (typeValue >= 0 && int(item.type) != typeValue)
             continue;
@@ -776,8 +843,11 @@ void SearchPanelController::applyFilters(bool resetPage)
         if (!quality.isEmpty()
             && !item.quality.contains(quality, Qt::CaseInsensitive))
             continue;
-        m_visibleResults.append(item);
+        m_filteredResults.append(item);
     }
+    // 分页按折叠后的展示行计算，否则一部 129 集的剧仍会占满十几页；
+    // 展开用的原始条目留在 m_filteredResults/m_results 里。
+    m_visibleResults = collapseSearchCollections(m_filteredResults);
 
     if (resetPage)
         m_page = 0;
@@ -1031,6 +1101,27 @@ bool SearchPanelController::eventFilter(QObject *watched, QEvent *event)
             hideSuggestions();
         }
     }
+    if (watched == m_ui.pageEdit) {
+        if (event->type() == QEvent::MouseButtonPress
+            && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton
+            && m_ui.pageEdit->isReadOnly()) {
+            beginPageJump();
+            return true;
+        }
+        if (event->type() == QEvent::KeyPress) {
+            const int key = static_cast<QKeyEvent *>(event)->key();
+            if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+                commitPageJump();
+                return true;
+            }
+            if (key == Qt::Key_Escape) {
+                cancelPageJump();
+                return true;
+            }
+        } else if (event->type() == QEvent::FocusOut) {
+            cancelPageJump();
+        }
+    }
     if (watched == m_ui.list->viewport()
         && (event->type() == QEvent::Resize || event->type() == QEvent::Show
             || event->type() == QEvent::FontChange)) {
@@ -1108,11 +1199,76 @@ void SearchPanelController::showResults(const QVector<MediaItem> &items)
     schedulePageSizeRefresh();
 }
 
+/// @brief 点击页码进入手动输入：临时解除只读并只保留当前页号，避免用户
+///        还要自己删掉“/ 总页数”。
+void SearchPanelController::beginPageJump()
+{
+    if (m_ui.pageEdit == nullptr || pageCount() <= 0)
+        return;
+    m_pageJumpEditing = true;
+    m_ui.pageEdit->setReadOnly(false);
+    m_ui.pageEdit->setText(QString::number(m_page + 1));
+    m_ui.pageEdit->selectAll();
+    m_ui.pageEdit->setFocus(Qt::MouseFocusReason);
+}
+
+/// @brief 取消输入并恢复“当前 / 总数”的只读显示。
+void SearchPanelController::cancelPageJump()
+{
+    if (m_ui.pageEdit == nullptr || !m_pageJumpEditing)
+        return;
+    m_pageJumpEditing = false;
+    m_ui.pageEdit->setReadOnly(true);
+    const int pages = pageCount();
+    m_ui.pageEdit->setText(pages > 0 ? tr("%1 / %2").arg(m_page + 1).arg(pages)
+                                     : tr("0 / 0"));
+}
+
+/// @brief 回车提交页码；非法输入不改变当前页，只提示有效范围。
+void SearchPanelController::commitPageJump()
+{
+    if (m_ui.pageEdit == nullptr || !m_pageJumpEditing)
+        return;
+
+    const int pages = pageCount();
+    const QString raw = m_ui.pageEdit->text().section(QLatin1Char('/'), 0, 0).trimmed();
+    bool ok = false;
+    const int requested = raw.toInt(&ok);
+    m_pageJumpEditing = false;
+    m_ui.pageEdit->setReadOnly(true);
+
+    if (!ok || pages <= 0 || requested < 1 || requested > pages) {
+        m_ui.pageEdit->setText(pages > 0 ? tr("%1 / %2").arg(m_page + 1).arg(pages)
+                                         : tr("0 / 0"));
+        if (pages > 0)
+            emit statusMessage(tr("页码需在 1 到 %1 之间").arg(pages));
+        return;
+    }
+    m_page = requested - 1;
+    applyPage();
+}
+
 /// @brief 按当前页号把过滤结果切片送入模型，并更新标题、页号和翻页按钮状态。
 void SearchPanelController::applyPage()
 {
     const int pages = pageCount();
-    if (m_visibleResults.size() == m_results.size()) {
+    bool hasCollections = false;
+    for (const MediaItem &item : std::as_const(m_visibleResults)) {
+        if (item.collectionSize > 1) {
+            hasCollections = true;
+            break;
+        }
+    }
+    const bool filtered = m_filteredResults.size() != m_results.size();
+    if (hasCollections) {
+        m_ui.titleLabel->setText(
+            filtered ? tr("搜索结果（已筛选 %1 项 / %2 集）")
+                           .arg(m_visibleResults.size())
+                           .arg(m_filteredResults.size())
+                     : tr("搜索结果（共 %1 项 / %2 集）")
+                           .arg(m_visibleResults.size())
+                           .arg(m_filteredResults.size()));
+    } else if (m_visibleResults.size() == m_results.size()) {
         m_ui.titleLabel->setText(tr("搜索结果（共 %1 条）").arg(m_results.size()));
     } else {
         m_ui.titleLabel->setText(
@@ -1121,12 +1277,13 @@ void SearchPanelController::applyPage()
                 .arg(m_results.size()));
     }
     if (m_ui.pageInfoLabel != nullptr)
-        m_ui.pageInfoLabel->setText(tr("每页 %1 条").arg(m_pageSize));
+        m_ui.pageInfoLabel->setText(tr("每页 %1 项").arg(m_pageSize));
 
     if (pages <= 0) {
         m_page = 0;
         m_model->clear();
-        m_ui.pageLabel->setText(tr("0 / 0"));
+        if (m_ui.pageEdit != nullptr && !m_pageJumpEditing)
+            m_ui.pageEdit->setText(tr("0 / 0"));
         m_ui.prevButton->setEnabled(false);
         m_ui.nextButton->setEnabled(false);
         return;
@@ -1137,11 +1294,13 @@ void SearchPanelController::applyPage()
     const int end = qMin(begin + m_pageSize, m_visibleResults.size());
 
     // 分组计数按当前筛选后的完整结果算，而不是当前页，避免翻页后组头数字变小。
+    // 多集剧按“部”计，同时保留集数，用户能看到折叠后还剩多少集。
     int musicTotal = 0;
-    int videoTotal = 0;
-    for (const MediaItem &item : std::as_const(m_visibleResults)) {
+    int videoEntries = countVideoEntries(m_filteredResults);
+    int videoEpisodes = 0;
+    for (const MediaItem &item : std::as_const(m_filteredResults)) {
         if (item.type == MediaType::Video)
-            ++videoTotal;
+            ++videoEpisodes;
         else
             ++musicTotal;
     }
@@ -1155,19 +1314,41 @@ void SearchPanelController::applyPage()
         // 组头只写在组边界和当前页第一行：组内每行都写会让列表变成一堵标题墙；
         // 页首重复一次则保证翻到音乐/影视中段时仍知道自己在哪一组。
         if (currentType != previousType) {
-            item.searchSectionLabel =
-                item.type == MediaType::Music
-                    ? tr("音乐（%1 首）").arg(musicTotal)
-                    : tr("影视（%1 个）").arg(videoTotal);
+            if (item.type == MediaType::Music) {
+                item.searchSectionLabel = tr("音乐（%1 首）").arg(musicTotal);
+            } else if (videoEpisodes > videoEntries) {
+                item.searchSectionLabel =
+                    tr("影视（%1 部 / %2 集）").arg(videoEntries).arg(videoEpisodes);
+            } else {
+                item.searchSectionLabel = tr("影视（%1 个）").arg(videoEntries);
+            }
             previousType = currentType;
         }
         slice.append(item);
     }
     m_model->setItems(slice);
 
-    m_ui.pageLabel->setText(tr("%1 / %2").arg(m_page + 1).arg(pages));
+    if (m_ui.pageEdit != nullptr && !m_pageJumpEditing)
+        m_ui.pageEdit->setText(tr("%1 / %2").arg(m_page + 1).arg(pages));
     m_ui.prevButton->setEnabled(m_page > 0);
     m_ui.nextButton->setEnabled(m_page + 1 < pages);
+}
+
+/// @brief 折叠行背后的全部条目。使用未筛选的 m_results，保证即使当前筛选
+///        隐藏了部分集数，加入播放列表时仍是完整一部。
+QVector<MediaItem> SearchPanelController::itemsForSearchEntry(const MediaItem &entry) const
+{
+    if (entry.collectionKey.isEmpty())
+        return {entry};
+
+    QVector<MediaItem> items;
+    for (const MediaItem &candidate : m_results) {
+        if (candidate.collectionKey == entry.collectionKey)
+            items.append(candidate);
+    }
+    if (items.isEmpty())
+        items.append(entry);
+    return items;
 }
 
 /// @brief 结果列表右键菜单：播放、加入对应类型列表、下载。
@@ -1182,14 +1363,24 @@ void SearchPanelController::handleContextMenu(const QPoint &pos)
     if (!item.isValid())
         return;
 
+    const QVector<MediaItem> entries = itemsForSearchEntry(item);
+    const bool collection = item.collectionSize > 1;
     QMenu menu(m_ui.list);
-    QAction *playAction = menu.addAction(tr("播放"));
-    QAction *addMusicAction = menu.addAction(tr("加入音乐列表"));
-    QAction *addVideoAction = menu.addAction(tr("加入视频列表"));
+    QAction *playAction =
+        menu.addAction(collection ? tr("播放第 1 集") : tr("播放"));
+    QAction *addMusicAction =
+        menu.addAction(collection && item.type == MediaType::Music
+                           ? tr("加入音乐列表（共 %1 首）").arg(entries.size())
+                           : tr("加入音乐列表"));
+    QAction *addVideoAction =
+        menu.addAction(collection && item.type == MediaType::Video
+                           ? tr("加入视频列表（共 %1 集）").arg(entries.size())
+                           : tr("加入视频列表"));
     // 类型与目标列表必须匹配：视频条目不能加进音乐列表，反之亦然。
     addMusicAction->setEnabled(item.type == MediaType::Music);
     addVideoAction->setEnabled(item.type == MediaType::Video);
-    QAction *downloadAction = menu.addAction(tr("下载"));
+    QAction *downloadAction =
+        menu.addAction(collection ? tr("下载第 1 集") : tr("下载"));
 
     QAction *chosen = menu.exec(m_ui.list->viewport()->mapToGlobal(pos));
     if (chosen == nullptr)
@@ -1198,9 +1389,9 @@ void SearchPanelController::handleContextMenu(const QPoint &pos)
     if (chosen == playAction) {
         emit mediaActivated(item);
     } else if (chosen == addMusicAction) {
-        emit addToPlaylistRequested(item, MediaType::Music);
+        emit addToPlaylistRequested(entries, MediaType::Music);
     } else if (chosen == addVideoAction) {
-        emit addToPlaylistRequested(item, MediaType::Video);
+        emit addToPlaylistRequested(entries, MediaType::Video);
     } else if (chosen == downloadAction) {
         emit downloadRequested(item);
     }

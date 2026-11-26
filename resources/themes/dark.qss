@@ -50,6 +50,23 @@ QFrame#frame_searchPager {
     background: transparent;
 }
 
+/* 页码平时像文字，点击后变成可输入的紧凑框；不能沿用通用输入框的大边框 */
+QLineEdit#edit_searchPage {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: #dfe4ff;
+    padding: 0 6px;
+}
+QLineEdit#edit_searchPage:hover {
+    background: rgba(255, 255, 255, 6%);
+}
+QLineEdit#edit_searchPage:focus {
+    background: rgba(8, 12, 26, 88%);
+    border: 1px solid rgba(140, 120, 255, 65%);
+    color: #ffffff;
+}
+
 QFrame#panelTransport {
     background: rgba(20, 22, 48, 55%);
     border: 1px solid rgba(160, 190, 255, 16%);

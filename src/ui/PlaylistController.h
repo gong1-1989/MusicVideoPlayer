@@ -52,6 +52,8 @@ public:
     void playItem(const MediaItem &item);
     /// 搜索结果加入指定列表（类型以参数为准，支持把视频加入音乐列表）
     void addSearchItem(const MediaItem &item, MediaType type);
+    /// 整组加入：多集剧只写盘一次，最后汇总新增/更新/重复的集数。
+    void addSearchItems(const QVector<MediaItem> &items, MediaType type);
     /// 本地文件导入：自动找同名 .lrc
     void addLocalFiles(MediaType type, const QStringList &files);
     /// 下载完成后把列表里同一来源条目更新为本地文件；找不到则忽略

@@ -48,6 +48,9 @@ private:
 
     QVector<MediaItem> m_result;
     int m_filtered = 0;
+    /// 同一次搜索内为每个多集结果分配稳定的折叠键，避免同名剧的不同结果
+    /// 被搜索面板误并成一部；只用于当前搜索结果，不写入播放列表。
+    int m_collectionSerial = 0;
 
     QVector<MediaItem> m_pendingBases;
     QVector<QString> m_pendingIds;

@@ -78,8 +78,8 @@ private:
     /// @brief 播放搜索结果条目。
     /// @return 成功发起播放返回 true；失败时界面已给出提示。
     bool playSearchItem(const MediaItem &item);
-    /// @brief 把搜索结果加入对应类型播放列表。
-    void addSearchItemToPlaylist(const MediaItem &item, MediaType type);
+    /// @brief 把搜索结果加入对应类型播放列表；多集剧整组传入一次写盘。
+    void addSearchItemsToPlaylist(const QVector<MediaItem> &items, MediaType type);
     /// @brief 清空播放相关界面（标题、进度、视觉区）。
     void clearPlaybackUi();
     /// 音量按钮改成右侧竖排悬浮条：slider_volume 是全局唯一音量入口
