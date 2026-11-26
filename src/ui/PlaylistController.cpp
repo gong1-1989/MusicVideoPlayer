@@ -12,6 +12,7 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHash>
@@ -27,6 +28,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QModelIndex>
+#include <QMouseEvent>
 #include <QPoint>
 #include <QRegularExpression>
 #include <QShortcut>
@@ -171,6 +173,8 @@ PlaylistController::PlaylistController(PlaybackController *player, const Playlis
     m_ui.videoView->setIndentation(16);
     m_ui.videoView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_ui.videoView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    // 剧头单击展开/收起需要看到整行点击位置；箭头点击仍由 QTreeView 原生处理。
+    m_ui.videoView->viewport()->installEventFilter(this);
     m_musicTabTitle = m_ui.tabs->tabText(0);
     m_videoTabTitle = m_ui.tabs->tabText(1);
 
@@ -768,6 +772,94 @@ int PlaylistController::sourceRowForIndex(MediaType type, const QModelIndex &ind
     if (type == MediaType::Video)
         return m_videoTreeModel != nullptr ? m_videoTreeModel->sourceRow(index) : -1;
     return index.row();
+}
+
+bool PlaylistController::isGroupIndex(MediaType type, const QModelIndex &index) const
+{
+    return type == MediaType::Video && m_videoTreeModel != nullptr && index.isValid()
+           && m_videoTreeModel->isGroup(index);
+}
+
+bool PlaylistController::pointOnDisclosure(const QPoint &pos, const QModelIndex &index) const
+{
+    const QRect itemRect = m_ui.videoView->visualRect(index);
+    if (!itemRect.isValid())
+        return false;
+
+    // 原生展开箭头画在条目矩形左侧的缩进区；条目矩形本身从文字列开始。
+    // 不能用 QStyle::SE_TreeViewDisclosureItem：部分样式会把整个条目矩形当作命中区，
+    // 导致点击剧头正文也被当成点击箭头而不再切换。
+    return pos.x() < itemRect.left() && pos.x() >= itemRect.left() - m_ui.videoView->indentation();
+}
+
+/// @brief 单击剧头正文展开/收起；双击只切换一次且不再播放第 1 集。
+/// @note 点击左侧原生箭头时不在这里重复切换，否则会和 QTreeView 默认行为抵消。
+bool PlaylistController::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched != m_ui.videoView->viewport())
+        return QObject::eventFilter(watched, event);
+
+    QTreeView *view = m_ui.videoView;
+    switch (event->type()) {
+    case QEvent::MouseButtonPress: {
+        const QMouseEvent *mouse = static_cast<QMouseEvent *>(event);
+        m_skipGroupRelease = false;
+        m_pressedGroupKey.clear();
+        m_pressedOnDisclosure = false;
+        if (mouse->button() == Qt::LeftButton) {
+            const QPoint pos = mouse->position().toPoint();
+            const QModelIndex index = view->indexAt(pos);
+            if (isGroupIndex(MediaType::Video, index)) {
+                m_pressedGroupKey = index.data(PlaylistTreeModel::GroupKeyRole).toString();
+                m_pressedGroupPos = pos;
+                m_pressedOnDisclosure = pointOnDisclosure(pos, index);
+            }
+        }
+        break;
+    }
+    case QEvent::MouseButtonDblClick: {
+        const QMouseEvent *mouse = static_cast<QMouseEvent *>(event);
+        if (isGroupIndex(MediaType::Video, view->indexAt(mouse->position().toPoint()))) {
+            // 第一次单击的释放事件已经完成切换，双击的第二次释放不再切换。
+            m_skipGroupRelease = true;
+            m_pressedGroupKey.clear();
+        }
+        break;
+    }
+    case QEvent::MouseButtonRelease: {
+        const QMouseEvent *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() != Qt::LeftButton)
+            break;
+        if (m_skipGroupRelease) {
+            m_skipGroupRelease = false;
+            m_pressedGroupKey.clear();
+            break;
+        }
+
+        const QString key = m_pressedGroupKey;
+        const QPoint pos = mouse->position().toPoint();
+        const bool onDisclosure = m_pressedOnDisclosure;
+        const QPoint pressPos = m_pressedGroupPos;
+        m_pressedGroupKey.clear();
+        m_pressedOnDisclosure = false;
+        if (key.isEmpty() || onDisclosure)
+            break;
+        // 按住拖动（滚动/选择）不算点击，避免滚动列表时误折叠。
+        if ((pos - pressPos).manhattanLength() > 4)
+            break;
+
+        const QModelIndex index = view->indexAt(pos);
+        if (!isGroupIndex(MediaType::Video, index)
+            || index.data(PlaylistTreeModel::GroupKeyRole).toString() != key) {
+            break;
+        }
+        view->setExpanded(index, !view->isExpanded(index));
+        break;
+    }
+    default:
+        break;
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 /// @brief 树/列表当前 index 的删除入口：视频分组节点删除整部剧。

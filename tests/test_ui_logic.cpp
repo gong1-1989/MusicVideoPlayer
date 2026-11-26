@@ -358,6 +358,8 @@ void UiLogicTest::addSearchItemsAddsWholeCollectionInOneBatch()
     QVERIFY(tree != nullptr);
     QCOMPARE(tree->rowCount(), 1);
     const QModelIndex group = tree->index(0, 0);
+    QVERIFY(controller.isGroupIndex(MediaType::Video, group));
+    QVERIFY(!controller.isGroupIndex(MediaType::Video, tree->index(0, 0, group)));
     QCOMPARE(tree->rowCount(group), 3);
     QCOMPARE(controller.sourceRowForIndex(MediaType::Video, group), 0);
     QCOMPARE(controller.sourceRowForIndex(MediaType::Video, tree->index(0, 0, group)), 0);

@@ -432,6 +432,9 @@ void MainWindow::setupConnections()
             [this](const QModelIndex &index) {
                 if (!index.isValid())
                     return;
+                // 剧头只负责展开/收起（单击处理），双击不再触发播放第 1 集。
+                if (m_playlists->isGroupIndex(MediaType::Video, index))
+                    return;
                 const int row = m_playlists->sourceRowForIndex(MediaType::Video, index);
                 if (row < 0)
                     return;

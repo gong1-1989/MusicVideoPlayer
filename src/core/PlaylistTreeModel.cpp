@@ -219,7 +219,7 @@ void PlaylistTreeModel::rebuild()
         QFont groupFont = groupItem->font();
         groupFont.setBold(true);
         groupItem->setFont(groupFont);
-        groupItem->setToolTip(tr("%1\n来源：%2；点击左侧箭头展开/收起，双击播放第 1 集。")
+        groupItem->setToolTip(tr("%1\n来源：%2；单击剧头或左侧箭头展开/收起。")
                                   .arg(groupTitle(rows),
                                        rows.first() >= 0 && m_source->itemAt(rows.first()).online
                                            ? tr("网络")
