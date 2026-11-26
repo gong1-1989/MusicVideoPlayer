@@ -338,6 +338,61 @@ void PlaylistController::restore()
     }
 }
 
+/// @brief 退出前保存“当时正在播放的条目”。
+/// @note 用 mediaIdentity() 而不是行号：下次启动前列表可能被搜索/下载改写，
+///       行号会漂移，身份仍能唯一定位同一条目。
+void PlaylistController::rememberPlayingItem()
+{
+    if (m_player == nullptr || !m_player->hasCurrentItem())
+        return;
+
+    PlaylistModel *playingModel = m_player->playlist();
+    MediaType type = MediaType::Music;
+    if (playingModel == m_videoModel) {
+        type = MediaType::Video;
+    } else if (playingModel != m_musicModel) {
+        // 搜索窗口的临时列表不属于播放列表，退出后不存在，记录也没有意义。
+        return;
+    }
+
+    const MediaItem current = m_player->currentItem();
+    // 试听条目只在当前会话存在，播放列表保存时会被过滤掉；不能拿它当恢复目标。
+    if (current.previewOnly)
+        return;
+    const int row = playingModel->indexOf(current);
+    if (row < 0)
+        return;
+
+    AppSettings::setLastPlayedItem(type == MediaType::Video ? 1 : 0,
+                                  mediaIdentity(playingModel->itemAt(row)));
+}
+
+/// @brief 启动后恢复上次退出时正在播放的条目为默认选中项。
+/// @note 只选中、不自动播放：沿用用户原有的启动行为，按播放键才起播。
+void PlaylistController::restoreLastSelection()
+{
+    const int typeValue = AppSettings::lastPlayedItemType();
+    const QString identity = AppSettings::lastPlayedItemIdentity();
+    if (typeValue < 0 || identity.isEmpty())
+        return;
+
+    const MediaType type = typeValue == 1 ? MediaType::Video : MediaType::Music;
+    PlaylistModel *model = modelFor(type);
+    int row = -1;
+    for (int i = 0; i < model->size(); ++i) {
+        if (mediaIdentity(model->itemAt(i)) == identity) {
+            row = i;
+            break;
+        }
+    }
+    if (row < 0)
+        return;
+
+    // 先切到条目所属页签，再选中；视频条目会展开剧集分组。
+    m_ui.tabs->setCurrentIndex(type == MediaType::Video ? 1 : 0);
+    selectSourceRow(type, row);
+}
+
 /// @brief 300ms 防抖保存，用 generation 丢弃过期回调；读取冻结时直接跳过。
 void PlaylistController::scheduleSave()
 {

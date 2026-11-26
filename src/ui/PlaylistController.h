@@ -53,6 +53,12 @@ public:
     bool isGroupIndex(MediaType type, const QModelIndex &index) const;
 
     void restore();
+    /// 退出前记录当前正在播放的列表条目，供下次启动默认选中。
+    /// 只在播放的条目属于持久化播放列表时写入；搜索试听等临时条目不记录。
+    void rememberPlayingItem();
+    /// 启动恢复列表后调用：按上次记录的 mediaIdentity 找回条目并选中。
+    /// 视频条目会展开所属剧集分组，保证选中行可见；找不到时保持原状。
+    void restoreLastSelection();
     bool save();
     /// 用户主动保存（Ctrl+S 或右键“保存播放列表”）：没有修改时给出明确反馈
     bool saveNow();

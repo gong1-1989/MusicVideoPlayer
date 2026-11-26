@@ -5,6 +5,7 @@
 #include <QRect>
 
 class QBoxLayout;
+class QSplitter;
 class QTimer;
 class QVBoxLayout;
 class QWidget;
@@ -17,6 +18,9 @@ struct PanelOverlayUi
     QWidget *stage = nullptr;
     QWidget *transport = nullptr;
     QBoxLayout *rootLayout = nullptr;
+    /// 侧栏与播放区之间的可拖动分隔条；有它时侧栏浮层切换走 splitter，
+    /// 不再从根布局 removeWidget/insertWidget。
+    QSplitter *sidebarSplitter = nullptr;
     QVBoxLayout *centerLayout = nullptr;
 };
 
@@ -49,6 +53,8 @@ private:
     bool m_controlsAutoHide = true;
     bool m_sidebarFloating = false;
     bool m_controlsFloating = false;
+    /// 常显模式下用户拖出的侧栏宽度；浮层往返时用它复位 splitter。
+    int m_sidebarLayoutWidth = 0;
     bool m_edgeDetectionEnabled = true;
 };
 

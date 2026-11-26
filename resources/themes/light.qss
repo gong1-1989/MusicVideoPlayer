@@ -43,6 +43,18 @@ QFrame#panelSidebar[floating="true"] {
     background: rgba(253, 252, 255, 92%);
 }
 
+/* 侧栏与播放区之间的手动分隔条：平时隐形，悬停时给一条淡紫提醒可拖动 */
+QSplitter#mainSplitter {
+    background: transparent;
+}
+QSplitter#mainSplitter::handle {
+    background: transparent;
+    border-radius: 4px;
+}
+QSplitter#mainSplitter::handle:hover {
+    background: rgba(110, 90, 220, 32%);
+}
+
 /* 搜索分页条与结果列表分开，避免最后一行贴着翻页按钮像被压住 */
 QFrame#frame_searchPager {
     border: none;

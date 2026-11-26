@@ -18,6 +18,8 @@ const char kWindowPreset[] = "ui/windowPreset";
 const char kGeometry[] = "ui/geometry";
 const char kVolume[] = "playback/volume";
 const char kMode[] = "playback/mode";
+const char kLastItemType[] = "playback/lastItemType";
+const char kLastItemIdentity[] = "playback/lastItemIdentity";
 const char kSearchLimit[] = "search/limit";
 const char kSearchHistory[] = "search/history";
 const char kDownloadLimitMb[] = "download/limitMb";
@@ -30,6 +32,7 @@ const char kLastDir[] = "paths/lastDir";
 const char kPlaylistMusic[] = "playlists/music";
 const char kPlaylistVideo[] = "playlists/video";
 const char kSidebarAutoHide[] = "ui/sidebarAutoHide";
+const char kSidebarWidth[] = "ui/sidebarWidth";
 const char kControlsAutoHide[] = "ui/controlsAutoHide";
 const char kShortcutPrefix[] = "shortcuts/";
 
@@ -148,6 +151,22 @@ void setSidebarAutoHide(bool enabled)
     settings().setValue(QLatin1String(kSidebarAutoHide), enabled);
 }
 
+/// @brief 左侧播放列表用户拖出的宽度。
+/// @return 常显模式的宽度，0 表示还没记录过；范围夹在 160..1200，
+///         防止手工改配置把侧栏撑满整个窗口。
+int sidebarWidth()
+{
+    const int value = settings().value(QLatin1String(kSidebarWidth), 0).toInt();
+    return value <= 0 ? 0 : qBound(160, value, 1200);
+}
+
+void setSidebarWidth(int width)
+{
+    if (width <= 0)
+        return;
+    settings().setValue(QLatin1String(kSidebarWidth), qBound(160, width, 1200));
+}
+
 bool controlsAutoHide()
 {
     return settings().value(QLatin1String(kControlsAutoHide), true).toBool();
@@ -192,6 +211,41 @@ int playbackMode()
 void setPlaybackMode(int mode)
 {
     settings().setValue(QLatin1String(kMode), qBound(0, mode, 2));
+}
+
+/// @brief 上次退出时正在播放的条目类型。
+/// @return 1=视频、0=音乐、-1=没有记录；只接受这三个值。
+int lastPlayedItemType()
+{
+    const int value = settings().value(QLatin1String(kLastItemType), -1).toInt();
+    return value == 0 || value == 1 ? value : -1;
+}
+
+QString lastPlayedItemIdentity()
+{
+    if (lastPlayedItemType() < 0)
+        return QString();
+    return settings().value(QLatin1String(kLastItemIdentity)).toString();
+}
+
+/// @brief 记录当前正在播放的列表条目。
+/// @note 类型不合法或身份为空时直接清空，避免下次启动按残缺记录误选其它行。
+void setLastPlayedItem(int type, const QString &identity)
+{
+    if ((type != 0 && type != 1) || identity.isEmpty()) {
+        clearLastPlayedItem();
+        return;
+    }
+    QSettings store = settings();
+    store.setValue(QLatin1String(kLastItemType), type);
+    store.setValue(QLatin1String(kLastItemIdentity), identity);
+}
+
+void clearLastPlayedItem()
+{
+    QSettings store = settings();
+    store.remove(QLatin1String(kLastItemType));
+    store.remove(QLatin1String(kLastItemIdentity));
 }
 
 int searchLimit()

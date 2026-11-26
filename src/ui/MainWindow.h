@@ -29,9 +29,11 @@ class QResizeEvent;
 class QShowEvent;
 class QFrame;
 class QLabel;
+class QVBoxLayout;
 class MusicVisualWidget;
 class HlsCacheBuilder;
 class QShortcut;
+class QSplitter;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -85,6 +87,12 @@ private:
     void startDownload(const MediaItem &item);
     /// @brief 清空播放相关界面（标题、进度、视觉区）。
     void clearPlaybackUi();
+    /// 把左侧播放列表和右侧播放区装进可拖动的 QSplitter。
+    /// .ui 里中心区是裸布局，这里把里面的控件搬到 QWidget 承载，
+    /// 新建的中心布局同时交给 PanelOverlay/Fullscreen 使用。
+    void setupSidebarSplitter();
+    /// 首次显示布局稳定后恢复用户上次拖出的侧栏宽度。
+    void applySavedSidebarWidth();
     /// 音量按钮改成右侧竖排悬浮条：slider_volume 是全局唯一音量入口
     void setupVolumePopup();
     /// @brief 在音量按钮上方弹出竖排滑块，并保持当前音量值。
@@ -121,6 +129,12 @@ private:
     QLabel *m_volumeLabel = nullptr;
     MusicVisualWidget *m_musicVisual = nullptr;
     HlsCacheBuilder *m_hlsCache = nullptr;
+    /// 左侧播放列表/右侧播放区的可拖动分隔条；见 setupSidebarSplitter()。
+    QSplitter *m_sidebarSplitter = nullptr;
+    /// 拆分后右侧中心区的新布局，承接原 layout_center 的全部控件。
+    QVBoxLayout *m_centerLayout = nullptr;
+    /// 布局稳定前读到的侧栏宽度，由 applySavedSidebarWidth() 消费。
+    int m_pendingSidebarWidth = 0;
     QVector<QShortcut *> m_shortcuts;
     /// 刚刚从搜索窗口点播的条目身份；启动失败时用它弹一次明确的错误，
     /// 而不是搜索窗关掉后用户只看到“点了没反应”。

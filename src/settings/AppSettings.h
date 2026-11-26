@@ -34,6 +34,10 @@ void setSavedGeometry(const QByteArray &geometry);
 /// 启动时是否自动收起左侧列表（收起后鼠标贴左边缘弹出）
 bool sidebarAutoHide();
 void setSidebarAutoHide(bool enabled);
+/// 左侧播放列表在常显模式下用户拖出的宽度；0 表示还没有记录过。
+/// 收起成贴边浮层时不使用该宽度，避免把浮层撑到半个窗口。
+int sidebarWidth();
+void setSidebarWidth(int width);
 /// 启动时是否自动收起底部控制区（收起后鼠标贴底边弹出）
 bool controlsAutoHide();
 void setControlsAutoHide(bool enabled);
@@ -44,6 +48,14 @@ int playbackVolume();
 void setPlaybackVolume(int percent);
 int playbackMode();                ///< 对应 PlaybackController::Mode
 void setPlaybackMode(int mode);
+
+/// 上次退出时正在播放的条目，用于下次启动默认选中。
+/// type 为 -1 表示没有记录；identity 是 mediaIdentity() 的结果，
+/// 比行号稳定：列表重排或插入新条目后仍能找回原条目。
+int lastPlayedItemType();
+QString lastPlayedItemIdentity();
+void setLastPlayedItem(int type, const QString &identity);
+void clearLastPlayedItem();
 
 // ---------------------------------------------------------------- 搜索
 int searchLimit();                 ///< 单次搜索结果条数

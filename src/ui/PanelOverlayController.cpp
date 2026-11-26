@@ -6,8 +6,10 @@
 
 #include <QBoxLayout>
 #include <QCursor>
+#include <QList>
 #include <QPoint>
 #include <QRect>
+#include <QSplitter>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -27,6 +29,8 @@ PanelOverlayController::PanelOverlayController(const PanelOverlayUi &ui, QObject
     Q_ASSERT(m_ui.rootLayout != nullptr);
     Q_ASSERT(m_ui.centerLayout != nullptr);
 
+    // 浮层/常显切换会拆装侧栏；记住常显模式下用户拖出的宽度。
+    m_sidebarLayoutWidth = AppSettings::sidebarWidth();
     m_edgeTimer = new QTimer(this);
     m_edgeTimer->setInterval(120);
     connect(m_edgeTimer, &QTimer::timeout, this, &PanelOverlayController::updateEdgePanels);
@@ -151,7 +155,31 @@ void PanelOverlayController::setSidebarFloating(bool floating)
     m_sidebarFloating = floating;
     m_sidebarPeek = false;
 
-    if (floating) {
+    if (m_ui.sidebarSplitter != nullptr) {
+        if (floating) {
+            // 先记下常显时的实际宽度，浮层收回去再展开仍能回到同一宽度。
+            const int index = m_ui.sidebarSplitter->indexOf(m_ui.sidebar);
+            if (index >= 0) {
+                const int section = m_ui.sidebarSplitter->sizes().value(index, 0);
+                if (section > 0)
+                    m_sidebarLayoutWidth = section;
+            }
+            if (m_sidebarLayoutWidth <= 0)
+                m_sidebarLayoutWidth = 300;
+            // QSplitter 没有 removeWidget：改父对象即从 splitter 子控件中摘除。
+            m_ui.sidebar->setParent(m_ui.centralWidget);
+        } else {
+            if (m_ui.sidebarSplitter->indexOf(m_ui.sidebar) < 0)
+                m_ui.sidebarSplitter->insertWidget(0, m_ui.sidebar);
+            const int total = m_ui.sidebarSplitter->width();
+            if (total > 0) {
+                const int minWidth = m_ui.sidebar->minimumWidth();
+                const int maxWidth = qMax(minWidth, total - 320);
+                const int width = qBound(minWidth, m_sidebarLayoutWidth, maxWidth);
+                m_ui.sidebarSplitter->setSizes(QList<int>{width, total - width});
+            }
+        }
+    } else if (floating) {
         // 浮层：从布局里摘出来，挂到 centralwidget 上，由定位函数贴边
         m_ui.rootLayout->removeWidget(m_ui.sidebar);
         m_ui.sidebar->setParent(m_ui.centralWidget);
@@ -213,8 +241,10 @@ void PanelOverlayController::positionControlOverlay()
     if (!m_controlsFloating)
         return;
 
-    // 舞台是 centralwidget 的直接子控件，控制条挂在同一层，坐标可以直接对齐
-    const QRect stage = m_ui.stage->geometry();
+    // 舞台现在挂在中心承载控件里，geometry() 是相对父控件的坐标；
+    // 控制条要贴到 centralwidget 上，先把舞台矩形换算到同一坐标系。
+    const QRect stage(m_ui.stage->mapTo(m_ui.centralWidget, QPoint(0, 0)),
+                      m_ui.stage->size());
     const int margin = 8;
     // 控制条高度完全交给字号撑开的 sizeHint，不再用 150 的硬上限截断；
     // 只限制不超过舞台高度，避免小窗口浮层盖住整幅画面。

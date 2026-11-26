@@ -37,6 +37,7 @@
 #include <QGuiApplication>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLayoutItem>
 #include <QLoggingCategory>
 #include <QMessageBox>
 #include <QModelIndex>
@@ -47,6 +48,7 @@
 #include <QShortcut>
 #include <QShowEvent>
 #include <QSlider>
+#include <QSplitter>
 #include <QTabBar>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -75,6 +77,9 @@ MainWindow::MainWindow(QWidget *parent)
     , m_player(new PlaybackController(this))
 {
     ui->setupUi(this);
+    // 侧栏和播放区之间需要一条用户可拖动的分隔线；必须在其它控制器
+    // 取用 layout_center / panelSidebar 之前完成重排。
+    setupSidebarSplitter();
     // 播放器只管取流；网页播放页的二次解析交给共享解析器，搜索、播放和下载
     // 用同一份缓存，避免同一集被反复请求播放页。
     m_player->setPageMediaResolver(m_pageResolver);
@@ -248,12 +253,13 @@ MainWindow::MainWindow(QWidget *parent)
     panelUi.stage = ui->panelStage;
     panelUi.transport = ui->panelTransport;
     panelUi.rootLayout = ui->layout_root;
-    panelUi.centerLayout = ui->layout_center;
+    panelUi.sidebarSplitter = m_sidebarSplitter;
+    panelUi.centerLayout = m_centerLayout;
     m_panels = new PanelOverlayController(panelUi, this);
 
     // 全屏窗口：新建独立视频控件并接管播放器视频输出，避免重挂原生视频子窗丢帧
     m_fullscreen = new FullscreenController(ui->videoWidget, m_player->mediaPlayer(),
-                                            ui->panelTransport, ui->layout_center,
+                                            ui->panelTransport, m_centerLayout,
                                             m_panels, 16.0, this);
     connect(m_fullscreen, &FullscreenController::shortcutTriggered, this,
             &MainWindow::executeShortcutAction);
@@ -380,6 +386,8 @@ MainWindow::MainWindow(QWidget *parent)
     setupConnections();
     m_settings->restore();
     m_playlists->restore();
+    // 列表恢复后立刻定位上次正在播放的条目为默认选中项；只选中、不自动播放。
+    m_playlists->restoreLastSelection();
     // 快捷键也属于设置：启动时按用户绑定重建，不再写死 Ctrl+, / Ctrl+S。
     rebuildShortcuts();
     // 主题/字体缩放已经在 restore 中应用，等样式 polish 完再按实际字体尺寸排版。
@@ -601,6 +609,18 @@ void MainWindow::closeEvent(QCloseEvent *event)
         // 真正暂停下载放到播放列表保存成功之后，避免保存失败取消退出时下载已被停掉。
     }
 
+    // 常显模式下把用户拖出的侧栏宽度写回设置；贴边浮层时不覆盖。
+    if (m_sidebarSplitter != nullptr
+        && m_sidebarSplitter->indexOf(ui->panelSidebar) >= 0
+        && !ui->panelSidebar->property("floating").toBool()) {
+        const int width = m_sidebarSplitter->sizes().value(0, ui->panelSidebar->width());
+        if (width > 0)
+            AppSettings::setSidebarWidth(width);
+    }
+
+    // 记录退出时正在播放的条目，下次启动恢复为默认选中项。
+    m_playlists->rememberPlayingItem();
+
     // 保存前先把播放器的最后位置写回模型（不停止播放）。
     // 旧顺序是“先 save 再 stop”，stop 里才写位置，最后几秒进度会丢。
     if (m_player != nullptr)
@@ -648,8 +668,10 @@ void MainWindow::closeEvent(QCloseEvent *event)
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
-    if (!event->spontaneous())
+    if (!event->spontaneous()) {
         QTimer::singleShot(0, this, &MainWindow::clampToAvailableScreen);
+        QTimer::singleShot(0, this, &MainWindow::applySavedSidebarWidth);
+    }
 }
 
 void MainWindow::clampToAvailableScreen()
@@ -766,13 +788,106 @@ void MainWindow::updateControlBarCentering()
     ui->layout_controls->invalidate();
 }
 
+void MainWindow::setupSidebarSplitter()
+{
+    // .ui 的根布局是“侧栏控件 + 中心裸布局”。裸布局不能直接放进 QSplitter，
+    // 这里把中心布局里的控件搬到承载 QWidget，再整体放进 splitter。
+    // 新中心布局保留原来的 spacing/margins，视觉间距不变。
+    m_sidebarSplitter = new QSplitter(Qt::Horizontal, ui->centralwidget);
+    m_sidebarSplitter->setObjectName(QStringLiteral("mainSplitter"));
+    m_sidebarSplitter->setChildrenCollapsible(false);
+    m_sidebarSplitter->setHandleWidth(8);
+
+    QLayoutItem *centerItem = nullptr;
+    for (int i = 0; i < ui->layout_root->count(); ++i) {
+        QLayoutItem *item = ui->layout_root->itemAt(i);
+        if (item != nullptr && item->layout() == ui->layout_center) {
+            centerItem = ui->layout_root->takeAt(i);
+            break;
+        }
+    }
+    Q_ASSERT(centerItem != nullptr);
+    if (centerItem == nullptr)
+        return;
+
+    QWidget *centerHost = new QWidget(m_sidebarSplitter);
+    centerHost->setObjectName(QStringLiteral("panelCenterHost"));
+    m_centerLayout = new QVBoxLayout(centerHost);
+    m_centerLayout->setSpacing(ui->layout_center->spacing());
+    m_centerLayout->setContentsMargins(ui->layout_center->contentsMargins());
+    while (ui->layout_center->count() > 0) {
+        QLayoutItem *child = ui->layout_center->takeAt(0);
+        // 必须通过 addWidget 重新挂载，而不是直接搬 QLayoutItem：直接搬不会把
+        // 控件 reparent 到 centerHost，控件仍挂在 centralwidget 上，
+        // 之后 mapTo()/浮层定位会拿到错误坐标。
+        if (QWidget *widget = child->widget()) {
+            m_centerLayout->addWidget(widget);
+            delete child;
+        } else {
+            m_centerLayout->addItem(child);
+        }
+    }
+    // 中心布局已被清空并完成迁移；从根布局摘除后释放，避免空布局挂父对象。
+    delete ui->layout_center;
+    ui->layout_center = nullptr;
+
+    ui->layout_root->removeWidget(ui->panelSidebar);
+    m_sidebarSplitter->addWidget(ui->panelSidebar);
+    m_sidebarSplitter->addWidget(centerHost);
+    // 侧栏保持用户拖出的绝对宽度，窗口变宽时把新增空间全部给播放区。
+    m_sidebarSplitter->setStretchFactor(0, 0);
+    m_sidebarSplitter->setStretchFactor(1, 1);
+    // 控制条/侧栏处于贴边浮层时，侧栏拖宽会改变舞台几何，浮层必须跟着重算。
+    connect(m_sidebarSplitter, &QSplitter::splitterMoved, this, [this]() {
+        if (m_panels != nullptr)
+            m_panels->reposition();
+    });
+    ui->layout_root->addWidget(m_sidebarSplitter, 1);
+
+    // 兼容旧 .ui 的 260/340 宽度上下限：最小宽度仍由字体自适应决定，
+    // 但取消 340 上限，否则“可拖动”实际只能拖几十像素。
+    ui->panelSidebar->setMaximumWidth(QWIDGETSIZE_MAX);
+    m_pendingSidebarWidth = AppSettings::sidebarWidth();
+}
+
+/// @brief 首次显示布局完成后恢复上次拖出的侧栏宽度。
+/// @note 延迟到 show 后执行：构造阶段 splitter 还没有实际像素宽度，
+///       直接 setSizes 会被随后布局覆盖。
+void MainWindow::applySavedSidebarWidth()
+{
+    if (m_sidebarSplitter == nullptr || m_pendingSidebarWidth <= 0)
+        return;
+    if (m_sidebarSplitter->indexOf(ui->panelSidebar) < 0) {
+        // 侧栏处于贴边浮层模式，宽度由 PanelOverlayController 自己保存/恢复。
+        m_pendingSidebarWidth = 0;
+        return;
+    }
+
+    const int total = m_sidebarSplitter->width();
+    if (total <= 0)
+        return;
+    const int minWidth = ui->panelSidebar->minimumWidth();
+    // 给播放区至少留 320px，避免用户把侧栏拖到覆盖整个窗口后误以为界面坏了。
+    const int maxWidth = qMax(minWidth, total - 320);
+    const int width = qBound(minWidth, m_pendingSidebarWidth, maxWidth);
+    m_sidebarSplitter->setSizes(QList<int>{width, total - width});
+    m_pendingSidebarWidth = 0;
+    // setSizes 引发的布局要等下一轮事件循环才生效；浮层控制条/侧栏要到那时
+    // 才能按最终舞台尺寸重新贴边，避免启动后浮层停在旧几何上。
+    QTimer::singleShot(0, this, [this]() {
+        if (m_panels != nullptr)
+            m_panels->reposition();
+    });
+}
+
 void MainWindow::updateAdaptiveMetrics()
 {
     if (ui == nullptr)
         return;
 
-    // 左侧栏宽度由标签栏实际字体宽度决定：不同字体缩放下，
-    // “音乐列表 / 视频列表”必须完整显示，不能靠固定 260 去硬撑。
+    // 左侧栏最小宽度由标签栏实际字体宽度决定：不同字体缩放下，
+    // “音乐列表 / 视频列表”必须完整显示。最大宽度不再封顶，
+    // 由 QSplitter 把实际宽度交给用户拖动，避免只能在小范围内调整。
     const QFontMetrics tabMetrics(ui->tab_media->tabBar()->font());
     const QFontMetrics titleMetrics(ui->label_playlistTitle->font());
     const QMargins margins = ui->layout_sidebar->contentsMargins();
@@ -781,9 +896,9 @@ void MainWindow::updateAdaptiveMetrics()
     const int contentWidth = qMax(tabBarWidth, titleWidth) + margins.left() + margins.right()
                              + tabMetrics.height() * 2;
     const int widthCap = qMax(240, width() / 3);
-    const int sidebarWidth = qMin(qMax(220, contentWidth), widthCap);
-    ui->panelSidebar->setMinimumWidth(sidebarWidth);
-    ui->panelSidebar->setMaximumWidth(sidebarWidth + tabMetrics.height() * 2);
+    const int sidebarMinWidth = qMin(qMax(180, contentWidth), widthCap);
+    ui->panelSidebar->setMinimumWidth(sidebarMinWidth);
+    ui->panelSidebar->setMaximumWidth(QWIDGETSIZE_MAX);
 
     // 标签页最小高度跟着标签栏字体走，避免大字号下标签被压扁。
     ui->tab_media->setMinimumHeight(
