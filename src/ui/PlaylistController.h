@@ -8,15 +8,19 @@
 
 class PlaybackController;
 class PlaylistModel;
+class PlaylistTreeModel;
+class QAbstractItemView;
 class QListView;
+class QModelIndex;
 class QPoint;
 class QTabWidget;
+class QTreeView;
 
-/// 播放列表面板依赖的控件：只给两个列表和音乐/视频页签。
+/// 播放列表面板依赖的控件：音乐仍是平铺列表，视频用树形列表展示“剧集折叠”。
 struct PlaylistUi
 {
     QListView *musicView = nullptr;
-    QListView *videoView = nullptr;
+    QTreeView *videoView = nullptr;
     QTabWidget *tabs = nullptr;
 };
 
@@ -32,10 +36,18 @@ public:
 
     PlaylistModel *musicModel() const { return m_musicModel; }
     PlaylistModel *videoModel() const { return m_videoModel; }
+    /// 视频页签的折叠树视图（音乐页仍是平铺列表）。
+    QTreeView *videoView() const { return m_ui.videoView; }
     PlaylistModel *modelFor(MediaType type) const;
 
     PlaylistModel *activeModel() const;
-    QListView *activeView() const;
+    QAbstractItemView *activeView() const;
+    /// 当前活动列表选中的真实源行；视频分组节点取第一集，未选中返回 -1。
+    int activeSourceRow() const;
+    /// 按源行定位并选中：视频会展开所属剧集分组，保证当前播放项可见。
+    void selectSourceRow(MediaType type, int row);
+    /// 视图 index 到扁平模型源行的映射；视频分组节点返回第一集行号。
+    int sourceRowForIndex(MediaType type, const QModelIndex &index) const;
 
     void restore();
     bool save();
@@ -71,10 +83,12 @@ signals:
     void downloadRequested(const MediaItem &item);
 
 private:
-    void bindView(QListView *view, PlaylistModel *model, MediaType type);
+    void bindView(QAbstractItemView *view, PlaylistModel *model, MediaType type);
+    void removeIndex(MediaType type, const QModelIndex &index);
+    void removeCollection(MediaType type, const QString &key);
     void removeRow(MediaType type, int row);
     void clearPlaylist(MediaType type);
-    void showContextMenu(MediaType type, QListView *view, PlaylistModel *model,
+    void showContextMenu(MediaType type, QAbstractItemView *view, PlaylistModel *model,
                          const QPoint &pos);
     void playRow(MediaType type, int row);
     /// 把搜索结果试听行提升为永久条目并立即写回列表
@@ -91,6 +105,8 @@ private:
     PlaylistUi m_ui;
     PlaylistModel *m_musicModel = nullptr;
     PlaylistModel *m_videoModel = nullptr;
+    /// 视频页签的折叠树：只做展示，真实数据/播放行号仍以 m_videoModel 为准。
+    PlaylistTreeModel *m_videoTreeModel = nullptr;
     QString m_musicTabTitle;
     QString m_videoTabTitle;
     /// 保存失败后界面仍保留修改；页签加 * 并在右键菜单提供重试

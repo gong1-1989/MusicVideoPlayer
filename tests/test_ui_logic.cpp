@@ -42,7 +42,7 @@
 #include <QTcpSocket>
 #include <QTest>
 #include <QTimer>
-#include <QWidget>
+#include <QTreeView>
 
 namespace {
 
@@ -232,7 +232,7 @@ void UiLogicTest::playlistSaveFailureKeepsDirtyAndRetries()
     QTabWidget tabs;
     // QTabWidget 会接管页面所有权；这里必须用堆对象，避免析构时重复释放栈对象。
     QListView *musicView = new QListView;
-    QListView *videoView = new QListView;
+    QTreeView *videoView = new QTreeView;
     tabs.addTab(musicView, QStringLiteral("音乐"));
     tabs.addTab(videoView, QStringLiteral("视频"));
 
@@ -272,7 +272,7 @@ void UiLogicTest::previewItemNeverPersistsUnlessPromoted()
     PlaybackController player;
     QTabWidget tabs;
     QListView *musicView = new QListView;
-    QListView *videoView = new QListView;
+    QTreeView *videoView = new QTreeView;
     tabs.addTab(musicView, QStringLiteral("音乐"));
     tabs.addTab(videoView, QStringLiteral("视频"));
     PlaylistController controller(&player, PlaylistUi{musicView, videoView, &tabs});
@@ -325,7 +325,7 @@ void UiLogicTest::addSearchItemsAddsWholeCollectionInOneBatch()
     PlaybackController player;
     QTabWidget tabs;
     QListView *musicView = new QListView;
-    QListView *videoView = new QListView;
+    QTreeView *videoView = new QTreeView;
     tabs.addTab(musicView, QStringLiteral("音乐"));
     tabs.addTab(videoView, QStringLiteral("视频"));
     PlaylistController controller(&player, PlaylistUi{musicView, videoView, &tabs});
@@ -346,9 +346,22 @@ void UiLogicTest::addSearchItemsAddsWholeCollectionInOneBatch()
     controller.addSearchItems(episodes, MediaType::Video);
     QCOMPARE(controller.videoModel()->size(), 3);
     QCOMPARE(PlaylistStore::load(MediaType::Video).size(), 3);
-    // 折叠键只服务于搜索结果，不能跟着单集写进播放列表。
-    for (const MediaItem &saved : PlaylistStore::load(MediaType::Video))
-        QVERIFY(saved.collectionKey.isEmpty());
+    // 播放列表要像搜索结果一样可按剧折叠：分组键、剧名和总集数必须落盘。
+    for (const MediaItem &saved : PlaylistStore::load(MediaType::Video)) {
+        QCOMPARE(saved.collectionKey, QStringLiteral("test-collection"));
+        QCOMPARE(saved.collectionTitle, QStringLiteral("测试剧"));
+        QCOMPARE(saved.collectionSize, 3);
+    }
+
+    // 视频页签绑定的是折叠树：一部 3 集的剧只显示 1 个父节点、展开后 3 集。
+    QAbstractItemModel *tree = controller.videoView()->model();
+    QVERIFY(tree != nullptr);
+    QCOMPARE(tree->rowCount(), 1);
+    const QModelIndex group = tree->index(0, 0);
+    QCOMPARE(tree->rowCount(group), 3);
+    QCOMPARE(controller.sourceRowForIndex(MediaType::Video, group), 0);
+    QCOMPARE(controller.sourceRowForIndex(MediaType::Video, tree->index(0, 0, group)), 0);
+    QCOMPARE(controller.sourceRowForIndex(MediaType::Video, tree->index(2, 0, group)), 2);
     QVERIFY(!controller.hasUnsavedChanges());
 
     // 重复整组加入不能产生重复条目，也不能把已保存的内容再写一遍。
@@ -378,7 +391,7 @@ void UiLogicTest::downloadedItemSwitchesPlaylistToLocalSource()
     PlaybackController player;
     QTabWidget tabs;
     QListView *musicView = new QListView;
-    QListView *videoView = new QListView;
+    QTreeView *videoView = new QTreeView;
     tabs.addTab(musicView, QStringLiteral("音乐"));
     tabs.addTab(videoView, QStringLiteral("视频"));
 
@@ -438,7 +451,7 @@ void UiLogicTest::proprietaryVideoFilesAreRejectedWithHint()
     PlaybackController player;
     QTabWidget tabs;
     QListView *musicView = new QListView;
-    QListView *videoView = new QListView;
+    QTreeView *videoView = new QTreeView;
     tabs.addTab(musicView, QStringLiteral("音乐"));
     tabs.addTab(videoView, QStringLiteral("视频"));
     PlaylistController controller(&player, PlaylistUi{musicView, videoView, &tabs});

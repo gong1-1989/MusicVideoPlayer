@@ -344,7 +344,8 @@ QPushButton#btn_settings {
 
 /* ------------------------------------------------ 列表 */
 QListView,
-QListWidget {
+QListWidget,
+QTreeView {
     background: transparent;
     border: none;
     outline: none;
@@ -352,23 +353,33 @@ QListWidget {
 }
 
 QListView::item,
-QListWidget::item {
+QListWidget::item,
+QTreeView::item {
     padding: 7px 10px;
     border-radius: 10px;
     margin: 2px 4px;
 }
 
 QListView::item:hover,
-QListWidget::item:hover {
+QListWidget::item:hover,
+QTreeView::item:hover {
     background: rgba(123, 91, 255, 10%);
 }
 
 QListView::item:selected,
-QListWidget::item:selected {
+QListWidget::item:selected,
+QTreeView::item:selected {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                                 stop:0 rgba(123, 91, 255, 22%),
                                 stop:1 rgba(53, 194, 255, 14%));
     color: #1e1e33;
+}
+
+/* 单列树不需要表头；显式透明可避免主题切换时残留表头底色。 */
+QTreeView QHeaderView,
+QHeaderView::section {
+    background: transparent;
+    border: none;
 }
 
 /* ------------------------------------------------ 自绘容器 */

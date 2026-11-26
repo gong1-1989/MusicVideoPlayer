@@ -129,6 +129,8 @@ qt_add_library(mvp_core STATIC
     src/stream/StreamTokenRegistry.cpp
     src/core/PlaylistModel.h
     src/core/PlaylistModel.cpp
+    src/core/PlaylistTreeModel.h
+    src/core/PlaylistTreeModel.cpp
     src/core/PlaylistStore.h
     src/core/PlaylistStore.cpp
     src/core/PlaybackController.h

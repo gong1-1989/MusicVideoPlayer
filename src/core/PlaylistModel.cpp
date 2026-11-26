@@ -158,6 +158,24 @@ bool PlaylistModel::refreshItem(int row, const MediaItem &item)
     takeString(merged.genre, item.genre);
     takeString(merged.description, item.description);
     takeString(merged.quality, item.quality);
+    // 分组元数据也随搜索刷新。旧列表里已经平铺保存的同剧条目会因此重新
+    // 拿到同一 collectionKey，树模型即可把它们折叠成一部剧，不必让用户
+    // 删掉重加。只有非空值才覆盖，避免单条刷新把已有分组拆散。
+    if (!item.collectionKey.isEmpty()) {
+        if (merged.collectionKey != item.collectionKey) {
+            merged.collectionKey = item.collectionKey;
+            changed = true;
+        }
+        if (!item.collectionTitle.isEmpty()
+            && merged.collectionTitle != item.collectionTitle) {
+            merged.collectionTitle = item.collectionTitle;
+            changed = true;
+        }
+        if (item.collectionSize > 0 && merged.collectionSize != item.collectionSize) {
+            merged.collectionSize = item.collectionSize;
+            changed = true;
+        }
+    }
     if (item.durationMs > 0 && merged.durationMs != item.durationMs) {
         merged.durationMs = item.durationMs;
         changed = true;

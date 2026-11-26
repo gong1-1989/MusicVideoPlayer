@@ -143,7 +143,26 @@
             <number>0</number>
            </property>
            <item>
-            <widget class="QListView" name="list_video"/>
+            <widget class="QTreeView" name="list_video">
+             <property name="headerHidden">
+              <bool>true</bool>
+             </property>
+             <property name="rootIsDecorated">
+              <bool>true</bool>
+             </property>
+             <property name="uniformRowHeights">
+              <bool>true</bool>
+             </property>
+             <property name="itemsExpandable">
+              <bool>true</bool>
+             </property>
+             <property name="expandsOnDoubleClick">
+              <bool>false</bool>
+             </property>
+             <property name="indentation">
+              <number>16</number>
+             </property>
+            </widget>
            </item>
           </layout>
          </widget>

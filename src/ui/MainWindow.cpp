@@ -416,13 +416,9 @@ void MainWindow::setupConnections()
             [this](const QString &text) { ui->label_status->setText(text); });
     connect(m_transport, &PlaybackUiController::currentItemChanged, this,
             [this](const MediaItem &item, int row) {
-                if (item.type == MediaType::Music) {
-                    ui->list_music->setCurrentIndex(m_musicModel->index(row));
-                    ui->tab_media->setCurrentIndex(0);
-                } else {
-                    ui->list_video->setCurrentIndex(m_videoModel->index(row));
-                    ui->tab_media->setCurrentIndex(1);
-                }
+                // 视频列表是折叠树：按源行映射到分组子项，并自动展开所属剧集。
+                ui->tab_media->setCurrentIndex(item.type == MediaType::Music ? 0 : 1);
+                m_playlists->selectSourceRow(item.type, row);
             });
 
     connect(ui->list_music, &QAbstractItemView::doubleClicked, this,
@@ -436,8 +432,11 @@ void MainWindow::setupConnections()
             [this](const QModelIndex &index) {
                 if (!index.isValid())
                     return;
+                const int row = m_playlists->sourceRowForIndex(MediaType::Video, index);
+                if (row < 0)
+                    return;
                 m_player->setPlaylist(m_videoModel);
-                m_player->playRow(index.row());
+                m_player->playRow(row);
             });
 }
 

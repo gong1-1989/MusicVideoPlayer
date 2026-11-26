@@ -489,8 +489,8 @@ void PlaybackUiController::playPressed()
         if (model == nullptr || model->isEmpty())
             return;
         m_player->setPlaylist(model);
-        const QModelIndex current = m_playlists->activeView()->currentIndex();
-        m_player->playRow(current.isValid() ? current.row() : 0);
+        const int row = m_playlists->activeSourceRow();
+        m_player->playRow(row >= 0 ? row : 0);
         return;
     }
     m_player->togglePlayPause();

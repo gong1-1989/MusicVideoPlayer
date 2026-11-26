@@ -401,6 +401,15 @@ inline QJsonObject mediaItemToJson(const MediaItem &item)
         object.insert(QStringLiteral("description"), item.description);
     if (!item.quality.isEmpty())
         object.insert(QStringLiteral("quality"), item.quality);
+    // 播放列表里的影视分组关系：同一部剧的多集共享 key，列表据此折叠成
+    // “剧名（共 N 集）”；单条或分组大小为 1 时不写，旧列表文件保持原样。
+    if (!item.collectionKey.isEmpty() && item.type == MediaType::Video) {
+        object.insert(QStringLiteral("collectionKey"), item.collectionKey);
+        if (!item.collectionTitle.isEmpty())
+            object.insert(QStringLiteral("collectionTitle"), item.collectionTitle);
+        if (item.collectionSize > 1)
+            object.insert(QStringLiteral("collectionSize"), item.collectionSize);
+    }
     return object;
 }
 
@@ -442,6 +451,16 @@ inline MediaItem mediaItemFromJson(const QJsonObject &object)
     item.genre = object.value(QStringLiteral("genre")).toString();
     item.description = object.value(QStringLiteral("description")).toString();
     item.quality = object.value(QStringLiteral("quality")).toString();
+    if (item.type == MediaType::Video) {
+        item.collectionKey = object.value(QStringLiteral("collectionKey")).toString();
+        item.collectionTitle = object.value(QStringLiteral("collectionTitle")).toString();
+        item.collectionSize = object.value(QStringLiteral("collectionSize")).toInt();
+        // 没有 key 的分组字段没有意义，按旧数据当成单条处理。
+        if (item.collectionKey.isEmpty()) {
+            item.collectionTitle.clear();
+            item.collectionSize = 0;
+        }
+    }
     return item;
 }
 

@@ -6,8 +6,9 @@
 #include <QAbstractListModel>
 #include <QVector>
 
-/// 播放列表数据模型：唯一数据源，界面通过 QListView 直接绑定，
-/// 不再维护"QList + QListWidget"两份平行数据。
+/// 播放列表数据模型：唯一数据源，播放行号和持久化都以这里为准。
+/// 音乐页由 QListView 直接绑定；视频页通过 PlaylistTreeModel 折叠展示，
+/// 但底层仍是本模型的扁平行。不再维护"QList + QListWidget"两份平行数据。
 class PlaylistModel : public QAbstractListModel
 {
     Q_OBJECT

@@ -7,12 +7,15 @@
 #include "core/PlaybackController.h"
 #include "core/PlaylistModel.h"
 #include "core/PlaylistStore.h"
+#include "core/PlaylistTreeModel.h"
 #include "settings/AppSettings.h"
 
+#include <QAbstractItemView>
 #include <QAction>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHash>
+#include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -25,9 +28,11 @@
 #include <QMessageBox>
 #include <QModelIndex>
 #include <QPoint>
+#include <QRegularExpression>
 #include <QShortcut>
 #include <QTabWidget>
 #include <QTimer>
+#include <QTreeView>
 #include <QVector>
 
 #include <utility>
@@ -122,6 +127,19 @@ QString proprietaryVideoFilterPatterns()
     return patterns.join(QLatin1Char(' '));
 }
 
+/// 播放列表分组标题：优先用源解析给出的基础剧名；旧条目没有该字段时
+/// 从“XXX（共 N 集）”里去掉计数后缀，避免折叠后重复显示两遍集数。
+QString collectionTitleFor(const MediaItem &item)
+{
+    QString title = item.collectionTitle.trimmed();
+    if (title.isEmpty())
+        title = item.title;
+    static const QRegularExpression count(
+        QStringLiteral("\\s*[（(]\\s*共\\s*\\d+\\s*集\\s*[）)]\\s*$"));
+    title.remove(count);
+    return title.trimmed();
+}
+
 } // namespace
 
 PlaylistController::PlaylistController(PlaybackController *player, const PlaylistUi &ui,
@@ -138,12 +156,43 @@ PlaylistController::PlaylistController(PlaybackController *player, const Playlis
     Q_ASSERT(m_ui.tabs != nullptr);
 
     m_ui.musicView->setModel(m_musicModel);
-    m_ui.videoView->setModel(m_videoModel);
+    // 视频模型保持扁平：播放、自动下一集、进度保存都按真实集行号工作；
+    // 树模型只在其上折叠展示，不改变底层行号。
+    m_videoTreeModel = new PlaylistTreeModel(m_videoModel, this);
+    m_ui.videoView->setModel(m_videoTreeModel);
+    // QTreeView 默认会保留一列表头；播放列表只有一列、不需要表头，
+    // 显式隐藏可避免深色主题下顶部留出一条白色表头带。
+    m_ui.videoView->setHeaderHidden(true);
+    m_ui.videoView->header()->setVisible(false);
+    m_ui.videoView->setRootIsDecorated(true);
+    m_ui.videoView->setItemsExpandable(true);
+    m_ui.videoView->setExpandsOnDoubleClick(false);
+    m_ui.videoView->setUniformRowHeights(true);
+    m_ui.videoView->setIndentation(16);
+    m_ui.videoView->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_ui.videoView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_musicTabTitle = m_ui.tabs->tabText(0);
     m_videoTabTitle = m_ui.tabs->tabText(1);
 
     bindView(m_ui.musicView, m_musicModel, MediaType::Music);
     bindView(m_ui.videoView, m_videoModel, MediaType::Video);
+
+    // 树模型重建会丢失 QTreeView 的展开态；按用户此前展开的分组重新展开。
+    connect(m_videoTreeModel, &PlaylistTreeModel::structureRebuilt, this, [this] {
+        for (const QString &key : m_videoTreeModel->expandedGroupKeys()) {
+            const QModelIndex group = m_videoTreeModel->indexForGroup(key);
+            if (group.isValid())
+                m_ui.videoView->setExpanded(group, true);
+        }
+    });
+    connect(m_ui.videoView, &QTreeView::expanded, this, [this](const QModelIndex &index) {
+        m_videoTreeModel->setGroupExpanded(index.data(PlaylistTreeModel::GroupKeyRole).toString(),
+                                           true);
+    });
+    connect(m_ui.videoView, &QTreeView::collapsed, this, [this](const QModelIndex &index) {
+        m_videoTreeModel->setGroupExpanded(index.data(PlaylistTreeModel::GroupKeyRole).toString(),
+                                           false);
+    });
 
     // 视频进度已经写进列表条目；停止/切歌/退出会触发，但连续切歌时
     // 没必要每首都整份落盘，合并到 300ms 后保存一次。退出路径仍同步 save()。
@@ -163,9 +212,40 @@ PlaylistModel *PlaylistController::activeModel() const
     return m_ui.tabs->currentIndex() == 1 ? m_videoModel : m_musicModel;
 }
 
-QListView *PlaylistController::activeView() const
+QAbstractItemView *PlaylistController::activeView() const
 {
-    return m_ui.tabs->currentIndex() == 1 ? m_ui.videoView : m_ui.musicView;
+    return m_ui.tabs->currentIndex() == 1 ? static_cast<QAbstractItemView *>(m_ui.videoView)
+                                         : static_cast<QAbstractItemView *>(m_ui.musicView);
+}
+
+int PlaylistController::activeSourceRow() const
+{
+    QAbstractItemView *view = activeView();
+    if (view == nullptr)
+        return -1;
+    const QModelIndex current = view->currentIndex();
+    if (!current.isValid())
+        return -1;
+    return sourceRowForIndex(m_ui.tabs->currentIndex() == 1 ? MediaType::Video : MediaType::Music,
+                             current);
+}
+
+void PlaylistController::selectSourceRow(MediaType type, int row)
+{
+    if (type == MediaType::Music) {
+        m_ui.musicView->setCurrentIndex(m_musicModel->index(row));
+        m_ui.musicView->scrollTo(m_musicModel->index(row), QAbstractItemView::EnsureVisible);
+        return;
+    }
+
+    const QModelIndex index = m_videoTreeModel->indexForSourceRow(row);
+    if (!index.isValid())
+        return;
+    // 当前播放的集数必须可见：如果它被折叠在剧头下，先展开父节点。
+    if (index.parent().isValid())
+        m_ui.videoView->expand(index.parent());
+    m_ui.videoView->setCurrentIndex(index);
+    m_ui.videoView->scrollTo(index, QAbstractItemView::EnsureVisible);
 }
 
 /// @brief 从 Data/playlists.json 恢复两个列表，并按需迁移旧版 QSettings 数据。
@@ -419,14 +499,21 @@ void PlaylistController::addSearchItems(const QVector<MediaItem> &items, MediaTy
     int added = 0;
     int refreshed = 0;
     int skipped = 0;
+    // 分组大小按本次整组加入的条目统计；右键“加入视频列表（共 N 集）”会把
+    // 全部剧集一次传进来，播放列表据此在树里折叠成一行。
+    QHash<QString, int> collectionCounts;
+    for (const MediaItem &item : items) {
+        if (type == MediaType::Video && !item.collectionKey.isEmpty())
+            ++collectionCounts[item.collectionKey];
+    }
     for (const MediaItem &original : items) {
         MediaItem copy = original;
         copy.type = type;
         copy.previewOnly = false;
-        // 折叠键只服务于当前搜索面板；进入播放列表后按真实单集保存。
-        copy.collectionKey.clear();
-        copy.collectionTitle.clear();
-        copy.collectionSize = 0;
+        if (type == MediaType::Video && !copy.collectionKey.isEmpty()) {
+            copy.collectionSize = collectionCounts.value(copy.collectionKey, 1);
+            copy.collectionTitle = collectionTitleFor(copy);
+        }
 
         if (model->addItem(copy)) {
             ++added;
@@ -656,7 +743,7 @@ QString PlaylistController::localFileDialogFilter(MediaType type)
         .arg(proprietaryFilter);
 }
 
-void PlaylistController::bindView(QListView *view, PlaylistModel *model, MediaType type)
+void PlaylistController::bindView(QAbstractItemView *view, PlaylistModel *model, MediaType type)
 {
     view->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(view, &QWidget::customContextMenuRequested, this,
@@ -664,14 +751,71 @@ void PlaylistController::bindView(QListView *view, PlaylistModel *model, MediaTy
                 showContextMenu(type, view, model, pos);
             });
 
-    // 选中一行后按 Delete 直接移除
+    // 选中一行后按 Delete 直接移除；分组节点删除整部剧，单集删除单条。
     auto *shortcut = new QShortcut(QKeySequence::Delete, view);
     shortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(shortcut, &QShortcut::activated, this, [this, view, type] {
         const QModelIndex index = view->currentIndex();
         if (index.isValid())
-            removeRow(type, index.row());
+            removeIndex(type, index);
     });
+}
+
+int PlaylistController::sourceRowForIndex(MediaType type, const QModelIndex &index) const
+{
+    if (!index.isValid())
+        return -1;
+    if (type == MediaType::Video)
+        return m_videoTreeModel != nullptr ? m_videoTreeModel->sourceRow(index) : -1;
+    return index.row();
+}
+
+/// @brief 树/列表当前 index 的删除入口：视频分组节点删除整部剧。
+void PlaylistController::removeIndex(MediaType type, const QModelIndex &index)
+{
+    if (!index.isValid())
+        return;
+    if (type == MediaType::Video && m_videoTreeModel != nullptr
+        && m_videoTreeModel->isGroup(index)) {
+        removeCollection(type, m_videoTreeModel->groupKey(index));
+        return;
+    }
+    removeRow(type, sourceRowForIndex(type, index));
+}
+
+/// @brief 删除整部剧：逐集移除扁平模型行，最后统一保存一次。
+void PlaylistController::removeCollection(MediaType type, const QString &key)
+{
+    if (type != MediaType::Video || key.isEmpty())
+        return;
+    PlaylistModel *model = m_videoModel;
+    const QVector<int> rows = m_videoTreeModel->sourceRowsForGroup(key);
+    if (rows.isEmpty())
+        return;
+
+    const QString name = m_videoTreeModel->indexForGroup(key).data(Qt::DisplayRole).toString();
+    bool removedAny = false;
+    // 从后往前删，前面行号不会因后面的删除而移动。
+    for (int i = rows.size() - 1; i >= 0; --i) {
+        const int row = rows.at(i);
+        const MediaItem item = model->itemAt(row);
+        if (!item.isValid())
+            continue;
+        const bool removingCurrent = m_player->playlist() == model
+                                     && m_player->currentRow() == row;
+        if (!model->removeRow(row))
+            continue;
+        removedAny = true;
+        if (m_player->playlist() == model)
+            m_player->onPlaylistRowRemoved(row);
+        m_player->releaseStreamCacheForItem(item);
+        if (removingCurrent)
+            emit playbackInvalidated();
+        removeCacheAfterPlayback(item);
+    }
+
+    if (removedAny && save())
+        emit statusMessage(tr("已从列表移除整部剧：%1").arg(name));
 }
 
 /// @brief 停止播放后清理条目的歌词缓存与播放缓存，文件被占用时重试。
@@ -779,10 +923,16 @@ void PlaylistController::clearPlaylist(MediaType type)
 /// @param view 触发菜单的视图。
 /// @param model 该视图对应的模型。
 /// @param pos 视口内点击位置。
-void PlaylistController::showContextMenu(MediaType type, QListView *view, PlaylistModel *model,
-                                         const QPoint &pos)
+void PlaylistController::showContextMenu(MediaType type, QAbstractItemView *view,
+                                         PlaylistModel *model, const QPoint &pos)
 {
     const QModelIndex index = view->indexAt(pos);
+    const bool isVideoGroup =
+        type == MediaType::Video && m_videoTreeModel != nullptr
+        && m_videoTreeModel->isGroup(index);
+    const QString selectedGroupKey =
+        isVideoGroup ? m_videoTreeModel->groupKey(index) : QString();
+    const int selectedGroupSize = isVideoGroup ? m_videoTreeModel->groupSize(index) : 0;
 
     QMenu menu(view);
     if (m_dirty) {
@@ -796,21 +946,23 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
     QAction *savePreviewAction = nullptr;
     QAction *removeAction = nullptr;
     MediaItem selectedItem;
-    const int selectedRow = index.isValid() ? index.row() : -1;
+    const int selectedRow = sourceRowForIndex(type, index);
     if (index.isValid()) {
-        selectedItem = model->itemAt(index.row());
-        if (selectedItem.previewOnly) {
+        selectedItem = model->itemAt(selectedRow);
+        if (!isVideoGroup && selectedItem.previewOnly) {
             savePreviewAction = menu.addAction(tr("保存到播放列表（临时条目）"));
             menu.addSeparator();
         }
         // 下载入口只对“还没有本地副本”的条目出现：网络直链和试听条目。
-        // 本地试听条目已经有文件，只应“保存到播放列表”，不应再下载。
-        if (selectedItem.online) {
+        // 分组节点代表整部剧，不在这里替用户批量下载 25 集。
+        if (!isVideoGroup && selectedItem.online) {
             downloadAction = menu.addAction(tr("下载到本地…"));
             menu.addSeparator();
         }
-        playAction = menu.addAction(tr("播放"));
-        removeAction = menu.addAction(tr("从列表移除"));
+        playAction = menu.addAction(isVideoGroup ? tr("播放第 1 集") : tr("播放"));
+        removeAction = menu.addAction(
+            isVideoGroup ? tr("移除整部剧（共 %1 集）").arg(selectedGroupSize)
+                         : tr("从列表移除"));
         menu.addSeparator();
     }
     QAction *clearAction = menu.addAction(tr("清空列表"));
@@ -885,6 +1037,11 @@ void PlaylistController::showContextMenu(MediaType type, QListView *view, Playli
         else
             emit statusMessage(tr("该条目已从列表移除"));
     } else if (chosen == removeAction) {
+        if (isVideoGroup) {
+            // 分组节点删除整部剧；key 在菜单打开期间保持稳定，树重建后仍能定位。
+            removeCollection(type, selectedGroupKey);
+            return;
+        }
         const int row = rowForSelection();
         if (row >= 0)
             removeRow(type, row);

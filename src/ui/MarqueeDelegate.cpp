@@ -3,9 +3,9 @@
 #include "ui/MarqueeDelegate.h"
 
 #include <QApplication>
+#include <QAbstractItemView>
 #include <QEvent>
 #include <QFontMetrics>
-#include <QListView>
 #include <QModelIndex>
 #include <QMouseEvent>
 #include <QPainter>
@@ -16,7 +16,7 @@
 /// @param view 目标列表视图，必须非空；委托不拥有它。
 /// @note 关闭横向滚动条、开启鼠标跟踪，并在 viewport 上安装过滤器
 ///       以感知悬停行和显示/隐藏状态。
-MarqueeDelegate::MarqueeDelegate(QListView *view)
+MarqueeDelegate::MarqueeDelegate(QAbstractItemView *view)
     : QStyledItemDelegate(view)
     , m_view(view)
 {
@@ -38,10 +38,9 @@ bool MarqueeDelegate::eventFilter(QObject *object, QEvent *event)
     if (object == m_view->viewport()) {
         if (event->type() == QEvent::MouseMove) {
             const QPoint pos = static_cast<QMouseEvent *>(event)->position().toPoint();
-            const QModelIndex index = m_view->indexAt(pos);
-            m_hoveredRow = index.isValid() ? index.row() : -1;
+            m_hoveredIndex = m_view->indexAt(pos);
         } else if (event->type() == QEvent::Leave) {
-            m_hoveredRow = -1;
+            m_hoveredIndex = QPersistentModelIndex();
         } else if (event->type() == QEvent::Hide || event->type() == QEvent::HideToParent) {
             // 切到另一个列表页后不再 40ms 空转，重新显示时再启动
             m_timer.stop();
@@ -70,7 +69,8 @@ void MarqueeDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
     const QRect textRect = style->subElementRect(QStyle::SE_ItemViewItemText, &opt, widget);
     const int textWidth = metrics.horizontalAdvance(text);
     const bool scrollRow =
-        index.row() == m_hoveredRow || (m_hoveredRow < 0 && index.row() == m_view->currentIndex().row());
+        index == m_hoveredIndex
+        || (!m_hoveredIndex.isValid() && index == m_view->currentIndex());
 
     if (textRect.isEmpty() || text.isEmpty() || !scrollRow || textWidth <= textRect.width()) {
         // 放得下就整行走主题默认绘制，选中态颜色完全跟 QSS 一致
@@ -107,11 +107,8 @@ void MarqueeDelegate::paint(QPainter *painter, const QStyleOptionViewItem &optio
 /// @note 文本放得下时不推进、不重绘；相位超过 100000 归零，避免整数无限增长。
 void MarqueeDelegate::advance()
 {
-    const int row = m_hoveredRow >= 0 ? m_hoveredRow : m_view->currentIndex().row();
-    if (row < 0)
-        return;
-    const QModelIndex index = m_view->model() ? m_view->model()->index(row, 0, QModelIndex())
-                                              : QModelIndex();
+    QModelIndex index = m_hoveredIndex.isValid() ? QModelIndex(m_hoveredIndex)
+                                                 : m_view->currentIndex();
     if (!index.isValid())
         return;
     const QRect rect = m_view->visualRect(index);
