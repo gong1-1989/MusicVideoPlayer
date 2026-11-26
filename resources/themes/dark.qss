@@ -648,6 +648,45 @@ QDialog#SourceProbeDialog QGroupBox::title {
     color: #8ef2ff;
 }
 
+/* 探源结果表：默认 QTableWidget 会退回系统浅色底，必须显式覆盖表体与表头 */
+QDialog#SourceProbeDialog QTableWidget#table_results {
+    background: rgba(8, 12, 26, 88%);
+    alternate-background-color: rgba(255, 255, 255, 5%);
+    border: 1px solid rgba(150, 190, 255, 22%);
+    border-radius: 8px;
+    color: #dfe4ff;
+    gridline-color: rgba(150, 190, 255, 16%);
+    selection-background-color: rgba(110, 92, 255, 38%);
+    selection-color: #ffffff;
+}
+
+QDialog#SourceProbeDialog QTableWidget#table_results::item {
+    padding: 4px 6px;
+    border: none;
+}
+
+QDialog#SourceProbeDialog QHeaderView::section {
+    background-color: #202747;
+    color: #eef2ff;
+    border: none;
+    border-right: 1px solid rgba(160, 190, 255, 20%);
+    border-bottom: 1px solid rgba(160, 190, 255, 32%);
+    padding: 5px 6px;
+    font-weight: 600;
+}
+
+QDialog#SourceProbeDialog QTableCornerButton::section {
+    background-color: #202747;
+    border: none;
+}
+
+/* 主操作按钮禁用时不能继续显示成可点击的高亮按钮 */
+QPushButton#btn_applyPrimary:disabled {
+    background: rgba(110, 120, 160, 16%);
+    border: 1px solid rgba(160, 180, 220, 20%);
+    color: rgba(220, 230, 255, 45%);
+}
+
 QDialog#SourceManagerDialog QCheckBox,
 QDialog#SourceProbeDialog QCheckBox {
     color: #dfe4ff;
