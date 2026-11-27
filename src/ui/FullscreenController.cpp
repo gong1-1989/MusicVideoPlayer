@@ -278,7 +278,10 @@ void FullscreenController::updateControlGeometry()
     // 留出视频画面本身的宽度，控制条只占底部中间一段，避免全屏时铺满整个屏宽。
     const int availableWidth = qMax(320, m_window->width() - 48);
     const int width = qMin(1120, availableWidth);
-    const int height = qBound(112, m_transport->sizeHint().height(), 150);
+    // 控制条高度必须跟随真实 sizeHint：字号放大后固定 150 的上限会裁掉按钮和
+    // 滑块；只按窗口高度留出上下边距，窄高度屏幕上仍允许收窄到 112。
+    const int maxHeight = qMax(112, m_window->height() - 36);
+    const int height = qBound(112, m_transport->sizeHint().height(), maxHeight);
     const int x = (m_window->width() - width) / 2;
     const int y = m_window->height() - height - 18;
     m_transport->setGeometry(x, y, width, height);

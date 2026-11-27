@@ -739,6 +739,10 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
                                    ? resume.targetPath
                                    : basePath;
     const bool hlsTrack = video ? !m_videoDirect : !m_audioDirect;
+    // 单文件 BYTERANGE 轨道按整段 Range 下载，DownloadTask 的 segmentIndex 始终是 0；
+    // 若把 segmentIndex 当成已完成分片数写回，下次复用会因 0 != 播放列表分片数
+    // 而误判过期，把已经下完的整段轨道重新下载。完成时统一按当前轨道分片数记录。
+    const int trackSegmentCount = video ? m_videoTrack.segmentCount : m_audioTrack.segmentCount;
     DownloadTask *task = DownloadTask::start(m_http, source, targetPath, m_item.headers, this);
     if (task == nullptr) {
         finishFailed(video ? tr("无法启动视频缓存任务") : tr("无法启动音轨缓存任务"));
@@ -859,13 +863,15 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
                 onTrackProgress(video, received, total);
             });
     connect(task, &DownloadTask::succeeded, this,
-            [this, video, basePath](const QString &path) {
+            [this, video, basePath, trackSegmentCount](const QString &path) {
                 TrackResume &state = video ? m_videoResume : m_audioResume;
                 state.valid = true;
                 state.completed = true;
                 state.targetPath = path;
                 state.bytesWritten = QFileInfo(path).size();
-                state.segmentCount = state.segmentIndex;
+                // 分片任务完成时 segmentIndex 已是总数；单文件 Range 任务始终为 0，
+                // 必须用轨道分片数，否则 completed 状态会被误判为分片数不一致。
+                state.segmentCount = trackSegmentCount;
                 saveTrackResume(basePath, state);
                 onTrackFinished(video, path);
             });
