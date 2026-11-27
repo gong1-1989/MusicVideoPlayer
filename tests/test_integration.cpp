@@ -858,7 +858,6 @@ void IntegrationTest::downloadHlsExitCheckpointsAtCompletedSegmentBoundary()
         DownloadTask::start(&http, server.url(QStringLiteral("/exit/index.m3u8")), path);
     QSignalSpy checkpoint(task, &DownloadTask::checkpoint);
     QSignalSpy fingerprint(task, &DownloadTask::playlistFingerprint);
-    QSignalSpy progress(task, &DownloadTask::progress);
     QSignalSpy failed(task, &DownloadTask::failed);
 
     // 先等第一片完整结束（checkpoint 只在完整分片边界发出），再等第二片
@@ -866,8 +865,11 @@ void IntegrationTest::downloadHlsExitCheckpointsAtCompletedSegmentBoundary()
     QTRY_VERIFY_WITH_TIMEOUT(checkpoint.count() >= 1, 5000);
     QVERIFY(fingerprint.count() > 0);
     const QString resumeFingerprint = fingerprint.last().at(0).toString();
-    const int progressAfterFirstSegment = progress.count();
-    QTRY_VERIFY_WITH_TIMEOUT(progress.count() > progressAfterFirstSegment, 5000);
+    // 不能用 progress 次数判断第二片是否已经到数据：HLS 的 progress 首参是
+    // “已完成分片数”，第一片结束和进入第二片都可能是同一个值，第二片的
+    // 首个 chunk 也可能在 checkpoint 之后、这里取基准之前就到达。改成等
+    // 暂存文件真实超过第一片长度，既证明半片已写入，也不依赖信号到达时机。
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(partial).size() > seg0.size(), 5000);
     task->stopForExit();
     QTest::qWait(100);
 
