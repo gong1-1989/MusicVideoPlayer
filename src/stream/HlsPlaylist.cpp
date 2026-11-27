@@ -71,7 +71,102 @@ QByteArray defaultIvForSequence(qint64 sequence)
     }
     return iv;
 }
+
+const QRegularExpression kKeyMethod(QStringLiteral("METHOD=([^,\\s]+)"));
+const QRegularExpression kKeyFormat(
+    QStringLiteral("KEYFORMAT=(?:\"([^\"]*)\"|([^,\\s]*))"));
+const QRegularExpression kKeyIv(
+    QStringLiteral("IV=(0[xX][0-9A-Fa-f]+|[0-9A-Fa-f]+)"));
+const QRegularExpression kKeyUri(
+    QStringLiteral("URI\\s*=\\s*(?:\"([^\"]*)\"|([^,\\s]*))"));
+
+QString keyFormatAttribute(const QString &line)
+{
+    const QRegularExpressionMatch match = kKeyFormat.match(line);
+    if (!match.hasMatch())
+        return QString();
+    return match.captured(1).isEmpty() ? match.captured(2).trimmed()
+                                       : match.captured(1).trimmed();
+}
+
+QString keyUriAttribute(const QString &line)
+{
+    const QRegularExpressionMatch match = kKeyUri.match(line);
+    if (!match.hasMatch())
+        return QString();
+    return match.captured(1).isEmpty() ? match.captured(2).trimmed()
+                                       : match.captured(1).trimmed();
+}
+
+/// 解析 16 字节 IV；支持 0x 前缀和裸 32 位十六进制。
+bool parseKeyIv(const QString &value, QByteArray *iv, QString *error)
+{
+    QString hex = value.trimmed();
+    if (hex.startsWith(QLatin1String("0x"), Qt::CaseInsensitive))
+        hex = hex.mid(2);
+    if (hex.size() != 32
+        || !QRegularExpression(QStringLiteral("^[0-9A-Fa-f]{32}$")).match(hex).hasMatch()) {
+        if (error != nullptr)
+            *error = QObject::tr("EXT-X-KEY 的 IV 不是 16 字节十六进制");
+        return false;
+    }
+    const QByteArray parsed = QByteArray::fromHex(hex.toLatin1());
+    if (parsed.size() != 16) {
+        if (error != nullptr)
+            *error = QObject::tr("EXT-X-KEY 的 IV 解析失败");
+        return false;
+    }
+    *iv = parsed;
+    return true;
+}
 } // namespace
+
+/// @brief 解析一条 #EXT-X-KEY 或 #EXT-X-SESSION-KEY。
+/// @note 只接受 HTTP(S) 的 identity AES-128；file/UNC/data 等地址直接失败，
+///       防止播放列表把密钥请求引到本机或局域网。
+HlsPlaylist::Key HlsPlaylist::parseKeyLine(const QString &line, const QUrl &baseUrl)
+{
+    Key result;
+    const QRegularExpressionMatch methodMatch = kKeyMethod.match(line);
+    if (!methodMatch.hasMatch() || methodMatch.captured(1).trimmed().isEmpty()) {
+        result.error = QObject::tr("EXT-X-KEY 缺少 METHOD");
+        return result;
+    }
+    result.method = methodMatch.captured(1).trimmed().toUpper();
+    if (result.method == QLatin1String("NONE"))
+        return result;
+    if (result.method != QLatin1String("AES-128")) {
+        result.unsupported = result.method;
+        return result;
+    }
+
+    const QString keyFormat = keyFormatAttribute(line);
+    if (!keyFormat.isEmpty()
+        && keyFormat.compare(QLatin1String("identity"), Qt::CaseInsensitive) != 0) {
+        result.method = QStringLiteral("%1/%2").arg(result.method, keyFormat);
+        result.unsupported = result.method;
+        return result;
+    }
+
+    const QString uri = keyUriAttribute(line);
+    if (uri.isEmpty()) {
+        result.error = QObject::tr("AES-128 的 EXT-X-KEY 缺少 URI");
+        return result;
+    }
+    result.url = baseUrl.resolved(QUrl(uri));
+    if (!NetworkAddressPolicy::isHttpMediaUrl(result.url)) {
+        result.error = QObject::tr("EXT-X-KEY 的 URI 不是 HTTP(S)：%1").arg(uri.left(160));
+        return result;
+    }
+
+    const QRegularExpressionMatch ivMatch = kKeyIv.match(line);
+    if (ivMatch.hasMatch() && !parseKeyIv(ivMatch.captured(1), &result.iv, &result.error))
+        return result;
+
+    result.enabled = true;
+    return result;
+}
+
 
 /// @brief 解析媒体播放列表，建立分片地址与起始时间轴。
 /// @param body 播放列表原文。

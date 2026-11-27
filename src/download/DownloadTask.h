@@ -2,6 +2,7 @@
 #define DOWNLOADTASK_H
 
 #include "net/NetLimits.h"
+#include "stream/HlsPlaylist.h"
 
 #include <QByteArray>
 #include <QFile>
@@ -104,15 +105,9 @@ private:
     class HlsDownloadSession
     {
     public:
-        struct Key
-        {
-            bool enabled = false;
-            QString method;
-            QUrl url;
-            QByteArray iv;
-            /// 非空表示该段使用了当前不支持的加密方式（如 SAMPLE-AES）。
-            QString unsupported;
-        };
+        /// KEY 字段与播放链路共用同一套解析结果，避免 METHOD/KEYFORMAT/IV
+        /// 的兼容判断在下载和缓存两侧各写一份。
+        using Key = HlsPlaylist::Key;
 
         struct Segment
         {

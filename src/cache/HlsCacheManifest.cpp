@@ -3,6 +3,7 @@
 #include "cache/HlsCacheManifest.h"
 
 #include "media/MediaItem.h"
+#include "stream/HlsPlaylist.h"
 
 #include <QRegularExpression>
 #include <QStringList>
@@ -19,7 +20,6 @@ const QRegularExpression kGroupId(QStringLiteral("\\bGROUP-ID\\s*=\\s*\"([^\"]*)
 const QRegularExpression kName(QStringLiteral("\\bNAME\\s*=\\s*\"([^\"]*)\""));
 const QRegularExpression kDefault(QStringLiteral("\\bDEFAULT\\s*=\\s*YES"),
                                   QRegularExpression::CaseInsensitiveOption);
-const QRegularExpression kMethod(QStringLiteral("METHOD=([^,\\s]+)"));
 const QRegularExpression kUri(
     QStringLiteral("\\bURI\\s*=\\s*(?:\"([^\"]*)\"|([^,\\s]*))"));
 
@@ -77,12 +77,9 @@ bool parseMaster(const QByteArray &body, const QUrl &baseUrl, Master *out, QStri
             // 子列表可能完全不重复写 KEY，缓存任务必须把主列表的 SESSION-KEY
             // 带过去，否则会把密文当明文合并进 MP4。
             out->sessionKeyLines.append(line);
-            const QRegularExpressionMatch method = kMethod.match(line);
-            const QString value = method.hasMatch() ? method.captured(1).trimmed() : QString();
-            if (!value.isEmpty()
-                && value.compare(QLatin1String("NONE"), Qt::CaseInsensitive) != 0) {
+            const HlsPlaylist::Key key = HlsPlaylist::parseKeyLine(line, baseUrl);
+            if (key.enabled || !key.unsupported.isEmpty())
                 out->encrypted = true;
-            }
             continue;
         }
 
@@ -168,12 +165,9 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
 
         if (line.startsWith(QLatin1String("#EXT-X-KEY"))
             || line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))) {
-            const QRegularExpressionMatch method = kMethod.match(line);
-            const QString value = method.hasMatch() ? method.captured(1).trimmed() : QString();
-            if (!value.isEmpty()
-                && value.compare(QLatin1String("NONE"), Qt::CaseInsensitive) != 0) {
+            const HlsPlaylist::Key key = HlsPlaylist::parseKeyLine(line, baseUrl);
+            if (key.enabled || !key.unsupported.isEmpty())
                 out->encrypted = true;
-            }
             continue;
         }
         if (line.startsWith(QLatin1String("#EXTINF:"))) {

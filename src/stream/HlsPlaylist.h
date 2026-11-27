@@ -87,6 +87,12 @@ public:
         std::function<Key(const QString &line, const QUrl &base)> keyParser;
     };
 
+    /// 解析一条 #EXT-X-KEY 或 #EXT-X-SESSION-KEY。
+    /// 只接受 HTTP(S) 的 identity AES-128；非 NONE 但不受支持的加密方式写入
+    /// unsupported，结构/地址错误写入 error。下载与缓存两条链路共用此规则，
+    /// 避免 KEY 字段的兼容性判断各自演化。
+    static Key parseKeyLine(const QString &line, const QUrl &baseUrl);
+
     /// 解析原始 m3u8，记录每个媒体分片及其起始时间；只处理完整媒体列表。
     /// 返回空指针表示这不是可预取的媒体列表（master 列表或分片为空）。
     static QSharedPointer<Info> parse(const QByteArray &body, const QUrl &playlistUrl);

@@ -31,132 +31,11 @@ Q_LOGGING_CATEGORY(lcDownload, "mvp.download")
 
 namespace {
 
-const QRegularExpression kUriAttribute(QStringLiteral("URI\\s*=\\s*\"([^\"]*)\""));
-const QRegularExpression kUriAttributeBare(QStringLiteral("URI\\s*=\\s*([^,\\s]+)"));
-const QRegularExpression kMethod(QStringLiteral("METHOD=([^,\\s]+)"));
-const QRegularExpression kKeyFormat(
-    QStringLiteral("KEYFORMAT=(?:\"([^\"]*)\"|([^,\\s]*))"));
-const QRegularExpression kIv(QStringLiteral("IV=(0[xX][0-9A-Fa-f]+|[0-9A-Fa-f]+)"));
 const QRegularExpression kMediaSequence(QStringLiteral("MEDIA-SEQUENCE=([^,\\s]+)"));
 const QRegularExpression kContentRange(QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)"),
                                        QRegularExpression::CaseInsensitiveOption);
 const QRegularExpression kRequestRange(QStringLiteral("^bytes=(\\d+)-(\\d+)$"),
                                         QRegularExpression::CaseInsensitiveOption);
-
-QString uriAttribute(const QString &line)
-{
-    const QRegularExpressionMatch quoted = kUriAttribute.match(line);
-    if (quoted.hasMatch())
-        return quoted.captured(1).trimmed();
-    // RFC 8216 的 URI 允许不加引号；只按引号解析会漏掉 fMP4 的 init 段。
-    const QRegularExpressionMatch bare = kUriAttributeBare.match(line);
-    return bare.hasMatch() ? bare.captured(1).trimmed() : QString();
-}
-
-QUrl resolveUrl(const QUrl &base, const QString &raw)
-{
-    const QString uri = raw.trimmed();
-    if (uri.isEmpty())
-        return QUrl();
-    return base.resolved(QUrl(uri));
-}
-
-/// @brief HLS KEY 行的解析结果，供媒体列表和 SESSION-KEY 共用。
-struct ParsedKeyLine
-{
-    enum class Kind {
-        None,       ///< METHOD=NONE，后面的分片恢复明文。
-        Supported,  ///< identity AES-128，可自动取 key 解密。
-        Unsupported ///< SAMPLE-AES 或非 identity KEYFORMAT。
-    };
-
-    Kind kind = Kind::None;
-    QString method;
-    QUrl url;
-    QByteArray iv;
-    QString error;
-};
-
-/// @brief 取 KEYFORMAT 的引号/裸值；未写时返回空，按 identity 处理。
-QString keyFormatAttribute(const QString &line)
-{
-    const QRegularExpressionMatch match = kKeyFormat.match(line);
-    if (!match.hasMatch())
-        return QString();
-    return match.captured(1).isEmpty() ? match.captured(2).trimmed()
-                                       : match.captured(1).trimmed();
-}
-
-/// @brief 解析 16 字节 IV；支持 0x 前缀和裸 32 位十六进制。
-bool parseKeyIv(const QString &value, QByteArray *iv, QString *error)
-{
-    QString hex = value.trimmed();
-    if (hex.startsWith(QLatin1String("0x"), Qt::CaseInsensitive))
-        hex = hex.mid(2);
-    if (hex.size() != 32
-        || !QRegularExpression(QStringLiteral("^[0-9A-Fa-f]{32}$")).match(hex).hasMatch()) {
-        if (error != nullptr)
-            *error = QObject::tr("EXT-X-KEY 的 IV 不是 16 字节十六进制");
-        return false;
-    }
-    const QByteArray parsed = QByteArray::fromHex(hex.toLatin1());
-    if (parsed.size() != 16) {
-        if (error != nullptr)
-            *error = QObject::tr("EXT-X-KEY 的 IV 解析失败");
-        return false;
-    }
-    *iv = parsed;
-    return true;
-}
-
-/// @brief 解析一条 #EXT-X-KEY 或 #EXT-X-SESSION-KEY。
-/// @note 只接受 HTTP(S) 的 identity AES-128；file/UNC/data 等地址直接失败，
-///       防止播放列表把密钥请求引到本机或局域网。
-ParsedKeyLine parseKeyLine(const QString &line, const QUrl &base)
-{
-    ParsedKeyLine result;
-    const QRegularExpressionMatch methodMatch = kMethod.match(line);
-    if (!methodMatch.hasMatch() || methodMatch.captured(1).trimmed().isEmpty()) {
-        result.error = QObject::tr("EXT-X-KEY 缺少 METHOD");
-        return result;
-    }
-    result.method = methodMatch.captured(1).trimmed().toUpper();
-    if (result.method == QLatin1String("NONE")) {
-        result.kind = ParsedKeyLine::Kind::None;
-        return result;
-    }
-    if (result.method != QLatin1String("AES-128")) {
-        result.kind = ParsedKeyLine::Kind::Unsupported;
-        return result;
-    }
-
-    const QString keyFormat = keyFormatAttribute(line);
-    if (!keyFormat.isEmpty()
-        && keyFormat.compare(QLatin1String("identity"), Qt::CaseInsensitive) != 0) {
-        result.kind = ParsedKeyLine::Kind::Unsupported;
-        result.method = QStringLiteral("%1/%2").arg(result.method, keyFormat);
-        return result;
-    }
-
-    const QString uri = uriAttribute(line);
-    if (uri.isEmpty()) {
-        result.error = QObject::tr("AES-128 的 EXT-X-KEY 缺少 URI");
-        return result;
-    }
-    result.url = resolveUrl(base, uri);
-    if (!NetworkAddressPolicy::isHttpMediaUrl(result.url)) {
-        result.error = QObject::tr("EXT-X-KEY 的 URI 不是 HTTP(S)：%1").arg(uri.left(160));
-        return result;
-    }
-
-    const QRegularExpressionMatch ivMatch = kIv.match(line);
-    if (ivMatch.hasMatch() && !parseKeyIv(ivMatch.captured(1), &result.iv, &result.error))
-        return result;
-
-    result.kind = ParsedKeyLine::Kind::Supported;
-    return result;
-}
-
 QString keyCacheKey(const QUrl &url)
 {
     return url.toString(QUrl::FullyEncoded);
@@ -359,13 +238,13 @@ void DownloadTask::setHlsSessionKey(const QString &line, const QUrl &baseUrl)
 void DownloadTask::HlsDownloadSession::applySessionKeyLine(const QString &line,
                                                            const QUrl &baseUrl)
 {
-    const ParsedKeyLine parsed = parseKeyLine(line, baseUrl);
+    const HlsPlaylist::Key parsed = HlsPlaylist::parseKeyLine(line, baseUrl);
     if (!parsed.error.isEmpty()) {
         sessionKey = Key();
         sessionKey.unsupported = parsed.error;
         return;
     }
-    if (parsed.kind == ParsedKeyLine::Kind::Supported) {
+    if (parsed.enabled) {
         if (!sessionKey.enabled) {
             sessionKey.enabled = true;
             sessionKey.method = parsed.method;
@@ -373,9 +252,9 @@ void DownloadTask::HlsDownloadSession::applySessionKeyLine(const QString &line,
             sessionKey.iv = parsed.iv;
             sessionKey.unsupported.clear();
         }
-    } else if (parsed.kind == ParsedKeyLine::Kind::Unsupported
+    } else if (!parsed.unsupported.isEmpty()
                && !sessionKey.enabled && sessionKey.unsupported.isEmpty()) {
-        sessionKey.unsupported = parsed.method;
+        sessionKey.unsupported = parsed.unsupported;
     }
 }
 
@@ -851,12 +730,12 @@ DownloadTask::HlsDownloadSession::parsePlaylist(const QByteArray &body, const QU
             const QString line = rawLine.trimmed();
             if (!line.startsWith(QLatin1String("#EXT-X-SESSION-KEY")))
                 continue;
-            const ParsedKeyLine parsed = parseKeyLine(line, baseUrl);
+            const HlsPlaylist::Key parsed = HlsPlaylist::parseKeyLine(line, baseUrl);
             if (!parsed.error.isEmpty()) {
                 result.error = parsed.error;
                 return result;
             }
-            if (parsed.kind == ParsedKeyLine::Kind::Supported) {
+            if (parsed.enabled) {
                 if (!sessionKey.enabled) {
                     sessionKey.enabled = true;
                     sessionKey.method = parsed.method;
@@ -864,9 +743,9 @@ DownloadTask::HlsDownloadSession::parsePlaylist(const QByteArray &body, const QU
                     sessionKey.iv = parsed.iv;
                     sessionKey.unsupported.clear();
                 }
-            } else if (parsed.kind == ParsedKeyLine::Kind::Unsupported
+            } else if (!parsed.unsupported.isEmpty()
                        && !sessionKey.enabled && sessionKey.unsupported.isEmpty()) {
-                sessionKey.unsupported = parsed.method;
+                sessionKey.unsupported = parsed.unsupported;
             }
         }
 
@@ -893,36 +772,12 @@ DownloadTask::HlsDownloadSession::parsePlaylist(const QByteArray &body, const QU
     fragmentedMp4 = false;
     segmentCipher.clear();
 
-    auto toPlaylistKey = [](const ParsedKeyLine &parsed) {
-        HlsPlaylist::Key key;
-        key.method = parsed.method;
-        key.error = parsed.error;
-        if (parsed.kind == ParsedKeyLine::Kind::Supported) {
-            key.enabled = true;
-            key.url = parsed.url;
-            key.iv = parsed.iv;
-        } else if (parsed.kind == ParsedKeyLine::Kind::Unsupported) {
-            key.unsupported = parsed.method;
-        }
-        return key;
-    };
-
     HlsPlaylist::MediaParseOptions options;
     options.strict = true;
     options.requireExtinf = false;
-    options.initialKey = toPlaylistKey(ParsedKeyLine{
-        sessionKey.enabled ? ParsedKeyLine::Kind::Supported
-                           : (sessionKey.unsupported.isEmpty()
-                                  ? ParsedKeyLine::Kind::None
-                                  : ParsedKeyLine::Kind::Unsupported),
-        sessionKey.method,
-        sessionKey.url,
-        sessionKey.iv,
-        {}});
-    if (!sessionKey.unsupported.isEmpty())
-        options.initialKey.unsupported = sessionKey.unsupported;
-    options.keyParser = [toPlaylistKey](const QString &line, const QUrl &base) {
-        return toPlaylistKey(parseKeyLine(line, base));
+    options.initialKey = sessionKey;
+    options.keyParser = [](const QString &line, const QUrl &base) {
+        return HlsPlaylist::parseKeyLine(line, base);
     };
 
     QString parseError;
