@@ -6,6 +6,7 @@
 #include "net/NetLimits.h"
 #include "util/HeaderPolicy.h"
 #include "util/HtmlText.h"
+#include "util/MediaExtensions.h"
 #include "util/NetworkAddressPolicy.h"
 
 #include <QJsonArray>
@@ -130,15 +131,17 @@ bool looksLikeStream(const QString &url)
     const QUrl parsed(url);
     if (!parsed.isValid() || parsed.host().isEmpty())
         return false;
-    static const QRegularExpression extension(
-        QStringLiteral("\\.(?:m3u8|mp4|flv|mkv)$"), QRegularExpression::CaseInsensitiveOption);
     // 只认 path 末尾（以及 query 里嵌套的播放地址）的扩展名；
     // `https://mp4.example.com/play` 这种主机名含 mp4 的地址不是直链。
     const auto pathLooksLikeStream = [](QString path) {
         // CDN 偶尔给出 `/a.mp4/` 形式，尾斜杠不应影响扩展名判断。
         while (path.endsWith(QLatin1Char('/')))
             path.chop(1);
-        return extension.match(path).hasMatch();
+        const QString suffix = MediaExtensions::suffixFromPath(path);
+        // 影视源实际会返回 .ts/.mov/.webm 等直链；只认 mp4/flv/mkv 会把
+        // 这些有效线路提前判死。m3u8 单独保留，下载后缀表不含播放列表。
+        return suffix == QStringLiteral("m3u8")
+            || MediaExtensions::isDownloadVideoSuffix(suffix);
     };
     if (pathLooksLikeStream(parsed.path()))
         return true;

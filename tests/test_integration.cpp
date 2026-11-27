@@ -276,6 +276,7 @@ private slots:
     void streamProxyReleaseCacheFileClosesEntry();
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
+    void maccmsAcceptsDirectTsStream();
     void externalAbortKillsProcessWithoutFinish();
     void externalProviderScopesCookieToConfiguredOrigin();
     void externalProviderHonorsLimit();
@@ -2791,6 +2792,69 @@ void IntegrationTest::maccmsAbortClosesInflightRequest()
     provider.abort();
     QTRY_VERIFY_WITH_TIMEOUT(server.disconnects >= 1, 2500);
     QVERIFY(timer.elapsed() < 2500);
+}
+
+void IntegrationTest::maccmsAcceptsDirectTsStream()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path == QByteArrayLiteral("/")) {
+            LocalHttpServer::respond(socket, 200, QByteArrayLiteral("<html>ok</html>"),
+                                    "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path.startsWith(QByteArrayLiteral("/index.php/ajax/suggest"))) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("{\"list\":[{\"id\":1,\"name\":\"直链测试\"}]}"),
+                "application/json");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/voddetail/1.html")) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("<a href=\"/vodplay/1-1-1.html\">第1集</a>"),
+                "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/vodplay/1-1-1.html")) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral(
+                    "<script>var player_aaaa = {\"encrypt\":0,\"from\":\"test\","
+                    "\"url\":\"https://cdn.example.com/video/media.ts\"};</script>"),
+                "text/html; charset=utf-8");
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, QByteArrayLiteral("missing"), "text/plain");
+    };
+
+    SourceConfig config;
+    config.id = QStringLiteral("maccms_direct_ts");
+    config.name = QStringLiteral("本地直链源");
+    config.kind = QStringLiteral("builtin");
+    config.provider = QStringLiteral("maccms_web");
+    config.mediaType = MediaType::Video;
+    config.urlTemplate = server.url(QStringLiteral("/")).toString();
+
+    MaccmsWebProvider provider(config, nullptr);
+    QVector<MediaItem> results;
+    QString error;
+    bool finished = false;
+    connect(&provider, &SearchProviderBase::finished, this,
+            [&finished, &results, &error](const QString &, const QVector<MediaItem> &items,
+                                          int, const QString &message) {
+                finished = true;
+                results = items;
+                error = message;
+            });
+
+    provider.search(QStringLiteral("直链测试"), 5);
+    QTRY_VERIFY_WITH_TIMEOUT(finished, 5000);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(results.size(), 1);
+    QCOMPARE(results.first().url, QUrl(QStringLiteral("https://cdn.example.com/video/media.ts")));
 }
 
 void IntegrationTest::externalAbortKillsProcessWithoutFinish()
