@@ -277,6 +277,7 @@ private slots:
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
     void maccmsAcceptsDirectTsStream();
+    void maccmsLateSuggestDoesNotPolluteNextSearch();
     void externalAbortKillsProcessWithoutFinish();
     void externalProviderScopesCookieToConfiguredOrigin();
     void externalProviderHonorsLimit();
@@ -2855,6 +2856,71 @@ void IntegrationTest::maccmsAcceptsDirectTsStream()
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QCOMPARE(results.size(), 1);
     QCOMPARE(results.first().url, QUrl(QStringLiteral("https://cdn.example.com/video/media.ts")));
+}
+
+void IntegrationTest::maccmsLateSuggestDoesNotPolluteNextSearch()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    int suggestCount = 0;
+    server.handler = [&suggestCount](const LocalHttpServer::Request &request,
+                                     QTcpSocket *socket) {
+        if (request.path == QByteArrayLiteral("/")) {
+            LocalHttpServer::respond(socket, 200, QByteArrayLiteral("<html>ok</html>"),
+                                    "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path.startsWith(QByteArrayLiteral("/index.php/ajax/suggest"))) {
+            ++suggestCount;
+            if (suggestCount == 1) {
+                // 第一轮联想结果故意迟到，此时用户已经发起了第二轮搜索。
+                LocalHttpServer::respond(
+                    socket, 200,
+                    QByteArrayLiteral("{\"list\":[{\"id\":7,\"name\":\"上一轮结果\"}]}"),
+                    "application/json", -1, {}, 400);
+            } else {
+                LocalHttpServer::respond(socket, 200,
+                                        QByteArrayLiteral("{\"list\":[]}"),
+                                        "application/json");
+            }
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, QByteArrayLiteral("missing"), "text/plain");
+    };
+
+    SourceConfig config;
+    config.id = QStringLiteral("maccms_late_suggest");
+    config.name = QStringLiteral("本地延迟源");
+    config.kind = QStringLiteral("builtin");
+    config.provider = QStringLiteral("maccms_web");
+    config.mediaType = MediaType::Video;
+    config.urlTemplate = server.url(QStringLiteral("/")).toString();
+
+    MaccmsWebProvider provider(config, nullptr);
+    int finishedCount = 0;
+    QVector<MediaItem> results;
+    connect(&provider, &SearchProviderBase::finished, this,
+            [&finishedCount, &results](const QString &, const QVector<MediaItem> &items,
+                                       int, const QString &) {
+                ++finishedCount;
+                results = items;
+            });
+
+    provider.search(QStringLiteral("第一次"), 5);
+    QTRY_COMPARE_WITH_TIMEOUT(suggestCount, 1, 3000);
+
+    // 第一轮联想响应还在延迟中，立刻发起第二轮；旧候选不能进入第二轮。
+    provider.search(QStringLiteral("第二次"), 5);
+    QTRY_VERIFY_WITH_TIMEOUT(finishedCount >= 1, 3000);
+    QTest::qWait(600);
+
+    int detailRequests = 0;
+    for (const auto &request : server.requests) {
+        if (request.path.startsWith(QByteArrayLiteral("/voddetail/")))
+            ++detailRequests;
+    }
+    QCOMPARE(detailRequests, 0);
+    QCOMPARE(results.size(), 0);
 }
 
 void IntegrationTest::externalAbortKillsProcessWithoutFinish()

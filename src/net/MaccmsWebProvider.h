@@ -106,6 +106,9 @@ private:
     bool m_suggestUsed = false;      // 本次结果来自 ajax/suggest
     bool m_htmlSearchTried = false;  // 已经试过 HTML 搜索链（防止 suggest 失败后反复回退）
     bool m_validationMode = false;   // 探测用：只验搜索命中，不抓详情/播放
+    /// 每轮 search 递增；异步回调只允许写回同一代的结果，防止 abort
+    /// 后迟到的 finished 混进下一轮。
+    quint64 m_runGeneration = 0;
 };
 
 #endif // MACCMSWEBPROVIDER_H

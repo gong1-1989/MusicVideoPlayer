@@ -341,7 +341,8 @@ void MaccmsWebProvider::abort()
 void MaccmsWebProvider::search(const QString &keyword, int limit)
 {
     // 同一个 provider 可能被“测试”按钮复用；上一轮还没结束时再次搜索，
-    // 必须先收掉在途请求，否则旧页面的回调会把候选/条目混进新一轮结果。
+    // 必须先作废旧代次并收掉在途请求，否则旧页面的回调会把候选/条目混进新一轮结果。
+    ++m_runGeneration;
     abort();
     m_keyword = keyword.trimmed();
     // 搜索页只拿候选，详情/播放页按 4 路并发抓取；上限跟设置一致，
@@ -441,9 +442,10 @@ void MaccmsWebProvider::requestHtml(
         callback(false, QString());
         return;
     }
+    const quint64 generation = m_runGeneration;
     QPointer<MaccmsWebProvider> self(this);
     m_http->fetch(url, QByteArray(), requestHeaders(),
-                  [self, callback](QNetworkReply *reply) {
+                  [self, generation, callback](QNetworkReply *reply) {
                       if (self.isNull()) {
                           // 源已被超时/取消销毁，迟到的响应必须自己收尾，
                           // 否则 reply 会一直挂在共享的 HttpClient 上。
@@ -451,6 +453,12 @@ void MaccmsWebProvider::requestHtml(
                               reply->abort();
                               reply->deleteLater();
                           }
+                          return;
+                      }
+                      if (self->m_runGeneration != generation) {
+                          // 上一轮已被 abort，迟到的响应不能再驱动新一轮请求链。
+                          if (reply != nullptr)
+                              reply->deleteLater();
                           return;
                       }
                       if (reply == nullptr) {
@@ -494,14 +502,20 @@ void MaccmsWebProvider::requestHtml(
 void MaccmsWebProvider::fetchRoot()
 {
     // 首页只用来测量"回首页"的长度基线，以及确认站点还活着
+    const quint64 generation = m_runGeneration;
     QPointer<MaccmsWebProvider> self(this);
     m_http->fetch(QUrl(m_root), QByteArray(), requestHeaders(),
-                  [self](QNetworkReply *reply) {
+                  [self, generation](QNetworkReply *reply) {
                       if (self.isNull()) {
                           if (reply != nullptr) {
                               reply->abort();
                               reply->deleteLater();
                           }
+                          return;
+                      }
+                      if (self->m_runGeneration != generation) {
+                          if (reply != nullptr)
+                              reply->deleteLater();
                           return;
                       }
                       if (reply != nullptr) {
@@ -527,14 +541,20 @@ void MaccmsWebProvider::trySuggest()
     // 也不受"搜索页被换成热榜"这类改版影响。没有这个接口的站会返回 404/HTML，退回 HTML 搜索链。
     const QUrl url =
         siteUrl(QStringLiteral("index.php/ajax/suggest?mid=1&wd=") + m_keywordEncoded);
+    const quint64 generation = m_runGeneration;
     QPointer<MaccmsWebProvider> self(this);
     m_http->fetch(url, QByteArray(), requestHeaders(),
-                  [self](QNetworkReply *reply) {
+                  [self, generation](QNetworkReply *reply) {
                       if (self.isNull()) {
                           if (reply != nullptr) {
                               reply->abort();
                               reply->deleteLater();
                           }
+                          return;
+                      }
+                      if (self->m_runGeneration != generation) {
+                          if (reply != nullptr)
+                              reply->deleteLater();
                           return;
                       }
                       QByteArray raw;
@@ -611,9 +631,10 @@ void MaccmsWebProvider::trySearch(int strategy)
     if (m_done)
         return;
     QPointer<MaccmsWebProvider> self(this);
+    const quint64 generation = m_runGeneration;
 
-    auto fail = [self, strategy](const QString &reason) {
-        if (self.isNull())
+    auto fail = [self, strategy, generation](const QString &reason) {
+        if (self.isNull() || self->m_runGeneration != generation)
             return;
         self->m_searchErrors.append(QStringLiteral("策略%1：%2").arg(strategy + 1).arg(reason));
         self->trySearch(strategy + 1);
@@ -672,9 +693,9 @@ void MaccmsWebProvider::trySearch(int strategy)
             fail(tr("请求未发出"));
             break;
         }
-        connect(reply, &QNetworkReply::finished, this, [self, reply, fail] {
+        connect(reply, &QNetworkReply::finished, this, [self, reply, fail, generation] {
             reply->deleteLater();
-            if (self.isNull())
+            if (self.isNull() || self->m_runGeneration != generation)
                 return;
             if (!HttpClient::isHttpSuccess(reply)) {
                 fail(HttpClient::describeError(reply));
@@ -704,9 +725,9 @@ void MaccmsWebProvider::trySearch(int strategy)
             fail(tr("请求未发出"));
             break;
         }
-        connect(reply, &QNetworkReply::finished, this, [self, reply, fail] {
+        connect(reply, &QNetworkReply::finished, this, [self, reply, fail, generation] {
             reply->deleteLater();
-            if (self.isNull())
+            if (self.isNull() || self->m_runGeneration != generation)
                 return;
             if (!HttpClient::isHttpSuccess(reply)) {
                 fail(HttpClient::describeError(reply));
