@@ -37,9 +37,8 @@ private:
     HttpClient *m_http;
     QPointer<QNetworkReply> m_reply;
     int m_generation = 0;
-    /// 当前请求对应的条目与歌词地址；在线响应正文按它写磁盘缓存。
+    /// 当前请求对应的条目；在线响应正文按它写磁盘缓存。
     MediaItem m_item;
-    QUrl m_lyricUrl;
 };
 
 #endif // LYRICSSERVICE_H

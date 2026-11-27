@@ -68,7 +68,6 @@ void LyricsService::load(const QUrl &url, const MediaItem &item)
     }
 
     m_item = item;
-    m_lyricUrl = url;
 
     // 在线歌词按“条目 + 歌词地址”缓存原始响应体。命中时不需要再打接口，
     // 但仍走同一套解析，JSON 包裹和纯 LRC 两种格式不会走岔。
@@ -127,7 +126,6 @@ void LyricsService::cancel()
     // 迟到，也不会把旧歌词塞进新条目的面板。
     ++m_generation;
     m_item = MediaItem();
-    m_lyricUrl = QUrl();
     if (m_reply.isNull())
         return;
     QNetworkReply *reply = m_reply.data();
