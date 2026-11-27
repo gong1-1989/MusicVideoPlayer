@@ -160,7 +160,18 @@ bool isHostPlaceholder(const QString &url)
     if (parsed.host().isEmpty())
         return true;
     const QString path = parsed.path();
-    return path.isEmpty() || path == QLatin1String("/");
+    if (!path.isEmpty() && path != QLatin1String("/"))
+        return false;
+    // 根路径不一定都是占位：有的站点把真实地址塞在 query 里，例如
+    // `https://host/?url=https://cdn.example.com/a.mp4`。只要 query 里
+    // 还能拆出带主机的绝对地址，就交给后面的直链判断，不能在这里提前判死。
+    const QUrlQuery query(parsed);
+    for (const auto &item : query.queryItems(QUrl::FullyDecoded)) {
+        const QUrl nested(item.second);
+        if (nested.isValid() && !nested.host().isEmpty())
+            return false;
+    }
+    return true;
 }
 
 QString pickSid(const QString &href)
