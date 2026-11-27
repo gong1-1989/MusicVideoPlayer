@@ -182,16 +182,19 @@ bool HlsCacheBuilder::start(const MediaItem &item, const QUrl &sourceUrl)
         return false;
     }
 
-    // 加载同一缓存目录上次留下的分片索引：播放代理据此把已下载字节直接
-    // 当作分片响应，断点续传后的前半段也能在本次启动继续命中。
-    // 没有可续现场的那条轨道必须清掉旧索引：新任务会从 0 重写轨道文件，
-    // 旧偏移继续命中就会把错位字节当成该分片返回。
+    HlsPreloadIndex::instance().openJournal(m_bodyPath + QStringLiteral(".preload.jsonl"));
     // 一次 start 会话只读取一次续传状态，后续启动下载直接复用这份快照。
     m_videoResume = loadTrackResume(m_bodyPath + QStringLiteral(".video"));
     m_audioResume = loadTrackResume(m_bodyPath + QStringLiteral(".audio"));
+    // 旧版本双轨缺陷会把视频/音轨都写成公共 media.ts，索引日志里可能仍留着
+    // 指向 media.ts 的切片。新状态即使已作废，旧日志也不会自动消失；必须先
+    // 清掉这条公共目标，否则播放代理会在新轨道下载完成前读到旧的错位字节。
+    for (const QString &legacyTarget :
+         { m_bodyPath, m_bodyPath + QStringLiteral(".ts"), m_bodyPath + QStringLiteral(".mp4") }) {
+        HlsPreloadIndex::instance().clearTrack(legacyTarget);
+    }
     const TrackResume &videoIndexResume = m_videoResume;
     const TrackResume &audioIndexResume = m_audioResume;
-    HlsPreloadIndex::instance().openJournal(m_bodyPath + QStringLiteral(".preload.jsonl"));
     if (!(videoIndexResume.bytesWritten > 0 && !videoIndexResume.fingerprint.isEmpty())) {
         const QString target = videoIndexResume.targetPath.isEmpty()
                                    ? m_bodyPath + QStringLiteral(".video")

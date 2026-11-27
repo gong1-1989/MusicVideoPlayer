@@ -2489,6 +2489,27 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
     QVERIFY(writeLegacyResume(videoState, base + QStringLiteral(".ts")));
     QVERIFY(writeLegacyResume(audioState, base + QStringLiteral(".ts")));
 
+    // 旧缺陷还可能把分片索引指向公共 media.ts；文件本身存在时，播放代理会
+    // 在修复后的新轨道下载完成前继续命中这段旧字节。
+    const QString legacyTrack = base + QStringLiteral(".ts");
+    QFile legacyBody(legacyTrack);
+    QVERIFY(legacyBody.open(QIODevice::WriteOnly));
+    QVERIFY(legacyBody.write(QByteArrayLiteral("legacy-media-bytes")) > 0);
+    legacyBody.close();
+    const QUrl legacySegment = server.url(QStringLiteral("/tracks/video-seg.ts"));
+    const QString identity = MediaCache::cacheIdentity(item);
+    HlsPreloadEntry legacyEntry;
+    legacyEntry.url = legacySegment;
+    legacyEntry.filePath = legacyTrack;
+    legacyEntry.offset = 0;
+    legacyEntry.size = 8;
+    legacyEntry.contentType = QByteArrayLiteral("video/mp2t");
+    HlsPreloadIndex::instance().openJournal(base + QStringLiteral(".preload.jsonl"));
+    HlsPreloadIndex::instance().record(identity, legacyEntry);
+    HlsPreloadSlice staleSlice;
+    QVERIFY(HlsPreloadIndex::instance().find(identity, legacySegment, QByteArray(),
+                                             &staleSlice));
+
     bool completed = false;
     bool failed = false;
     QString failureMessage;
@@ -2500,6 +2521,9 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
                 failureMessage = message;
             });
     QVERIFY(builder.start(item));
+    // start 会重新打开索引日志并清掉公共 media.ts 目标，旧切片不能继续命中。
+    QVERIFY(!HlsPreloadIndex::instance().find(identity, legacySegment, QByteArray(),
+                                              &staleSlice));
 
     QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(videoState) && QFileInfo::exists(audioState),
                              10000);
