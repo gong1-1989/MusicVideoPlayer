@@ -947,6 +947,14 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
         oldValidator->abort();
         oldValidator->deleteLater();
     }
+    if (m_webValidator != nullptr) {
+        // 网页型校验器同样先摘成员再 abort，避免 abort 同步发出的 finished
+        // 被新一轮的状态接住。
+        MaccmsWebProvider *oldWebValidator = m_webValidator;
+        m_webValidator = nullptr;
+        oldWebValidator->abort();
+        oldWebValidator->deleteLater();
+    }
     m_finished = false;
     m_type = hintType;
     m_auto = autoDetect;
@@ -965,11 +973,6 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     m_redirectOrigin = QUrl();
     m_webFallbackPossible = false;
     m_webFallbackTried = false;
-    if (m_webValidator != nullptr) {
-        m_webValidator->abort();
-        m_webValidator->deleteLater();
-        m_webValidator = nullptr;
-    }
     m_validationFirstItems.clear();
     m_validationPasses = 0;
     m_validationNote.clear();
