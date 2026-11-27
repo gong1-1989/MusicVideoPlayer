@@ -1914,6 +1914,10 @@ bool DownloadManager::startPublishCopy(const QString &id, const QString &sourceP
     copy.stagingDir = sourceInfo.absolutePath();
     m_chunkCopies.insert(id, copy);
     job.filePath = finalPath;
+    // 暂存源已经完整，剩下的只是写入下载目录。提前标记 committed：
+    // 用户在这期间暂停/退出后，下次启动必须重新发布这份已完成的暂存文件，
+    // 而不是按 committed=false 重新起一条网络下载（会白拉一遍完整媒体）。
+    job.committed = true;
     job.status = DownloadJob::Status::Downloading;
     job.message = tr("正在写入下载目录（%1）")
                       .arg(sourceInfo.size() / (1024.0 * 1024.0), 0, 'f', 1);
@@ -2018,6 +2022,19 @@ void DownloadManager::copyChunks()
         target->close();
         source->close();
         cancelChunkCopy(id, ChunkCopyKind::Cache, false);
+
+        // 复制期间播放缓存可能被播放器/清理逻辑截断或删除。read 到 EOF
+        // 只表示“没有更多字节”，不表示源文件还是启动时那么长；不校验
+        // 长度会把半截缓存当成完整下载发布出去。
+        const qint64 copiedSize = QFileInfo(partial).size();
+        if (job.bytesTotal > 0 && copiedSize != job.bytesTotal) {
+            QFile::remove(partial);
+            finishJob(id, job.filePath, false,
+                      tr("播放缓存复制不完整（%1/%2 字节）")
+                          .arg(copiedSize)
+                          .arg(job.bytesTotal));
+            return;
+        }
 
         if (!job.stagingPath.isEmpty()) {
             // 影视 HLS 的完整播放缓存先落到暂存区，再统一发布到下载目录；
