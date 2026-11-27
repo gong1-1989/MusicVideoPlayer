@@ -1486,6 +1486,13 @@ void HlsCacheBuilder::cleanupTrackFilesAt(const QString &bodyPath, const QString
         HlsPreloadIndex::instance().clearTrack(audioPath);
     if (!audioBase.isEmpty())
         HlsPreloadIndex::instance().clearTrack(audioBase);
+    // 旧版本双轨缺陷把两条轨道都写成公共 bodyPath.ts；删除条目时也要把这类
+    // 遗留目标一起回收，否则下一次同身份重新缓存会先命中旧错位字节。
+    for (const QString &legacyTarget :
+         { bodyPath, bodyPath + QStringLiteral(".ts"), bodyPath + QStringLiteral(".mp4") }) {
+        if (!legacyTarget.isEmpty())
+            HlsPreloadIndex::instance().clearTrack(legacyTarget);
+    }
     for (const QString &path : { videoPath, videoBase, videoBase + QStringLiteral(".ts"),
                                  videoBase + QStringLiteral(".mp4"),
                                  videoBase + QStringLiteral(".mvpdownload"),
@@ -1504,6 +1511,16 @@ void HlsCacheBuilder::cleanupTrackFilesAt(const QString &bodyPath, const QString
     }
     if (!videoBase.isEmpty())
         removeTrackResume(videoBase);
+    // 公共 bodyPath.ts/.mp4 只可能是旧双轨缺陷留下的错误轨道，正式成品是
+    // bodyPath 本身，删除条目时可以安全一并移除。
+    if (!bodyPath.isEmpty()) {
+        for (const QString &path : { bodyPath + QStringLiteral(".ts"),
+                                     bodyPath + QStringLiteral(".mp4"),
+                                     bodyPath + QStringLiteral(".ts.mvpdownload"),
+                                     bodyPath + QStringLiteral(".mp4.mvpdownload") }) {
+            QFile::remove(path);
+        }
+    }
     // 删除条目时同步删除分片索引日志，避免下次同名身份重新打开时残留旧偏移。
     if (!bodyPath.isEmpty())
         QFile::remove(bodyPath + QStringLiteral(".preload.jsonl"));

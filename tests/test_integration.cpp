@@ -2492,10 +2492,15 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
     // 旧缺陷还可能把分片索引指向公共 media.ts；文件本身存在时，播放代理会
     // 在修复后的新轨道下载完成前继续命中这段旧字节。
     const QString legacyTrack = base + QStringLiteral(".ts");
+    const QString legacyMp4 = base + QStringLiteral(".mp4");
     QFile legacyBody(legacyTrack);
     QVERIFY(legacyBody.open(QIODevice::WriteOnly));
     QVERIFY(legacyBody.write(QByteArrayLiteral("legacy-media-bytes")) > 0);
     legacyBody.close();
+    QFile legacyMp4Body(legacyMp4);
+    QVERIFY(legacyMp4Body.open(QIODevice::WriteOnly));
+    QVERIFY(legacyMp4Body.write(QByteArrayLiteral("legacy-mp4-bytes")) > 0);
+    legacyMp4Body.close();
     const QUrl legacySegment = server.url(QStringLiteral("/tracks/video-seg.ts"));
     const QString identity = MediaCache::cacheIdentity(item);
     HlsPreloadEntry legacyEntry;
@@ -2557,6 +2562,12 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
     QVERIFY2(!failed, qPrintable(failureMessage));
     QVERIFY(completed);
     QVERIFY(QFileInfo(MediaCache::completeFileForItem(item)).size() > 0);
+
+    // 旧版本缺陷留下的公共 media.ts/.mp4 必须随轨道清理一起回收。
+    builder.cancelAndRemove();
+    QVERIFY(!builder.start(MediaItem()));
+    QVERIFY(!QFileInfo::exists(legacyTrack));
+    QVERIFY(!QFileInfo::exists(legacyMp4));
 }
 
 void IntegrationTest::hlsCacheBuilderMergesSingleFileAudio()
