@@ -1353,6 +1353,20 @@ void SearchPanelController::handleContextMenu(const QPoint &pos)
     if (chosen == nullptr)
         return;
 
+    // menu.exec 期间可能刚好收到新搜索结果并重建模型；此时缓存的条目
+    // 已不在当前结果中，继续播放/加入会把上一条搜索的内容误交给播放列表。
+    bool stillPresent = false;
+    for (const MediaItem &candidate : std::as_const(m_results)) {
+        if (mediaIdentity(candidate) == mediaIdentity(item)) {
+            stillPresent = true;
+            break;
+        }
+    }
+    if (!stillPresent) {
+        emit statusMessage(tr("搜索结果已刷新，请重新选择条目"));
+        return;
+    }
+
     if (chosen == playAction) {
         // 折叠行只是展示用的“整部剧”条目，真正能播的是背后的第 1 集；
         // 直接把展示条目送进播放列表会把它当成一部单片，标题和地址都不对。

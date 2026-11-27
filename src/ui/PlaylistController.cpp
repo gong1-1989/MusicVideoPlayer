@@ -305,10 +305,14 @@ void PlaylistController::restore()
         }
         if (imported) {
             canMarkMigrated = PlaylistStore::saveAll(music, video);
-            if (canMarkMigrated)
+            if (canMarkMigrated) {
                 qCInfo(lcPlaylist) << "已把旧 QSettings 播放列表迁移到 Data/playlists.json";
-            else
+            } else {
+                // 迁移内容已经显示在界面里，但没写进主文件；必须标脏，
+                // 否则用户直接退出时 m_dirty 仍为 false，列表会在下次启动消失。
+                setDirty(true);
                 qCWarning(lcPlaylist) << "播放列表迁移失败，保留旧 QSettings 数据待下次重试";
+            }
         }
         if (canMarkMigrated) {
             AppSettings::setPlaylistsMigrated(true);
