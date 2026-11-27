@@ -1064,6 +1064,20 @@ void IntegrationTest::downloadManagerImportsCompleteCache()
             [&completed](const MediaItem &, const QString &path) { completed.append(path); });
     const QString id = manager.importFromCache(item, cacheBody, target);
     QVERIFY(!id.isEmpty());
+    // 上次失败/退出可能留下同名暂存文件；这次完整复制必须能替换它，
+    // 不能被 Windows rename 的“目标已存在”卡住而永久失败。
+    const QString stagingPath = [&manager, &id]() {
+        for (const DownloadJob &job : manager.jobs()) {
+            if (job.id == id)
+                return job.stagingPath;
+        }
+        return QString();
+    }();
+    QVERIFY(!stagingPath.isEmpty());
+    QFile staleStaging(stagingPath);
+    QVERIFY(staleStaging.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(staleStaging.write("stale-staging"), qint64(13));
+    staleStaging.close();
     QTRY_COMPARE_WITH_TIMEOUT(completed.size(), 1, 5000);
     QCOMPARE(completed.first(), target);
     QVERIFY(!QFileInfo::exists(target + QStringLiteral(".mvpdownload")));

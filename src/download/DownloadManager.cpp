@@ -2023,6 +2023,16 @@ void DownloadManager::copyChunks()
             // 影视 HLS 的完整播放缓存先落到暂存区，再统一发布到下载目录；
             // 中途退出时下载目录里不会出现 .mvpdownload 半成品。
             const QString stagedPath = job.stagingPath;
+            // 上一次复制其实已经写完暂存文件，但发布失败/退出被记为失败时，
+            // 暂存文件会留在原地。Windows 的 rename 不会覆盖已有目标，直接
+            // 重试会一直失败并把刚复制好的 .mvpdownload 删掉；先移除旧的
+            // 暂存文件，再接入这次完整复制结果。
+            if (QFileInfo::exists(stagedPath) && !QFile::remove(stagedPath)) {
+                QFile::remove(partial);
+                finishJob(id, job.filePath, false,
+                          tr("缓存复制完成，但无法替换旧暂存文件"));
+                return;
+            }
             if (!QFile::rename(partial, stagedPath)) {
                 QFile::remove(partial);
                 finishJob(id, job.filePath, false,
