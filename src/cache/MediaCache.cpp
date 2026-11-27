@@ -307,8 +307,14 @@ QString removalPathForItem(const MediaItem &item)
             continue;
 
         const QFileInfo metaInfo(MediaCache::metaPathForFile(path));
-        if (!metaInfo.exists())
-            return path;
+        if (!metaInfo.exists()) {
+            // 未完成缓存有身份标记时必须核对归属：同名条目的半成品不能被
+            // 另一条目的删除操作误删，否则用户会丢掉正在下载的进度。
+            const QString partialIdentity = MediaCache::readPartialIdentity(path);
+            if (partialIdentity.isEmpty() || partialIdentity == identity)
+                return path;
+            continue;
+        }
 
         MediaCache::State state;
         if (MediaCache::readState(path, &state) && state.identity == identity)
@@ -324,17 +330,22 @@ QString removalPathForItem(const MediaItem &item)
     if (QFileInfo::exists(fallback)
         || QFileInfo::exists(MediaCache::partialStatePathForFile(fallback))) {
         const QFileInfo metaInfo(MediaCache::metaPathForFile(fallback));
-        if (!metaInfo.exists())
-            return fallback;
-        MediaCache::State state;
-        if (MediaCache::readState(fallback, &state) && state.identity == identity)
-            return fallback;
+        if (!metaInfo.exists()) {
+            const QString partialIdentity = MediaCache::readPartialIdentity(fallback);
+            if (partialIdentity.isEmpty() || partialIdentity == identity)
+                return fallback;
+        } else {
+            MediaCache::State state;
+            if (MediaCache::readState(fallback, &state) && state.identity == identity)
+                return fallback;
+        }
     }
 
-    // 没有任何残留可删时返回候选 0，让调用方走“无需删除”的成功路径。
-    return item.type == MediaType::Video
-               ? root + QLatin1Char('/') + base + QStringLiteral("/media")
-               : root + QLatin1Char('/') + base;
+    // 没有任何匹配残留：返回一个缓存根内的哨兵路径，让 removeForItem 的空删除
+    // 路径保持成功，同时绝不能把“候选 0 属于同名别的条目”误当成待删正文。
+    return root + QLatin1Char('/') + QStringLiteral(".__mvp-nocache__")
+           + identityDigest(item, 8)
+           + (item.type == MediaType::Video ? QStringLiteral("/media") : QString());
 }
 
 } // namespace

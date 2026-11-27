@@ -269,6 +269,7 @@ private slots:
     void hlsCacheBuilderMergesSingleFileAudio();
     void hlsCacheBuilderKeepsTrackPathsDistinct();
     void mediaCacheRemovesHashedFallback();
+    void mediaCacheRemovalSkipsOtherPartial();
     void hlsCacheBuilderFollowsRealAppleStream();
     void lyricsServiceCachesOnlinePayload();
     void mediaRemuxConvertsTsToMp4();
@@ -2614,6 +2615,35 @@ void IntegrationTest::mediaCacheRemovesHashedFallback()
     const QString first = root + QLatin1Char('/') + base + QStringLiteral("/media");
     QVERIFY(QFileInfo::exists(first));
     QVERIFY(QFileInfo::exists(MediaCache::metaPathForFile(first)));
+}
+
+void IntegrationTest::mediaCacheRemovalSkipsOtherPartial()
+{
+    MediaItem keep;
+    keep.type = MediaType::Video;
+    keep.title = QStringLiteral("同名半成品保护");
+    keep.url = QUrl(QStringLiteral("https://example.com/watch?id=1"));
+    keep.online = true;
+
+    MediaItem remove;
+    remove.type = MediaType::Video;
+    remove.title = keep.title;
+    remove.url = QUrl(QStringLiteral("https://example.com/watch?id=2"));
+    remove.online = true;
+
+    // 同一标题下先让另一条目占用候选 0 的半成品目录。
+    const QString body = MediaCache::filePathForItem(keep);
+    QVERIFY(QDir().mkpath(QFileInfo(body).absolutePath()));
+    QFile file(body);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QVERIFY(file.write("partial", 7) == 7);
+    file.close();
+    QVERIFY(MediaCache::writePartialIdentity(body, MediaCache::cacheIdentity(keep)));
+
+    // 删除另一条同名条目不能把这份半成品当成孤儿清掉。
+    QVERIFY(MediaCache::removeForItem(remove));
+    QVERIFY(QFileInfo::exists(body));
+    QCOMPARE(MediaCache::readPartialIdentity(body), MediaCache::cacheIdentity(keep));
 }
 
 
