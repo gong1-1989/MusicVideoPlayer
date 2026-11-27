@@ -2680,6 +2680,18 @@ void CoreLogicTest::pageMediaExtractorReadsPlayerConfig()
                 QStringLiteral("var url = 'javascript:alert(1)'"), page)
                 .isEmpty());
 
+    // 播放页也会把直链写成 TS/MKV 等容器，不能只认 m3u8/mp4。
+    QCOMPARE(PageMediaExtractor::extractMediaUrl(
+                 QStringLiteral("<script>const vid = 'https://cdn.example.com/hls/seg.ts';</script>"),
+                 QUrl(QStringLiteral("https://site.example/")))
+                 .toString(),
+             QStringLiteral("https://cdn.example.com/hls/seg.ts"));
+    QCOMPARE(PageMediaExtractor::extractMediaUrl(
+                 QStringLiteral("{\"file\":\"https:\\/\\/cdn.example.com\\/movie.mkv\"}"),
+                 QUrl(QStringLiteral("https://site.example/")))
+                 .toString(),
+             QStringLiteral("https://cdn.example.com/movie.mkv"));
+
     QVERIFY(MediaPageResolver::isPlaybackPage(page));
     QVERIFY(MediaPageResolver::isPlaybackPage(
         QUrl(QStringLiteral("https://site.example/vodplay/123-1-1.html"))));

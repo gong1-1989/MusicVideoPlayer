@@ -38,15 +38,15 @@ QUrl PageMediaExtractor::extractMediaUrl(const QString &html, const QUrl &base)
         QStringLiteral("<source[^>]+src=[\"']([^\"']+)[\"']"),
         // DPlayer 一类播放器常写成 const vid = '...m3u8'。
         QStringLiteral("(?:const|let|var)\\s+[\\w$]+\\s*=\\s*[\"']"
-                       "([^\"']+\\.(?:m3u8|mp4|flv|webm|mpd)[^\"']*)[\"']"),
+                       "([^\"']+\\.(?:m3u8|mp4|flv|webm|mpd|ts|mkv|mov|m4v)[^\"']*)[\"']"),
         // 播放器配置对象：url: '...' / "playUrl": "..."。
         QStringLiteral("[\"']?(?:playUrl|videoUrl|url|src|file|source|stream|vid)[\"']?"
                        "\\s*[:=]\\s*[\"']"
-                       "([^\"']+\\.(?:m3u8|mp4|flv|webm|mpd)[^\"']*)[\"']"),
+                       "([^\"']+\\.(?:m3u8|mp4|flv|webm|mpd|ts|mkv|mov|m4v)[^\"']*)[\"']"),
         // 兜底：任何带媒体后缀的绝对地址。
-        QStringLiteral("[\"']((?:https?:)?//[^\"']+\\.(?:m3u8|mp4|flv|webm|mpd)[^\"']*)[\"']"),
+        QStringLiteral("[\"']((?:https?:)?//[^\"']+\\.(?:m3u8|mp4|flv|webm|mpd|ts|mkv|mov|m4v)[^\"']*)[\"']"),
         // 兜底：站内相对地址。
-        QStringLiteral("[\"']([^\"']+\\.(?:m3u8|mp4|flv|webm|mpd)[^\"']*)[\"']"),
+        QStringLiteral("[\"']([^\"']+\\.(?:m3u8|mp4|flv|webm|mpd|ts|mkv|mov|m4v)[^\"']*)[\"']"),
     };
 
     for (const QString &pattern : patterns) {
