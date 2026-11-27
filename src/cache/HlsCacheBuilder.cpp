@@ -1132,15 +1132,26 @@ void HlsCacheBuilder::onRemuxFinished(bool success, const QString &outputPath,
     m_variantTimer->stop();
     const MediaItem item = m_item;
     const QString cachePath = outputPath;
-    m_item = MediaItem();
-    m_bodyPath.clear();
-    m_videoPath.clear();
-    m_audioPath.clear();
-    m_master = HlsCacheManifest::Master();
+    resetSessionState();
     qCInfo(lcHlsCache) << "HLS 影视缓存完成：" << item.displayName()
                        << cachePath << total << "字节";
     emit progressChanged(item, 100, tr("影视缓存完成"));
     emit completed(item, cachePath);
+}
+
+/// @brief 清空当前条目的会话字段，统一完成/退出/取消/失败四条收尾路径。
+void HlsCacheBuilder::resetSessionState()
+{
+    m_item = MediaItem();
+    m_bodyPath.clear();
+    m_identity.clear();
+    m_videoSegments.clear();
+    m_audioSegments.clear();
+    m_videoPath.clear();
+    m_audioPath.clear();
+    m_videoResume = TrackResume();
+    m_audioResume = TrackResume();
+    m_master = HlsCacheManifest::Master();
 }
 
 /// @brief 退出程序时中止下载/转码，但保留轨道文件与续传状态。
@@ -1164,16 +1175,7 @@ void HlsCacheBuilder::stopForExit()
                            << "videoBytes=" << m_videoResume.bytesWritten
                            << "audioBytes=" << m_audioResume.bytesWritten;
     }
-    m_item = MediaItem();
-    m_bodyPath.clear();
-    m_identity.clear();
-    m_videoSegments.clear();
-    m_audioSegments.clear();
-    m_videoPath.clear();
-    m_audioPath.clear();
-    m_videoResume = TrackResume();
-    m_audioResume = TrackResume();
-    m_master = HlsCacheManifest::Master();
+    resetSessionState();
 }
 
 /// @brief 退出专用：DownloadTask 补精确检查点后保留 `.mvpdownload`，转码器直接终止。
@@ -1290,16 +1292,7 @@ void HlsCacheBuilder::cancel()
     cancelTasks();
     if (!m_bodyPath.isEmpty())
         cleanupPartial(false);
-    m_item = MediaItem();
-    m_bodyPath.clear();
-    m_identity.clear();
-    m_videoSegments.clear();
-    m_audioSegments.clear();
-    m_videoPath.clear();
-    m_audioPath.clear();
-    m_videoResume = TrackResume();
-    m_audioResume = TrackResume();
-    m_master = HlsCacheManifest::Master();
+    resetSessionState();
 }
 
 /// @brief 取消当前缓存并删除该条目的所有缓存（含已完成正文）。
@@ -1463,11 +1456,7 @@ void HlsCacheBuilder::finishFailed(const QString &message)
     stopMigrations();
     cancelTasks();
     cleanupPartial(true);
-    m_item = MediaItem();
-    m_bodyPath.clear();
-    m_videoPath.clear();
-    m_audioPath.clear();
-    m_master = HlsCacheManifest::Master();
+    resetSessionState();
     qCWarning(lcHlsCache) << "HLS 影视缓存失败：" << item.displayName() << message;
     emit failed(item, message);
 }

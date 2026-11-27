@@ -827,7 +827,9 @@ void MainWindow::setupSidebarSplitter()
             m_centerLayout->addItem(child);
         }
     }
-    // 中心布局已被清空并完成迁移；从根布局摘除后释放，避免空布局挂父对象。
+    // 中心布局已整体迁移完；takeAt() 返回的 QLayoutItem 就是 layout_center
+    // 本身（QLayout 继承 QLayoutItem），所以下面 delete 同时释放 centerItem。
+    // 不要再单独 delete centerItem，否则会二次释放。
     delete ui->layout_center;
     ui->layout_center = nullptr;
 

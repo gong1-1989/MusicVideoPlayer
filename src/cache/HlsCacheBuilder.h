@@ -124,6 +124,9 @@ private:
     void retainCurrentTrackFiles();
     void cleanupRetainedTracks();
     void cleanupPartial(bool removeBody);
+    /// 清空当前条目的会话字段；调用前必须先完成信号/任务/文件清理，
+    /// 否则后续日志和完成信号会拿不到条目信息。
+    void resetSessionState();
     QString audioGroupForVariant(const QUrl &videoUrl) const;
     void emitProgress();
 

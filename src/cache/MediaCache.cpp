@@ -302,10 +302,9 @@ QString cacheIdentity(const MediaItem &item)
 {
     if (!item.online)
         return mediaIdentity(item);
-    if (!item.webUrl.isEmpty() && item.webUrl.isValid()) {
-        return QStringLiteral("web:") + item.webUrl.toString() + QLatin1Char('#')
-               + item.title;
-    }
+    // 网页条目沿用 mediaIdentity 的 webUrl+标题规则，避免两处身份算法漂移。
+    if (!item.webUrl.isEmpty() && item.webUrl.isValid())
+        return mediaIdentity(item);
 
     QUrl bare = preferredPlaybackUrl(item);
     bare.setQuery(QString());

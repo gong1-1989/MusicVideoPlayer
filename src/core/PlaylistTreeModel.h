@@ -41,7 +41,6 @@ public:
 
     /// 记住用户展开过的分组；模型重建（增删/恢复）后由视图恢复展开态。
     void setGroupExpanded(const QString &key, bool expanded);
-    bool isGroupExpanded(const QString &key) const;
     QStringList expandedGroupKeys() const;
 
 signals:

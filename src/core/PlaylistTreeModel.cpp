@@ -137,11 +137,6 @@ void PlaylistTreeModel::setGroupExpanded(const QString &key, bool expanded)
         m_expandedKeys.remove(key);
 }
 
-bool PlaylistTreeModel::isGroupExpanded(const QString &key) const
-{
-    return m_expandedKeys.contains(key);
-}
-
 QStringList PlaylistTreeModel::expandedGroupKeys() const
 {
     QStringList result;
