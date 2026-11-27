@@ -298,6 +298,11 @@ void DownloadTask::setPathResolver(std::function<QString(const QString &)> resol
     m_pathResolver = std::move(resolver);
 }
 
+void DownloadTask::setPreserveHlsBaseName(bool preserve)
+{
+    m_preserveHlsBaseName = preserve;
+}
+
 /// @brief 临时文件路径：目标路径加 `.mvpdownload`。
 QString DownloadTask::partialPath() const
 {
@@ -1385,7 +1390,12 @@ bool DownloadTask::switchToHlsFile()
     QString base = m_filePath;
     if (dot > slash && dot >= 0)
         base = m_filePath.left(dot);
-    QString newPath = base + QLatin1Char('.') + desiredSuffix;
+    // `HlsCacheBuilder` 用 media.video / media.audio 区分两条轨道；如果按普通
+    // 下载“替换最后一个扩展名”的规则，两者都会变成 media.ts 并同时写同一
+    // 文件。缓存轨道改为追加容器后缀，保留 `.video` / `.audio` 基名。
+    QString newPath = m_preserveHlsBaseName
+                          ? m_filePath + QLatin1Char('.') + desiredSuffix
+                          : base + QLatin1Char('.') + desiredSuffix;
     if (m_pathResolver) {
         const QString resolved = m_pathResolver(newPath);
         if (!resolved.isEmpty())

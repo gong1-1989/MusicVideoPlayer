@@ -768,6 +768,10 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
         finishFailed(video ? tr("无法启动视频缓存任务") : tr("无法启动音轨缓存任务"));
         return false;
     }
+    // 轨道基名里的 `.video` / `.audio` 是区分标记，不是可替换的扩展名。
+    // HLS 确认后必须变成 media.video.ts / media.audio.ts，否则双轨会撞到
+    // 同一个 media.ts，后启动的任务截断前一条轨道。
+    task->setPreserveHlsBaseName(true);
     // HLS 媒体分片不再由后台任务直接回源，而是登记到播放器同一个流转代理：
     // 播放已经拉过的分片直接复用代理缓存，尚未拉过的分片也由代理统一排队，
     // 从根源上避免播放和整段缓存各自下载同一片、互抢带宽。

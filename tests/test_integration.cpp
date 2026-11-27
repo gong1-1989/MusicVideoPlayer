@@ -267,6 +267,7 @@ private slots:
     void hlsCacheBuilderRejectsStaleCompletedTrack();
     void downloadManagerReusesPlaybackCacheThroughStaging();
     void hlsCacheBuilderMergesSingleFileAudio();
+    void hlsCacheBuilderKeepsTrackPathsDistinct();
     void hlsCacheBuilderFollowsRealAppleStream();
     void lyricsServiceCachesOnlinePayload();
     void mediaRemuxConvertsTsToMp4();
@@ -2374,6 +2375,139 @@ void IntegrationTest::downloadManagerReusesPlaybackCacheThroughStaging()
     QCOMPARE(finalJobs.size(), 1);
     QCOMPARE(finalJobs.first(), QStringLiteral("ok"));
     manager.shutdownForExit();
+}
+
+void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
+{
+    if (!MediaRemux::isAvailable())
+        QSKIP("未找到 ffmpeg，跳过独立音轨目标路径测试");
+
+    const QString ffmpeg = MediaRemux::ffmpegExecutable();
+    const QString videoTs = m_tempDir.filePath(QStringLiteral("track-video.ts"));
+    const QString audioTs = m_tempDir.filePath(QStringLiteral("track-audio.ts"));
+    QFile::remove(videoTs);
+    QFile::remove(audioTs);
+
+    QProcess generator;
+    generator.start(ffmpeg, {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                             QStringLiteral("-loglevel"), QStringLiteral("error"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("testsrc=size=160x90:rate=25"),
+                             QStringLiteral("-t"), QStringLiteral("1"),
+                             QStringLiteral("-c:v"), QStringLiteral("mpeg2video"),
+                             QStringLiteral("-an"),
+                             QStringLiteral("-f"), QStringLiteral("mpegts"), videoTs});
+    QVERIFY(generator.waitForFinished(30000));
+    QCOMPARE(generator.exitCode(), 0);
+    generator.start(ffmpeg, {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                             QStringLiteral("-loglevel"), QStringLiteral("error"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("sine=frequency=440"),
+                             QStringLiteral("-t"), QStringLiteral("1"),
+                             QStringLiteral("-c:a"), QStringLiteral("mp2"),
+                             QStringLiteral("-vn"),
+                             QStringLiteral("-f"), QStringLiteral("mpegts"), audioTs});
+    QVERIFY(generator.waitForFinished(30000));
+    QCOMPARE(generator.exitCode(), 0);
+
+    QFile videoFile(videoTs);
+    QFile audioFile(audioTs);
+    QVERIFY(videoFile.open(QIODevice::ReadOnly));
+    QVERIFY(audioFile.open(QIODevice::ReadOnly));
+    const QByteArray videoBody = videoFile.readAll();
+    const QByteArray audioBody = audioFile.readAll();
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray master =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:7\n"
+        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud1\",NAME=\"A\",DEFAULT=YES,"
+        "URI=\"audio.m3u8\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=160x90,CODECS=\"mp2v\","
+        "AUDIO=\"aud1\"\n"
+        "video.m3u8\n";
+    const QByteArray videoPlaylist =
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n"
+        "#EXTINF:1.0,\nvideo-seg.ts\n#EXT-X-ENDLIST\n";
+    const QByteArray audioPlaylist =
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n"
+        "#EXTINF:1.0,\naudio-seg.ts\n#EXT-X-ENDLIST\n";
+    server.handler = [videoBody, audioBody, master, videoPlaylist, audioPlaylist](
+                         const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/tracks/master.m3u8"))
+            LocalHttpServer::respond(socket, 200, master, "application/vnd.apple.mpegurl");
+        else if (request.path == QStringLiteral("/tracks/video.m3u8"))
+            LocalHttpServer::respond(socket, 200, videoPlaylist,
+                                     "application/vnd.apple.mpegurl");
+        else if (request.path == QStringLiteral("/tracks/audio.m3u8"))
+            LocalHttpServer::respond(socket, 200, audioPlaylist,
+                                     "application/vnd.apple.mpegurl");
+        else if (request.path == QStringLiteral("/tracks/video-seg.ts"))
+            LocalHttpServer::respond(socket, 200, videoBody, "video/mp2t", -1, {}, 1200);
+        else if (request.path == QStringLiteral("/tracks/audio-seg.ts"))
+            LocalHttpServer::respond(socket, 200, audioBody, "video/mp2t", -1, {}, 1200);
+        else
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("双轨路径测试");
+    item.url = server.url(QStringLiteral("/tracks/master.m3u8"));
+    item.online = true;
+
+    HttpClient http;
+    HlsCacheBuilder builder(&http);
+    const QUrl videoUrl = server.url(QStringLiteral("/tracks/video.m3u8"));
+    const QUrl audioUrl = server.url(QStringLiteral("/tracks/audio.m3u8"));
+    builder.setPlaybackTrackResolvers([videoUrl] { return videoUrl; },
+                                      [audioUrl] { return audioUrl; });
+
+    bool completed = false;
+    bool failed = false;
+    QString failureMessage;
+    connect(&builder, &HlsCacheBuilder::completed, &builder,
+            [&](const MediaItem &, const QString &) { completed = true; });
+    connect(&builder, &HlsCacheBuilder::failed, &builder,
+            [&](const MediaItem &, const QString &message) {
+                failed = true;
+                failureMessage = message;
+            });
+    QVERIFY(builder.start(item));
+
+    const QString base = MediaCache::filePathForItem(item);
+    const QString videoState = base + QStringLiteral(".video.resume.json");
+    const QString audioState = base + QStringLiteral(".audio.resume.json");
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(videoState) && QFileInfo::exists(audioState),
+                             10000);
+    auto targetPathOf = [](const QString &path) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly))
+            return QString();
+        return QJsonDocument::fromJson(file.readAll()).object()
+            .value(QStringLiteral("targetPath")).toString();
+    };
+    // 续传状态先在固定基名登记，分片列表确认后才改成 .ts；等两条都完成切换。
+    QString videoTarget;
+    QString audioTarget;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        ([&] {
+            videoTarget = targetPathOf(videoState);
+            audioTarget = targetPathOf(audioState);
+            return videoTarget.endsWith(QStringLiteral(".ts"))
+                   && audioTarget.endsWith(QStringLiteral(".ts"));
+        }()),
+        10000);
+    // 两条轨道必须以各自基名落盘；若都退化成 media.ts，会并发写同一个文件。
+    QCOMPARE(videoTarget, base + QStringLiteral(".video.ts"));
+    QCOMPARE(audioTarget, base + QStringLiteral(".audio.ts"));
+    QVERIFY(videoTarget != audioTarget);
+
+    QTRY_VERIFY_WITH_TIMEOUT(completed || failed, 40000);
+    QVERIFY2(!failed, qPrintable(failureMessage));
+    QVERIFY(completed);
+    QVERIFY(QFileInfo(MediaCache::completeFileForItem(item)).size() > 0);
 }
 
 void IntegrationTest::hlsCacheBuilderMergesSingleFileAudio()

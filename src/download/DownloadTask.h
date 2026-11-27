@@ -59,6 +59,10 @@ public:
     void setAllowIncompletePlaylist(bool allow);
     /// 目标路径冲突时由下载管理器重新分配，绝不覆盖已有文件。
     void setPathResolver(std::function<QString(const QString &)> resolver);
+    /// HLS 缓存轨道用 `.video` / `.audio` 作为区分后缀；切换 ts/mp4 时必须
+    /// 追加容器后缀而不是替换最后一段，否则两条轨道都会落到同一个
+    /// `media.ts` 并互相覆盖。普通下载保持原来的“替换扩展名”行为。
+    void setPreserveHlsBaseName(bool preserve);
 
     /// 去掉 Windows 非法字符并补扩展名
     static QString sanitizeFileName(const QString &name, const QString &suffix);
@@ -232,6 +236,8 @@ private:
     HlsDownloadSession m_hls;
 
     bool m_isHls = false;
+    /// HLS 缓存轨道的 `.video` / `.audio` 基名不能被容器后缀替换。
+    bool m_preserveHlsBaseName = false;
     bool m_ambiguousTextResolved = false;
     bool m_verifyMediaMagic = false;
     bool m_allowIncomplete = false;
