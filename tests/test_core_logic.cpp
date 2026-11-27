@@ -996,6 +996,7 @@ private slots:
     void searchRankerGroupsAndRanks();
     void searchRankerKeepsBestDuplicate();
     void playlistModelRefreshesSignedUrlWithoutLosingProgress();
+    void playlistModelRefreshClearsStaleStreamScope();
     void playlistModelUpdatesPlaybackPositionSeparately();
     void playbackSeekStepClampsToMediaBounds();
     void sourceConfigJsonRoundTrip();
@@ -1476,6 +1477,32 @@ void CoreLogicTest::playlistModelRefreshesSignedUrlWithoutLosingProgress()
 
     // 再次刷新相同内容不应产生无意义的数据变更。
     QVERIFY(!model.refreshItem(0, fresh));
+}
+
+void CoreLogicTest::playlistModelRefreshClearsStaleStreamScope()
+{
+    PlaylistModel model;
+    MediaItem preview;
+    preview.type = MediaType::Music;
+    preview.title = QStringLiteral("同一首歌");
+    preview.artist = QStringLiteral("同一歌手");
+    preview.online = true;
+    preview.previewOnly = true;
+    preview.streamScope = QStringLiteral("preview");
+    preview.url = QUrl(QStringLiteral("https://cdn.example.com/preview.m4a"));
+    // 身份用 webUrl + 标题，签名直链变化不影响同一首歌的识别。
+    preview.webUrl = QUrl(QStringLiteral("https://example.com/song/1"));
+    QVERIFY(model.addItem(preview));
+
+    // 同一身份的后一次搜索拿到完整曲目：scope 为空、previewOnly 为 false。
+    // 刷新后必须清掉旧“试听”标签，否则列表与详情会长期显示过期语义。
+    MediaItem full = preview;
+    full.previewOnly = false;
+    full.streamScope.clear();
+    full.url = QUrl(QStringLiteral("https://cdn.example.com/full.mp3"));
+    QVERIFY(model.refreshItem(0, full));
+    QVERIFY(model.itemAt(0).streamScope.isEmpty());
+    QVERIFY(!model.itemAt(0).previewOnly);
 }
 
 void CoreLogicTest::playlistModelUpdatesPlaybackPositionSeparately()

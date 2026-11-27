@@ -147,6 +147,13 @@ bool PlaylistModel::refreshItem(int row, const MediaItem &item)
             merged.online = false;
             changed = true;
         }
+        // 内容范围随搜索结果更新：同一身份从试听/电台变成完整曲目时，
+        // 必须清掉旧标签，否则列表会一直显示“试听”。已下载的本地文件
+        // 不参与这一步，避免被在线试听结果重新标成片段。
+        if (merged.streamScope != item.streamScope) {
+            merged.streamScope = item.streamScope;
+            changed = true;
+        }
     }
     takeUrl(merged.lyricUrl, item.lyricUrl);
     takeUrl(merged.posterUrl, item.posterUrl);
