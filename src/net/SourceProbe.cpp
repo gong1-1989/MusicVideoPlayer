@@ -935,6 +935,18 @@ void Prober::start(const QUrl &site, MediaType hintType, const QStringList &extr
     // 新的一轮探测必须换一个代次：上一轮首页请求可能还在路上，
     // 不能让它复用同一个 Prober 时把迟到响应写进本轮结果。
     ++m_runGeneration;
+    // 候选请求和试搜校验器也要立刻停掉。只靠代次过滤的话，旧请求仍会
+    // 占着连接和预算继续跑；先 abort 再清空句柄，旧回调会因代次不符直接返回。
+    if (m_activeReply != nullptr) {
+        m_activeReply->abort();
+        m_activeReply = nullptr;
+    }
+    if (m_validator != nullptr) {
+        ConfigSearchProvider *oldValidator = m_validator;
+        m_validator = nullptr;
+        oldValidator->abort();
+        oldValidator->deleteLater();
+    }
     m_finished = false;
     m_type = hintType;
     m_auto = autoDetect;
@@ -1259,16 +1271,24 @@ void Prober::probeNextCandidate()
     }
     m_activeReply = reply;
 
-    QTimer::singleShot(kRequestTimeoutMs, this, [this, reply] {
-        if (m_activeReply == reply) {
+    // 超时定时器不能被地址复用误伤：旧 reply 释放后，新 reply 可能正好
+    // 落在同一块堆地址上，若只比较裸指针就会把新一轮的请求 abort 掉。
+    // 用 QPointer 跟住旧对象，并带上本轮代次，复用 Prober 后旧定时器直接失效。
+    const int generation = m_runGeneration;
+    QPointer<QNetworkReply> guard(reply);
+    QTimer::singleShot(kRequestTimeoutMs, this, [this, guard, generation] {
+        if (generation != m_runGeneration || guard.isNull())
+            return;
+        if (m_activeReply == guard.data()) {
             m_activeReply = nullptr;
-            reply->abort();
+            guard->abort();
         }
     });
 
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, probeUrl, tpl, keyword, candidateType] {
-        if (m_finished) {
+            [this, reply, probeUrl, tpl, keyword, candidateType, generation] {
+        // 复用 Prober 后，上一轮的候选响应不能继续写入新一轮的候选/结果计数。
+        if (m_finished || generation != m_runGeneration) {
             reply->deleteLater();
             return;
         }

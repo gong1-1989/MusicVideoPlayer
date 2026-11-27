@@ -1020,6 +1020,7 @@ private slots:
     void sourceProbeAutoCoversBothTypeCandidates();
     void sourceProbeCancelBeforeHomeReply();
     void sourceProbeDeletedBeforeHomeReply();
+    void sourceProbeRestartIgnoresLateCandidateReply();
     void sourceTimeoutUsesConfiguredValue();
     void httpLogUrlRedactsSignature();
     void headerPolicyStripsSecretsAcrossHost();
@@ -2291,6 +2292,59 @@ void CoreLogicTest::sourceProbeDeletedBeforeHomeReply()
              "首页请求还没有发到本地站点");
     delete prober;
     QTest::qWait(500);
+}
+
+void CoreLogicTest::sourceProbeRestartIgnoresLateCandidateReply()
+{
+    // 同一个 Prober 连续探测两个站点：第一个站点的候选请求故意慢返回，
+    // 在第二轮已经开始后才到。迟到的候选响应必须按代次丢弃，不能把
+    // 第一个站点的失败尝试混进第二个站点的结果里。
+    ProbeSiteServer slowSite([](const QString &target, QByteArray &body,
+                                QByteArray &contentType, int &status) {
+        Q_UNUSED(target);
+        status = 200;
+        contentType = QByteArrayLiteral("text/html; charset=utf-8");
+        body = QByteArrayLiteral("<html><head><title>慢站点</title></head><body></body></html>");
+    });
+    slowSite.setResponseDelay(400);
+    QVERIFY(slowSite.listen(QHostAddress::LocalHost));
+
+    ProbeSiteServer fastSite([](const QString &target, QByteArray &body,
+                                QByteArray &contentType, int &status) {
+        if (target == QStringLiteral("/")) {
+            status = 200;
+            contentType = QByteArrayLiteral("text/html; charset=utf-8");
+            body = QByteArrayLiteral("<html><head><title>新站点</title></head><body></body></html>");
+            return;
+        }
+        status = 404;
+        body = QByteArrayLiteral("not found");
+    });
+    fastSite.setResponseDelay(200);
+    QVERIFY(fastSite.listen(QHostAddress::LocalHost));
+
+    HttpClient http;
+    SourceProbe::Prober prober(&http);
+    QSignalSpy finished(&prober, &SourceProbe::Prober::finished);
+    QVERIFY(finished.isValid());
+
+    prober.start(QUrl(slowSite.baseUrl()), MediaType::Video, {}, true);
+    QVERIFY2(QTest::qWaitFor([&] { return slowSite.targets.size() >= 2; }, 2000),
+             "第一个站点还没有发出候选请求");
+
+    // 第一轮候选响应仍在延迟队列中，立刻切换到第二个站点。
+    prober.start(QUrl(fastSite.baseUrl()), MediaType::Video, {}, true);
+    QVERIFY2(finished.wait(8000), "第二轮探测没有结束");
+    QCOMPARE(finished.count(), 1);
+
+    const SourceProbe::Result result =
+        qvariant_cast<SourceProbe::Result>(finished.at(0).at(0));
+    const QString slowHost = QStringLiteral(":%1").arg(slowSite.serverPort());
+    for (const SourceProbe::Attempt &attempt : result.attempts) {
+        QVERIFY2(!attempt.url.contains(slowHost),
+                 qPrintable(QStringLiteral("迟到的第一轮候选混进了第二轮结果: ")
+                            + attempt.url));
+    }
 }
 
 void CoreLogicTest::sourceTimeoutUsesConfiguredValue()

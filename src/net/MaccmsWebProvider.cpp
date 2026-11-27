@@ -326,6 +326,9 @@ void MaccmsWebProvider::abort()
 /// @param limit 返回条数上限。
 void MaccmsWebProvider::search(const QString &keyword, int limit)
 {
+    // 同一个 provider 可能被“测试”按钮复用；上一轮还没结束时再次搜索，
+    // 必须先收掉在途请求，否则旧页面的回调会把候选/条目混进新一轮结果。
+    abort();
     m_keyword = keyword.trimmed();
     // 搜索页只拿候选，详情/播放页按 4 路并发抓取；上限跟设置一致，
     // 但保留 50 条的硬上限，避免一次搜索打出几百个请求。

@@ -2771,9 +2771,20 @@ void IntegrationTest::maccmsAbortClosesInflightRequest()
     config.urlTemplate = server.url(QStringLiteral("/")).toString();
 
     MaccmsWebProvider provider(config, nullptr);
+    bool finishedEmitted = false;
+    connect(&provider, &SearchProviderBase::finished, this,
+            [&finishedEmitted](const QString &, const QVector<MediaItem> &, int, const QString &) {
+                finishedEmitted = true;
+            });
     provider.search(QStringLiteral("测试"), 5);
     QTRY_COMPARE(server.requests.size(), 1);
     QCOMPARE(server.requests.first().path, QByteArray("/"));
+
+    // 同一实例再次搜索：上一轮的首页请求必须被收掉，不能把取消回调
+    // 当成新一轮的响应，也不能在第二轮刚开始时提前发 finished。
+    provider.search(QStringLiteral("第二次"), 5);
+    QTRY_COMPARE(server.requests.size(), 2);
+    QVERIFY(!finishedEmitted);
 
     QElapsedTimer timer;
     timer.start();
