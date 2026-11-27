@@ -203,6 +203,16 @@ QByteArray validSearchJson()
         "{\"items\":[{\"title\":\"本地歌曲\",\"url\":\"http://example.com/a.mp3\"}]}");
 }
 
+int countFullRequests(const LocalHttpServer &server)
+{
+    int total = 0;
+    for (const LocalHttpServer::Request &request : server.requests) {
+        if (request.headers.value("range").isEmpty())
+            ++total;
+    }
+    return total;
+}
+
 QList<QByteArray> g_logMessages;
 
 void captureMessages(QtMsgType, const QMessageLogContext &, const QString &message)
@@ -260,6 +270,7 @@ private slots:
     void streamProxyPreservesEncodedSegmentQuery();
     void streamProxyServesFirstSegmentOfLongPlaylist();
     void streamProxyDeduplicatesConcurrentHlsSegments();
+    void streamProxyRetriesAfterFailedSegmentCache();
     void streamProxyReleaseCacheFileClosesEntry();
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
@@ -2548,6 +2559,64 @@ void IntegrationTest::streamProxyDeduplicatesConcurrentHlsSegments()
 
     one->deleteLater();
     two->deleteLater();
+    proxy.shutdown();
+}
+
+void IntegrationTest::streamProxyRetriesAfterFailedSegmentCache()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray payload(131072, 'f');
+    const qint64 probeBytes = 16384;
+    server.handler = [payload, probeBytes](const LocalHttpServer::Request &request,
+                                           QTcpSocket *socket) {
+        if (request.path != QByteArray("/hls/fail-seg.ts")) {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+            return;
+        }
+        const QByteArray range = request.headers.value("range");
+        if (range.isEmpty()) {
+            LocalHttpServer::respond(socket, 200, payload, "video/mp2t");
+            return;
+        }
+        if (range == "bytes=0-" + QByteArray::number(probeBytes - 1)) {
+            LocalHttpServer::respond(
+                socket, 206, payload.left(int(probeBytes)), "video/mp2t", probeBytes,
+                "Content-Range: bytes 0-" + QByteArray::number(probeBytes - 1) + "/"
+                    + QByteArray::number(payload.size()) + "\r\n");
+            return;
+        }
+        // 首片探测成功后让后续分片失败，制造一个“已标记 failed 但仍留在缓存表”
+        // 的分片条目；下一次没有 Range 的播放请求必须能重新回源，而不是继续 502。
+        LocalHttpServer::respond(socket, 500, {}, "text/plain");
+    };
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+    const QUrl proxied = proxy.proxyUrlFor(server.url(QStringLiteral("/hls/fail-seg.ts")));
+    QVERIFY(proxied.isValid());
+
+    HttpClient first;
+    QNetworkReply *failedReply = first.get(proxied, "bytes=0-");
+    QVERIFY(failedReply != nullptr);
+    QSignalSpy failedFinished(failedReply, &QNetworkReply::finished);
+    QTRY_VERIFY_WITH_TIMEOUT(failedFinished.count() > 0, 5000);
+    QCOMPARE(failedReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), 502);
+    failedReply->deleteLater();
+    // 首次请求会拆成“探测 + 3 个后续分片”，不能按总请求数断言；只确认
+    // 失败阶段没有额外发起无 Range 的整段回源。
+    QCOMPARE(countFullRequests(server), 0);
+
+    HttpClient second;
+    QNetworkReply *retry = second.get(proxied);
+    QVERIFY(retry != nullptr);
+    QSignalSpy retryFinished(retry, &QNetworkReply::finished);
+    QTRY_VERIFY_WITH_TIMEOUT(retryFinished.count() > 0, 5000);
+    QVERIFY(HttpClient::isHttpSuccess(retry));
+    QCOMPARE(retry->readAll(), payload);
+    QCOMPARE(countFullRequests(server), 1);
+
+    retry->deleteLater();
     proxy.shutdown();
 }
 

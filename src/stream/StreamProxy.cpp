@@ -457,8 +457,15 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
     // 先查缓存：完整或已下载部分都能立刻回 206，拖动无需等上游。
     if (!isHead) {
         const QSharedPointer<CacheEntry> cached = m_cache.value(cacheKey);
-        if (!cached.isNull() && !cached->failed
-            && (cached->total >= 0 || cached->pending)) {
+        if (!cached.isNull() && cached->failed) {
+            // 失败条目只用于把已在等待的客户端唤醒成 502，不能让它在缓存表里
+            // 常驻。否则同一分片后续的无 Range 请求会直接命中失败条目并继续
+            // 回 502，源站恢复后也无法重新回源，只能等 LRU 超时清理。
+            qCInfo(lcProxy) << "丢弃失败的流转缓存条目，允许重新回源"
+                            << HttpClient::redactUrl(upstream);
+            dropCacheEntry(cacheKey);
+        } else if (!cached.isNull()
+                   && (cached->total >= 0 || cached->pending)) {
             if (serveFromCache(client, cached, cacheKey, request.range, hasRange)) {
                 qCDebug(lcProxy) << "流转缓存命中" << HttpClient::redactUrl(upstream)
                                  << "已缓存" << cacheDataSize(*cached) << "/" << cached->total;
@@ -1022,6 +1029,12 @@ bool StreamProxy::tryStartRangeDownload(QTcpSocket *client, const QUrl &upstream
     entry->pending = true;
     entry->multiRange = true;
     entry->upstreamStarted = true;
+    // 必须登记本条目的上游地址：serveFromCache 用它判断“普通 HLS 分片”并
+    // 等整片写齐后再发响应头。缺这一项时 cacheOnlySegment 为假，探测首片
+    // 一到就先回 206，后续分片失败只能断开已发头的连接，播放器会收到被
+    // 截断的 206 而不是明确的 502。
+    entry->upstream = upstream;
+    entry->contentType = guessContentType(upstream);
     // 探测阶段只知道首片大小；按整片上限预留会让 2 条预取就吃满 256MB 配额，
     // 把后面排队的 HLS 分片全部挡住。未知总长时只登记真实在途的首片。
     entry->reservedBytes = kRangeProbeBytes;
@@ -1290,7 +1303,7 @@ void StreamProxy::failRangeEntry(const QString &key,
                                  const QSharedPointer<CacheEntry> &entry,
                                  const QString &reason)
 {
-    if (entry.isNull())
+    if (entry.isNull() || entry->failed)
         return;
     qCWarning(lcProxy) << "HLS 分片多连接失败" << reason
                        << "已缓存" << entry->data.size() << "/" << entry->total;
