@@ -310,8 +310,10 @@ QString removalPathForItem(const MediaItem &item)
         if (!metaInfo.exists()) {
             // 未完成缓存有身份标记时必须核对归属：同名条目的半成品不能被
             // 另一条目的删除操作误删，否则用户会丢掉正在下载的进度。
+            const bool hasPartialMarker =
+                QFileInfo::exists(MediaCache::partialStatePathForFile(path));
             const QString partialIdentity = MediaCache::readPartialIdentity(path);
-            if (partialIdentity.isEmpty() || partialIdentity == identity)
+            if (!hasPartialMarker || partialIdentity == identity)
                 return path;
             continue;
         }
@@ -331,8 +333,10 @@ QString removalPathForItem(const MediaItem &item)
         || QFileInfo::exists(MediaCache::partialStatePathForFile(fallback))) {
         const QFileInfo metaInfo(MediaCache::metaPathForFile(fallback));
         if (!metaInfo.exists()) {
+            const bool hasPartialMarker =
+                QFileInfo::exists(MediaCache::partialStatePathForFile(fallback));
             const QString partialIdentity = MediaCache::readPartialIdentity(fallback);
-            if (partialIdentity.isEmpty() || partialIdentity == identity)
+            if (!hasPartialMarker || partialIdentity == identity)
                 return fallback;
         } else {
             MediaCache::State state;
