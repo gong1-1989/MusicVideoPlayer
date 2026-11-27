@@ -670,8 +670,15 @@ void HlsCacheBuilder::startDownloads()
     // 对齐。分片数不一致时必须回到 DownloadTask，让它按指纹/序号重新校验。
     const bool videoResumeMatchesTrack =
         m_videoResume.segmentCount == m_videoTrack.segmentCount;
+    const QFileInfo videoFile(videoTarget);
+    // 文件存在还不够：续传记录写着完整字节数，但文件被截断/清空时同样不能
+    // 复用。字节数未知的旧记录只要求非空，避免升级后无谓重下。
+    const bool videoFileMatches =
+        videoFile.exists() && videoFile.size() > 0
+        && (m_videoResume.bytesWritten <= 0
+            || videoFile.size() == m_videoResume.bytesWritten);
     if (m_videoResume.valid && m_videoResume.completed && videoResumeMatchesTrack
-        && QFileInfo::exists(videoTarget)) {
+        && videoFileMatches) {
         // 退出发生在两条轨道都下完、FFmpeg 尚未收尾时：直接复用成品轨道。
         m_videoPath = videoTarget;
         m_videoDone = true;
@@ -683,6 +690,10 @@ void HlsCacheBuilder::startDownloads()
         if (m_videoResume.valid && m_videoResume.completed && !videoResumeMatchesTrack) {
             qCInfo(lcHlsCache) << "已完成视频轨与当前播放列表分片数不一致，重新下载"
                                << m_videoResume.segmentCount << m_videoTrack.segmentCount;
+        } else if (m_videoResume.valid && m_videoResume.completed && !videoFileMatches
+                   && videoFile.exists()) {
+            qCInfo(lcHlsCache) << "已完成视频轨长度与续传记录不一致，重新下载"
+                               << videoFile.size() << m_videoResume.bytesWritten;
         }
         if (!startTrack(true, m_videoSource, videoBase))
             return;
@@ -698,8 +709,13 @@ void HlsCacheBuilder::startDownloads()
                                         : audioBase;
         const bool audioResumeMatchesTrack =
             m_audioResume.segmentCount == m_audioTrack.segmentCount;
+        const QFileInfo audioFile(audioTarget);
+        const bool audioFileMatches =
+            audioFile.exists() && audioFile.size() > 0
+            && (m_audioResume.bytesWritten <= 0
+                || audioFile.size() == m_audioResume.bytesWritten);
         if (m_audioResume.valid && m_audioResume.completed && audioResumeMatchesTrack
-            && QFileInfo::exists(audioTarget)) {
+            && audioFileMatches) {
             m_audioPath = audioTarget;
             m_audioDone = true;
             m_audioPct = 100;
@@ -712,6 +728,10 @@ void HlsCacheBuilder::startDownloads()
                 qCInfo(lcHlsCache) << "已完成音轨与当前播放列表分片数不一致，重新下载"
                                    << m_audioResume.segmentCount
                                    << m_audioTrack.segmentCount;
+            } else if (m_audioResume.valid && m_audioResume.completed && !audioFileMatches
+                       && audioFile.exists()) {
+                qCInfo(lcHlsCache) << "已完成音轨长度与续传记录不一致，重新下载"
+                                   << audioFile.size() << m_audioResume.bytesWritten;
             }
             if (!startTrack(false, m_audioSource, audioBase))
                 return;

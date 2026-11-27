@@ -2126,6 +2126,41 @@ void IntegrationTest::hlsCacheBuilderRejectsStaleCompletedTrack()
     QCOMPARE(seg1Requests, 1);
 
     QVERIFY(MediaCache::removeForItem(item));
+
+    // 第二种损坏：分片数恰好一致，但成品轨道被截断。只检查 completed +
+    // 文件存在会直接复用这段短文件，转封装必然失败；长度必须与续传记录一致。
+    const QString truncatedBase = MediaCache::filePathForItem(item);
+    const QString truncatedTarget = truncatedBase + QStringLiteral(".video");
+    QDir().mkpath(QFileInfo(truncatedBase).absolutePath());
+    QFile truncated(truncatedTarget);
+    QVERIFY(truncated.open(QIODevice::WriteOnly));
+    QCOMPARE(truncated.write(QByteArray(1024, 'x')), qint64(1024));
+    truncated.close();
+    QJsonObject truncatedResume = resume;
+    truncatedResume.insert(QStringLiteral("targetPath"), truncatedTarget);
+    truncatedResume.insert(QStringLiteral("bytesWritten"), qint64(4096));
+    truncatedResume.insert(QStringLiteral("segmentIndex"), 2);
+    truncatedResume.insert(QStringLiteral("segmentCount"), 2);
+    const QByteArray truncatedPayload = QJsonDocument(truncatedResume).toJson();
+    QSaveFile truncatedState(truncatedTarget + QStringLiteral(".resume.json"));
+    QVERIFY(truncatedState.open(QIODevice::WriteOnly));
+    QCOMPARE(truncatedState.write(truncatedPayload), qint64(truncatedPayload.size()));
+    QVERIFY(truncatedState.commit());
+
+    seg0Requests = 0;
+    seg1Requests = 0;
+    completed = false;
+    failed = false;
+    completedPath.clear();
+    failureMessage.clear();
+    QVERIFY(builder.start(item));
+    QTRY_VERIFY_WITH_TIMEOUT(completed || failed, 30000);
+    QVERIFY2(!failed, qPrintable(failureMessage));
+    QVERIFY(completed);
+    QCOMPARE(seg0Requests, 1);
+    QCOMPARE(seg1Requests, 1);
+
+    QVERIFY(MediaCache::removeForItem(item));
 }
 
 void IntegrationTest::downloadManagerReusesPlaybackCacheThroughStaging()
