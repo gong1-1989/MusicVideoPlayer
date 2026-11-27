@@ -132,6 +132,10 @@ void MediaPageResolver::finishResolve(QNetworkReply *reply, const MediaItem &ori
         fail(tr("播放页请求失败"));
         return;
     }
+    // HttpClient 只负责交付 reply，不负责释放；失败分支如果不 deleteLater，
+    // 每次播放页 404/403/超限都会把响应体和 QNetworkReply 一直留到 HttpClient
+    // 销毁。这里统一在进入处理时登记延迟释放，后续读状态/正文仍然安全。
+    reply->deleteLater();
     if (!HttpClient::isHttpSuccess(reply)) {
         fail(tr("播放页打不开：%1").arg(HttpClient::describeError(reply)));
         return;
@@ -140,7 +144,6 @@ void MediaPageResolver::finishResolve(QNetworkReply *reply, const MediaItem &ori
     bool exceeded = false;
     const QByteArray body = HttpClient::readAllLimited(reply, NetLimits::kHtmlBytes, &exceeded);
     const QUrl finalUrl = reply->url().isValid() ? reply->url() : pageUrl;
-    reply->deleteLater();
     if (exceeded) {
         fail(tr("播放页内容过大，未继续解析"));
         return;
