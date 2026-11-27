@@ -109,7 +109,12 @@ bool SourceConfig::isValid() const
     if (kind == QLatin1String("builtin")) {
         // 内置实现见 createSearchProvider()：目前只剩网页型影视（内置抓取）
         if (provider == QLatin1String("maccms_web")) {
-            return mediaType == MediaType::Video && !urlTemplate.trimmed().isEmpty();
+            if (mediaType != MediaType::Video || urlTemplate.trimmed().isEmpty())
+                return false;
+            // 站点地址最终交给 QNetworkRequest；file:/// 等协议必须在启停判定
+            // 阶段就拒绝，与 validationError() 保持同一口径。
+            const QString scheme = QUrl(urlTemplate).scheme();
+            return scheme == QLatin1String("http") || scheme == QLatin1String("https");
         }
         return false;
     }

@@ -1764,6 +1764,21 @@ void CoreLogicTest::sourceConfigRejectsNonHttpDetailTemplate()
     config.detailUrlTemplate = QStringLiteral("https://api.example.com/detail/{id}");
     QVERIFY(config.isValid());
     QVERIFY(config.validationError().isEmpty());
+
+    // 内置影视源同样只接受 http(s) 站点，不能因为“地址非空”就放行 file:///。
+    SourceConfig builtin;
+    builtin.id = QStringLiteral("builtin-scheme");
+    builtin.name = QStringLiteral("内置协议校验");
+    builtin.kind = QStringLiteral("builtin");
+    builtin.provider = QStringLiteral("maccms_web");
+    builtin.mediaType = MediaType::Video;
+    builtin.urlTemplate = QStringLiteral("file:///C:/site/index.html");
+    QVERIFY(!builtin.isValid());
+    QVERIFY(builtin.validationError().contains(QStringLiteral("http")));
+
+    builtin.urlTemplate = QStringLiteral("http://example.com/");
+    QVERIFY(builtin.isValid());
+    QVERIFY(builtin.validationError().isEmpty());
 }
 
 void CoreLogicTest::sourceProbeLiveVideoSearch()
@@ -3020,6 +3035,11 @@ void CoreLogicTest::configMapperSplitsEpisodesAndResolvesUrls()
         ConfigMapper::normalizeUrl(QStringLiteral("//cdn.example.com/a.ts"));
     QCOMPARE(protocolRelative.scheme(), QStringLiteral("https"));
     QCOMPARE(protocolRelative.host(), QStringLiteral("cdn.example.com"));
+    // 协议相对地址应继承站点实际协议；http 源站不能把 //cdn 强行升级成 https。
+    const QUrl protocolRelativeHttp = ConfigMapper::normalizeUrl(
+        QStringLiteral("//cdn.example.com/a.ts"), QUrl(QStringLiteral("http://origin.example/")));
+    QCOMPARE(protocolRelativeHttp.scheme(), QStringLiteral("http"));
+    QCOMPARE(protocolRelativeHttp.host(), QStringLiteral("cdn.example.com"));
 
     const QUrl relative = ConfigMapper::normalizeUrl(
         QStringLiteral("000001.ts"), QUrl(QStringLiteral("https://x/a/index.m3u8")));

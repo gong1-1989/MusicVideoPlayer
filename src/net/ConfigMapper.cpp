@@ -219,7 +219,13 @@ QUrl normalizeUrl(const QString &raw, const QUrl &base)
     const QString text = raw.trimmed();
     if (text.isEmpty())
         return QUrl();
-    QUrl url = text.startsWith(QStringLiteral("//")) ? QUrl(QStringLiteral("https:") + text)
+    // 协议相对地址按 RFC 3986 继承 base 的协议。以前一律补 https，会让
+    // 只支持 http 的源站/CDN 上的 `//cdn/...` 直链被强行升级后打不开。
+    // base 不是 http(s) 时仍默认 https，避免把地址降级到未知协议。
+    QString scheme = base.scheme().toLower();
+    if (scheme != QLatin1String("http") && scheme != QLatin1String("https"))
+        scheme = QStringLiteral("https");
+    QUrl url = text.startsWith(QStringLiteral("//")) ? QUrl(scheme + QLatin1Char(':') + text)
                                                       : QUrl(text);
     if (url.isRelative() && !url.isEmpty() && base.isValid())
         url = base.resolved(url);
