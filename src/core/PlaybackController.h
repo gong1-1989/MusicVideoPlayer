@@ -128,6 +128,9 @@ private:
     /// 启动阶段失败时切到下一条备用线路；没有备用或已经出声后返回 false。
     bool tryNextFallback();
     int rowCount() const;
+    /// 当前这一轮真正在播的上游地址：优先已切换到的备用线路，没有再回主地址。
+    /// 预取和拖动共用，避免两处各写一份“跟随备用线路”的判断。
+    QUrl activePlaybackUrl(const MediaItem &item) const;
     void onMediaStatusChanged(QMediaPlayer::MediaStatus status);
     void updateLoops();
     /// 切换视频/停止/退出前写入当前视频位置；音乐不参与。

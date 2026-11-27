@@ -15,6 +15,7 @@
 #include "net/ExternalSearchProvider.h"
 #include "net/HttpClient.h"
 #include "net/MaccmsWebProvider.h"
+#include "net/MediaPageResolver.h"
 #include "net/NetLimits.h"
 #include "net/SearchCoordinator.h"
 #include "net/SourceConfig.h"
@@ -285,6 +286,7 @@ private slots:
     void requestLogsRedactQuerySecrets();
     void downloadLimitSettingClampsAndPersists();
     void videoPositionRestoredAfterSwitch();
+    void pageResolutionDoesNotReviveStoppedOrSwitchedPlayback();
 
 private:
     QTemporaryDir m_tempDir;
@@ -3090,6 +3092,79 @@ void IntegrationTest::downloadLimitSettingClampsAndPersists()
     AppSettings::setDownloadLimitMb(0);
     QCOMPARE(AppSettings::downloadLimitMb(), 512);
     AppSettings::setDownloadLimitMb(original);
+}
+
+/// 网页播放页解析是异步的：用户在中途按停止或切到另一个列表后，旧回调
+/// 不能再用已经失效的行号把播放重新拉起来。这里用延迟响应稳定地制造
+/// “解析未返回就切走”的时序，而不是依赖本机网络快慢。
+void IntegrationTest::pageResolutionDoesNotReviveStoppedOrSwitchedPlayback()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QUrl mediaUrl = server.url(QStringLiteral("/media.m3u8"));
+    const QString html = QStringLiteral("<script>const vid = '%1';</script>")
+                             .arg(mediaUrl.toString());
+    server.handler = [html](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path.startsWith("/play")) {
+            LocalHttpServer::respond(socket, 200, html.toUtf8(), "text/html", -1, {}, 300);
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    auto videoItem = [&](const QString &title, const QString &query) {
+        MediaItem item;
+        item.type = MediaType::Video;
+        item.title = title;
+        item.url = server.url(QStringLiteral("/play?%1").arg(query));
+        item.sourceOrigin = HeaderPolicy::originOnly(item.url);
+        item.online = true;
+        item.sourceId = QStringLiteral("link");
+        return item;
+    };
+
+    PlaylistModel videoOne;
+    videoOne.addItem(videoItem(QStringLiteral("page-one"), QStringLiteral("id=1")));
+    PlaylistModel videoTwo;
+    videoTwo.addItem(videoItem(QStringLiteral("page-two"), QStringLiteral("id=2")));
+    PlaylistModel music;
+    MediaItem song;
+    song.type = MediaType::Music;
+    song.title = QStringLiteral("song");
+    song.url = server.url(QStringLiteral("/track.mp3"));
+    song.sourceOrigin = HeaderPolicy::originOnly(song.url);
+    song.online = true;
+    music.addItem(song);
+
+    HttpClient http;
+    MediaPageResolver resolver(&http);
+    PlaybackController player;
+    player.setPageMediaResolver(&resolver);
+
+    // 场景一：解析未返回时按下停止，回调不能把播放重新拉起来。
+    player.setPlaylist(&videoOne);
+    player.playRow(0);
+    QCOMPARE(player.currentRow(), -1);
+    QTest::qWait(40);
+    player.stop();
+    QTest::qWait(500);
+    QCOMPARE(player.currentRow(), -1);
+    QCOMPARE(player.activeUpstreamUrl(), QUrl());
+
+    // 场景二：解析未返回时切到音乐列表，旧行号不能在新列表上开播。
+    player.setPlaylist(&videoTwo);
+    player.playRow(0);
+    QCOMPARE(player.currentRow(), -1);
+    QTest::qWait(40);
+    player.setPlaylist(&music);
+    QTest::qWait(500);
+    QCOMPARE(player.currentRow(), -1);
+    QCOMPARE(player.activeUpstreamUrl(), QUrl());
+
+    // 作废旧回调整体不应影响后续正常点播。
+    player.playRow(0);
+    QCOMPARE(player.currentRow(), 0);
+    player.stop();
 }
 
 void IntegrationTest::videoPositionRestoredAfterSwitch()

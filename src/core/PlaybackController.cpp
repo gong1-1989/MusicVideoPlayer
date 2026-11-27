@@ -104,8 +104,7 @@ PlaybackController::PlaybackController(QObject *parent)
         const MediaItem item = m_itemResolver ? m_itemResolver(modelItem) : modelItem;
         // 换过备用线路后，预取必须跟随正在播放的那条；继续拿主线路地址
         // 会让代理去重试已经 403/HTML 的旧线路，拖慢实际播放。
-        const QUrl playbackUrl =
-            m_activeUpstreamUrl.isValid() ? m_activeUpstreamUrl : preferredPlaybackUrl(item);
+        const QUrl playbackUrl = activePlaybackUrl(item);
         if (!item.online || !isHlsUrl(playbackUrl))
             return;
         // 每 3 秒提交一次就够了；分片时长通常 3-7 秒，太频繁只会反复覆盖队列。
@@ -294,6 +293,10 @@ void PlaybackController::setPlaylist(PlaylistModel *playlist)
     saveCurrentVideoPosition();
     clearPendingResume();
 
+    // 换模型必须作废在途的网页播放页解析：否则回调里的 serial 仍然有效，
+    // 会把旧列表的行号套到新列表上，用户切走后又突然开始播放另一首歌/另一集。
+    ++m_pageResolveSerial;
+
     m_playlist = playlist;
     m_row = -1;
     m_consecutiveErrors = 0;
@@ -314,6 +317,13 @@ MediaItem PlaybackController::currentItem() const
 int PlaybackController::rowCount() const
 {
     return m_playlist ? m_playlist->size() : 0;
+}
+
+QUrl PlaybackController::activePlaybackUrl(const MediaItem &item) const
+{
+    // 换过备用线路后，预取和拖动都必须跟随正在播放的那条；继续拿主线路
+    // 地址会让代理去重试已经 403/HTML 的旧线路，拖慢实际播放。
+    return m_activeUpstreamUrl.isValid() ? m_activeUpstreamUrl : preferredPlaybackUrl(item);
 }
 
 void PlaybackController::playRow(int row)
@@ -573,6 +583,9 @@ void PlaybackController::stop()
     // 关闭窗口、按停止都会走这里；必须在 QMediaPlayer 清零前读出最后位置。
     saveCurrentVideoPosition();
     clearPendingResume();
+    // 停止也要作废尚未返回的网页播放页解析；否则用户点了停止，
+    // 几百毫秒后解析完成仍会调用 playRowInternal 把播放重新拉起来。
+    ++m_pageResolveSerial;
     // 停止后旧 source 的延迟定位目标必须清掉，否则下一次加载会先跳到旧位置。
     m_deferredSeekMs = -1;
     m_consecutiveErrors = 0;
@@ -663,7 +676,9 @@ void PlaybackController::seek(qint64 ms)
     // 直接拿 currentItem().headers 会让 HLS 拖动后的分片请求缺少 Cookie 而 403。
     const MediaItem modelItem = currentItem();
     const MediaItem item = m_itemResolver ? m_itemResolver(modelItem) : modelItem;
-    const QUrl playbackUrl = preferredPlaybackUrl(item);
+    // 和 positionChanged 的预取共用同一判定：换过备用线路后必须跟随正在
+    // 播放的上游地址，否则拖动会去预取已经 403/HTML 的主线路。
+    const QUrl playbackUrl = activePlaybackUrl(item);
     if (m_proxyReady && m_proxy != nullptr && item.online && isHlsUrl(playbackUrl)) {
         QMetaObject::invokeMethod(
             m_proxy,
@@ -727,6 +742,9 @@ void PlaybackController::onPlaylistRowRemoved(int row)
         // 条目已经从模型里移除，进度属于被删条目，随条目一起丢弃；
         // 不能再读当前播放器位置写进后面那条，否则会把进度串到下一集。
         clearPendingResume();
+        // 这一行对应的网页播放页解析也必须作废：行号在删除后已经属于下一条，
+        // 继续回调会把解析结果播到别人头上。
+        ++m_pageResolveSerial;
         m_player->stop();
         m_player->setSource(QUrl());
         m_row = -1;
