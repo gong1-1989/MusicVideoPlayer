@@ -2286,18 +2286,49 @@ bool DownloadManager::startSeedCopy(const QString &id)
         return false;
 
     cancelSeedCopy(id, true);
-    QFile *source = new QFile(job.seedSourcePath, this);
-    QFile *target = new QFile(job.partialPath(), this);
-    if (!source->open(QIODevice::ReadOnly)) {
-        source->deleteLater();
-        target->deleteLater();
-        return false;
+    const QString partial = job.partialPath();
+    qint64 offset = QFileInfo(partial).size();
+    if (offset > job.seedBytes)
+        offset = 0;
+    if (offset >= job.seedBytes) {
+        // 上次退出/暂停时种子前缀其实已经复制完了，只差切到网络下载。
+        // 不能再从头复制一遍几百 MB/几 GB 的播放缓存。
+        job.bytesReceived = job.seedBytes;
+        job.segmentIndex = job.seedSegmentIndex;
+        job.hlsFingerprint = job.seedFingerprint;
+        job.seedSourcePath.clear();
+        job.seedBytes = 0;
+        job.seedSegmentIndex = 0;
+        job.message = tr("已复用播放缓存已下载部分，继续网络下载");
+        scheduleSave();
+        scheduleNotify();
+        QTimer::singleShot(0, this, [this, id] {
+            if (!m_shuttingDown)
+                startJob(id);
+        });
+        return true;
     }
-    QFile::remove(job.partialPath());
-    if (!target->open(QIODevice::WriteOnly)) {
+
+    QFile *source = new QFile(job.seedSourcePath, this);
+    QFile *target = new QFile(partial, this);
+    if (!source->open(QIODevice::ReadOnly) || !source->seek(offset)) {
+        const QString error = source->errorString();
         source->close();
         source->deleteLater();
         target->deleteLater();
+        emit statusMessage(tr("无法读取播放缓存：%1").arg(error));
+        return false;
+    }
+    const QIODevice::OpenMode mode = offset > 0
+        ? QIODevice::ReadWrite
+        : (QIODevice::WriteOnly | QIODevice::Truncate);
+    if (!target->open(mode) || !target->resize(offset) || !target->seek(offset)) {
+        const QString error = target->errorString();
+        target->close();
+        source->close();
+        target->deleteLater();
+        source->deleteLater();
+        emit statusMessage(tr("无法续写下载文件：%1").arg(error));
         return false;
     }
 
@@ -2305,14 +2336,16 @@ bool DownloadManager::startSeedCopy(const QString &id)
     copy.kind = ChunkCopyKind::Seed;
     copy.source = source;
     copy.target = target;
-    copy.remaining = job.seedBytes;
+    copy.remaining = job.seedBytes - offset;
     m_chunkCopies.insert(id, copy);
-    job.bytesReceived = 0;
+    job.bytesReceived = offset;
     job.status = DownloadJob::Status::Downloading;
     job.message = job.hls
-        ? tr("正在复用播放缓存已完成分片（%1 MB）")
+        ? tr("正在复用播放缓存已完成分片（%1/%2 MB）")
+              .arg(offset / (1024.0 * 1024.0), 0, 'f', 1)
               .arg(job.seedBytes / (1024.0 * 1024.0), 0, 'f', 1)
-        : tr("正在复用播放缓存已下载部分（%1 MB）")
+        : tr("正在复用播放缓存已下载部分（%1/%2 MB）")
+              .arg(offset / (1024.0 * 1024.0), 0, 'f', 1)
               .arg(job.seedBytes / (1024.0 * 1024.0), 0, 'f', 1);
     scheduleSave();
     scheduleNotify();
