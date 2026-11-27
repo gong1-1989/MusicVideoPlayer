@@ -186,10 +186,11 @@ bool HlsCacheBuilder::start(const MediaItem &item, const QUrl &sourceUrl)
     // 当作分片响应，断点续传后的前半段也能在本次启动继续命中。
     // 没有可续现场的那条轨道必须清掉旧索引：新任务会从 0 重写轨道文件，
     // 旧偏移继续命中就会把错位字节当成该分片返回。
-    const TrackResume videoIndexResume =
-        loadTrackResume(m_bodyPath + QStringLiteral(".video"));
-    const TrackResume audioIndexResume =
-        loadTrackResume(m_bodyPath + QStringLiteral(".audio"));
+    // 一次 start 会话只读取一次续传状态，后续启动下载直接复用这份快照。
+    m_videoResume = loadTrackResume(m_bodyPath + QStringLiteral(".video"));
+    m_audioResume = loadTrackResume(m_bodyPath + QStringLiteral(".audio"));
+    const TrackResume &videoIndexResume = m_videoResume;
+    const TrackResume &audioIndexResume = m_audioResume;
     HlsPreloadIndex::instance().openJournal(m_bodyPath + QStringLiteral(".preload.jsonl"));
     if (!(videoIndexResume.bytesWritten > 0 && !videoIndexResume.fingerprint.isEmpty())) {
         const QString target = videoIndexResume.targetPath.isEmpty()
@@ -648,7 +649,6 @@ void HlsCacheBuilder::startDownloads()
         return;
     }
 
-    m_videoResume = loadTrackResume(videoBase);
     const QString videoTarget = m_videoResume.valid && !m_videoResume.targetPath.isEmpty()
                                     ? m_videoResume.targetPath
                                     : videoBase;
@@ -669,7 +669,6 @@ void HlsCacheBuilder::startDownloads()
             finishFailed(tr("没有找到可下载的音轨地址"));
             return;
         }
-        m_audioResume = loadTrackResume(audioBase);
         const QString audioTarget = m_audioResume.valid && !m_audioResume.targetPath.isEmpty()
                                         ? m_audioResume.targetPath
                                         : audioBase;
@@ -700,7 +699,9 @@ void HlsCacheBuilder::startDownloads()
 /// @return 任务启动成功返回 true；失败时已走 finishFailed()。
 bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &basePath)
 {
-    TrackResume resume = loadTrackResume(basePath);
+    // 续传状态已在 start() 读取一次，这里只使用同一份快照，避免磁盘状态在
+    // 播放列表解析期间被另一个进程改写后，startDownloads 与 startTrack 看到不同版本。
+    TrackResume &resume = video ? m_videoResume : m_audioResume;
     const QString targetPath = resume.valid && !resume.targetPath.isEmpty()
                                    ? resume.targetPath
                                    : basePath;
@@ -733,10 +734,6 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
     resume.valid = true;
     resume.completed = false;
     resume.targetPath = targetPath;
-    if (video)
-        m_videoResume = resume;
-    else
-        m_audioResume = resume;
     saveTrackResume(basePath, resume);
 
     task->setMaxBytes(std::numeric_limits<qint64>::max());
