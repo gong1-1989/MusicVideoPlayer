@@ -743,6 +743,9 @@ void DownloadManager::load()
 
     // 状态数组按加入顺序追加，最新记录在尾部；超过上限时从头部删最早的
     // 已完成记录，而不是保留最早 100 条、把刚完成的反而裁掉。
+    // 带着未完成缓存清理标记的记录不能裁：裁掉后 cleanupPendingCaches 再也
+    // 找不到它，播放缓存/歌词缓存会永久留在磁盘。清理成功后会清除标记，
+    // 下次启动或保存时再按正常上限裁剪。
     int completed = 0;
     for (const DownloadJob &job : std::as_const(loaded)) {
         if (job.status == DownloadJob::Status::Completed)
@@ -750,7 +753,9 @@ void DownloadManager::load()
     }
     int completedToDrop = completed - kMaxCompletedJobs;
     for (int i = 0; i < loaded.size() && completedToDrop > 0; ) {
-        if (loaded.at(i).status == DownloadJob::Status::Completed) {
+        if (loaded.at(i).status == DownloadJob::Status::Completed
+            && loaded.at(i).cleanupCachePath.isEmpty()
+            && !loaded.at(i).cleanupMediaAndLyrics) {
             loaded.removeAt(i);
             --completedToDrop;
         } else {

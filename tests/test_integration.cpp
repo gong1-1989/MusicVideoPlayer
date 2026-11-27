@@ -258,6 +258,7 @@ private slots:
     void downloadManagerPublishesAcrossVolumes();
     void downloadManagerRemovesLegacyDownloadCache();
     void downloadManagerMigratesLegacyStaging();
+    void downloadManagerKeepsPendingCleanupRecord();
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
     void hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList();
@@ -1521,6 +1522,55 @@ void IntegrationTest::downloadManagerMigratesLegacyStaging()
 
     manager.shutdownForExit();
     AppSettings::setDownloadDir(QString());
+}
+
+void IntegrationTest::downloadManagerKeepsPendingCleanupRecord()
+{
+    QDir().mkpath(StoragePaths::dataDir());
+    const QString statePath = StoragePaths::dataFile(QStringLiteral("downloads.json"));
+    QFile state(statePath);
+    QVERIFY(state.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QJsonArray encoded;
+    DownloadJob pending;
+    pending.id = QStringLiteral("pending-cleanup");
+    pending.item.type = MediaType::Music;
+    pending.item.title = QStringLiteral("待清理缓存");
+    pending.filePath = m_tempDir.filePath(QStringLiteral("pending-cleanup.mp3"));
+    pending.status = DownloadJob::Status::Completed;
+    pending.cleanupCachePath = m_tempDir.filePath(QStringLiteral("pending-cleanup.cache"));
+    encoded.append(pending.toJson());
+    for (int i = 0; i < 100; ++i) {
+        DownloadJob job;
+        job.id = QStringLiteral("completed-%1").arg(i);
+        job.item.type = MediaType::Music;
+        job.item.title = QStringLiteral("历史完成 %1").arg(i);
+        job.filePath = m_tempDir.filePath(QStringLiteral("completed-%1.mp3").arg(i));
+        job.status = DownloadJob::Status::Completed;
+        encoded.append(job.toJson());
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("jobs"), encoded);
+    state.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    state.close();
+
+    {
+        HttpClient http;
+        DownloadManager manager(&http);
+        QCOMPARE(manager.jobs().size(), 100);
+        bool keptPending = false;
+        for (const DownloadJob &job : manager.jobs()) {
+            if (job.id == pending.id) {
+                keptPending = true;
+                break;
+            }
+        }
+        // 清理标记还没完成的记录不能被历史裁剪丢掉；否则对应播放缓存/歌词
+        // 缓存永远没有记录可供 cleanupPendingCaches 继续清理。
+        QVERIFY(keptPending);
+        manager.shutdownForExit();
+    }
+    QFile::remove(statePath);
 }
 
 void IntegrationTest::downloadHlsMergesAndRemuxes()
