@@ -76,6 +76,44 @@ QString safeEntryName(const QString &raw, MediaType type)
         raw, type == MediaType::Video ? QStringLiteral("影视") : QStringLiteral("音乐"), 120);
 }
 
+/// @brief 从直链查询串中选出真正的媒体 id 参数。
+/// @note 不能直接取第一个以 "id" 结尾的键：`uid`、`user_id`、`paid`、`valid`
+///       也满足 endsWith("id")。先命中这类账号/状态参数，会让同一用户下不同曲目
+///       得到同一个缓存身份，最终复用错误缓存。先按常见媒体 id 名精确匹配，
+///       找不到时才退回原来的“第一个 *id”规则以保持旧身份稳定。
+QString stableMediaId(const QUrl &url)
+{
+    const QList<QPair<QString, QString>> items =
+        QUrlQuery(url).queryItems(QUrl::FullyDecoded);
+    static const QStringList preferred = {
+        QStringLiteral("id"),
+        QStringLiteral("mediaid"),
+        QStringLiteral("itemid"),
+        QStringLiteral("trackid"),
+        QStringLiteral("songid"),
+        QStringLiteral("musicid"),
+        QStringLiteral("videoid"),
+        QStringLiteral("vid"),
+        QStringLiteral("aid"),
+        QStringLiteral("avid"),
+        QStringLiteral("bvid"),
+        QStringLiteral("cid"),
+        QStringLiteral("epid"),
+        QStringLiteral("sid"),
+    };
+    for (const QString &key : preferred) {
+        for (const auto &item : items) {
+            if (item.first.compare(key, Qt::CaseInsensitive) == 0)
+                return item.second;
+        }
+    }
+    for (const auto &item : items) {
+        if (item.first.toLower().endsWith(QStringLiteral("id")))
+            return item.second;
+    }
+    return QString();
+}
+
 /// @brief 对 mediaIdentity() 做 SHA-256 并截取前 length 位十六进制。
 QString identityDigest(const MediaItem &item, int length)
 {
@@ -297,7 +335,8 @@ QString rootDir()
 /// @param item 媒体条目。
 /// @return 本地条目直接用 mediaIdentity；网页条目用 webUrl+标题；在线条目用
 ///         去查询串的播放地址、类型、标题、作者、源 id 与稳定 id 参数拼成。
-/// @note 签名、过期时间等易变参数不参与身份，否则同一首歌每次重播都会新建缓存。
+/// @note 签名、过期时间等易变参数不参与身份，否则同一首歌每次重播都会新建缓存；
+///       `uid`/`paid` 等账号或状态参数也不能盖过真正的媒体 id，否则会串用缓存。
 QString cacheIdentity(const MediaItem &item)
 {
     if (!item.online)
@@ -309,17 +348,7 @@ QString cacheIdentity(const MediaItem &item)
     QUrl bare = preferredPlaybackUrl(item);
     bare.setQuery(QString());
     bare.setFragment(QString());
-    QString stableId;
-    // 只捡名字里带 id 的参数（id/songId/videoId/aid…）；签名、过期时间这类
-    // 会变的参数不能参与缓存归属，否则同一首歌每次重播都换一份缓存。
-    const QUrlQuery query(item.url);
-    for (const auto &pair : query.queryItems(QUrl::FullyDecoded)) {
-        const QString key = pair.first.toLower();
-        if (key == QStringLiteral("id") || key.endsWith(QStringLiteral("id"))) {
-            stableId = pair.second;
-            break;
-        }
-    }
+    const QString stableId = stableMediaId(item.url);
     return QStringLiteral("url:") + bare.toString() + QLatin1Char('#')
            + QString::number(static_cast<int>(item.type)) + QLatin1Char('#') + item.title
            + QLatin1Char('#') + item.artist + QLatin1Char('#') + item.sourceId

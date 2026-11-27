@@ -3421,6 +3421,23 @@ void CoreLogicTest::mediaCacheLayoutForMusicAndVideo()
     songB.url = QStringLiteral("https://music.163.com/song/media/outer/url?id=2.mp3");
     QVERIFY(MediaCache::cacheIdentity(songA) != MediaCache::cacheIdentity(songB));
 
+    // `uid`、`paid` 等账号/状态参数也以 "id" 结尾，不能抢在真正的媒体 id
+    // 前面参与缓存身份。否则同一用户下的两首歌会共用同一个缓存目录。
+    MediaItem songC = music;
+    songC.url = QStringLiteral("https://api.example.com/stream?uid=7&id=3");
+    MediaItem songD = music;
+    songD.url = QStringLiteral("https://api.example.com/stream?uid=7&id=4");
+    QVERIFY(MediaCache::cacheIdentity(songC) != MediaCache::cacheIdentity(songD));
+
+    // 同一媒体 id 换用户或换状态参数不应另起缓存。
+    MediaItem songCWithoutUser = music;
+    songCWithoutUser.url = QStringLiteral("https://api.example.com/stream?id=3");
+    QCOMPARE(MediaCache::cacheIdentity(songC), MediaCache::cacheIdentity(songCWithoutUser));
+    MediaItem songCWithStatus = music;
+    songCWithStatus.url = QStringLiteral("https://api.example.com/stream?paid=0&id=3");
+    QCOMPARE(MediaCache::cacheIdentity(songCWithoutUser),
+             MediaCache::cacheIdentity(songCWithStatus));
+
     // 删除重试的真实场景：正文被短暂占用，第一轮删正文失败后 JSON 已被删掉。
     // 下一次按“无 JSON 的残留正文”仍要定位到同一个文件，不能跳到 (3)。
     {
