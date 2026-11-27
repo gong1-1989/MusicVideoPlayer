@@ -35,6 +35,20 @@ QString playlistAttribute(const QString &line, const QString &name)
         return {};
     return match.captured(1).isEmpty() ? match.captured(2) : match.captured(1);
 }
+
+/// @brief 去掉属性值两侧的可选引号。
+/// @note #EXT-X-BASE 不是标准 HLS 标签，但部分站点会写成带引号的形式；
+///       解析、变体枚举和重写必须使用同一套去引号规则，否则同一份列表
+///       在播放器侧可用、在重写侧却被判成非 HTTP(S) 地址。
+QString unquotedValue(const QString &value)
+{
+    const QString trimmed = value.trimmed();
+    if (trimmed.size() >= 2 && trimmed.startsWith(QLatin1Char('"'))
+        && trimmed.endsWith(QLatin1Char('"'))) {
+        return trimmed.mid(1, trimmed.size() - 2);
+    }
+    return trimmed;
+}
 } // namespace
 
 namespace {
@@ -243,11 +257,8 @@ QSharedPointer<HlsPlaylist::MediaInfo> HlsPlaylist::parseMedia(
             continue;
 
         if (line.startsWith(QLatin1String("#EXT-X-BASE:"))) {
-            QString value = line.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
-            if (value.size() >= 2 && value.startsWith(QLatin1Char('"'))
-                && value.endsWith(QLatin1Char('"'))) {
-                value = value.mid(1, value.size() - 2);
-            }
+            const QString value = unquotedValue(
+                line.mid(QStringLiteral("#EXT-X-BASE:").size()));
             const QUrl next = info->base.resolved(QUrl(value));
             const bool accepted = options.strict
                 ? (!value.isEmpty() && NetworkAddressPolicy::isHttpMediaUrl(next))
@@ -548,7 +559,8 @@ QList<HlsPlaylist::Variant> HlsPlaylist::variants(const QByteArray &body,
             continue;
 
         if (line.startsWith(QLatin1String("#EXT-X-BASE:"))) {
-            const QString value = line.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
+            const QString value = unquotedValue(
+                line.mid(QStringLiteral("#EXT-X-BASE:").size()));
             const QUrl next = base.resolved(QUrl(value));
             if (next.isValid())
                 base = next;
@@ -664,8 +676,8 @@ QByteArray HlsPlaylist::rewrite(const QByteArray &body, const QUrl &playlistUrl,
         }
 
         if (trimmed.startsWith(QLatin1String("#EXT-X-BASE:"))) {
-            const QString value =
-                trimmed.mid(QStringLiteral("#EXT-X-BASE:").size()).trimmed();
+            const QString value = unquotedValue(
+                trimmed.mid(QStringLiteral("#EXT-X-BASE:").size()));
             const QUrl next = base.resolved(QUrl(value));
             if (!NetworkAddressPolicy::isHttpMediaUrl(next)) {
                 failure = QObject::tr("播放列表的 BASE 不是 HTTP(S)：%1").arg(value.left(160));

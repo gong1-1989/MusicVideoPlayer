@@ -4349,6 +4349,19 @@ void CoreLogicTest::hlsPlaylistParsesAndIndexes()
     QCOMPARE(HlsPlaylist::segmentIndexAt(*info, 4000), 1);
     QCOMPARE(HlsPlaylist::segmentIndexAt(*info, 9999), 1);
 
+    // 非标准但部分站点会写的带引号 BASE：变体枚举也要按同一规则去引号，
+    // 否则 master 里的子列表会被解析成相对原地址的错误路径。
+    const QByteArray master =
+        "#EXTM3U\n"
+        "#EXT-X-BASE:\"https://cdn.test/a/\"\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=1280x720\n"
+        "720/index.m3u8\n";
+    const QList<HlsPlaylist::Variant> variants = HlsPlaylist::variants(
+        master, QUrl(QStringLiteral("https://origin.test/path/list.m3u8")));
+    QCOMPARE(variants.size(), 1);
+    QCOMPARE(variants.first().uri,
+             QUrl(QStringLiteral("https://cdn.test/a/720/index.m3u8")));
+
     QVERIFY(HlsPlaylist::sameScope(
         QUrl(QStringLiteral("https://cdn.test/a/list.m3u8")),
         QUrl(QStringLiteral("https://cdn.test/a/720/index.m3u8"))));
@@ -4388,6 +4401,22 @@ void CoreLogicTest::hlsPlaylistRewritesUris()
     QVERIFY2(text.contains(QStringLiteral("http://127.0.0.1:1234/stream/token/seg1.ts")),
              qPrintable(text));
     QVERIFY(!text.contains(QStringLiteral("seg1.ts\nseg1.ts")));
+
+    // 带引号的 BASE 在重写阶段也必须先去掉引号，否则整份列表会被判成
+    // 非 HTTP(S) 地址并让播放器收到 502。
+    const QByteArray quotedBasePlaylist =
+        "#EXTM3U\n"
+        "#EXT-X-BASE:\"https://cdn.test/a/\"\n"
+        "#EXTINF:4,\n"
+        "seg1.ts\n";
+    QString quotedBaseError;
+    const QByteArray quotedBaseRewritten = HlsPlaylist::rewrite(
+        quotedBasePlaylist, playlistUrl, [](const QUrl &) {
+            return QUrl(QStringLiteral("http://127.0.0.1:1234/stream/token/"));
+        }, &quotedBaseError);
+    QVERIFY2(quotedBaseError.isEmpty(), qPrintable(quotedBaseError));
+    QVERIFY(QString::fromUtf8(quotedBaseRewritten)
+                .contains(QStringLiteral("http://127.0.0.1:1234/stream/token/seg1.ts")));
 
     // UTF-8 BOM 不能把首行 #EXTM3U 变成“分片 URI”，否则整份播放列表
     // 会被判成非法并返回空结果。
