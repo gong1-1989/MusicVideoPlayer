@@ -123,7 +123,7 @@ private:
     /// 切换条目/退出时再清理，避免“缓存 100% 的瞬间当前会话重新回源”。
     void retainCurrentTrackFiles();
     void cleanupRetainedTracks();
-    void cleanupPartial(bool removeBody);
+    void cleanupPartial(bool removeBody, bool removeTracks = true);
     /// 清空当前条目的会话字段；调用前必须先完成信号/任务/文件清理，
     /// 否则后续日志和完成信号会拿不到条目信息。
     void resetSessionState();

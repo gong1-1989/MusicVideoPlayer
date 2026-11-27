@@ -262,6 +262,7 @@ private slots:
     void hlsCacheBuilderProducesSuffixlessMp4();
     void hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList();
     void hlsCacheBuilderResumesAfterExit();
+    void hlsCacheBuilderPreservesResumeOnTrackFailure();
     void hlsCacheBuilderRejectsStaleCompletedTrack();
     void downloadManagerReusesPlaybackCacheThroughStaging();
     void hlsCacheBuilderMergesSingleFileAudio();
@@ -1875,6 +1876,138 @@ void IntegrationTest::hlsCacheBuilderResumesAfterExit()
     QVERIFY(!QFileInfo::exists(base + QStringLiteral(".video.resume.json")));
     QVERIFY(!QFileInfo::exists(base + QStringLiteral(".partial.json")));
     QVERIFY(!QFileInfo::exists(base + QStringLiteral(".video.ts.mvpdownload")));
+
+    QVERIFY(MediaCache::removeForItem(item));
+}
+
+void IntegrationTest::hlsCacheBuilderPreservesResumeOnTrackFailure()
+{
+    if (!MediaRemux::isAvailable())
+        QSKIP("未找到 ffmpeg，跳过 HLS 失败续传测试");
+
+    const QString ffmpeg = MediaRemux::ffmpegExecutable();
+    const QString sourceTs = m_tempDir.filePath(QStringLiteral("hls-failure-source.ts"));
+    QFile::remove(sourceTs);
+    QProcess generator;
+    generator.start(ffmpeg, {QStringLiteral("-y"), QStringLiteral("-nostdin"),
+                             QStringLiteral("-loglevel"), QStringLiteral("error"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("testsrc=size=160x90:rate=25"),
+                             QStringLiteral("-f"), QStringLiteral("lavfi"),
+                             QStringLiteral("-i"), QStringLiteral("sine=frequency=440"),
+                             QStringLiteral("-t"), QStringLiteral("2"),
+                             QStringLiteral("-c:v"), QStringLiteral("mpeg2video"),
+                             QStringLiteral("-c:a"), QStringLiteral("mp2"),
+                             QStringLiteral("-f"), QStringLiteral("mpegts"), sourceTs});
+    QVERIFY(generator.waitForFinished(30000));
+    QCOMPARE(generator.exitCode(), 0);
+    QFile tsFile(sourceTs);
+    QVERIFY(tsFile.open(QIODevice::ReadOnly));
+    const QByteArray tsBytes = tsFile.readAll();
+    QVERIFY(tsBytes.size() > 1024);
+    const int split = tsBytes.size() / 2;
+
+    bool failSecondSegment = true;
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "seg0.ts\n"
+        "#EXTINF:1.0,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n";
+    server.handler = [&failSecondSegment, playlist, tsBytes, split](
+                         const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/failure-cache/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+        } else if (request.path == QStringLiteral("/failure-cache/seg0.ts")) {
+            LocalHttpServer::respond(socket, 200, tsBytes.left(split), "video/mp2t");
+        } else if (request.path == QStringLiteral("/failure-cache/seg1.ts")) {
+            if (failSecondSegment)
+                LocalHttpServer::respond(socket, 500, QByteArrayLiteral("server error"),
+                                         "text/plain");
+            else
+                LocalHttpServer::respond(socket, 200, tsBytes.mid(split), "video/mp2t");
+        } else {
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+        }
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("HLS 失败续传测试");
+    item.url = server.url(QStringLiteral("/failure-cache/index.m3u8"));
+    item.online = true;
+
+    const QString base = MediaCache::filePathForItem(item);
+    QVERIFY(MediaCache::removeForItem(item));
+
+    HttpClient http;
+    HlsCacheBuilder builder(&http);
+    bool completed = false;
+    bool failed = false;
+    QString failureMessage;
+    connect(&builder, &HlsCacheBuilder::completed, &builder,
+            [&](const MediaItem &, const QString &) { completed = true; });
+    connect(&builder, &HlsCacheBuilder::failed, &builder,
+            [&](const MediaItem &, const QString &message) {
+                failed = true;
+                failureMessage = message;
+            });
+
+    auto partialBytes = [&]() {
+        qint64 bytes = 0;
+        for (const QString &suffix : { QStringLiteral(".ts.mvpdownload"),
+                                       QStringLiteral(".mp4.mvpdownload"),
+                                       QStringLiteral(".video.mvpdownload"),
+                                       QStringLiteral(".video.ts.mvpdownload"),
+                                       QStringLiteral(".video.mp4.mvpdownload") })
+            bytes = qMax(bytes, QFileInfo(base + suffix).size());
+        return bytes;
+    };
+    auto resumedSegments = [&]() {
+        QFile state(base + QStringLiteral(".video.resume.json"));
+        if (!state.open(QIODevice::ReadOnly))
+            return -1;
+        QJsonParseError error;
+        const QJsonDocument document = QJsonDocument::fromJson(state.readAll(), &error);
+        if (error.error != QJsonParseError::NoError || !document.isObject())
+            return -1;
+        return document.object().value(QStringLiteral("segmentIndex")).toInt(-1);
+    };
+
+    QVERIFY(builder.start(item));
+    QTRY_VERIFY_WITH_TIMEOUT(failed, 15000);
+    QVERIFY2(!completed, qPrintable(failureMessage));
+    // 失败不能把已经下完的第一片和续传状态一起清掉，否则重试只能从零开始。
+    QVERIFY(QFileInfo::exists(base + QStringLiteral(".video.resume.json")));
+    QVERIFY(partialBytes() >= split);
+    QVERIFY(resumedSegments() >= 1);
+
+    failSecondSegment = false;
+    completed = false;
+    failed = false;
+    failureMessage.clear();
+    QVERIFY(builder.start(item));
+    QTRY_VERIFY_WITH_TIMEOUT(completed || failed, 30000);
+    QVERIFY2(!failed, qPrintable(failureMessage));
+    QVERIFY(completed);
+
+    int firstSegmentRequests = 0;
+    for (const LocalHttpServer::Request &request : server.requests) {
+        // 迁移旧轨道时会发一个 bytes=0-0 探测请求，它不是重新下载分片；
+        // 只有不带 Range 的完整分片请求才说明续传点被丢弃。
+        if (request.path == QStringLiteral("/failure-cache/seg0.ts")
+            && request.headers.value("range").isEmpty())
+            ++firstSegmentRequests;
+    }
+    // 第二次启动必须接着第一片之后下载，而不是整段重下。
+    QCOMPARE(firstSegmentRequests, 1);
+    QVERIFY(!QFileInfo::exists(base + QStringLiteral(".video.resume.json")));
 
     QVERIFY(MediaCache::removeForItem(item));
 }

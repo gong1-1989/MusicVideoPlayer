@@ -1470,10 +1470,26 @@ void HlsCacheBuilder::cleanupTrackFilesAt(const QString &bodyPath, const QString
 
 /// @brief 清理当前构建留下的半成品。
 /// @param removeBody true 时连同正文和旁车 JSON 一起删除；失败路径使用。
+/// @param removeTracks true 时连轨道文件与续传状态一起删除；只有用户明确
+///        删除条目时才这样做，网络/转封装失败必须保留可续传现场。
 /// @note 只尝试删除空目录，目录里还有用户其他缓存时 rmdir 失败可忽略。
-void HlsCacheBuilder::cleanupPartial(bool removeBody)
+void HlsCacheBuilder::cleanupPartial(bool removeBody, bool removeTracks)
 {
-    cleanupTrackFiles();
+    if (removeTracks) {
+        cleanupTrackFiles();
+    } else {
+        // 轨道文件保留，但内存索引必须立刻失效：失败后当前播放会话可能还在
+        // 读代理地址，继续命中指向半成品的索引会读到截断或错位字节；下一次
+        // start() 只登记重新校验后的分片，宁可回源也不能返回错位字节。
+        const QString videoBase = m_bodyPath + QStringLiteral(".video");
+        const QString audioBase = m_bodyPath + QStringLiteral(".audio");
+        for (const QString &path : { m_videoPath, videoBase, m_audioPath, audioBase }) {
+            if (!path.isEmpty())
+                HlsPreloadIndex::instance().clearTrack(path);
+        }
+        // 轨道文件保留时必须保留未完成身份标记：否则下一次 start() 会因
+        // 目录非空又找不到同一身份，把续传现场改判成 " (2)" 新目录并整段重下。
+    }
     if (removeBody && !m_bodyPath.isEmpty()) {
         QFile::remove(m_bodyPath);
         QFile::remove(m_bodyPath + QStringLiteral(".json"));
@@ -1489,8 +1505,10 @@ void HlsCacheBuilder::cleanupPartial(bool removeBody)
     }
 }
 
-/// @brief 统一失败收尾：停止计时器/请求/任务，删除半成品并发出 failed。
+/// @brief 统一失败收尾：停止计时器/请求/任务，删除正文半成品并发出 failed。
 /// @param message 面向用户的失败原因。
+/// @note 失败与用户主动删除不同：轨道文件和续传状态必须保留，下一次播放
+///       可以按指纹/分片序号继续；只有正文和转封装临时文件没有复用价值。
 void HlsCacheBuilder::finishFailed(const QString &message)
 {
     if (!m_active)
@@ -1502,8 +1520,10 @@ void HlsCacheBuilder::finishFailed(const QString &message)
     m_variantTimer->stop();
     abortPlaylistFetch();
     stopMigrations();
-    cancelTasks();
-    cleanupPartial(true);
+    // 不能用 cancelTasks()：DownloadTask::cancel() 会删掉当前 .mvpdownload。
+    // stopTasksForExit() 只补检查点并保留文件，正是失败重试需要的现场。
+    stopTasksForExit();
+    cleanupPartial(true, false);
     resetSessionState();
     qCWarning(lcHlsCache) << "HLS 影视缓存失败：" << item.displayName() << message;
     emit failed(item, message);
