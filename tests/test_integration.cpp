@@ -2464,6 +2464,31 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
     builder.setPlaybackTrackResolvers([videoUrl] { return videoUrl; },
                                       [audioUrl] { return audioUrl; });
 
+    const QString base = MediaCache::filePathForItem(item);
+    const QString videoState = base + QStringLiteral(".video.resume.json");
+    const QString audioState = base + QStringLiteral(".audio.resume.json");
+    // 模拟旧缺陷留下的状态：两条轨道都写在公共 media.ts。修复后这类状态必须
+    // 被拒绝，否则再次启动仍会把双轨指到同一文件。
+    QVERIFY(QDir().mkpath(QFileInfo(base).absolutePath()));
+    // 目录非空但没有身份标记时 start() 会认为目录属于别的条目并改到 " (2)"，
+    // 这里先登记身份，让旧续传状态落在真正的缓存目录里。
+    QVERIFY(MediaCache::writePartialIdentity(base, MediaCache::cacheIdentity(item)));
+    auto writeLegacyResume = [](const QString &path, const QString &target) {
+        QJsonObject object;
+        object.insert(QStringLiteral("version"), 1);
+        object.insert(QStringLiteral("targetPath"), target);
+        object.insert(QStringLiteral("bytesWritten"), 0);
+        object.insert(QStringLiteral("segmentIndex"), 0);
+        object.insert(QStringLiteral("segmentCount"), 1);
+        object.insert(QStringLiteral("fingerprint"), QStringLiteral("legacy"));
+        object.insert(QStringLiteral("completed"), false);
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly)
+               && file.write(QJsonDocument(object).toJson(QJsonDocument::Compact)) > 0;
+    };
+    QVERIFY(writeLegacyResume(videoState, base + QStringLiteral(".ts")));
+    QVERIFY(writeLegacyResume(audioState, base + QStringLiteral(".ts")));
+
     bool completed = false;
     bool failed = false;
     QString failureMessage;
@@ -2476,9 +2501,6 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
             });
     QVERIFY(builder.start(item));
 
-    const QString base = MediaCache::filePathForItem(item);
-    const QString videoState = base + QStringLiteral(".video.resume.json");
-    const QString audioState = base + QStringLiteral(".audio.resume.json");
     QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(videoState) && QFileInfo::exists(audioState),
                              10000);
     auto targetPathOf = [](const QString &path) {
@@ -2496,7 +2518,10 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
             videoTarget = targetPathOf(videoState);
             audioTarget = targetPathOf(audioState);
             return videoTarget.endsWith(QStringLiteral(".ts"))
-                   && audioTarget.endsWith(QStringLiteral(".ts"));
+                   && audioTarget.endsWith(QStringLiteral(".ts"))
+                   // 旧状态里的公共 media.ts 必须已被新任务改写掉。
+                   && videoTarget != base + QStringLiteral(".ts")
+                   && audioTarget != base + QStringLiteral(".ts");
         }()),
         10000);
     // 两条轨道必须以各自基名落盘；若都退化成 media.ts，会并发写同一个文件。

@@ -1306,12 +1306,22 @@ HlsCacheBuilder::TrackResume HlsCacheBuilder::loadTrackResume(const QString &bas
 
     resume.targetPath = object.value(QStringLiteral("targetPath")).toString();
     // 状态文件也在缓存目录里，必须限制目标与基名同目录，避免被篡改成任意写盘路径。
+    // 仅同目录还不够：媒体目录里的另一条轨道（media.audio.*）或旧版本缺陷留下的
+    // 公共 media.ts 也在同目录。目标名必须是 basePath、basePath.ts 或 basePath.mp4，
+    // 否则视频轨和音轨会被上一轮的错误状态重新指到同一个文件。
     if (!resume.targetPath.isEmpty()) {
         const QString baseDir = QDir::cleanPath(QFileInfo(basePath).absolutePath());
         const QString targetDir =
             QDir::cleanPath(QFileInfo(resume.targetPath).absolutePath());
-        if (baseDir != targetDir) {
-            qCWarning(lcHlsCache) << "HLS 续传目标越界，忽略状态：" << resume.targetPath;
+        const QString cleanTarget = QDir::cleanPath(resume.targetPath);
+        const QString cleanBase = QDir::cleanPath(basePath);
+        const bool nameMatches =
+            cleanTarget.compare(cleanBase, Qt::CaseInsensitive) == 0
+            || cleanTarget.compare(cleanBase + QStringLiteral(".ts"), Qt::CaseInsensitive) == 0
+            || cleanTarget.compare(cleanBase + QStringLiteral(".mp4"), Qt::CaseInsensitive) == 0;
+        if (baseDir != targetDir || !nameMatches) {
+            qCWarning(lcHlsCache) << "HLS 续传目标与轨道基名不匹配，忽略状态："
+                                  << resume.targetPath;
             resume.targetPath.clear();
         }
     }
