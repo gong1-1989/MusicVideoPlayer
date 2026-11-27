@@ -2737,6 +2737,21 @@ void CoreLogicTest::hlsCacheManifestKeepsSessionKeyAndDisablesEncryptedSingleFil
     QVERIFY(track.encrypted);
     QVERIFY(!track.singleFile);
     QVERIFY(track.singleFileUrl.isEmpty());
+
+    // AES-128 行结构异常（缺 URI）时仍要保守标记加密，避免缓存层误判为明文单文件。
+    HlsCacheManifest::MediaTrack malformedKey;
+    const QByteArray malformedBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXT-X-KEY:METHOD=AES-128\n"
+        "#EXTINF:1,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n");
+    QVERIFY2(HlsCacheManifest::parseMediaTrack(malformedBody,
+                                               QUrl(QStringLiteral("http://example.com/media.m3u8")),
+                                               &malformedKey, &error),
+             qPrintable(error));
+    QVERIFY(malformedKey.encrypted);
+    QVERIFY(!malformedKey.singleFile);
 }
 
 void CoreLogicTest::downloadRejectsHtmlDisguisedAsOctetStream()

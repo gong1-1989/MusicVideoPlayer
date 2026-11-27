@@ -40,6 +40,17 @@ QString capture(const QRegularExpression &re, const QString &line)
     return match.hasMatch() ? match.captured(1).trimmed() : QString();
 }
 
+/// @brief KEY 行是否意味着内容被加密。
+/// @note 除正常解析出的 enabled/unsupported 外，只要 METHOD 不是 NONE 就按加密处理。
+///       这样即使 URI/IV 非法导致 parseKeyLine 返回 error，缓存层也不会误走明文单文件
+///       路径，避免把加密流当普通 MP4 落盘。
+bool marksEncrypted(const HlsPlaylist::Key &key)
+{
+    return key.enabled || !key.unsupported.isEmpty()
+        || (!key.method.isEmpty()
+            && key.method.compare(QLatin1String("NONE"), Qt::CaseInsensitive) != 0);
+}
+
 } // namespace
 
 namespace HlsCacheManifest {
@@ -78,7 +89,7 @@ bool parseMaster(const QByteArray &body, const QUrl &baseUrl, Master *out, QStri
             // 带过去，否则会把密文当明文合并进 MP4。
             out->sessionKeyLines.append(line);
             const HlsPlaylist::Key key = HlsPlaylist::parseKeyLine(line, baseUrl);
-            if (key.enabled || !key.unsupported.isEmpty())
+            if (marksEncrypted(key))
                 out->encrypted = true;
             continue;
         }
@@ -166,7 +177,7 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
         if (line.startsWith(QLatin1String("#EXT-X-KEY"))
             || line.startsWith(QLatin1String("#EXT-X-SESSION-KEY"))) {
             const HlsPlaylist::Key key = HlsPlaylist::parseKeyLine(line, baseUrl);
-            if (key.enabled || !key.unsupported.isEmpty())
+            if (marksEncrypted(key))
                 out->encrypted = true;
             continue;
         }
