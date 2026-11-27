@@ -309,6 +309,25 @@ LoadResult loadAll()
                                 << "：" << read.error;
             return result;
         }
+        if (read.status == ReadStatus::Corrupt) {
+            // 快照损坏时同样不能把空列表写回去：它可能是用户列表的最后一份
+            // 数据。先把损坏内容改名备份，再冻结保存，避免下一次退出/修改
+            // 用空文件覆盖仍可供人工恢复的原始内容。
+            const QString corrupt = backupCorrupt(snapshot);
+            result.storageBlocked = true;
+            result.message = corrupt.isEmpty()
+                ? QStringLiteral(
+                      "播放列表快照内容损坏且无法备份；为避免覆盖最后一份数据，当前禁止保存。"
+                      "快照：%1")
+                      .arg(snapshot)
+                : QStringLiteral(
+                      "播放列表快照内容损坏，已备份为 %1；当前显示空列表，"
+                      "为避免写入空文件，已禁止保存。")
+                      .arg(corrupt);
+            qCCritical(lcStore) << "播放列表快照损坏，禁止保存：" << snapshot
+                                << "：" << read.error;
+            return result;
+        }
         qCWarning(lcStore) << "播放列表快照也无法读取：" << snapshot
                            << "，原因：" << read.error;
     }

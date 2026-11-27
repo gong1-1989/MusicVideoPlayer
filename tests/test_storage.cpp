@@ -63,6 +63,7 @@ private slots:
     void playlistMissingPartitionsIsCorrupt();
     void playlistSnapshotRecoversAfterCorruption();
     void playlistSnapshotReadErrorBlocksSave();
+    void playlistSnapshotCorruptBlocksSave();
     void playlistVideoProgressRoundTrip();
     void playlistVideoProgressRemovedWithItem();
     void sourceRegistrySeedsAndPersists();
@@ -220,6 +221,32 @@ void StorageTest::playlistSnapshotReadErrorBlocksSave()
     QVERIFY(result.music.isEmpty());
     QVERIFY(result.video.isEmpty());
     QVERIFY(result.message.contains(QStringLiteral("禁止保存")));
+}
+
+void StorageTest::playlistSnapshotCorruptBlocksSave()
+{
+    // 主文件缺失、快照内容损坏时，快照仍可能是用户列表的最后一份数据。
+    // 此时不能把它当成“空列表”继续允许保存，否则退出/下一次修改会把
+    // 损坏但可人工恢复的快照直接覆盖掉。
+    const QString primary = PlaylistStore::filePath();
+    const QString snapshot = PlaylistStore::backupFilePath();
+    QVERIFY(!QFileInfo::exists(primary));
+    QFile file(snapshot);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(file.write("{ not json") > 0);
+    file.close();
+
+    const PlaylistStore::LoadResult result = PlaylistStore::loadAll();
+    QVERIFY(result.storageBlocked);
+    QVERIFY(result.music.isEmpty());
+    QVERIFY(result.video.isEmpty());
+    QVERIFY(result.message.contains(QStringLiteral("禁止保存")));
+    // 损坏快照必须改名保留，而不是原地覆盖或直接删除。
+    QVERIFY(!QFile::exists(snapshot));
+    const QFileInfoList backups = QDir(StoragePaths::dataDir())
+                                      .entryInfoList({QStringLiteral("playlists.json.bak.corrupt-*")},
+                                                     QDir::Files);
+    QVERIFY(!backups.isEmpty());
 }
 
 void StorageTest::playlistVideoProgressRoundTrip()
