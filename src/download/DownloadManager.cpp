@@ -639,9 +639,18 @@ bool DownloadManager::retryJob(const QString &id, bool allowIncomplete)
 /// @brief 清除已完成/已取消任务记录（不删用户文件）。
 void DownloadManager::clearCompleted()
 {
+    // 先尝试清理这些完成记录挂着的播放缓存/歌词缓存。直接按状态删除会把
+    // 带 cleanupCachePath / cleanupMediaAndLyrics 的记录一起丢掉，
+    // cleanupPendingCaches() 之后再也找不到清理目标，缓存会永久留在磁盘。
+    // 清理失败的记录必须保留，交给定时器继续重试。
+    cleanupPendingCaches();
     for (int i = m_jobs.size() - 1; i >= 0; --i) {
-        if (m_jobs.at(i).status == DownloadJob::Status::Completed)
+        const DownloadJob &job = m_jobs.at(i);
+        if (job.status == DownloadJob::Status::Completed
+            && job.cleanupCachePath.isEmpty()
+            && !job.cleanupMediaAndLyrics) {
             m_jobs.removeAt(i);
+        }
     }
     scheduleSave();
     emit jobsChanged();

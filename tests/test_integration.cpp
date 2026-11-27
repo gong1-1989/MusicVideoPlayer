@@ -1537,7 +1537,11 @@ void IntegrationTest::downloadManagerKeepsPendingCleanupRecord()
     pending.item.title = QStringLiteral("待清理缓存");
     pending.filePath = m_tempDir.filePath(QStringLiteral("pending-cleanup.mp3"));
     pending.status = DownloadJob::Status::Completed;
-    pending.cleanupCachePath = m_tempDir.filePath(QStringLiteral("pending-cleanup.cache"));
+    // 在缓存根目录下建一个同名目录：removeCachePath() 的 QFile::remove 会
+    // 失败并保持 cleanupCachePath，模拟播放器仍占用缓存、清理需要重试。
+    pending.cleanupCachePath =
+        MediaCache::rootDir() + QStringLiteral("/pending-cleanup/media");
+    QVERIFY(QDir().mkpath(pending.cleanupCachePath));
     encoded.append(pending.toJson());
     for (int i = 0; i < 100; ++i) {
         DownloadJob job;
@@ -1568,6 +1572,13 @@ void IntegrationTest::downloadManagerKeepsPendingCleanupRecord()
         // 清理标记还没完成的记录不能被历史裁剪丢掉；否则对应播放缓存/歌词
         // 缓存永远没有记录可供 cleanupPendingCaches 继续清理。
         QVERIFY(keptPending);
+
+        // “清除已完成”同样不能把清理失败、仍带标记的记录删掉，否则缓存清理
+        // 会失去唯一的重试入口；普通已完成记录应被清空。
+        manager.clearCompleted();
+        QCOMPARE(manager.jobs().size(), 1);
+        QCOMPARE(manager.jobs().constFirst().id, pending.id);
+        QVERIFY(!manager.jobs().constFirst().cleanupCachePath.isEmpty());
         manager.shutdownForExit();
     }
     QFile::remove(statePath);
