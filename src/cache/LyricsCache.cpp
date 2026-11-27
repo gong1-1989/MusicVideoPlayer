@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QStringList>
 #include <QUrl>
 
 namespace {
@@ -54,6 +55,18 @@ bool readMetaIdentity(const QString &path, QString *identity)
     return true;
 }
 
+/// @brief 同一条目在 1000 个候选位都被占用时使用的短哈希兜底路径。
+QString hashedPath(const MediaItem &item)
+{
+    const QString identity = lyricIdentity(item);
+    const QString digest =
+        QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256)
+            .toHex()
+            .left(8);
+    return LyricsCache::rootDir() + QLatin1Char('/') + MediaCache::entryBaseName(item)
+           + QStringLiteral("__") + digest;
+}
+
 /// 找当前条目实际占用的歌词正文。创建候选和读取现有必须分开：
 /// 创建时遇到“无正文无 JSON”的空位就停，读取时只有身份匹配才算命中。
 QString existingPath(const MediaItem &item)
@@ -69,6 +82,14 @@ QString existingPath(const MediaItem &item)
         QString storedIdentity;
         if (readMetaIdentity(path, &storedIdentity) && storedIdentity == identity)
             return path;
+    }
+    // 候选位全被占用时 store() 会写短哈希兜底路径；读取和删除也必须能
+    // 认出它，否则正文写进去后永远 load() 不到，删除条目也清不掉。
+    const QString fallback = hashedPath(item);
+    if (QFileInfo(fallback).isFile()) {
+        QString storedIdentity;
+        if (readMetaIdentity(fallback, &storedIdentity) && storedIdentity == identity)
+            return fallback;
     }
     return QString();
 }
@@ -98,12 +119,7 @@ QString writablePath(const MediaItem &item)
         }
         return path;
     }
-    const QString digest =
-        QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha256)
-            .toHex()
-            .left(8);
-    return root + QLatin1Char('/') + MediaCache::entryBaseName(item)
-           + QStringLiteral("__") + digest;
+    return hashedPath(item);
 }
 
 /// @brief 写入旁车 JSON，记录版本、identity、来源、格式与大小。
@@ -225,8 +241,14 @@ bool removeForItem(const MediaItem &item)
     // 删除条目时必须一并清理，否则会永久占位并把后续写入推到更后面的序号。
     const QString identity = lyricIdentity(item);
     bool ok = true;
-    for (int index = 0; index < 1000; ++index) {
-        const QString path = candidatePath(item, index);
+    QStringList paths;
+    paths.reserve(1001);
+    for (int index = 0; index < 1000; ++index)
+        paths.append(candidatePath(item, index));
+    // 短哈希兜底路径不在候选序列里，但 store() 可能把正文写进去；
+    // 不把它列进删除范围就会留下永远无法命中的孤儿。
+    paths.append(hashedPath(item));
+    for (const QString &path : paths) {
         const bool bodyExists = QFileInfo::exists(path);
         const QString meta = path + QStringLiteral(".json");
         const bool metaExists = QFileInfo::exists(meta);

@@ -1051,6 +1051,7 @@ private slots:
     void hlsCompleteCacheRecognition();
     void hlsCacheManifestParsesMasterAndSingleFile();
     void lyricsCacheRoundTrip();
+    void lyricsCacheHashedFallbackIsReachable();
     void shortcutsDefaultConflictDetection();
     void streamProxyHandlesSuffixlessTextPlaylist();
     void streamProxyDoesNotReuseLocalPrefixEntry();
@@ -3729,6 +3730,60 @@ void CoreLogicTest::lyricsCacheRoundTrip()
     QVERIFY(LyricsCache::removeForItem(music));
     QVERIFY(!QFileInfo::exists(orphanPath));
     QVERIFY(root.entryList(QDir::Files | QDir::NoDotAndDotDot).isEmpty());
+}
+
+void CoreLogicTest::lyricsCacheHashedFallbackIsReachable()
+{
+    QTemporaryDir dataDir;
+    QVERIFY(dataDir.isValid());
+    const QByteArray oldDataDir = qgetenv("MVP_DATA_DIR");
+    const bool hadDataDir = qEnvironmentVariableIsSet("MVP_DATA_DIR");
+    struct EnvGuard
+    {
+        QByteArray oldValue;
+        bool had = false;
+        ~EnvGuard()
+        {
+            if (had)
+                qputenv("MVP_DATA_DIR", oldValue);
+            else
+                qunsetenv("MVP_DATA_DIR");
+        }
+    } guard{oldDataDir, hadDataDir};
+    qputenv("MVP_DATA_DIR", dataDir.path().toUtf8());
+
+    MediaItem music;
+    music.type = MediaType::Music;
+    music.title = QStringLiteral("兜底歌词");
+    music.artist = QStringLiteral("测试");
+    music.url = QUrl(QStringLiteral("https://music.example.com/song.mp3?id=77"));
+    music.lyricUrl = QUrl(QStringLiteral("https://music.example.com/api/lyric?id=77"));
+    music.online = true;
+
+    const QString root = LyricsCache::rootDir();
+    QVERIFY(QDir().mkpath(root));
+    // 占满全部 1000 个常规候选位（只放正文、不放旁车），迫使 store()
+    // 走短哈希兜底路径；load()/removeForItem() 也必须认得这条路径。
+    const QString base = MediaCache::entryBaseName(music);
+    for (int index = 0; index < 1000; ++index) {
+        const QString name = index == 0
+                                 ? base
+                                 : base + QStringLiteral(" (%1)").arg(index + 1);
+        QFile orphan(QDir(root).filePath(name));
+        QVERIFY2(orphan.open(QIODevice::WriteOnly), qPrintable(orphan.fileName()));
+        orphan.write("x");
+        orphan.close();
+    }
+
+    const QByteArray payload = QByteArrayLiteral("[00:01.00]兜底成功");
+    QVERIFY(LyricsCache::store(music, payload));
+
+    QByteArray loaded;
+    QVERIFY(LyricsCache::load(music, &loaded));
+    QCOMPARE(loaded, payload);
+
+    QVERIFY(LyricsCache::removeForItem(music));
+    QVERIFY(QDir(root).entryList(QDir::Files | QDir::NoDotAndDotDot).isEmpty());
 }
 
 void CoreLogicTest::shortcutsDefaultConflictDetection()
