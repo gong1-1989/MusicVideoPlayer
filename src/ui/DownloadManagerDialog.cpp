@@ -418,8 +418,10 @@ void DownloadManagerDialog::pauseOrResumeSelected()
 }
 
 /// @brief 移除选中的下载记录。
-/// @note 已完成任务只移除记录、不删磁盘文件；未完成任务会同时删除已下载
-///       部分和 .mvpdownload 临时文件，因此必须二次确认。
+/// @note 已完成任务只移除记录、不删除下载文件；若记录仍带待清理缓存，
+///       会先清理应用自己的播放/歌词缓存，清理失败则保留记录稍后重试。
+///       未完成任务会同时删除已下载部分和 .mvpdownload 临时文件，
+///       因此必须二次确认。
 void DownloadManagerDialog::removeSelected()
 {
     const DownloadJob *job = selectedJob();

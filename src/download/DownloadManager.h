@@ -109,8 +109,11 @@ private:
     /// 用一次真实字节采样更新任务速度；返回速度是否变化。
     bool noteTransferSample(DownloadJob &job, qint64 bytes, qint64 nowMs);
     void scheduleRemoveFile(const QString &path, int attempt = 0);
-    /// 清理下载完成后标记了 cleanupCachePath 的播放缓存；被播放器占用时
-    /// 定时重试，程序重启后也会继续。只删 media-cache，不碰歌词缓存。
+    /// 清理单条下载记录挂着的播放缓存/歌词缓存；返回 false 表示仍有缓存
+    /// 被占用，需要保留记录并定时重试。
+    bool cleanupJobCaches(DownloadJob &job, bool *changed = nullptr);
+    /// 清理所有已完成记录挂着的缓存；被播放器占用时定时重试，程序重启后
+    /// 也会继续。只删应用自己的播放/歌词缓存，不碰用户下载文件。
     void cleanupPendingCaches();
     /// 升级迁移：把旧版本放在下载目录 `.download-cache` 里的暂存文件搬到
     /// 应用数据目录，避免重启后继续在下载目录重建缓存；搬不到时保留原

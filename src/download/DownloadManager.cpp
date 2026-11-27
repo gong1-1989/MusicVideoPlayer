@@ -477,6 +477,23 @@ bool DownloadManager::removeJob(const QString &id)
 
     DownloadJob job = m_jobs.at(index);
 
+    // 已完成记录可能还挂着“删除播放缓存/歌词缓存”的清理标记。直接删记录会
+    // 让 cleanupPendingCaches() 失去唯一的重试入口，缓存永久留在磁盘。
+    // 先尝试清理；清理不掉（例如播放器仍占用正文）时保留记录，交给定时器
+    // 重试，而不是静默丢标记。用户下载目录里的成品文件不受影响。
+    if (job.status == DownloadJob::Status::Completed
+        && (!job.cleanupCachePath.isEmpty() || job.cleanupMediaAndLyrics)) {
+        bool changed = false;
+        if (!cleanupJobCaches(m_jobs[index], &changed)) {
+            if (changed)
+                scheduleSave();
+            if (!m_cacheCleanupTimer->isActive())
+                m_cacheCleanupTimer->start();
+            emit statusMessage(tr("缓存仍被占用，已保留下载记录；停止播放后会重试清理"));
+            return false;
+        }
+    }
+
     // 缓存复制任务没有 DownloadTask，必须单独关句柄并清掉半成品。
     cancelCacheCopy(id, true);
     cancelSeedCopy(id, true);
@@ -1081,6 +1098,52 @@ void DownloadManager::cleanLegacyDownloadCaches()
     }
 }
 
+/// @brief 清理单条已完成下载记录挂着的播放缓存与歌词缓存。
+/// @param job 目标记录；清理成功的标记会被就地清空。
+/// @param changed 任一标记被清空时置为 true，供调用方决定是否落盘。
+/// @return 所有标记都清理成功返回 true；仍有缓存被占用返回 false。
+bool DownloadManager::cleanupJobCaches(DownloadJob &job, bool *changed)
+{
+    bool ok = true;
+
+    if (!job.cleanupCachePath.isEmpty()) {
+        const QString path = job.cleanupCachePath;
+        // HLS 影视的正文是无后缀 MP4，退出时可能还没有正文，只剩
+        // media.ts/.mvpdownload 和续传状态。不能因为正文不存在就直接跳过，
+        // 否则下载完成后这些半成品会永久留在 media-cache。
+        if (MediaCache::removeCachePath(path)) {
+            job.cleanupCachePath.clear();
+            if (changed != nullptr)
+                *changed = true;
+            qCInfo(lcDownloadManager) << "已删除下载对应的播放缓存" << path;
+        } else {
+            // Windows 上播放器持有正文句柄时删除会失败；保留精确路径，
+            // 后面按条目身份补扫并配合定时重试。
+            ok = false;
+        }
+    }
+
+    if (job.cleanupMediaAndLyrics) {
+        // 按条目身份补扫一遍：普通网络下载没有 cacheCopySourcePath /
+        // seedCacheBodyPath，但播放时可能已经生成了完整或半成品缓存；
+        // 只依赖“本次是否复用缓存”会漏掉这种场景。歌词缓存与播放缓存
+        // 分属两个目录，必须分别删除。
+        const bool mediaOk = MediaCache::removeForItem(job.item);
+        const bool lyricsOk = LyricsCache::removeForItem(job.item);
+        if (mediaOk && lyricsOk) {
+            job.cleanupMediaAndLyrics = false;
+            if (changed != nullptr)
+                *changed = true;
+            qCInfo(lcDownloadManager) << "已清理下载条目对应的播放缓存与歌词缓存"
+                                      << job.item.displayName();
+        } else {
+            ok = false;
+        }
+    }
+
+    return ok;
+}
+
 /// @brief 清理已完成任务遗留的播放缓存，避免缓存与下载各存一份。
 void DownloadManager::cleanupPendingCaches()
 {
@@ -1091,38 +1154,11 @@ void DownloadManager::cleanupPendingCaches()
         if (job.cleanupCachePath.isEmpty() && !job.cleanupMediaAndLyrics)
             continue;
 
-        if (!job.cleanupCachePath.isEmpty()) {
-            const QString path = job.cleanupCachePath;
-            // HLS 影视的正文是无后缀 MP4，退出时可能还没有正文，只剩
-            // media.ts/.mvpdownload 和续传状态。不能因为正文不存在就直接跳过，
-            // 否则下载完成后这些半成品会永久留在 media-cache。
-            if (MediaCache::removeCachePath(path)) {
-                job.cleanupCachePath.clear();
-                changed = true;
-                qCInfo(lcDownloadManager) << "已删除下载对应的播放缓存" << path;
-            } else {
-                // Windows 上播放器持有正文句柄时删除会失败；保留精确路径，
-                // 后面按条目身份补扫并配合定时重试。
-                pending = true;
-            }
-        }
-
-        if (job.cleanupMediaAndLyrics) {
-            // 按条目身份补扫一遍：普通网络下载没有 cacheCopySourcePath /
-            // seedCacheBodyPath，但播放时可能已经生成了完整或半成品缓存；
-            // 只依赖“本次是否复用缓存”会漏掉这种场景。歌词缓存与播放缓存
-            // 分属两个目录，必须分别删除。
-            const bool mediaOk = MediaCache::removeForItem(job.item);
-            const bool lyricsOk = LyricsCache::removeForItem(job.item);
-            if (mediaOk && lyricsOk) {
-                job.cleanupMediaAndLyrics = false;
-                changed = true;
-                qCInfo(lcDownloadManager) << "已清理下载条目对应的播放缓存与歌词缓存"
-                                          << job.item.displayName();
-            } else {
-                pending = true;
-            }
-        }
+        bool jobChanged = false;
+        if (!cleanupJobCaches(job, &jobChanged))
+            pending = true;
+        if (jobChanged)
+            changed = true;
     }
 
     if (changed) {

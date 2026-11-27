@@ -259,6 +259,7 @@ private slots:
     void downloadManagerRemovesLegacyDownloadCache();
     void downloadManagerMigratesLegacyStaging();
     void downloadManagerKeepsPendingCleanupRecord();
+    void downloadManagerKeepsRecordWhenPendingCacheCleanupFails();
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
     void hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList();
@@ -1584,6 +1585,60 @@ void IntegrationTest::downloadManagerKeepsPendingCleanupRecord()
         QVERIFY(!manager.jobs().constFirst().cleanupCachePath.isEmpty());
         manager.shutdownForExit();
     }
+    QFile::remove(statePath);
+}
+
+void IntegrationTest::downloadManagerKeepsRecordWhenPendingCacheCleanupFails()
+{
+    QDir().mkpath(StoragePaths::dataDir());
+    const QString statePath = StoragePaths::dataFile(QStringLiteral("downloads.json"));
+    QFile state(statePath);
+    QVERIFY(state.open(QIODevice::WriteOnly | QIODevice::Truncate));
+
+    DownloadJob pending;
+    pending.id = QStringLiteral("pending-remove");
+    pending.item.type = MediaType::Music;
+    pending.item.title = QStringLiteral("待移除的缓存记录");
+    pending.filePath = m_tempDir.filePath(QStringLiteral("pending-remove.mp3"));
+    pending.status = DownloadJob::Status::Completed;
+    pending.cleanupCachePath =
+        MediaCache::rootDir() + QStringLiteral("/remove-job-pending/media");
+    QVERIFY(QDir().mkpath(pending.cleanupCachePath));
+
+    QFile downloaded(pending.filePath);
+    QVERIFY(downloaded.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(downloaded.write("user-download") > 0);
+    downloaded.close();
+
+    QJsonArray encoded;
+    encoded.append(pending.toJson());
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("jobs"), encoded);
+    state.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    state.close();
+
+    {
+        HttpClient http;
+        DownloadManager manager(&http);
+        QCOMPARE(manager.jobs().size(), 1);
+
+        // 缓存路径仍是目录时 removeCachePath() 会失败：记录必须保留，
+        // 否则 cleanupPendingCaches() 再也找不到这条待清理缓存。
+        QVERIFY(!manager.removeJob(pending.id));
+        QCOMPARE(manager.jobs().size(), 1);
+        QVERIFY(!manager.jobs().constFirst().cleanupCachePath.isEmpty());
+        QVERIFY(QFileInfo::exists(pending.filePath));
+
+        // 解除占用后再次移除：缓存清理成功，记录才可以删除；用户下载目录
+        // 里的成品文件始终不能被删。
+        QVERIFY(QDir(pending.cleanupCachePath).removeRecursively());
+        QVERIFY(manager.removeJob(pending.id));
+        QVERIFY(manager.jobs().isEmpty());
+        QVERIFY(QFileInfo::exists(pending.filePath));
+        manager.shutdownForExit();
+    }
+    QFile::remove(pending.filePath);
     QFile::remove(statePath);
 }
 
