@@ -2477,11 +2477,11 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
         QJsonObject object;
         object.insert(QStringLiteral("version"), 1);
         object.insert(QStringLiteral("targetPath"), target);
-        object.insert(QStringLiteral("bytesWritten"), 0);
-        object.insert(QStringLiteral("segmentIndex"), 0);
+        object.insert(QStringLiteral("bytesWritten"), 4096);
+        object.insert(QStringLiteral("segmentIndex"), 1);
         object.insert(QStringLiteral("segmentCount"), 1);
         object.insert(QStringLiteral("fingerprint"), QStringLiteral("legacy"));
-        object.insert(QStringLiteral("completed"), false);
+        object.insert(QStringLiteral("completed"), true);
         QFile file(path);
         return file.open(QIODevice::WriteOnly)
                && file.write(QJsonDocument(object).toJson(QJsonDocument::Compact)) > 0;

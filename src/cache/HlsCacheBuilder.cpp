@@ -1322,7 +1322,10 @@ HlsCacheBuilder::TrackResume HlsCacheBuilder::loadTrackResume(const QString &bas
         if (baseDir != targetDir || !nameMatches) {
             qCWarning(lcHlsCache) << "HLS 续传目标与轨道基名不匹配，忽略状态："
                                   << resume.targetPath;
-            resume.targetPath.clear();
+            // 目标路径不可信时不能只清 targetPath 而保留 bytesWritten/序号：
+            // startTrack 会拿旧进度去续新基名文件，把另一条轨道或旧缺陷文件
+            // 的字节数当成当前轨道前缀。整份状态作废，让本次从头校验下载。
+            return TrackResume();
         }
     }
     resume.bytesWritten = qMax<qint64>(
