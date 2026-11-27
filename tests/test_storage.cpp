@@ -62,6 +62,7 @@ private slots:
     void playlistCorruptFileBacksUp();
     void playlistMissingPartitionsIsCorrupt();
     void playlistSnapshotRecoversAfterCorruption();
+    void playlistSnapshotReadErrorBlocksSave();
     void playlistVideoProgressRoundTrip();
     void playlistVideoProgressRemovedWithItem();
     void sourceRegistrySeedsAndPersists();
@@ -202,6 +203,23 @@ void StorageTest::playlistSnapshotRecoversAfterCorruption()
     QCOMPARE(result.music.size(), 1);
     QCOMPARE(result.music.first().title, QStringLiteral("快照恢复"));
     QVERIFY(QFile::exists(result.corruptBackupPath));
+}
+
+void StorageTest::playlistSnapshotReadErrorBlocksSave()
+{
+    // 主文件缺失、快照路径被目录占用，读取状态是 ReadError 而不是“没有快照”。
+    // 快照里可能仍是用户列表的最后一份有效数据，此时必须冻结保存，避免退出
+    // 或下一次修改用空/新列表覆盖它。
+    const QString primary = PlaylistStore::filePath();
+    const QString snapshot = PlaylistStore::backupFilePath();
+    QVERIFY(!QFileInfo::exists(primary));
+    QVERIFY(QDir().mkpath(snapshot));
+
+    const PlaylistStore::LoadResult result = PlaylistStore::loadAll();
+    QVERIFY(result.storageBlocked);
+    QVERIFY(result.music.isEmpty());
+    QVERIFY(result.video.isEmpty());
+    QVERIFY(result.message.contains(QStringLiteral("禁止保存")));
 }
 
 void StorageTest::playlistVideoProgressRoundTrip()

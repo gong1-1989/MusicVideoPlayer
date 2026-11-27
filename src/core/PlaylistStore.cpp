@@ -296,6 +296,19 @@ LoadResult loadAll()
             qCInfo(lcStore) << "播放列表已从快照恢复：" << snapshot;
             return result;
         }
+        // 主文件不可用、快照也存在但读不了（占用/权限/超限）时，快照仍可能
+        // 是用户列表的最后一份有效数据。此时若允许保存，退出或下一次修改会
+        // 用空/新列表覆盖快照，相当于把最后一个恢复源也删掉，因此必须冻结保存。
+        if (read.status == ReadStatus::ReadError || read.status == ReadStatus::TooLarge) {
+            result.storageBlocked = true;
+            result.message = QStringLiteral(
+                "播放列表主文件不可用，且最近一次快照无法读取；为避免覆盖最后一份有效数据，"
+                "当前禁止保存。主文件：%1；快照：%2（%3）")
+                .arg(primary, snapshot, read.error);
+            qCCritical(lcStore) << "播放列表快照未能读取，禁止保存：" << snapshot
+                                << "：" << read.error;
+            return result;
+        }
         qCWarning(lcStore) << "播放列表快照也无法读取：" << snapshot
                            << "，原因：" << read.error;
     }
