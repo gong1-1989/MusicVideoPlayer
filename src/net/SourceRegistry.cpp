@@ -334,6 +334,21 @@ bool SourceRegistry::load()
             m_lastError = tr("已从最近一次成功保存的备份恢复源配置。");
             qCInfo(lcRegistry) << m_lastError;
         } else {
+            // 备份文件存在但读不出来时，它可能是用户自定义源的最后一份数据。
+            // 不能直接写预置源把 sources.json.bak 覆盖掉；先改名保留损坏内容，
+            // 无法备份时宁可本次加载失败，也不破坏唯一的恢复源。
+            if (QFileInfo::exists(backupPath()) && !backupReason.isEmpty()) {
+                const QString corruptBackup = backupCorruptFile(backupPath());
+                if (corruptBackup.isEmpty()) {
+                    m_lastError = tr("源配置备份无法读取（%1），且无法备份；未覆盖原文件。")
+                                      .arg(backupReason);
+                    qCWarning(lcRegistry) << m_lastError;
+                    return false;
+                }
+                m_lastError = tr("源配置备份无法读取（%1），已备份为 %2。")
+                                  .arg(backupReason, QFileInfo(corruptBackup).fileName());
+                qCWarning(lcRegistry) << m_lastError;
+            }
             if (!parseErrorReason.isEmpty()) {
                 const QString corruptBackup = backupCorruptFile(primary);
                 if (corruptBackup.isEmpty()) {

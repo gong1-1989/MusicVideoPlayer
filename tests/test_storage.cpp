@@ -70,6 +70,7 @@ private slots:
     void sourceRegistryRemovesRetiredSeeds();
     void sourceRegistryReloadUsesPrimary();
     void sourceRegistryCorruptFileBacksUp();
+    void sourceRegistryCorruptBackupIsPreserved();
     void sourceRegistryRestoresSnapshot();
     void sourceRegistryCorruptBackupNameCollision();
     void sourceRegistryUnwritableDataDirFails();
@@ -400,6 +401,31 @@ void StorageTest::sourceRegistryCorruptFileBacksUp()
     SourceRegistry reloaded;
     QVERIFY(reloaded.load());
     QVERIFY(reloaded.lastError().isEmpty());
+}
+
+void StorageTest::sourceRegistryCorruptBackupIsPreserved()
+{
+    // 主文件缺失、快照损坏时，快照仍可能是用户自定义源的最后一份数据。
+    // 不能直接写预置源把它覆盖掉；应先把损坏快照改名保留，再恢复预置源。
+    const QString primary = StoragePaths::dataFile(QStringLiteral("sources.json"));
+    const QString snapshot = StoragePaths::dataFile(QStringLiteral("sources.json.bak"));
+    QVERIFY(!QFileInfo::exists(primary));
+    QFile file(snapshot);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    QVERIFY(file.write("{ broken backup") > 0);
+    file.close();
+
+    SourceRegistry registry;
+    QVERIFY(registry.load());
+    QVERIFY(registry.lastError().contains(QStringLiteral("备份")));
+    QCOMPARE(registry.enabledSources().size(), 3);
+
+    const QStringList backups =
+        QDir(StoragePaths::dataDir())
+            .entryList({QStringLiteral("sources.json.bak.corrupt-*")}, QDir::Files);
+    QCOMPARE(backups.size(), 1);
+    // 新快照由恢复后的预置源重新生成，损坏快照已另存。
+    QVERIFY(QFileInfo::exists(snapshot));
 }
 
 void StorageTest::sourceRegistryRestoresSnapshot()
