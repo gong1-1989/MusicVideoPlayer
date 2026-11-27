@@ -3,7 +3,6 @@
 #include "cache/MediaCache.h"
 #include "net/HttpClient.h"
 #include "net/MediaPageResolver.h"
-#include "stream/HlsPlaylist.h"
 #include "stream/StreamProxy.h"
 #include "util/NetworkAddressPolicy.h"
 
@@ -275,98 +274,6 @@ QUrl PlaybackController::proxyUrlForHlsCache(
     return invoked ? proxied : QUrl();
 }
 
-/// @brief 读取代理线程维护的码率快照，并转换成播放层无关的轻量结构。
-/// @note 变体列表只在代理线程更新；这里用阻塞队列取一次拷贝，
-///       主线程后续刷新只操作本地副本，不再反复跨线程读代理容器。
-PlaybackController::BitrateSnapshot PlaybackController::bitrateSnapshot() const
-{
-    BitrateSnapshot snapshot;
-    if (m_proxy == nullptr || !m_proxyReady || m_playlist == nullptr || m_row < 0)
-        return snapshot;
-
-    const MediaItem item = m_playlist->itemAt(m_row);
-    if (!item.isValid() || item.type != MediaType::Video)
-        return snapshot;
-    // 只有真正走代理的 HLS 才能按 master 变体切换；直链视频没有码率选项。
-    // 注意：即使整片缓存已经完成，也不能直接返回空——当前这一轮播放仍可能
-    // 由代理流提供，而且用户需要在缓存完成后继续看到/切换码率。
-    if (!item.online || !playbackIsHls(item))
-        return snapshot;
-    snapshot.isVideo = true;
-
-    StreamProxy::VariantState state;
-    const bool invoked = QMetaObject::invokeMethod(
-        m_proxy, [proxy = m_proxy, &state] { state = proxy->variantState(); },
-        Qt::BlockingQueuedConnection);
-    if (!invoked)
-        return snapshot;
-
-    snapshot.selectedIndex = state.selectedIndex;
-    snapshot.currentIndex = state.currentIndex;
-    for (const HlsPlaylist::Variant &variant : std::as_const(state.variants)) {
-        BitrateOption option;
-        option.index = variant.index;
-        option.bandwidth = variant.bandwidth;
-        option.resolution = variant.resolution;
-        option.codecs = variant.codecs;
-        snapshot.options.append(option);
-    }
-    return snapshot;
-}
-
-/// @brief 用户切换码率：锁定变体、重载同一视频，并靠列表里的进度恢复位置。
-/// @note 必须先 saveCurrentVideoPosition 再停播；HLS 的当前位置不会自动
-///       带进新 source，只能通过条目 positionMs 走现有的 applyPendingResume。
-void PlaybackController::selectBitrate(int index)
-{
-    if (!hasCurrentItem() || m_player == nullptr || m_playlist == nullptr)
-        return;
-
-    const BitrateSnapshot snapshot = bitrateSnapshot();
-    if (!snapshot.isVideo || snapshot.options.isEmpty())
-        return;
-    if (index >= 0) {
-        const bool exists = std::any_of(snapshot.options.cbegin(), snapshot.options.cend(),
-                                        [index](const BitrateOption &option) {
-                                            return option.index == index;
-                                        });
-        if (!exists)
-            return;
-    }
-    if (index == snapshot.selectedIndex)
-        return;
-
-    const int row = m_row;
-    if (row < 0 || row >= m_playlist->size())
-        return;
-
-    // 先写回模型：随后的 stop() 会让 QMediaPlayer::position() 归零，
-    // 那时再保存只能得到 0，切换码率就会从头播放。
-    saveCurrentVideoPosition();
-    m_player->stop();
-
-    bool applied = false;
-    const bool invoked = QMetaObject::invokeMethod(
-        m_proxy, [proxy = m_proxy, index, &applied] {
-            proxy->setVariantIndex(index);
-            applied = true;
-        },
-        Qt::BlockingQueuedConnection);
-    if (!invoked || !applied) {
-        emit errorOccurred(tr("码率切换失败：流代理未响应"));
-        // 已经停掉了播放器，失败时不能把用户留在黑屏；用原码率重载同一行。
-        playRowInternal(row, false);
-        return;
-    }
-
-    // 复用正常播放入口：它会重新走代理、重新解析 master，并读取刚写回的
-    // positionMs 恢复进度；缓存构建器也会因 currentItemChanged 跟随新码率。
-    // 如果整片缓存已完成，必须跳过那一次“本地缓存优先”，否则新码率不会
-    // 生效；标记只影响这一次重载。
-    m_forceStreamOnce = true;
-    playRowInternal(row, false);
-}
-
 void PlaybackController::setMediaItemResolver(
     std::function<MediaItem(const MediaItem &)> resolver)
 {
@@ -502,10 +409,6 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
     // 每次换源都从 1× 开始；长按快进在结尾自动切下一首时不能把 2× 带过去。
     m_player->setPlaybackRate(1.0);
 
-    // 码率切换请求的“本次强行走网络”标记只消费一次，任何普通播放都恢复
-    // 默认的“本地文件 > 完整缓存 > 网络”优先级。
-    const bool forceStream = std::exchange(m_forceStreamOnce, false);
-
     // 切换视频（含自动下一集）前保存正在播放的那一条；音乐会被存储层忽略。
     saveCurrentVideoPosition();
     clearPendingResume();
@@ -567,14 +470,6 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
         m_fallbackUrls = candidates;
     }
 
-    // 换条目时清空上一部的 master 变体，避免码率栏在加载新视频前仍显示旧码率。
-    // 同一行重载（切换码率）不能清，否则刚锁定的选择会被自己抹掉。
-    if (row != m_row && m_proxy != nullptr && m_proxyReady) {
-        QMetaObject::invokeMethod(
-            m_proxy, [proxy = m_proxy] { proxy->clearVariantState(); },
-            Qt::BlockingQueuedConnection);
-    }
-
     m_row = row;
     m_unavailableReason.clear();
     m_lastPrefetchPosition = -1;
@@ -620,7 +515,7 @@ void PlaybackController::playRowInternal(int row, bool autoAdvance)
         sourceKind = QStringLiteral("备用线路");
     const bool cacheable = !fallbackRetry && MediaCache::isCacheable(playbackItem);
     const QString completeCache =
-        (playbackItem.online && !forceStream && !fallbackRetry)
+        (playbackItem.online && !fallbackRetry)
             ? MediaCache::completeFileForItem(playbackItem)
             : QString();
     if (!completeCache.isEmpty()) {

@@ -59,27 +59,6 @@ public:
     QUrl lastPlaybackVideoPlaylist() const;
     QUrl lastPlaybackAudioPlaylist() const;
 
-    /// 当前 HLS 主列表的码率状态，供播放区域码率栏显示。
-    /// variants 来自最近一次成功解析的 master；currentIndex 根据播放器
-    /// 最近实际请求的视频子列表反查，selectedIndex 为用户锁定项（-1 自动）。
-    struct VariantState
-    {
-        QUrl masterUrl;
-        QList<HlsPlaylist::Variant> variants;
-        QUrl currentVideoPlaylist;
-        int selectedIndex = -1;
-        int currentIndex = -1;
-    };
-    /// 必须在代理线程调用；PlaybackController 用阻塞队列读取快照。
-    VariantState variantState() const;
-
-    /// 锁定指定码率变体；-1 表示恢复自动选择（master 不裁剪）。
-    /// 必须在代理线程调用，下一次 master 请求生效。
-    void setVariantIndex(int index);
-
-    /// 切换影视条目时清空上一部的主列表变体，避免码率栏显示旧数据。
-    void clearVariantState();
-
     /// 关闭监听、终止所有上游请求并清空缓存。
     /// 只应在代理所属线程调用；PlaybackController 用阻塞队列调用它。
     void shutdown();
@@ -267,8 +246,6 @@ private:
     /// 解析原始 m3u8，记录每个媒体分片的起始时间和地址；只处理完整分片播放列表。
     void rememberPlaylist(const QByteArray &body, const QUrl &playlistUrl,
                           const QHash<QString, QString> &headers);
-    /// master 的变体必须在改写前记录：改写后只剩一个变体，码率栏会丢选项。
-    void rememberMasterVariants(const QByteArray &body, const QUrl &playlistUrl);
     const PlaylistInfo *playlistFor(const QUrl &playlistUrl,
                                     const QHash<QString, QString> &headers) const;
 
@@ -301,13 +278,6 @@ private:
     StreamCacheStore m_cache;
     QHash<QString, QSharedPointer<PlaylistInfo>> m_playlists;
     QString m_lastPlaylistKey;
-
-    /// 当前 master 的完整变体列表。m_variantMasterIdentity 用协议/host/端口/path
-    /// 标识同一份主列表，避免 token 查询串变化时误清空用户选择。
-    QUrl m_variantMasterUrl;
-    QString m_variantMasterIdentity;
-    QList<HlsPlaylist::Variant> m_masterVariants;
-    int m_selectedVariantIndex = -1;
 
     QList<PrefetchJob> m_prefetchQueue;
     QHash<QString, QNetworkReply *> m_prefetchReplies;

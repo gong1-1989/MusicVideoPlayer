@@ -106,13 +106,8 @@ public:
 
     /// 解析主列表中的视频码率变体。正文不是 master 或没有有效 HTTP(S)
     /// 子列表时返回空列表；变体序号按原始文件顺序保留。
+    /// 下载链路用它按 BANDWIDTH 选择最高码率，因此变体解析必须保留。
     static QList<Variant> variants(const QByteArray &body, const QUrl &playlistUrl);
-
-    /// 只保留指定序号的视频变体，其余 #EXT-X-STREAM-INF 及其 URI 行删除。
-    /// 全局标签（#EXT-X-MEDIA、SESSION-KEY、VERSION 等）原样保留，
-    /// 保证裁剪后独立音轨和加密信息仍可用。序号无效时返回原文。
-    static QByteArray restrictToVariant(const QByteArray &body, const QUrl &playlistUrl,
-                                        int variantIndex);
 
     using ProxyResolver = std::function<QUrl(const QUrl &)>;
 

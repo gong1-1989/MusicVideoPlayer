@@ -109,28 +109,6 @@ public:
                              const QString &cachePath, const QString &cacheIdentity,
                              const QUrl &sourceOrigin) const;
 
-    /// 播放区域码率栏需要的快照：可用变体、用户锁定项和实际播放项。
-    /// currentIndex/selectedIndex 为 -1 时分别表示“自动选择”和“尚未解析到”。
-    struct BitrateOption
-    {
-        int index = -1;
-        int bandwidth = 0;
-        QString resolution;
-        QString codecs;
-    };
-    struct BitrateSnapshot
-    {
-        QList<BitrateOption> options;
-        int selectedIndex = -1;
-        int currentIndex = -1;
-        bool isVideo = false;
-    };
-    BitrateSnapshot bitrateSnapshot() const;
-
-    /// 用户选择码率：先保存当前进度，再让代理锁定新变体并重载同一视频。
-    /// index 为 -1 表示恢复自动码率；切换失败时保留原播放状态。
-    void selectBitrate(int index);
-
 signals:
     void currentItemChanged(const MediaItem &item, int row);
     void playbackStateChanged(QMediaPlayer::PlaybackState state);
@@ -203,9 +181,6 @@ private:
     /// 提前 seek 会被随后的 play() 重置回 0，必须等播放请求真正发出。
     bool m_sourcePlayRequested = false;
     qint64 m_deferredSeekMs = -1;
-    /// 用户切换码率时，本条重载必须强行走网络代理，不能因为整片缓存已经
-    /// 落盘就继续播放固定码率的本地 MP4；只对紧接着的一次 playRowInternal 生效。
-    bool m_forceStreamOnce = false;
     /// 当前条目的备用线路队列。只在启动阶段失败时消费；已经播出声后
     /// 网络抖动/解码失败不换线，避免用户看到“播到一半突然换片源”。
     QVector<QUrl> m_fallbackUrls;
