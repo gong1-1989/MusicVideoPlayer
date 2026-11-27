@@ -56,6 +56,9 @@ struct MediaTrack
     /// 此时整个媒体文件本身就是可直接 Range 下载的 MP4。
     bool singleFile = false;
     QUrl singleFileUrl;
+    /// 列表是 fMP4 分片（EXT-X-MAP 或 .m4s/.m4f 分片）。
+    /// 分片索引必须按 MP4 类型回给播放器，不能一律标成 MPEG-TS。
+    bool fragmentedMp4 = false;
 };
 
 /// 解析媒体播放列表。不是带 #EXTINF 的媒体列表时 valid=false。

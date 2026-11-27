@@ -166,6 +166,8 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
     QList<bool> segmentRanges;
     bool pendingDuration = false;
     bool pendingRange = false;
+    bool hasMap = false;
+    bool fragmentedMp4 = false;
     QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
     for (QString &raw : lines) {
         if (raw.endsWith(QLatin1Char('\r')))
@@ -179,6 +181,12 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
             const HlsPlaylist::Key key = HlsPlaylist::parseKeyLine(line, baseUrl);
             if (marksEncrypted(key))
                 out->encrypted = true;
+            continue;
+        }
+        if (line.startsWith(QLatin1String("#EXT-X-MAP:"))) {
+            // MAP 表示后续分片是 fMP4；缓存索引若仍标成 MPEG-TS，
+            // 播放代理会把 fMP4 片段按错误容器回给播放器。
+            hasMap = true;
             continue;
         }
         if (line.startsWith(QLatin1String("#EXTINF:"))) {
@@ -200,6 +208,10 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
                 *error = QStringLiteral("媒体播放列表包含无效分片地址");
             return false;
         }
+        if (segment.path().endsWith(QLatin1String(".m4s"), Qt::CaseInsensitive)
+            || segment.path().endsWith(QLatin1String(".m4f"), Qt::CaseInsensitive)) {
+            fragmentedMp4 = true;
+        }
         segmentUrls.append(segment);
         segmentRanges.append(pendingRange);
         pendingDuration = false;
@@ -213,6 +225,7 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
     }
 
     out->valid = true;
+    out->fragmentedMp4 = hasMap || fragmentedMp4;
     out->segmentCount = segmentUrls.size();
     out->singleFile = !out->encrypted;
     const QUrl first = segmentUrls.first();

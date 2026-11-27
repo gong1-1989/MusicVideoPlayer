@@ -55,6 +55,16 @@ QString trackSourceLabel(bool direct)
                   : QStringLiteral("分片列表 → 合并");
 }
 
+/// @brief 分片索引回给播放器时使用的 MIME 类型。
+/// @note TS 分片沿用原来的 video/mp2t；fMP4 分片必须标成 MP4，
+///       否则播放代理会把 init 段和 m4s 片段按错误容器转发。
+QByteArray trackSegmentContentType(bool video, bool fragmentedMp4)
+{
+    if (fragmentedMp4)
+        return video ? QByteArrayLiteral("video/mp4") : QByteArrayLiteral("audio/mp4");
+    return QByteArrayLiteral("video/mp2t");
+}
+
 } // namespace
 
 /// @brief 构造 HLS 后台缓存器。
@@ -810,7 +820,8 @@ bool HlsCacheBuilder::startTrack(bool video, const QUrl &source, const QString &
                 entry.filePath = trackPath + QStringLiteral(".mvpdownload");
                 entry.offset = offset;
                 entry.size = size;
-                entry.contentType = QByteArrayLiteral("video/mp2t");
+                entry.contentType = trackSegmentContentType(
+                    video, video ? m_videoTrack.fragmentedMp4 : m_audioTrack.fragmentedMp4);
                 HlsPreloadIndex::instance().record(m_identity, entry);
             });
     connect(task, &DownloadTask::progress, this,
@@ -893,7 +904,8 @@ void HlsCacheBuilder::maybeStartMigration(bool video, const QString &fingerprint
     const qint64 generation = m_generation;
     auto *migrator = new HlsPreloadMigrator(
         m_http, segments.mid(0, resume.segmentIndex), resume.segmentIndex,
-        resume.bytesWritten, trackPath, QByteArrayLiteral("video/mp2t"), m_item.headers,
+        resume.bytesWritten, trackPath,
+        trackSegmentContentType(video, track.fragmentedMp4), m_item.headers,
         m_originUrl,
         [this, video, generation](bool, const QList<HlsPreloadEntry> &entries,
                                   const QString &error) {

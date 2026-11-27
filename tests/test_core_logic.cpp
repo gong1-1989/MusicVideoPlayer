@@ -1037,6 +1037,7 @@ private slots:
     void aes128CbcDecryptsKnownVector();
     void downloadHlsDecryptsAes128Segments();
     void hlsCacheManifestKeepsSessionKeyAndDisablesEncryptedSingleFile();
+    void hlsCacheManifestDetectsFragmentedMp4Segments();
     void configMapperReadsNestedPaths();
     void configMapperBoolRulesDoNotMixWithNumbers();
     void configMapperSplitsEpisodesAndResolvesUrls();
@@ -2752,6 +2753,51 @@ void CoreLogicTest::hlsCacheManifestKeepsSessionKeyAndDisablesEncryptedSingleFil
              qPrintable(error));
     QVERIFY(malformedKey.encrypted);
     QVERIFY(!malformedKey.singleFile);
+}
+
+void CoreLogicTest::hlsCacheManifestDetectsFragmentedMp4Segments()
+{
+    const QUrl playlistUrl(QStringLiteral("http://example.com/media.m3u8"));
+    QString error;
+
+    // EXT-X-MAP 是 fMP4 的明确标志；此时分片索引必须按 MP4 类型返回，
+    // 不能沿用 TS 的 video/mp2t。
+    HlsCacheManifest::MediaTrack mapped;
+    const QByteArray mapBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXT-X-MAP:URI=\"init.mp4\"\n"
+        "#EXTINF:1,\n"
+        "seg1.mp4\n"
+        "#EXTINF:1,\n"
+        "seg2.mp4\n"
+        "#EXT-X-ENDLIST\n");
+    QVERIFY2(HlsCacheManifest::parseMediaTrack(mapBody, playlistUrl, &mapped, &error),
+             qPrintable(error));
+    QVERIFY(mapped.fragmentedMp4);
+    QCOMPARE(mapped.segmentCount, 2);
+    QVERIFY(!mapped.singleFile);
+
+    // 没有 MAP 时，m4s/m4f 后缀同样说明是 fMP4 分片。
+    HlsCacheManifest::MediaTrack suffixed;
+    const QByteArray suffixBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXTINF:1,\n"
+        "seg1.m4s\n"
+        "#EXT-X-ENDLIST\n");
+    QVERIFY2(HlsCacheManifest::parseMediaTrack(suffixBody, playlistUrl, &suffixed, &error),
+             qPrintable(error));
+    QVERIFY(suffixed.fragmentedMp4);
+
+    // 普通 TS 列表不能被误判。
+    HlsCacheManifest::MediaTrack ts;
+    const QByteArray tsBody = QByteArrayLiteral(
+        "#EXTM3U\n"
+        "#EXTINF:1,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n");
+    QVERIFY2(HlsCacheManifest::parseMediaTrack(tsBody, playlistUrl, &ts, &error),
+             qPrintable(error));
+    QVERIFY(!ts.fragmentedMp4);
 }
 
 void CoreLogicTest::downloadRejectsHtmlDisguisedAsOctetStream()
