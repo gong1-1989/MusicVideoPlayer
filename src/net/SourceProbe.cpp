@@ -1229,8 +1229,13 @@ void Prober::probeNextCandidate()
     // 不能占用内置路径的预算，否则最后几条默认路径会被截断。
     const int userPathBudget =
         (m_inputPath.size() > 1 && looksLikeApiPath(m_inputPath)) ? 1 : 0;
-    const int maxAttempts = baseAttempts + m_extraPaths.size() + m_homeApiHints.size()
-                            + userPathBudget;
+    // 候选列表已经把“用户输入域名 + 首页跳转域名”两个 origin 展开过了；
+    // 只按路径条数估算预算，有跳转时实际候选会翻倍，列表尾部会被截掉。
+    // 预算取实际候选数与路径估算的较大值，总耗时仍由 budgetLeft() 控制。
+    const int realCandidates = m_candidates.size();
+    const int maxAttempts = qMax(
+        realCandidates,
+        baseAttempts + m_extraPaths.size() + m_homeApiHints.size() + userPathBudget);
     if (m_candidateIndex >= m_candidates.size() || m_candidateIndex >= maxAttempts) {
         // 候选末尾还没走到网页型标记时，也要给网页型一次机会。
         if (m_webFallbackPossible && !m_webFallbackTried) {
