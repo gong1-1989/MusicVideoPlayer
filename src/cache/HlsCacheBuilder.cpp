@@ -361,6 +361,19 @@ void HlsCacheBuilder::onMasterReady(const QByteArray &body, const QUrl &finalUrl
     m_videoDirect = track.singleFile;
     m_videoSource = track.singleFile ? track.singleFileUrl : finalUrl;
     m_hasAudio = false;
+    // 直接以媒体列表为源的路径曾经漏掉视频轨列表的索引处理：旧迁移需要
+    // 分片顺序，加密轨则必须禁用分片索引，否则明文落盘的分片可能被播放
+    // 代理按密文列表再次解密。
+    m_videoSegments.clear();
+    if (const auto info = HlsPlaylist::parse(body, finalUrl))
+        m_videoSegments = info->segments;
+    m_videoHasByteRange = body.contains(QByteArrayLiteral("#EXT-X-BYTERANGE:"));
+    if (track.encrypted) {
+        HlsPreloadIndex::instance().openJournal(QString());
+        if (!m_bodyPath.isEmpty())
+            QFile::remove(m_bodyPath + QStringLiteral(".preload.jsonl"));
+        qCInfo(lcHlsCache) << "加密媒体列表不使用分片预加载索引";
+    }
     qCInfo(lcHlsCache) << "源是媒体列表，直接缓存："
                        << (track.singleFile ? "单文件 BYTERANGE" : "普通分片")
                        << "分片数" << track.segmentCount;

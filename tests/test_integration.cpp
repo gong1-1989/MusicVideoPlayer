@@ -258,6 +258,7 @@ private slots:
     void downloadManagerMigratesLegacyStaging();
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
+    void hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList();
     void hlsCacheBuilderResumesAfterExit();
     void downloadManagerReusesPlaybackCacheThroughStaging();
     void hlsCacheBuilderMergesSingleFileAudio();
@@ -1670,6 +1671,57 @@ void IntegrationTest::hlsCacheBuilderProducesSuffixlessMp4()
 
     QVERIFY(MediaCache::removeForItem(item));
     QVERIFY(!QFileInfo::exists(completedPath));
+}
+
+void IntegrationTest::hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n"
+        "#EXTINF:1.0,\n"
+        "seg0.ts\n"
+        "#EXT-X-ENDLIST\n";
+    server.handler = [playlist](const LocalHttpServer::Request &request,
+                                QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/encrypted-media/index.m3u8"))
+            LocalHttpServer::respond(socket, 200, playlist,
+                                     "application/vnd.apple.mpegurl");
+        else
+            LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("加密媒体列表索引清理测试");
+    item.url = server.url(QStringLiteral("/encrypted-media/index.m3u8"));
+    item.online = true;
+
+    const QString base = MediaCache::filePathForItem(item);
+    const QString journal = base + QStringLiteral(".preload.jsonl");
+    QVERIFY(MediaCache::removeForItem(item));
+    QVERIFY(QDir().mkpath(QFileInfo(base).absolutePath()));
+    // 目录里有旧索引时，必须留下身份标记；否则 resolvedCachePath 会把
+    // 非空目录当成路径冲突，builder.start() 会改选 " (2)" 目录。
+    QVERIFY(MediaCache::writePartialIdentity(base, MediaCache::cacheIdentity(item)));
+    QFile file(journal);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("{\"i\":\"stale\",\"u\":\"http://example.com/seg.ts\","
+               "\"p\":\"/tmp/stale\",\"o\":0,\"s\":1}\n");
+    file.close();
+    QVERIFY(QFileInfo::exists(journal));
+
+    HttpClient http;
+    HlsCacheBuilder builder(&http);
+    QVERIFY(builder.start(item));
+    // 源本身就是带 EXT-X-KEY 的媒体列表：必须立即丢弃旧分片索引，
+    // 不能等下载任务因缺 KEY 失败后才由通用清理兜底。
+    QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(journal), 5000);
+    builder.stopForExit();
+    QVERIFY(MediaCache::removeForItem(item));
 }
 
 void IntegrationTest::hlsCacheBuilderResumesAfterExit()
