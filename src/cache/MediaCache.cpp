@@ -315,6 +315,22 @@ QString removalPathForItem(const MediaItem &item)
             return path;
     }
 
+    // 1000 个常规候选位全被占用时，resolvedCachePath 会退到短哈希兜底路径；
+    // 删除也必须覆盖这条路径，否则条目删除后正文和旁车会永久成为孤儿。
+    const QString fallback = root + QLatin1Char('/') + base + QStringLiteral("__")
+                             + identityDigest(item, 8)
+                             + (item.type == MediaType::Video ? QStringLiteral("/media")
+                                                              : QString());
+    if (QFileInfo::exists(fallback)
+        || QFileInfo::exists(MediaCache::partialStatePathForFile(fallback))) {
+        const QFileInfo metaInfo(MediaCache::metaPathForFile(fallback));
+        if (!metaInfo.exists())
+            return fallback;
+        MediaCache::State state;
+        if (MediaCache::readState(fallback, &state) && state.identity == identity)
+            return fallback;
+    }
+
     // 没有任何残留可删时返回候选 0，让调用方走“无需删除”的成功路径。
     return item.type == MediaType::Video
                ? root + QLatin1Char('/') + base + QStringLiteral("/media")

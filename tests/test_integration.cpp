@@ -268,6 +268,7 @@ private slots:
     void downloadManagerReusesPlaybackCacheThroughStaging();
     void hlsCacheBuilderMergesSingleFileAudio();
     void hlsCacheBuilderKeepsTrackPathsDistinct();
+    void mediaCacheRemovesHashedFallback();
     void hlsCacheBuilderFollowsRealAppleStream();
     void lyricsServiceCachesOnlinePayload();
     void mediaRemuxConvertsTsToMp4();
@@ -2569,6 +2570,52 @@ void IntegrationTest::hlsCacheBuilderKeepsTrackPathsDistinct()
     QVERIFY(!QFileInfo::exists(legacyTrack));
     QVERIFY(!QFileInfo::exists(legacyMp4));
 }
+
+void IntegrationTest::mediaCacheRemovesHashedFallback()
+{
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("回退缓存清理");
+    item.url = QUrl(QStringLiteral("https://example.com/watch?id=1"));
+    item.online = true;
+
+    const QString root = QDir::cleanPath(MediaCache::rootDir());
+    const QString base = MediaCache::entryBaseName(item);
+    QVERIFY(QDir().mkpath(root));
+    // 占满 1000 个常规候选位，并给每个候选写入别的身份，逼 filePathForItem 走短哈希兜底。
+    for (int index = 0; index < 1000; ++index) {
+        const QString name = index <= 0
+                                 ? base
+                                 : QStringLiteral("%1 (%2)").arg(base).arg(index + 1);
+        const QString body = root + QLatin1Char('/') + name + QStringLiteral("/media");
+        QVERIFY(QDir().mkpath(QFileInfo(body).absolutePath()));
+        QFile file(body);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write("x", 1) == 1);
+        file.close();
+        QVERIFY(MediaCache::writeState(body, QStringLiteral("other-%1").arg(index), item.url,
+                                      QByteArrayLiteral("video/mp4"), 1, true));
+    }
+
+    const QString fallback = MediaCache::filePathForItem(item);
+    QVERIFY(fallback.contains(QStringLiteral("__")));
+    QVERIFY(QDir().mkpath(QFileInfo(fallback).absolutePath()));
+    QFile fallbackBody(fallback);
+    QVERIFY(fallbackBody.open(QIODevice::WriteOnly));
+    QVERIFY(fallbackBody.write("fallback", 8) == 8);
+    fallbackBody.close();
+    QVERIFY(MediaCache::writeState(fallback, MediaCache::cacheIdentity(item), item.url,
+                                  QByteArrayLiteral("video/mp4"), 8, true));
+
+    QVERIFY(MediaCache::removeForItem(item));
+    QVERIFY(!QFileInfo::exists(fallback));
+    QVERIFY(!QFileInfo::exists(MediaCache::metaPathForFile(fallback)));
+    // 兜底路径之前的第一个候选属于别的条目，不能被误删。
+    const QString first = root + QLatin1Char('/') + base + QStringLiteral("/media");
+    QVERIFY(QFileInfo::exists(first));
+    QVERIFY(QFileInfo::exists(MediaCache::metaPathForFile(first)));
+}
+
 
 void IntegrationTest::hlsCacheBuilderMergesSingleFileAudio()
 {
