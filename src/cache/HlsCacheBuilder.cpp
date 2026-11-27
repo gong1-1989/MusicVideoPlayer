@@ -959,10 +959,15 @@ void HlsCacheBuilder::maybeStartMigration(bool video, const QString &fingerprint
 }
 
 /// @brief 迁移结果只在同一次 start/generation 内落索引，防止切换条目后写错日志。
+/// @note 迁移器完成或失败后必须先释放对象；否则每次旧缓存迁移都会在 builder
+///       下留下一个挂着分片 URL 列表的子对象，反复切换条目会持续累积内存。
 void HlsCacheBuilder::onMigrationFinished(bool video, qint64 generation,
                                           const QList<HlsPreloadEntry> &entries,
                                           const QString &error)
 {
+    QPointer<HlsPreloadMigrator> finished = video ? m_videoMigrator : m_audioMigrator;
+    if (finished != nullptr)
+        finished->deleteLater();
     if (video)
         m_videoMigrator = nullptr;
     else

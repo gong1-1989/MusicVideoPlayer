@@ -190,6 +190,10 @@ void HlsPreloadMigrator::finish()
     if (m_done)
         return;
     m_done = true;
+    // 探测成功时 reply 已 deleteLater，但 QPointer 条目仍占着列表；
+    // 迁移结束后立即释放，避免长列表跟随对象一起留在内存里。
+    m_replies.clear();
+    m_active = 0;
 
     qint64 offset = 0;
     QList<HlsPreloadEntry> entries;
