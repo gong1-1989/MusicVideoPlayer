@@ -714,14 +714,3 @@ bool SourceRegistry::replaceAll(const QVector<SourceConfig> &sources)
     emit changed();
     return true;
 }
-
-/// @brief 返回启用且有效的源数量。
-int SourceRegistry::enabledCount() const
-{
-    int count = 0;
-    for (const SourceConfig &config : m_sources) {
-        if (config.enabled && config.isValid())
-            ++count;
-    }
-    return count;
-}

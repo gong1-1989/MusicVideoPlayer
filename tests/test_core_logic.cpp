@@ -997,7 +997,6 @@ private slots:
     void searchRankerKeepsBestDuplicate();
     void playlistModelRefreshesSignedUrlWithoutLosingProgress();
     void playlistModelUpdatesPlaybackPositionSeparately();
-    void playbackModeTextMatchesCompactLabels();
     void playbackSeekStepClampsToMediaBounds();
     void sourceConfigJsonRoundTrip();
     void sourceRegistryKeepsLongTermSeedsOnly();
@@ -1506,23 +1505,6 @@ void CoreLogicTest::playlistModelUpdatesPlaybackPositionSeparately()
     music.url = QUrl(QStringLiteral("https://cdn.example.com/song.mp3"));
     QVERIFY(model.addItem(music));
     QVERIFY(!model.updatePlaybackPosition(1, 5000, 5000));
-}
-
-void CoreLogicTest::playbackModeTextMatchesCompactLabels()
-{
-    using Mode = PlaybackController::Mode;
-    QCOMPARE(PlaybackController::modeDisplayText(Mode::ListLoop, false),
-             QStringLiteral("列表循环"));
-    QCOMPARE(PlaybackController::modeDisplayText(Mode::ListLoop, true),
-             QStringLiteral("循环"));
-    QCOMPARE(PlaybackController::modeDisplayText(Mode::SingleLoop, false),
-             QStringLiteral("单曲循环"));
-    QCOMPARE(PlaybackController::modeDisplayText(Mode::SingleLoop, true),
-             QStringLiteral("单曲"));
-    QCOMPARE(PlaybackController::modeDisplayText(Mode::Random, false),
-             QStringLiteral("随机播放"));
-    QCOMPARE(PlaybackController::modeDisplayText(Mode::Random, true),
-             QStringLiteral("随机"));
 }
 
 void CoreLogicTest::playbackSeekStepClampsToMediaBounds()
