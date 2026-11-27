@@ -154,6 +154,9 @@ private:
         qint64 segmentBytes = 0;
         qint64 segmentExpected = -1;
         qint64 segmentFileOffset = 0;
+        /// 当前是否已有分片请求正在写盘。退出续传只能记录到上一完整分片，
+        /// 否则会把半片字节和“已完成分片数”一起持久化，重启后重复写入该片前缀。
+        bool segmentInProgress = false;
     };
 
     DownloadTask(HttpClient *http,
@@ -184,6 +187,9 @@ private:
     void clearKeyMaterial();
     bool openTargetFile();
     void resetTargetFile();
+    /// 续传响应与本地进度不一致时清空临时文件并重试一次无 Range 请求。
+    /// 只在第一次不一致时返回 true；再次失败交给调用方报错，避免无限重试。
+    bool restartFromZeroAfterRangeMismatch(const QString &reason);
     void commitFile();
     void fail(const QString &message, bool removePartial = false);
     void finish();
@@ -229,6 +235,8 @@ private:
     bool m_ambiguousTextResolved = false;
     bool m_verifyMediaMagic = false;
     bool m_allowIncomplete = false;
+    /// 本次任务是否已经从“续传响应不一致”回退到从头下载。
+    bool m_restartedFromZero = false;
     QString m_resumeFingerprint;
 };
 

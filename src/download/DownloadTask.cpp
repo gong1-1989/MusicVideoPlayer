@@ -191,6 +191,34 @@ void DownloadTask::resetTargetFile()
         emit targetResetted();
 }
 
+/// @brief 续传响应与本地临时文件不一致时，清空并从零重发一次。
+/// @return true 表示已经发起新的无 Range 请求；false 表示已重试过或无法重试。
+/// @note 服务器把本地进度判为越界（416）或返回错误起点时，保留半成品只会让
+///       每次重试都撞同一个错误；回退一次从头下载比永久失败更可靠。
+bool DownloadTask::restartFromZeroAfterRangeMismatch(const QString &reason)
+{
+    if (m_restartedFromZero)
+        return false;
+    m_restartedFromZero = true;
+    qCWarning(lcDownload) << "续传响应与本地进度不一致，改为从头重试：" << reason;
+
+    if (!m_reply.isNull()) {
+        QNetworkReply *reply = m_reply.data();
+        m_reply = nullptr;
+        reply->abort();
+        reply->deleteLater();
+    }
+    resetTargetFile();
+    if (m_done)
+        return false;
+
+    // 重新走一次不带 Range 的直链请求；m_sessionBytesWritten 会由
+    // startDirectRequest() 清零，expectedBytes 等新响应头重新计算。
+    m_expectedBytes = -1;
+    startDirectRequest();
+    return true;
+}
+
 /// @brief 设置续传状态。
 /// @param bytesWritten 已写入字节数。
 /// @param segmentIndex 已完成的完整分片数（仅 HLS）。
@@ -369,6 +397,14 @@ void DownloadTask::onHeaders(QNetworkReply *reply)
                 commitFile();
                 return;
             }
+            // 服务器声明的总长比本地半成品短，或根本没给 Content-Range：
+            // 本地前缀已不可信，回退一次从头下载。否则每次重试都会重复 416。
+            const QString reason = total > 0
+                ? tr("服务器总长 %1 与本地进度 %2 不一致").arg(total).arg(m_bytesWritten)
+                : tr("服务器拒绝续传范围 %1").arg(QString::fromLatin1(
+                      reply->rawHeader(QByteArrayLiteral("Content-Range"))));
+            if (restartFromZeroAfterRangeMismatch(reason))
+                return;
         }
         fail(HttpClient::describeError(reply));
         return;
@@ -484,6 +520,13 @@ void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
             qint64 total = -1;
             if (!parseContentRange(contentRange, &start, &end, &total)
                 || start != m_bytesWritten) {
+                // 服务器给了错误起点时继续写会把两段不同位置的数据拼在一起。
+                // 先回退一次无 Range 请求；仍不对再按原错误停止。
+                if (restartFromZeroAfterRangeMismatch(
+                        tr("续传响应起点不正确（%1）")
+                            .arg(QString::fromLatin1(contentRange)))) {
+                    return;
+                }
                 fail(tr("服务器返回的续传起点不正确（%1），已停止")
                          .arg(QString::fromLatin1(contentRange)));
                 return;
@@ -507,6 +550,13 @@ void DownloadTask::beginDirectMediaReply(QNetworkReply *reply,
         qint64 end = -1;
         qint64 total = -1;
         if (parseContentRange(contentRange, &start, &end, &total) && start >= 0) {
+            // 没发 Range 却收到 206 时只能接受从 0 开始的分段；start>0 说明
+            // 响应缺少文件前缀，写下去会得到一份从中间开始的文件。
+            if (start != 0) {
+                fail(tr("服务器在未请求续传时返回了部分内容（%1），已停止")
+                         .arg(QString::fromLatin1(contentRange)), true);
+                return;
+            }
             // 总长缺失时 Content-Range 的 end 是该区间的最后一个字节；开区间
             // 请求（bytes=start-）的 end 就是文件末尾，因此最终长度是 end+1。
             // 有了这个下界，后续完成校验不再只能依赖 Content-Length。
@@ -914,6 +964,9 @@ void DownloadTask::startSegmentRequest(const HlsDownloadSession::Segment &segmen
     m_hls.segmentFileOffset = m_bytesWritten;
     m_hls.segmentBytes = 0;
     m_hls.segmentExpected = expectedRangeBytes(segment.range);
+    // 从这里到 onSegmentFinished 之间写进文件的都是“半片”；退出时必须只
+    // 记录 segmentFileOffset，不能把半片字节当成可续传前缀。
+    m_hls.segmentInProgress = true;
     QPointer<DownloadTask> self(this);
     const QHash<QString, QString> headers =
         HeaderPolicy::sanitizedForTarget(segment.url, m_headers, m_originUrl);
@@ -1119,6 +1172,8 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
     if (m_hls.currentSegment.key.enabled && !writeDecryptedSegment(m_hls.currentSegment))
         return;
 
+    // 到这里当前分片已经完整落入临时文件，下面的字节属于完整前缀。
+    m_hls.segmentInProgress = false;
     m_hls.segmentCipher.clear();
     m_hls.currentKey.clear();
     m_hls.segmentExpected = -1;
@@ -1466,7 +1521,11 @@ void DownloadTask::stopForExit()
     clearKeyMaterial();
     if (m_file != nullptr) {
         // 退出前补一次精确检查点；普通下载的 readyRead 检查点有 1 秒节流。
-        emit checkpoint(m_bytesWritten, m_hls.segmentIndex,
+        // HLS 正在写分片时只能记录到分片起点：已落盘的半片字节不能与
+        // “已完成分片数”一起续传，否则重启会从该片开头重写并产生重复前缀。
+        const qint64 checkpointBytes =
+            (m_isHls && m_hls.segmentInProgress) ? m_hls.segmentFileOffset : m_bytesWritten;
+        emit checkpoint(checkpointBytes, m_hls.segmentIndex,
                         m_isHls ? m_hls.segments.size() : -1);
         m_file->flush();
         m_file->close();

@@ -234,6 +234,8 @@ private slots:
     void downloadTaskUsesMappedProxyDespitePublicOrigin();
     void hlsCacheBuilderUsesActualFallbackSource();
     void downloadResumesFromPartialFileWithRange();
+    void downloadRestartsAfterUnsatisfiedRangeTotalMismatch();
+    void downloadHlsExitCheckpointsAtCompletedSegmentBoundary();
     void downloadCancelLeavesExistingFinalFile();
     void downloadManagerKeepsExistingFinalFile();
     void downloadManagerSameNameGetsDistinctFiles();
@@ -730,6 +732,153 @@ void IntegrationTest::downloadResumesFromPartialFileWithRange()
 
     QCOMPARE(server.requests.size(), 1);
     QCOMPARE(server.requests.first().headers.value("range"), QByteArray("bytes=300-"));
+}
+
+void IntegrationTest::downloadRestartsAfterUnsatisfiedRangeTotalMismatch()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+
+    const QByteArray full(800, 'r');
+    server.handler = [full](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        const QByteArray range = request.headers.value("range");
+        if (range == "bytes=1000-") {
+            // 本地半成品比服务器当前资源还长：416 + 总长 800。
+            // 继续保留这 1000 字节只会让后续每次重试都重复 416。
+            LocalHttpServer::respond(socket, 416, {}, "text/plain", 0,
+                                     "Content-Range: bytes */800\r\n");
+            return;
+        }
+        LocalHttpServer::respond(socket, 200, full, "audio/mpeg", full.size());
+    };
+
+    HttpClient http;
+    const QString path = m_tempDir.filePath(QStringLiteral("resume-416.mp3"));
+    const QString partial = path + QStringLiteral(".mvpdownload");
+    QFile::remove(path);
+    QFile::remove(partial);
+    {
+        QFile file(partial);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QVERIFY(file.write(QByteArray(1000, 'x')) == 1000);
+    }
+
+    DownloadTask *task = DownloadTask::start(&http, server.url(QStringLiteral("/resume-416.mp3")), path);
+    task->setResumeState(1000, 0, false);
+
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 5000);
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(succeeded.count(), 1);
+
+    QFile result(path);
+    QVERIFY(result.open(QIODevice::ReadOnly));
+    QCOMPARE(result.size(), qint64(full.size()));
+    QCOMPARE(result.readAll(), full);
+
+    // 第一次带 Range 被 416 拒绝，第二次必须改成无 Range 的完整请求。
+    QCOMPARE(server.requests.size(), 2);
+    QCOMPARE(server.requests.first().headers.value("range"), QByteArray("bytes=1000-"));
+    QVERIFY(!server.requests.at(1).headers.contains("range"));
+}
+
+void IntegrationTest::downloadHlsExitCheckpointsAtCompletedSegmentBoundary()
+{
+    const QByteArray seg0(65536, 'a');
+    const QByteArray seg1(262144, 'b');
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "seg0.ts\n"
+        "#EXTINF:1.0,\n"
+        "seg1.ts\n"
+        "#EXT-X-ENDLIST\n";
+
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    int seg1Requests = 0;
+    server.handler = [&, playlist, seg0, seg1](const LocalHttpServer::Request &request,
+                                               QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/exit/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+            return;
+        }
+        if (request.path == QStringLiteral("/exit/seg0.ts")) {
+            LocalHttpServer::respond(socket, 200, seg0, "video/mp2t", seg0.size());
+            return;
+        }
+        if (request.path == QStringLiteral("/exit/seg1.ts")) {
+            ++seg1Requests;
+            if (seg1Requests == 1) {
+                // 第一片完整、第二片只发一个 chunk 并保持连接，制造“下到一半退出”。
+                const QByteArray chunk = seg1.left(65536);
+                QByteArray head =
+                    "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\n"
+                    "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+                head += QByteArray::number(chunk.size(), 16).toUpper() + "\r\n";
+                socket->write(head);
+                socket->write(chunk);
+                socket->write("\r\n");
+                socket->flush();
+                return;
+            }
+            LocalHttpServer::respond(socket, 200, seg1, "video/mp2t", seg1.size());
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    HttpClient http;
+    const QString path = m_tempDir.filePath(QStringLiteral("hls-exit.ts"));
+    const QString partial = path + QStringLiteral(".mvpdownload");
+    QFile::remove(path);
+    QFile::remove(partial);
+
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/exit/index.m3u8")), path);
+    QSignalSpy checkpoint(task, &DownloadTask::checkpoint);
+    QSignalSpy fingerprint(task, &DownloadTask::playlistFingerprint);
+    QSignalSpy progress(task, &DownloadTask::progress);
+    QSignalSpy failed(task, &DownloadTask::failed);
+
+    // 先等第一片完整结束（checkpoint 只在完整分片边界发出），再等第二片
+    // 的第一个 chunk 让 progress 再增加一次。
+    QTRY_VERIFY_WITH_TIMEOUT(checkpoint.count() >= 1, 5000);
+    QVERIFY(fingerprint.count() > 0);
+    const QString resumeFingerprint = fingerprint.last().at(0).toString();
+    const int progressAfterFirstSegment = progress.count();
+    QTRY_VERIFY_WITH_TIMEOUT(progress.count() > progressAfterFirstSegment, 5000);
+    task->stopForExit();
+    QTest::qWait(100);
+
+    // 文件里确实有第二片半片（stopForExit 已 flush 关闭），但检查点必须退回到
+    // 第一片末尾；否则重启会把这个半片当成完整前缀，从第二片开头重复写入。
+    QVERIFY(QFileInfo(partial).size() > seg0.size());
+    QVERIFY(checkpoint.count() > 0);
+    const QList<QVariant> lastCheckpoint = checkpoint.last();
+    QCOMPARE(lastCheckpoint.at(0).toLongLong(), qint64(seg0.size()));
+    QCOMPARE(lastCheckpoint.at(1).toInt(), 1);
+    QCOMPARE(failed.count(), 0);
+
+    // 按该检查点续传：openTargetFile 会截掉半片，第二片必须从头发送。
+    DownloadTask *resumed =
+        DownloadTask::start(&http, server.url(QStringLiteral("/exit/index.m3u8")), path);
+    resumed->setResumeState(seg0.size(), 1, true);
+    resumed->setResumeFingerprint(resumeFingerprint);
+    QSignalSpy resumedSucceeded(resumed, &DownloadTask::succeeded);
+    QSignalSpy resumedFailed(resumed, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(resumedSucceeded.count() + resumedFailed.count() > 0, 5000);
+    QCOMPARE(resumedFailed.count(), 0);
+    QCOMPARE(resumedSucceeded.count(), 1);
+    QCOMPARE(seg1Requests, 2);
+
+    QFile result(path);
+    QVERIFY(result.open(QIODevice::ReadOnly));
+    QCOMPARE(result.readAll(), seg0 + seg1);
 }
 
 void IntegrationTest::downloadCancelLeavesExistingFinalFile()
