@@ -74,6 +74,10 @@ bool removeForItem(const MediaItem &item);
 /// 只允许 media-cache 根目录下的路径；影视条目删空父目录，但不会碰
 /// lyrics-cache 等其他旁车缓存。文件不存在视为成功。
 bool removeCachePath(const QString &cachePath);
+/// 判断路径是否是 media-cache 能管理的正文路径。
+/// 缓存根本身、根外路径、空路径都返回 false；用于区分“永远删不掉”
+/// 的失效标记与“暂时被占用”的重试。
+bool isManagedCachePath(const QString &cachePath);
 
 /// 只有可按字节 Range 读取的在线直链才适合整段落盘。
 bool isCacheable(const MediaItem &item);

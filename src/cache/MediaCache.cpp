@@ -521,18 +521,28 @@ bool removeForItem(const MediaItem &item)
     return ok;
 }
 
+/// @brief 判断路径是否是 media-cache 能管理的正文路径。
+/// @note 缓存根本身不能当正文删；根外路径即使存在也不归本应用管，
+///       调用方必须把它当成失效标记，而不是反复重试。
+bool isManagedCachePath(const QString &cachePath)
+{
+    if (cachePath.isEmpty())
+        return false;
+    const QString cacheRoot = QDir::cleanPath(rootDir());
+    const QString path = QDir::cleanPath(cachePath);
+    return path != cacheRoot && path.startsWith(cacheRoot + QLatin1Char('/'));
+}
+
 /// @brief 按已知缓存路径删除正文、旁车 JSON 和空条目目录。
 /// @param cachePath 正文路径。
 /// @return 删除成功返回 true；路径在缓存根之外或正文仍被占用返回 false。
 bool removeCachePath(const QString &cachePath)
 {
-    if (cachePath.isEmpty())
+    if (!isManagedCachePath(cachePath))
         return false;
 
     const QString cacheRoot = QDir::cleanPath(rootDir());
     const QString path = QDir::cleanPath(cachePath);
-    if (path == cacheRoot || !path.startsWith(cacheRoot + QLatin1Char('/')))
-        return false;
 
     const QString meta = QDir::cleanPath(metaPathForFile(path));
     bool ok = true;

@@ -1149,18 +1149,29 @@ bool DownloadManager::cleanupJobCaches(DownloadJob &job, bool *changed)
 
     if (!job.cleanupCachePath.isEmpty()) {
         const QString path = job.cleanupCachePath;
-        // HLS 影视的正文是无后缀 MP4，退出时可能还没有正文，只剩
-        // media.ts/.mvpdownload 和续传状态。不能因为正文不存在就直接跳过，
-        // 否则下载完成后这些半成品会永久留在 media-cache。
-        if (MediaCache::removeCachePath(path)) {
+        // 旧版本/手工编辑/缓存根变更可能留下根外路径。removeCachePath()
+        // 对这类路径永远返回 false，若继续保留标记，记录会每 10 秒重试
+        // 且用户无法移除。这里只丢弃失效标记，绝不删除根外文件。
+        if (!MediaCache::isManagedCachePath(path)) {
+            qCWarning(lcDownloadManager) << "下载记录的缓存清理路径已失效，丢弃标记"
+                                         << path;
             job.cleanupCachePath.clear();
             if (changed != nullptr)
                 *changed = true;
-            qCInfo(lcDownloadManager) << "已删除下载对应的播放缓存" << path;
         } else {
-            // Windows 上播放器持有正文句柄时删除会失败；保留精确路径，
-            // 后面按条目身份补扫并配合定时重试。
-            ok = false;
+            // HLS 影视的正文是无后缀 MP4，退出时可能还没有正文，只剩
+            // media.ts/.mvpdownload 和续传状态。不能因为正文不存在就直接
+            // 跳过，否则下载完成后这些半成品会永久留在 media-cache。
+            if (MediaCache::removeCachePath(path)) {
+                job.cleanupCachePath.clear();
+                if (changed != nullptr)
+                    *changed = true;
+                qCInfo(lcDownloadManager) << "已删除下载对应的播放缓存" << path;
+            } else {
+                // Windows 上播放器持有正文句柄时删除会失败；保留精确路径，
+                // 后面按条目身份补扫并配合定时重试。
+                ok = false;
+            }
         }
     }
 

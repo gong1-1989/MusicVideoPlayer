@@ -261,6 +261,7 @@ private slots:
     void downloadManagerMigratesLegacyStaging();
     void downloadManagerKeepsPendingCleanupRecord();
     void downloadManagerKeepsRecordWhenPendingCacheCleanupFails();
+    void downloadManagerDropsUnmanagedCleanupPath();
     void downloadManagerStateTrimKeepsResumableArtifacts();
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
@@ -1642,6 +1643,56 @@ void IntegrationTest::downloadManagerKeepsRecordWhenPendingCacheCleanupFails()
     }
     QFile::remove(pending.filePath);
     QFile::remove(statePath);
+}
+
+void IntegrationTest::downloadManagerDropsUnmanagedCleanupPath()
+{
+    QDir().mkpath(StoragePaths::dataDir());
+    const QString statePath = StoragePaths::dataFile(QStringLiteral("downloads.json"));
+    const QString outsidePath =
+        m_tempDir.filePath(QStringLiteral("unmanaged-cache/media"));
+    QVERIFY(QDir().mkpath(QFileInfo(outsidePath).absolutePath()));
+    QFile outside(outsidePath);
+    QVERIFY(outside.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(outside.write("outside-cache") > 0);
+    outside.close();
+
+    DownloadJob job;
+    job.id = QStringLiteral("unmanaged-cleanup");
+    job.item.type = MediaType::Video;
+    job.item.title = QStringLiteral("根外缓存清理");
+    job.filePath = m_tempDir.filePath(QStringLiteral("unmanaged-cleanup.mp4"));
+    job.status = DownloadJob::Status::Completed;
+    job.cleanupCachePath = outsidePath;
+
+    QFile state(statePath);
+    QVERIFY(state.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QJsonArray jobs;
+    jobs.append(job.toJson());
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("jobs"), jobs);
+    state.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    state.close();
+
+    {
+        HttpClient http;
+        DownloadManager manager(&http);
+        QCOMPARE(manager.jobs().size(), 1);
+        // 根外路径 removeCachePath() 永远返回 false。若保留标记，记录会
+        // 每 10 秒重试且用户无法移除；启动清理必须直接丢弃失效标记。
+        QTRY_VERIFY_WITH_TIMEOUT(manager.jobs().constFirst().cleanupCachePath.isEmpty(), 3000);
+        QVERIFY(manager.removeJob(job.id));
+        QVERIFY(manager.jobs().isEmpty());
+        QVERIFY(QFileInfo::exists(outsidePath));
+        QFile check(outsidePath);
+        QVERIFY(check.open(QIODevice::ReadOnly));
+        QCOMPARE(check.readAll(), QByteArray("outside-cache"));
+        manager.shutdownForExit();
+    }
+
+    QFile::remove(statePath);
+    QVERIFY(QDir(QFileInfo(outsidePath).absolutePath()).removeRecursively());
 }
 
 void IntegrationTest::downloadManagerStateTrimKeepsResumableArtifacts()
