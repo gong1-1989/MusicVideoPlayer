@@ -290,6 +290,7 @@ private slots:
     void searchTimeoutAbortsProvider();
     void maccmsAbortClosesInflightRequest();
     void maccmsAcceptsDirectTsStream();
+    void maccmsProbesSuffixlessDirectMedia();
     void maccmsLateSuggestDoesNotPolluteNextSearch();
     void externalAbortKillsProcessWithoutFinish();
     void externalProviderScopesCookieToConfiguredOrigin();
@@ -3866,6 +3867,115 @@ void IntegrationTest::maccmsAcceptsDirectTsStream()
     QVERIFY2(error.isEmpty(), qPrintable(error));
     QCOMPARE(results.size(), 1);
     QCOMPARE(results.first().url, QUrl(QStringLiteral("https://cdn.example.com/video/media.ts")));
+}
+
+void IntegrationTest::maccmsProbesSuffixlessDirectMedia()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [&server](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path == QByteArrayLiteral("/")) {
+            LocalHttpServer::respond(socket, 200, QByteArrayLiteral("<html>ok</html>"),
+                                    "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path.startsWith(QByteArrayLiteral("/index.php/ajax/suggest"))) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("{\"list\":[{\"id\":1,\"name\":\"无后缀直链\"},"
+                                  "{\"id\":2,\"name\":\"伪装页面\"}]}"),
+                "application/json");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/voddetail/1.html")) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("<a href=\"/vodplay/1-1-1.html\">第1集</a>"),
+                "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/voddetail/2.html")) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("<a href=\"/vodplay/2-1-1.html\">第1集</a>"),
+                "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/vodplay/1-1-1.html")) {
+            const QString html =
+                QStringLiteral("<script>var player_aaaa = {\"encrypt\":0,\"from\":\"test\","
+                               "\"url\":\"%1\"};</script>")
+                    .arg(server.url(QStringLiteral("/stream?id=1")).toString());
+            LocalHttpServer::respond(socket, 200, html.toUtf8(), "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/vodplay/2-1-1.html")) {
+            const QString html =
+                QStringLiteral("<script>var player_aaaa = {\"encrypt\":0,\"from\":\"test\","
+                               "\"url\":\"%1\"};</script>")
+                    .arg(server.url(QStringLiteral("/page?id=2")).toString());
+            LocalHttpServer::respond(socket, 200, html.toUtf8(), "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/stream?id=1")) {
+            // 没有后缀，但 206 + video/mp4 + 总长度足够，应被识别成真实直链。
+            LocalHttpServer::respond(socket, 206, QByteArrayLiteral("M"), "video/mp4", 1,
+                                     "Content-Range: bytes 0-0/2097152\r\n");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/page?id=2")) {
+            // 无后缀播放器页：即使 200 也不能当媒体。
+            LocalHttpServer::respond(socket, 200,
+                                     QByteArrayLiteral("<html>player shell</html>"),
+                                     "text/html; charset=utf-8");
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, QByteArrayLiteral("missing"), "text/plain");
+    };
+
+    SourceConfig config;
+    config.id = QStringLiteral("maccms_suffixless_media");
+    config.name = QStringLiteral("本地无后缀源");
+    config.kind = QStringLiteral("builtin");
+    config.provider = QStringLiteral("maccms_web");
+    config.mediaType = MediaType::Video;
+    config.urlTemplate = server.url(QStringLiteral("/")).toString();
+
+    MaccmsWebProvider provider(config, nullptr);
+    QVector<MediaItem> results;
+    QString error;
+    int filtered = -1;
+    bool finished = false;
+    connect(&provider, &SearchProviderBase::finished, this,
+            [&finished, &results, &error, &filtered](const QString &,
+                                                     const QVector<MediaItem> &items, int skipped,
+                                                     const QString &message) {
+                finished = true;
+                results = items;
+                filtered = skipped;
+                error = message;
+            });
+
+    provider.search(QStringLiteral("无后缀"), 5);
+    QTRY_VERIFY_WITH_TIMEOUT(finished, 5000);
+    QVERIFY2(error.isEmpty(), qPrintable(error));
+    QCOMPARE(results.size(), 1);
+    QCOMPARE(results.first().url, server.url(QStringLiteral("/stream?id=1")));
+    QCOMPARE(filtered, 1);
+
+    bool probedMedia = false;
+    bool probedPage = false;
+    for (const LocalHttpServer::Request &request : std::as_const(server.requests)) {
+        if (request.path == QByteArrayLiteral("/stream?id=1")) {
+            probedMedia = true;
+            QCOMPARE(request.headers.value("range"), QByteArrayLiteral("bytes=0-0"));
+        } else if (request.path == QByteArrayLiteral("/page?id=2")) {
+            probedPage = true;
+            QCOMPARE(request.headers.value("range"), QByteArrayLiteral("bytes=0-0"));
+        }
+    }
+    QVERIFY(probedMedia);
+    QVERIFY(probedPage);
 }
 
 void IntegrationTest::maccmsLateSuggestDoesNotPolluteNextSearch()

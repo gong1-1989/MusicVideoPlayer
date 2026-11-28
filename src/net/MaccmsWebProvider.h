@@ -70,6 +70,11 @@ private:
     void startWorkers();
     void processJob(const QSharedPointer<Job> &job);
     void processPlay(const QSharedPointer<Job> &job);
+    /// 无后缀地址先做一次 Range 0-0 探测：只有响应确实是音视频才当直链，
+    /// 避免把 /play?id=... 这类播放器页误当媒体地址。
+    void probeSuffixlessMedia(const QUrl &media,
+                              const std::function<void(bool, const QString &)> &done);
+    void deliverMedia(const QSharedPointer<Job> &job, const QUrl &media);
     void finishJob(const QSharedPointer<Job> &job, bool ok, const MediaItem &item = MediaItem(),
                    const QString &reason = QString());
     /// 把已完成条目按候选序号排序后作为快照发出，先出的直链先显示

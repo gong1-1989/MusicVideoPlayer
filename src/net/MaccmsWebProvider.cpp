@@ -15,6 +15,7 @@
 #include <QJsonValue>
 #include <QLoggingCategory>
 #include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSet>
@@ -154,6 +155,46 @@ bool looksLikeStream(const QString &url)
             return true;
     }
     return false;
+}
+
+/// 无后缀直链的探测结果是否可信。
+/// @note 只信明确的音视频 MIME；octet-stream 太泛（很多下载接口都这么回），
+///       必须同时看到足够大的总长度才当媒体，避免把几十字节的占位页当视频。
+bool looksLikeMediaResponse(QNetworkReply *reply)
+{
+    if (reply == nullptr || !HttpClient::isHttpSuccess(reply))
+        return false;
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status != 200 && status != 206)
+        return false;
+
+    const QString type = reply->header(QNetworkRequest::ContentTypeHeader)
+                             .toString()
+                             .section(QLatin1Char(';'), 0, 0)
+                             .trimmed()
+                             .toLower();
+    if (type.startsWith(QStringLiteral("video/"))
+        || type.startsWith(QStringLiteral("audio/"))) {
+        return true;
+    }
+    if (type == QStringLiteral("application/vnd.apple.mpegurl")
+        || type == QStringLiteral("application/x-mpegurl")
+        || type == QStringLiteral("audio/mpegurl")) {
+        return true;
+    }
+    if (type != QStringLiteral("application/octet-stream"))
+        return false;
+
+    bool ok = false;
+    qint64 total = -1;
+    const QByteArray contentRange = reply->rawHeader("Content-Range").toLower();
+    const int slash = contentRange.lastIndexOf('/');
+    if (slash >= 0)
+        total = contentRange.mid(slash + 1).toLongLong(&ok);
+    if (!ok) {
+        total = reply->header(QNetworkRequest::ContentLengthHeader).toLongLong(&ok);
+    }
+    return ok && total >= 1024 * 1024;
 }
 
 /// 站点把播放地址写成自己的域名占位（encrypt 3 的典型形态），这种拿不到直链
@@ -1116,7 +1157,24 @@ void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
             return;
         }
         if (!looksLikeStream(decoded)) {
-            retryOrFail(tr("播放参数不是直链（%1），可能要二次解析").arg(decoded.left(60)));
+            // 后缀只能证明“像直链”，不能证明“不是直链”。CDN 常把真实媒体
+            // 挂在 /play?id=... 这类无后缀地址上；先探测响应类型，避免把
+            // 播放器页当媒体，也避免把可播地址直接判死。
+            const QUrl media = encodeMediaUrl(decoded, HeaderPolicy::originOnly(QUrl(self->m_root)));
+            if (media.isEmpty() || !media.isValid()) {
+                retryOrFail(tr("播放地址无法解析"));
+                return;
+            }
+            self->probeSuffixlessMedia(
+                media, [self, job, media, retryOrFail](bool ok, const QString &reason) {
+                    if (self.isNull() || self->m_done)
+                        return;
+                    if (!ok) {
+                        retryOrFail(reason);
+                        return;
+                    }
+                    self->deliverMedia(job, media);
+                });
             return;
         }
 
@@ -1125,28 +1183,96 @@ void MaccmsWebProvider::processPlay(const QSharedPointer<Job> &job)
             retryOrFail(tr("播放地址无法解析"));
             return;
         }
-
-        MediaItem item;
-        item.type = MediaType::Video;
-        item.title = job->candidate.title;
-        item.url = media;
-        item.webUrl = job->candidate.detailUrl;
-        item.sourceOrigin = HeaderPolicy::originOnly(QUrl(self->m_root));
-        item.sourceId = self->m_config.id;
-        item.online = true;
-        item.headers = self->mediaHeaders();
-        item.posterUrl = self->siteUrl(job->candidate.poster);
-        item.year = job->candidate.year;
-        item.area = job->candidate.area;
-        item.genre = job->candidate.genre;
-        item.description = job->candidate.description;
-        item.quality = job->candidate.quality;
-        if (item.quality.isEmpty())
-            item.quality = inferQuality(item.title, MediaType::Video);
-
-        qCInfo(lcWeb) << "取到直链" << item.title << HttpClient::redactUrl(media);
-        self->finishJob(job, true, item);
+        self->deliverMedia(job, media);
     });
+}
+
+/// @brief 对无后缀候选发 Range 0-0，只看响应头和总长度，不下载正文。
+void MaccmsWebProvider::probeSuffixlessMedia(
+    const QUrl &media, const std::function<void(bool, const QString &)> &done)
+{
+    if (m_done || m_http == nullptr) {
+        done(false, tr("播放地址探测失败：网络层不可用"));
+        return;
+    }
+
+    QPointer<MaccmsWebProvider> self(this);
+    m_http->stream(
+        media, QByteArrayLiteral("bytes=0-0"), mediaHeaders(),
+        [self, done](QNetworkReply *reply) {
+            if (self.isNull()) {
+                if (reply != nullptr) {
+                    reply->abort();
+                    reply->deleteLater();
+                }
+                return;
+            }
+            // 探测期间被 abort/新一轮搜索作废：既不回写旧结果，也不继续链路。
+            if (self->m_done) {
+                if (reply != nullptr) {
+                    reply->abort();
+                    reply->deleteLater();
+                }
+                return;
+            }
+
+            const bool ok = looksLikeMediaResponse(reply);
+            QString reason;
+            if (!ok) {
+                const int status = reply != nullptr
+                    ? reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()
+                    : 0;
+                const QString type = reply != nullptr
+                    ? reply->header(QNetworkRequest::ContentTypeHeader)
+                          .toString()
+                          .section(QLatin1Char(';'), 0, 0)
+                          .trimmed()
+                    : QString();
+                if (status > 0) {
+                    reason = tr("播放地址探测不是媒体（HTTP %1，%2）")
+                                 .arg(status)
+                                 .arg(type.isEmpty() ? tr("未知类型") : type);
+                } else {
+                    reason = tr("播放地址探测失败：连接不上媒体地址");
+                }
+            }
+
+            // 只要响应头；正文一个字节都不留，避免把大文件读进内存。
+            if (reply != nullptr) {
+                reply->abort();
+                reply->deleteLater();
+            }
+            done(ok, reason);
+        },
+        HeaderPolicy::originOnly(QUrl(m_root)));
+}
+
+/// @brief 把已确认的媒体地址组装成条目并结束当前候选。
+void MaccmsWebProvider::deliverMedia(const QSharedPointer<Job> &job, const QUrl &media)
+{
+    if (m_done || job.isNull())
+        return;
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = job->candidate.title;
+    item.url = media;
+    item.webUrl = job->candidate.detailUrl;
+    item.sourceOrigin = HeaderPolicy::originOnly(QUrl(m_root));
+    item.sourceId = m_config.id;
+    item.online = true;
+    item.headers = mediaHeaders();
+    item.posterUrl = siteUrl(job->candidate.poster);
+    item.year = job->candidate.year;
+    item.area = job->candidate.area;
+    item.genre = job->candidate.genre;
+    item.description = job->candidate.description;
+    item.quality = job->candidate.quality;
+    if (item.quality.isEmpty())
+        item.quality = inferQuality(item.title, MediaType::Video);
+
+    qCInfo(lcWeb) << "取到直链" << item.title << HttpClient::redactUrl(media);
+    finishJob(job, true, item);
 }
 
 /// @brief 单个详情任务收尾：成功则产出条目，失败计数并在无剩余任务时结束。
