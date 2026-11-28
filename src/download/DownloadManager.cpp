@@ -924,6 +924,12 @@ void DownloadManager::saveNow()
     if (payload.size() > kMaxStateFileBytes) {
         qCWarning(lcDownloadManager) << "下载状态超过上限，且没有可安全裁剪的历史"
                                      << payload.size() << kMaxStateFileBytes;
+        if (!m_stateLimitWarned) {
+            m_stateLimitWarned = true;
+            emit statusMessage(
+                tr("下载状态超过 16MB 且没有可安全裁剪的历史，本次未保存；"
+                   "请先清理已完成记录或检查 Data 目录权限。"));
+        }
         return;
     }
 
@@ -944,6 +950,7 @@ void DownloadManager::saveNow()
         qCWarning(lcDownloadManager) << "下载状态文件保存失败" << file.errorString();
         return;
     }
+    m_stateLimitWarned = false;
     // 只有新状态成功落盘后才真正丢掉被裁剪的记录。
     if (trimmed)
         m_jobs = jobs;

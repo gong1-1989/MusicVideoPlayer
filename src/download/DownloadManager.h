@@ -179,6 +179,8 @@ private:
     QTimer *m_cacheCleanupTimer = nullptr;
     QString m_statePath;
     bool m_shuttingDown = false;
+    /// 状态文件超过上限且无法安全裁剪时只提示一次，避免每次自动保存都刷状态栏。
+    bool m_stateLimitWarned = false;
 };
 
 #endif // DOWNLOADMANAGER_H

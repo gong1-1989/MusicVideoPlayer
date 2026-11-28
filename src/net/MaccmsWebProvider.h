@@ -74,6 +74,10 @@ private:
     /// 避免把 /play?id=... 这类播放器页误当媒体地址。
     void probeSuffixlessMedia(const QUrl &media,
                               const std::function<void(bool, const QString &)> &done);
+    /// 无后缀 + text/plain/octet-stream 时再取一小段正文，确认是否 HLS 列表；
+    /// 播放器页同样是 text/html/文本，不能只凭 MIME 放行。
+    void probePlaylistBody(const QUrl &media,
+                           const std::function<void(bool, const QString &)> &done);
     void deliverMedia(const QSharedPointer<Job> &job, const QUrl &media);
     void finishJob(const QSharedPointer<Job> &job, bool ok, const MediaItem &item = MediaItem(),
                    const QString &reason = QString());

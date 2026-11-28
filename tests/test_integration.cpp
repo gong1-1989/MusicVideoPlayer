@@ -1789,6 +1789,78 @@ void IntegrationTest::downloadManagerStateTrimKeepsResumableArtifacts()
         manager.shutdownForExit();
     }
 
+    // 已提交但未完成转码的失败记录不能裁剪：丢掉记录会让最终 TS/MP4
+    // 失去唯一负责人，保存必须失败并在状态栏提示一次。
+    QVector<DownloadJob> blockedJobs;
+    for (int i = 0; i < 5; ++i) {
+        DownloadJob job;
+        job.id = QStringLiteral("state-warn-blocked-%1").arg(i);
+        job.item.type = MediaType::Music;
+        job.item.title = QStringLiteral("待重试失败 %1").arg(i);
+        job.filePath = m_tempDir.filePath(
+            QStringLiteral("state-trim/blocked-%1.mp3").arg(i));
+        job.url = QUrl(QStringLiteral("https://example.invalid/state-warn.mp3"));
+        job.status = i == 0 ? DownloadJob::Status::Downloading
+                            : DownloadJob::Status::Failed;
+        job.snapshot = i == 0;
+        job.committed = true;
+        blockedJobs.append(job);
+    }
+    auto blockedPayloadFor = [&](int messageSize) {
+        for (int i = 0; i < blockedJobs.size(); ++i) {
+            // 第一条加载时会被改成更长的快照失败提示；第二条单独承担体积，
+            // 这样调参可以精确到 1 字节。
+            blockedJobs[i].message.clear();
+            if (i == 1)
+                blockedJobs[i].message = QString(messageSize, QLatin1Char('y'));
+        }
+        QJsonArray jobs;
+        for (const DownloadJob &job : std::as_const(blockedJobs))
+            jobs.append(job.toJson());
+        QJsonObject root;
+        root.insert(QStringLiteral("version"), 1);
+        root.insert(QStringLiteral("jobs"), jobs);
+        return QJsonDocument(root).toJson(QJsonDocument::Indented);
+    };
+    int blockedMessageSize = 16 * 1024 * 1024;
+    QByteArray payload2;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        payload2 = blockedPayloadFor(blockedMessageSize);
+        const qint64 target = kStateLimit - 10;
+        const qint64 delta = target - payload2.size();
+        if (delta == 0)
+            break;
+        blockedMessageSize += int(delta);
+    }
+    QVERIFY(payload2.size() < kStateLimit);
+    {
+        QFile state(statePath);
+        QVERIFY(state.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(state.write(payload2), qint64(payload2.size()));
+    }
+    {
+        HttpClient http;
+        DownloadManager manager(&http);
+        QSignalSpy messages(&manager, &DownloadManager::statusMessage);
+        // 等过 900ms 的合并保存定时器；轮询以免定时器被启动清理短暂推迟。
+        bool warned = false;
+        QElapsedTimer waitTimer;
+        waitTimer.start();
+        while (!warned && waitTimer.elapsed() < 4000) {
+            QTest::qWait(100);
+            for (const QList<QVariant> &args : std::as_const(messages)) {
+                if (args.first().toString().contains(QStringLiteral("下载状态超过 16MB"))) {
+                    warned = true;
+                    break;
+                }
+            }
+        }
+        QVERIFY2(warned, "状态栏未提示下载状态超限");
+        // 保存失败必须保留旧文件，不能把超限状态写成半截 JSON。
+        QCOMPARE(QFileInfo(statePath).size(), qint64(payload2.size()));
+        manager.shutdownForExit();
+    }
+
     QFile::remove(statePath);
     QFile::remove(resumeTarget + QStringLiteral(".mvpdownload"));
 }
@@ -3955,7 +4027,8 @@ void IntegrationTest::maccmsProbesSuffixlessDirectMedia()
             LocalHttpServer::respond(
                 socket, 200,
                 QByteArrayLiteral("{\"list\":[{\"id\":1,\"name\":\"无后缀直链\"},"
-                                  "{\"id\":2,\"name\":\"伪装页面\"}]}"),
+                                  "{\"id\":2,\"name\":\"伪装页面\"},"
+                                  "{\"id\":3,\"name\":\"文本HLS\"}]}"),
                 "application/json");
             return;
         }
@@ -3970,6 +4043,13 @@ void IntegrationTest::maccmsProbesSuffixlessDirectMedia()
             LocalHttpServer::respond(
                 socket, 200,
                 QByteArrayLiteral("<a href=\"/vodplay/2-1-1.html\">第1集</a>"),
+                "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/voddetail/3.html")) {
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("<a href=\"/vodplay/3-1-1.html\">第1集</a>"),
                 "text/html; charset=utf-8");
             return;
         }
@@ -3989,6 +4069,14 @@ void IntegrationTest::maccmsProbesSuffixlessDirectMedia()
             LocalHttpServer::respond(socket, 200, html.toUtf8(), "text/html; charset=utf-8");
             return;
         }
+        if (request.path == QByteArrayLiteral("/vodplay/3-1-1.html")) {
+            const QString html =
+                QStringLiteral("<script>var player_aaaa = {\"encrypt\":0,\"from\":\"test\","
+                               "\"url\":\"%1\"};</script>")
+                    .arg(server.url(QStringLiteral("/list?id=3")).toString());
+            LocalHttpServer::respond(socket, 200, html.toUtf8(), "text/html; charset=utf-8");
+            return;
+        }
         if (request.path == QByteArrayLiteral("/stream?id=1")) {
             // 没有后缀，但 206 + video/mp4 + 总长度足够，应被识别成真实直链。
             LocalHttpServer::respond(socket, 206, QByteArrayLiteral("M"), "video/mp4", 1,
@@ -4000,6 +4088,16 @@ void IntegrationTest::maccmsProbesSuffixlessDirectMedia()
             LocalHttpServer::respond(socket, 200,
                                      QByteArrayLiteral("<html>player shell</html>"),
                                      "text/html; charset=utf-8");
+            return;
+        }
+        if (request.path == QByteArrayLiteral("/list?id=3")) {
+            // 无后缀 HLS：站点以 text/plain 返回，必须靠正文 #EXTM3U 识别。
+            LocalHttpServer::respond(
+                socket, 200,
+                QByteArrayLiteral("#EXTM3U\n#EXT-X-VERSION:3\n"
+                                  "#EXT-X-TARGETDURATION:10\n"
+                                  "#EXTINF:10,\nsegment.ts\n#EXT-X-ENDLIST\n"),
+                "text/plain; charset=utf-8");
             return;
         }
         LocalHttpServer::respond(socket, 404, QByteArrayLiteral("missing"), "text/plain");
@@ -4031,12 +4129,16 @@ void IntegrationTest::maccmsProbesSuffixlessDirectMedia()
     provider.search(QStringLiteral("无后缀"), 5);
     QTRY_VERIFY_WITH_TIMEOUT(finished, 5000);
     QVERIFY2(error.isEmpty(), qPrintable(error));
-    QCOMPARE(results.size(), 1);
+    QCOMPARE(results.size(), 2);
     QCOMPARE(results.first().url, server.url(QStringLiteral("/stream?id=1")));
+    QCOMPARE(results.at(1).url, server.url(QStringLiteral("/list?id=3")));
     QCOMPARE(filtered, 1);
 
     bool probedMedia = false;
     bool probedPage = false;
+    bool probedPlaylist = false;
+    QByteArray playlistProbeRange;
+    QByteArray playlistBodyRange;
     for (const LocalHttpServer::Request &request : std::as_const(server.requests)) {
         if (request.path == QByteArrayLiteral("/stream?id=1")) {
             probedMedia = true;
@@ -4044,10 +4146,21 @@ void IntegrationTest::maccmsProbesSuffixlessDirectMedia()
         } else if (request.path == QByteArrayLiteral("/page?id=2")) {
             probedPage = true;
             QCOMPARE(request.headers.value("range"), QByteArrayLiteral("bytes=0-0"));
+        } else if (request.path == QByteArrayLiteral("/list?id=3")) {
+            probedPlaylist = true;
+            const QByteArray range = request.headers.value("range");
+            if (range == QByteArrayLiteral("bytes=0-0"))
+                playlistProbeRange = range;
+            else if (range == QByteArrayLiteral("bytes=0-4095"))
+                playlistBodyRange = range;
         }
     }
     QVERIFY(probedMedia);
     QVERIFY(probedPage);
+    QVERIFY(probedPlaylist);
+    // 第一次只看头，第二次只取 4KB 正文；两次都不能整段下载。
+    QCOMPARE(playlistProbeRange, QByteArrayLiteral("bytes=0-0"));
+    QCOMPARE(playlistBodyRange, QByteArrayLiteral("bytes=0-4095"));
 }
 
 void IntegrationTest::maccmsLateSuggestDoesNotPolluteNextSearch()

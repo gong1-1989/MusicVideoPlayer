@@ -1199,7 +1199,7 @@ void MaccmsWebProvider::probeSuffixlessMedia(
     QPointer<MaccmsWebProvider> self(this);
     m_http->stream(
         media, QByteArrayLiteral("bytes=0-0"), mediaHeaders(),
-        [self, done](QNetworkReply *reply) {
+        [self, done, media](QNetworkReply *reply) {
             if (self.isNull()) {
                 if (reply != nullptr) {
                     reply->abort();
@@ -1217,17 +1217,34 @@ void MaccmsWebProvider::probeSuffixlessMedia(
             }
 
             const bool ok = looksLikeMediaResponse(reply);
+            const int status = reply != nullptr
+                ? reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()
+                : 0;
+            const QString type = reply != nullptr
+                ? reply->header(QNetworkRequest::ContentTypeHeader)
+                      .toString()
+                      .section(QLatin1Char(';'), 0, 0)
+                      .trimmed()
+                : QString();
+            const bool mayBePlaylist =
+                !ok && (status == 200 || status == 206)
+                && (type.isEmpty() || type == QLatin1String("text/plain")
+                    || type == QLatin1String("application/octet-stream"));
+
+            // 只要响应头；正文一个字节都不留，避免把大文件读进内存。
+            if (reply != nullptr) {
+                reply->abort();
+                reply->deleteLater();
+            }
+            if (mayBePlaylist) {
+                // 少数站点把 m3u8 以 text/plain / octet-stream 返回，且地址
+                // 没有 .m3u8 后缀。再取 4KB 正文确认首行 #EXTM3U，避免把
+                // 播放器页或任意文本当成媒体。
+                self->probePlaylistBody(media, done);
+                return;
+            }
             QString reason;
             if (!ok) {
-                const int status = reply != nullptr
-                    ? reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()
-                    : 0;
-                const QString type = reply != nullptr
-                    ? reply->header(QNetworkRequest::ContentTypeHeader)
-                          .toString()
-                          .section(QLatin1Char(';'), 0, 0)
-                          .trimmed()
-                    : QString();
                 if (status > 0) {
                     reason = tr("播放地址探测不是媒体（HTTP %1，%2）")
                                  .arg(status)
@@ -1236,15 +1253,52 @@ void MaccmsWebProvider::probeSuffixlessMedia(
                     reason = tr("播放地址探测失败：连接不上媒体地址");
                 }
             }
-
-            // 只要响应头；正文一个字节都不留，避免把大文件读进内存。
-            if (reply != nullptr) {
-                reply->abort();
-                reply->deleteLater();
-            }
             done(ok, reason);
         },
         HeaderPolicy::originOnly(QUrl(m_root)));
+}
+
+/// @brief 对 text/plain 无后缀候选读取最多 4KB，确认是否 HLS 播放列表。
+void MaccmsWebProvider::probePlaylistBody(
+    const QUrl &media, const std::function<void(bool, const QString &)> &done)
+{
+    if (m_done || m_http == nullptr) {
+        done(false, tr("播放列表探测失败：网络层不可用"));
+        return;
+    }
+
+    QPointer<MaccmsWebProvider> self(this);
+    m_http->fetch(
+        media, QByteArrayLiteral("bytes=0-4095"), mediaHeaders(),
+        [self, done](QNetworkReply *reply) {
+            if (self.isNull()) {
+                if (reply != nullptr)
+                    reply->deleteLater();
+                return;
+            }
+            if (self->m_done) {
+                if (reply != nullptr)
+                    reply->deleteLater();
+                return;
+            }
+
+            bool ok = false;
+            QString reason;
+            if (reply != nullptr && reply->error() == QNetworkReply::NoError) {
+                QByteArray body = reply->readAll();
+                if (body.startsWith("\xEF\xBB\xBF"))
+                    body.remove(0, 3);
+                body = body.trimmed();
+                ok = body.startsWith("#EXTM3U");
+            }
+            if (!ok) {
+                reason = tr("播放地址探测不是媒体：文本内容不是 HLS 播放列表");
+            }
+            if (reply != nullptr)
+                reply->deleteLater();
+            done(ok, reason);
+        },
+        256 * 1024, HeaderPolicy::originOnly(QUrl(m_root)));
 }
 
 /// @brief 把已确认的媒体地址组装成条目并结束当前候选。
