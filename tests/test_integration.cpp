@@ -245,6 +245,7 @@ private slots:
     void downloadFailsOnShortContentLength();
     void downloadStopsAtInjectedByteLimit();
     void downloadRejectsShortHlsSegmentRange();
+    void downloadRetriesTransientHlsSegmentErrors();
     void downloadTaskUsesMappedProxyDespitePublicOrigin();
     void hlsCacheBuilderUsesActualFallbackSource();
     void downloadResumesFromPartialFileWithRange();
@@ -650,6 +651,58 @@ void IntegrationTest::downloadRejectsShortHlsSegmentRange()
     QCOMPARE(failed.count(), 1);
     QVERIFY(failed.first().first().toString().contains(QStringLiteral("分片长度不完整")));
     QVERIFY(!QFile::exists(m_tempDir.filePath(QStringLiteral("short-list.ts"))));
+}
+
+void IntegrationTest::downloadRetriesTransientHlsSegmentErrors()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QByteArray segmentBytes(512, 'r');
+    const QByteArray playlist =
+        "#EXTM3U\n"
+        "#EXT-X-VERSION:3\n"
+        "#EXT-X-TARGETDURATION:1\n"
+        "#EXT-X-MEDIA-SEQUENCE:0\n"
+        "#EXTINF:1.0,\n"
+        "seg0.ts\n"
+        "#EXT-X-ENDLIST\n";
+    int segmentAttempts = 0;
+    server.handler = [&, playlist, segmentBytes](const LocalHttpServer::Request &request,
+                                                 QTcpSocket *socket) {
+        if (request.path == QStringLiteral("/hls/retry/index.m3u8")) {
+            LocalHttpServer::respond(socket, 200, playlist, "application/vnd.apple.mpegurl");
+            return;
+        }
+        if (request.path == QStringLiteral("/hls/retry/seg0.ts")) {
+            ++segmentAttempts;
+            // 前两次模拟上游 CDN 的瞬时 502；第三次恢复，缓存任务应继续
+            // 而不是像旧实现那样直接终止整条轨道。
+            if (segmentAttempts <= 2) {
+                LocalHttpServer::respond(socket, 502, "bad gateway", "text/plain");
+                return;
+            }
+            LocalHttpServer::respond(socket, 200, segmentBytes, "video/mp2t");
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    HttpClient http;
+    const QString path = m_tempDir.filePath(QStringLiteral("retry-segment.mp4"));
+    QFile::remove(path);
+    QFile::remove(m_tempDir.filePath(QStringLiteral("retry-segment.ts")));
+    DownloadTask *task =
+        DownloadTask::start(&http, server.url(QStringLiteral("/hls/retry/index.m3u8")), path);
+    QSignalSpy succeeded(task, &DownloadTask::succeeded);
+    QSignalSpy failed(task, &DownloadTask::failed);
+    QTRY_VERIFY_WITH_TIMEOUT(succeeded.count() + failed.count() > 0, 8000);
+
+    QCOMPARE(failed.count(), 0);
+    QCOMPARE(succeeded.count(), 1);
+    QCOMPARE(segmentAttempts, 3);
+    QFile result(succeeded.first().first().toString());
+    QVERIFY(result.open(QIODevice::ReadOnly));
+    QCOMPARE(result.readAll(), segmentBytes);
 }
 
 void IntegrationTest::downloadTaskUsesMappedProxyDespitePublicOrigin()

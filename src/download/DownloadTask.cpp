@@ -34,7 +34,11 @@ const QRegularExpression kMediaSequence(QStringLiteral("MEDIA-SEQUENCE=([^,\\s]+
 const QRegularExpression kContentRange(QStringLiteral("^bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)"),
                                        QRegularExpression::CaseInsensitiveOption);
 const QRegularExpression kRequestRange(QStringLiteral("^bytes=(\\d+)-(\\d+)$"),
-                                        QRegularExpression::CaseInsensitiveOption);
+                                       QRegularExpression::CaseInsensitiveOption);
+// 单条 HLS 分片允许两次退避重试（总共三次请求）。后台整段缓存可能连续跑
+// 几百片，不能因一片的瞬时 502/超时丢掉整条轨道；也不能无限重试拖住任务。
+constexpr int kHlsSegmentMaxRetries = 2;
+constexpr int kHlsSegmentRetryBaseDelayMs = 600;
 QString keyCacheKey(const QUrl &url)
 {
     return url.toString(QUrl::FullyEncoded);
@@ -912,6 +916,12 @@ void DownloadTask::startNextSegment()
     }
 
     const HlsDownloadSession::Segment segment = m_hls.segments.at(m_hls.segmentIndex);
+    // 重试计数只属于当前分片。进入下一片（或首次续传定位到新片）时归零，
+    // 否则前一片的重试次数会错误地消耗后一片的额度。
+    if (m_hls.segmentAttemptIndex != m_hls.segmentIndex) {
+        m_hls.segmentAttemptIndex = m_hls.segmentIndex;
+        m_hls.segmentAttempt = 0;
+    }
     // 播放列表本身可以来自公网，但其中的绝对分片地址仍可能是内网地址；
     // 每个分片发请求前都按同一个可信源站再校验一次。
     if (!NetworkAddressPolicy::allowsMediaTarget(segment.url, m_originUrl)) {
@@ -954,6 +964,9 @@ void DownloadTask::startSegmentRequest(const HlsDownloadSession::Segment &segmen
     // 从这里到 onSegmentFinished 之间写进文件的都是“半片”；退出时必须只
     // 记录 segmentFileOffset，不能把半片字节当成可续传前缀。
     m_hls.segmentInProgress = true;
+    // 每次请求都换一个代号：重试时旧 reply 的 readyRead/finished 可能晚到，
+    // 必须按代号丢弃，不能把上一次的半片写进重试后的同一文件位置。
+    const int segmentToken = ++m_hls.segmentToken;
     QPointer<DownloadTask> self(this);
     const QHash<QString, QString> headers =
         HeaderPolicy::sanitizedForTarget(segment.url, m_headers, m_originUrl);
@@ -974,7 +987,7 @@ void DownloadTask::startSegmentRequest(const HlsDownloadSession::Segment &segmen
         qCDebug(lcDownload) << "HLS 分片改走本机流转代理，跳过代理地址的源站校验："
                             << HttpClient::redactUrl(requestUrl);
     }
-    m_http->stream(requestUrl, segment.range, headers, [self, segment](QNetworkReply *reply) {
+    m_http->stream(requestUrl, segment.range, headers, [self, segment, segmentToken](QNetworkReply *reply) {
         if (self.isNull()) {
             if (reply != nullptr) {
                 reply->abort();
@@ -989,6 +1002,13 @@ void DownloadTask::startSegmentRequest(const HlsDownloadSession::Segment &segmen
             }
             return;
         }
+        if (self->m_hls.segmentToken != segmentToken) {
+            if (reply != nullptr) {
+                reply->abort();
+                reply->deleteLater();
+            }
+            return;
+        }
         if (reply == nullptr) {
             self->fail(QObject::tr("分片地址重定向失败"));
             return;
@@ -996,7 +1016,14 @@ void DownloadTask::startSegmentRequest(const HlsDownloadSession::Segment &segmen
 
         self->m_reply = reply;
         if (!HttpClient::isHttpSuccess(reply)) {
-            self->fail(HttpClient::describeError(reply));
+            const QString error = HttpClient::describeError(reply);
+            // 上游 CDN 偶发 502/503/429 或连接超时，后台整段缓存不应因此
+            // 丢掉整条轨道；先做有界退避重试，仍失败才按原逻辑报错。
+            if (self->isTransientSegmentError(reply)
+                && self->retrySegmentAfterTransientFailure(error)) {
+                return;
+            }
+            self->fail(error);
             return;
         }
         if (segment.range.isEmpty()) {
@@ -1033,13 +1060,21 @@ void DownloadTask::startSegmentRequest(const HlsDownloadSession::Segment &segmen
             }
         }
 
-        self->connect(reply, &QNetworkReply::readyRead, self.data(), [self, reply] {
-            if (!self.isNull() && !self->m_done)
+        self->connect(reply, &QNetworkReply::readyRead, self.data(),
+                      [self, reply, segmentToken] {
+            if (!self.isNull() && !self->m_done
+                && self->m_hls.segmentToken == segmentToken) {
                 self->writeReplyData(reply);
+            }
         });
-        self->connect(reply, &QNetworkReply::finished, self.data(), [self, reply] {
-            if (!self.isNull())
+        self->connect(reply, &QNetworkReply::finished, self.data(),
+                      [self, reply, segmentToken] {
+            if (!self.isNull() && !self->m_done
+                && self->m_hls.segmentToken == segmentToken) {
                 self->onSegmentFinished(reply);
+            } else if (reply != nullptr) {
+                reply->deleteLater();
+            }
         });
 
         if (reply->bytesAvailable() > 0)
@@ -1047,6 +1082,80 @@ void DownloadTask::startSegmentRequest(const HlsDownloadSession::Segment &segmen
         if (reply->isFinished())
             self->onSegmentFinished(reply);
     }, policyOrigin);
+}
+
+/// @brief 判断分片失败是否属于可恢复的瞬时错误。
+/// @note 4xx、范围不匹配、内容长度不符等属于确定性错误，重试只会重复失败；
+///       这里只放行 408/429/5xx 和连接级超时/中断。
+bool DownloadTask::isTransientSegmentError(QNetworkReply *reply)
+{
+    if (reply == nullptr)
+        return false;
+    const int status =
+        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status == 408 || status == 429 || (status >= 500 && status <= 599))
+        return true;
+
+    switch (reply->error()) {
+    case QNetworkReply::TimeoutError:
+    case QNetworkReply::TemporaryNetworkFailureError:
+    case QNetworkReply::NetworkSessionFailedError:
+    case QNetworkReply::RemoteHostClosedError:
+    case QNetworkReply::UnknownNetworkError:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/// @brief 对当前分片做有界退避重试。
+/// @return true 表示已安排下一次请求；false 表示额度用完，调用方应走 fail。
+/// @note 重试前必须把文件回滚到本片起点。上一次 502 可能在 readyRead 阶段
+///       已写入半片字节，不回滚会把两段响应拼成损坏分片。
+bool DownloadTask::retrySegmentAfterTransientFailure(const QString &reason)
+{
+    if (m_done)
+        return true;
+    if (m_hls.segmentAttempt >= kHlsSegmentMaxRetries)
+        return false;
+
+    ++m_hls.segmentAttempt;
+    // 递增代号后再 abort：旧 reply 的 finished 可能同步到达，代号不匹配时
+    // 会被回调直接丢弃，不会再次触发失败或写入。
+    ++m_hls.segmentToken;
+    if (!m_reply.isNull()) {
+        QNetworkReply *reply = m_reply.data();
+        m_reply = nullptr;
+        reply->abort();
+        reply->deleteLater();
+    }
+
+    if (m_file == nullptr) {
+        fail(tr("分片重试时下载文件已失效"));
+        return true;
+    }
+    // 只回滚本次未完成分片写入的字节，保留之前已完整落盘的分片前缀。
+    if (!m_file->resize(m_hls.segmentFileOffset)
+        || !m_file->seek(m_hls.segmentFileOffset)) {
+        fail(tr("分片重试时无法回滚临时文件：%1").arg(m_file->errorString()));
+        return true;
+    }
+    m_bytesWritten = m_hls.segmentFileOffset;
+    m_hls.segmentBytes = 0;
+    m_hls.segmentCipher.clear();
+    m_hls.segmentExpected = expectedRangeBytes(m_hls.currentSegment.range);
+
+    const int delayMs =
+        kHlsSegmentRetryBaseDelayMs * (1 << (m_hls.segmentAttempt - 1));
+    qCWarning(lcDownload) << "HLS 分片瞬时失败，准备第" << m_hls.segmentAttempt
+                          << "次重试：" << reason
+                          << "分片" << HttpClient::redactUrl(m_hls.currentSegment.url);
+    const HlsDownloadSession::Segment segment = m_hls.currentSegment;
+    QTimer::singleShot(delayMs, this, [this, segment] {
+        if (!m_done)
+            startSegmentRequest(segment);
+    });
+    return true;
 }
 
 /// @brief 从 EXT-X-KEY 指定的地址取 16 字节 AES-128 密钥。
@@ -1138,7 +1247,13 @@ void DownloadTask::onSegmentFinished(QNetworkReply *reply)
         return;
 
     if (!HttpClient::isHttpSuccess(reply)) {
-        fail(HttpClient::describeError(reply));
+        const QString error = HttpClient::describeError(reply);
+        // 响应头阶段成功、正文阶段才断流时，也会在这里进入重试。
+        if (isTransientSegmentError(reply)
+            && retrySegmentAfterTransientFailure(error)) {
+            return;
+        }
+        fail(error);
         return;
     }
 

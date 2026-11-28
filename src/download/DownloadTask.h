@@ -163,6 +163,13 @@ private:
         /// 当前是否已有分片请求正在写盘。退出续传只能记录到上一完整分片，
         /// 否则会把半片字节和“已完成分片数”一起持久化，重启后重复写入该片前缀。
         bool segmentInProgress = false;
+        /// 当前分片已经失败并重试的次数；切换到新分片时归零，避免整轨无限重试。
+        int segmentAttempt = 0;
+        /// 重试计数归属的分片序号，用来区分“同一片重试”和“进入下一片”。
+        int segmentAttemptIndex = -1;
+        /// 每次分片请求的代号；重试时递增，旧请求迟到的 readyRead/finished
+        /// 必须被丢弃，不能把上一次的半片数据写进重试后的文件。
+        int segmentToken = 0;
     };
 
     DownloadTask(HttpClient *http,
@@ -182,6 +189,11 @@ private:
     void startNextSegment();
     void startSegmentRequest(const HlsDownloadSession::Segment &segment);
     void onSegmentFinished(QNetworkReply *reply);
+    /// 分片级瞬时失败（5xx/408/429/超时/连接中断）的有界重试；返回 true
+    /// 表示已经安排下一次请求，调用方不应再走整任务失败。
+    bool retrySegmentAfterTransientFailure(const QString &reason);
+    /// 只有可恢复的服务端/网络错误才重试；4xx、范围错误和内容错误直接失败。
+    static bool isTransientSegmentError(QNetworkReply *reply);
     void onDirectFinished(QNetworkReply *reply);
     void writeReplyData(QNetworkReply *reply);
     bool writeDecryptedSegment(const HlsDownloadSession::Segment &segment);
