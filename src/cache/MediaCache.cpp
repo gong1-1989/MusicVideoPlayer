@@ -352,6 +352,28 @@ QString removalPathForItem(const MediaItem &item)
            + (item.type == MediaType::Video ? QStringLiteral("/media") : QString());
 }
 
+// Windows 路径大小写不敏感；状态文件里的旧路径可能用了不同盘符/目录大小写。
+// 判断归属时必须跟文件系统语义一致，否则有效缓存会被当成根外路径丢掉标记。
+constexpr Qt::CaseSensitivity kCachePathCase =
+#if defined(Q_OS_WIN)
+    Qt::CaseInsensitive;
+#else
+    Qt::CaseSensitive;
+#endif
+
+bool sameCachePath(const QString &left, const QString &right)
+{
+    return left.compare(right, kCachePathCase) == 0;
+}
+
+bool isBelowCacheRoot(const QString &path, const QString &cacheRoot)
+{
+    if (path.size() <= cacheRoot.size())
+        return false;
+    return path.at(cacheRoot.size()) == QLatin1Char('/')
+           && path.left(cacheRoot.size()).compare(cacheRoot, kCachePathCase) == 0;
+}
+
 } // namespace
 
 namespace MediaCache {
@@ -530,7 +552,7 @@ bool isManagedCachePath(const QString &cachePath)
         return false;
     const QString cacheRoot = QDir::cleanPath(rootDir());
     const QString path = QDir::cleanPath(cachePath);
-    return path != cacheRoot && path.startsWith(cacheRoot + QLatin1Char('/'));
+    return !sameCachePath(path, cacheRoot) && isBelowCacheRoot(path, cacheRoot);
 }
 
 /// @brief 按已知缓存路径删除正文、旁车 JSON 和空条目目录。
@@ -561,7 +583,7 @@ bool removeCachePath(const QString &cachePath)
     // 本应用缓存（可能还有退出时保留的分片/续传状态），一并回收。
     // 音乐正文直接在根目录，父目录等于 root，不处理。
     const QString parent = QFileInfo(path).absolutePath();
-    if (parent != cacheRoot && parent.startsWith(cacheRoot + QLatin1Char('/'))
+    if (!sameCachePath(parent, cacheRoot) && isBelowCacheRoot(parent, cacheRoot)
         && QDir(parent).exists()) {
         ok = QDir(parent).removeRecursively() && ok;
     }

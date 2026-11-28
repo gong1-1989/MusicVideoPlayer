@@ -275,6 +275,7 @@ private slots:
     void hlsCacheBuilderKeepsTrackPathsDistinct();
     void mediaCacheRemovesHashedFallback();
     void mediaCacheRemovalSkipsOtherPartial();
+    void mediaCacheManagedPathIgnoresWindowsCase();
     void hlsCacheBuilderFollowsRealAppleStream();
     void lyricsServiceCachesOnlinePayload();
     void mediaRemuxConvertsTsToMp4();
@@ -2984,6 +2985,43 @@ void IntegrationTest::mediaCacheRemovalSkipsOtherPartial()
     QCOMPARE(MediaCache::readPartialIdentity(body), MediaCache::cacheIdentity(keep));
 }
 
+
+void IntegrationTest::mediaCacheManagedPathIgnoresWindowsCase()
+{
+#ifdef Q_OS_WIN
+    MediaItem item;
+    item.type = MediaType::Music;
+    item.title = QStringLiteral("缓存路径大小写");
+    item.url = QUrl(QStringLiteral("https://example.com/case.mp3"));
+    item.online = true;
+
+    const QString body = MediaCache::filePathForItem(item);
+    QVERIFY(QDir().mkpath(QFileInfo(body).absolutePath()));
+    QFile file(body);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(file.write("case") > 0);
+    file.close();
+
+    // 状态文件里的旧路径可能把盘符或目录写成不同大小写。Windows 文件系统
+    // 仍能定位同一个文件，归属判断也必须按不区分大小写处理，不能把有效
+    // 缓存误判成根外路径后丢弃清理标记。
+    QString alternate = body;
+    for (QChar &character : alternate) {
+        if (character.isUpper())
+            character = character.toLower();
+        else if (character.isLower())
+            character = character.toUpper();
+    }
+    QVERIFY(alternate != body);
+    QVERIFY(MediaCache::isManagedCachePath(alternate));
+    QVERIFY(MediaCache::removeCachePath(alternate));
+    QVERIFY(!QFileInfo::exists(body));
+    // 音乐正文的父目录就是缓存根；大小写不同也不能把整个缓存根删掉。
+    QVERIFY(QDir(MediaCache::rootDir()).exists());
+#else
+    QSKIP("大小写不敏感路径只在 Windows 生效");
+#endif
+}
 
 void IntegrationTest::hlsCacheBuilderMergesSingleFileAudio()
 {
