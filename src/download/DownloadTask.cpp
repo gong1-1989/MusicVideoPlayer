@@ -1489,6 +1489,10 @@ void DownloadTask::fail(const QString &message, bool removePartial)
         // 地址无效/返回网页等根本不可能成功的情况才删掉空文件。
         if (removePartial || m_bytesWritten == 0)
             QFile::remove(temp);
+    } else if (removePartial && !m_filePath.isEmpty()) {
+        // startRequest() 在地址校验阶段失败时文件还没打开，旧一次尝试
+        // 留下的 .mvpdownload 也必须清掉，否则会带着过期字节继续“续传”。
+        QFile::remove(partialPath());
     }
 
     qCWarning(lcDownload) << "下载失败：" << message;

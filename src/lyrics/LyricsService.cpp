@@ -88,9 +88,12 @@ void LyricsService::load(const QUrl &url, const MediaItem &item)
         return;
     }
 
-    // 记录本次请求的世代号；回调里拿它和当前世代比较，丢弃取消后的迟到响应。
+    // 歌词地址来自搜索源返回的字段，必须带上条目可信源站。HttpClient
+    // 会据此拒绝公网源把请求引到 127.0.0.1/内网；旧条目没有源站信息时
+    // 保持兼容，不额外猜测来源。
     const int generation = m_generation;
-    m_reply = m_http->get(url);
+    m_reply = m_http->get(url, QByteArray(), QHash<QString, QString>(),
+                          NetLimits::kJsonBytes, item.sourceOrigin);
     if (m_reply == nullptr) {
         emit lyricsFailed(tr("歌词请求未能发出"));
         return;

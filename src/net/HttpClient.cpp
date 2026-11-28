@@ -125,13 +125,21 @@ QNetworkRequest buildRequest(const QUrl &url, const QHash<QString, QString> &ext
         if (key.compare(QLatin1String("Referer"), Qt::CaseInsensitive) == 0) {
             const QUrl referer(text.trimmed());
             const QString safe = HeaderPolicy::refererHeaderValue(referer);
-            if (!safe.isEmpty())
-                text = safe;
+            // 解析不出可信的 scheme+host 时直接丢弃该头，不能把原始值
+            // 回退发送：配置里的相对地址也可能带着签名 query。
+            if (safe.isEmpty()) {
+                qCWarning(lcHttp) << "忽略无法安全压缩的 Referer";
+                continue;
+            }
+            text = safe;
         } else if (key.compare(QLatin1String("Origin"), Qt::CaseInsensitive) == 0) {
             const QUrl originValue(text.trimmed());
             const QString safe = HeaderPolicy::originHeaderValue(originValue);
-            if (!safe.isEmpty())
-                text = safe;
+            if (safe.isEmpty()) {
+                qCWarning(lcHttp) << "忽略无法安全压缩的 Origin";
+                continue;
+            }
+            text = safe;
         }
         const QByteArray value = text.toUtf8();
         if (!isSafeHeader(key, value)) {

@@ -23,6 +23,7 @@
 #include <QTemporaryDir>
 #include <QTcpServer>
 #include <QTest>
+#include <QSignalSpy>
 
 namespace {
 
@@ -83,6 +84,7 @@ private slots:
     void downloadManagerRejectsOversizedStateFile();
     void downloadManagerRejectsStateWithoutJobsArray();
     void downloadManagerKeepsPartialOwnedByActiveTarget();
+    void downloadManagerDoesNotAcceptUnrelatedStagedFinalFile();
     void downloadManagerDelayedRemoveSkipsReservedPath();
     void downloadManagerDoesNotResumeSnapshot();
     void sourceRegistryRehydratesPlaylistCredentials();
@@ -823,6 +825,55 @@ void StorageTest::downloadManagerKeepsPartialOwnedByActiveTarget()
     // 旧路径仍由第一条 Paused 任务持有，第二条改到新路径后不能删除这条
     // 共享续传点，否则第一条任务恢复时会从 0 重下。
     QVERIFY(QFile::exists(oldPartial));
+}
+
+void StorageTest::downloadManagerDoesNotAcceptUnrelatedStagedFinalFile()
+{
+    const QString dir = m_tempDir.filePath(QStringLiteral("downloads-unrelated-final"));
+    QVERIFY(QDir().mkpath(dir));
+    const QString target = QDir(dir).filePath(QStringLiteral("movie.mp3"));
+    const QString staging = m_tempDir.filePath(QStringLiteral("staging/movie.mp3"));
+
+    QFile userFile(target);
+    QVERIFY(userFile.open(QIODevice::WriteOnly));
+    QVERIFY(userFile.write("user") > 0);
+    userFile.close();
+
+    DownloadJob job;
+    job.id = QStringLiteral("committed-but-missing-staging");
+    job.item.type = MediaType::Music;
+    job.item.title = QStringLiteral("movie");
+    job.item.url = QUrl(QStringLiteral("http://127.0.0.1:1/movie.mp3"));
+    job.item.online = true;
+    job.url = job.item.url;
+    job.filePath = target;
+    job.stagingPath = staging;
+    job.bytesReceived = 100;
+    job.bytesTotal = 100;
+    job.committed = true;
+    job.status = DownloadJob::Status::Paused;
+
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("jobs"), QJsonArray{job.toJson()});
+    QFile state(StoragePaths::dataFile(QStringLiteral("downloads.json")));
+    QVERIFY(state.open(QIODevice::WriteOnly));
+    state.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    state.close();
+
+    HttpClient http;
+    DownloadManager manager(&http);
+    QSignalSpy completed(&manager, &DownloadManager::jobCompleted);
+    manager.resumePending();
+    QTest::qWait(300);
+
+    // 暂存文件已经不存在，最终路径上的 5 字节用户文件不能因为 committed
+    // 就直接算下载完成；旧实现会立刻发 jobCompleted 并把这个文件交出去。
+    QCOMPARE(completed.count(), 0);
+    QFile check(target);
+    QVERIFY(check.open(QIODevice::ReadOnly));
+    QCOMPARE(check.readAll(), QByteArray("user"));
+    manager.shutdownForExit();
 }
 
 void StorageTest::downloadManagerDelayedRemoveSkipsReservedPath()

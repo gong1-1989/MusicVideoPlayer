@@ -10,6 +10,7 @@
 #include "cache/LyricsCache.h"
 #include "core/PlaybackController.h"
 #include "core/PlaylistModel.h"
+#include "download/DownloadJob.h"
 #include "download/DownloadTask.h"
 #include "media/MediaItem.h"
 #include "net/ConfigMapper.h"
@@ -440,6 +441,7 @@ public:
                     }
 
                     const QByteArray head = pending.left(headEnd);
+                    ++requestCount;
                     const QByteArray path =
                         head.split('\n').value(0).trimmed().split(' ').value(1);
                     qint64 start = 0;
@@ -499,6 +501,7 @@ public:
 
     QByteArray body;
     QByteArray playlist;
+    int requestCount = 0;
 };
 
 /// 缓存淘汰回归源：播放列表有 10 个分片，预取请求只回 206 头和 1KB 正文后挂住；
@@ -1031,7 +1034,9 @@ private slots:
     void networkAddressPolicyBlocksPrivateMediaTargets();
     void htmlTextPoliciesPreserveSiteDifferences();
     void pageMediaExtractorReadsPlayerConfig();
+    void pageMediaExtractorScansAllCandidates();
     void mediaExtensionsKeepCategorySets();
+    void downloadJobUnknownStatusIsNotPaused();
     void playlistSnifferRecognizesBody();
     void downloadRejectsHtmlDisguisedAsOctetStream();
     void downloadUsesContentRangeEndWhenTotalUnknown();
@@ -1063,6 +1068,7 @@ private slots:
     void hlsPreloadIndexPersistsAndFollowsRenamedTrack();
     void hlsPreloadMigratorBuildsOnlyExactIndex();
     void streamProxyServesPreloadedSegmentWithoutUpstream();
+    void streamProxyServesPreloadedByteRangeAtOffset();
     void streamProxySkipsSingleFileHlsSegmentCache();
     void streamProxyFallsBackWhenHlsRangeIgnored();
     void streamProxyHandlesFailedRangePartWithoutCrash();
@@ -2741,6 +2747,42 @@ void CoreLogicTest::pageMediaExtractorReadsPlayerConfig()
     QVERIFY(!MediaPageResolver::needsResolution(video));
 }
 
+void CoreLogicTest::pageMediaExtractorScansAllCandidates()
+{
+    // 同一个 pattern 的第一个候选是占位/非法地址时，不能放弃后面真正的
+    // <source>；旧实现只 re.match 第一个，整页会解析失败。
+    const QString html = QStringLiteral(
+        "<video><source src=\"blob:https://site.example/placeholder\">"
+        "<source src=\"https://cdn.example.com/hls/real.m3u8?token=1\">"
+        "</video>");
+    QCOMPARE(PageMediaExtractor::extractMediaUrl(
+                 html, QUrl(QStringLiteral("https://site.example/play/1.html")))
+                 .toString(),
+             QStringLiteral("https://cdn.example.com/hls/real.m3u8?token=1"));
+}
+
+void CoreLogicTest::downloadJobUnknownStatusIsNotPaused()
+{
+    QJsonObject object;
+    object.insert(QStringLiteral("id"), QStringLiteral("job-1"));
+    object.insert(QStringLiteral("url"), QStringLiteral("https://cdn.example/movie.mp4"));
+    object.insert(QStringLiteral("filePath"), QStringLiteral("C:/downloads/movie.mp4"));
+    object.insert(QStringLiteral("item"),
+                  QJsonObject{{QStringLiteral("title"), QStringLiteral("movie")}});
+    object.insert(QStringLiteral("status"), QStringLiteral("future-status"));
+
+    DownloadJob job;
+    QString error;
+    QVERIFY2(DownloadJob::fromJson(object, &job, &error), qPrintable(error));
+    // 未知状态不能落到 Paused：resumePending() 会自动拉起未由用户暂停的
+    // Paused 任务，状态文件损坏时会变成意外下载。
+    QCOMPARE(job.status, DownloadJob::Status::Failed);
+
+    object.remove(QStringLiteral("status"));
+    QVERIFY2(DownloadJob::fromJson(object, &job, &error), qPrintable(error));
+    QCOMPARE(job.status, DownloadJob::Status::Failed);
+}
+
 void CoreLogicTest::mediaExtensionsKeepCategorySets()
 {
     QCOMPARE(MediaExtensions::suffixFromUrl(
@@ -4352,6 +4394,75 @@ void CoreLogicTest::streamProxyServesPreloadedSegmentWithoutUpstream()
     HlsPreloadIndex::instance().openJournal(QString());
 }
 
+void CoreLogicTest::streamProxyServesPreloadedByteRangeAtOffset()
+{
+    SingleFileHlsServer upstream;
+    QVERIFY(upstream.listen(QHostAddress::LocalHost));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString trackPath = dir.path() + QStringLiteral("/track.video");
+    QFile file(trackPath);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(upstream.body), qint64(upstream.body.size()));
+    file.close();
+
+    const QString identity = QStringLiteral("range-preload-item");
+    const QUrl mediaUrl(QStringLiteral("http://127.0.0.1:%1/hls/main.mp4")
+                            .arg(upstream.serverPort()));
+    HlsPreloadEntry entry;
+    entry.url = mediaUrl;
+    entry.range = QByteArrayLiteral("bytes=200000-399999");
+    entry.filePath = trackPath;
+    entry.offset = 200000;
+    entry.size = 200000;
+    entry.contentType = QByteArrayLiteral("video/mp4");
+    HlsPreloadIndex::instance().openJournal(dir.path() + QStringLiteral("/index.preload.jsonl"));
+    HlsPreloadIndex::instance().record(identity, entry);
+
+    StreamProxy proxy;
+    QVERIFY(proxy.start());
+    const QUrl playlistUrl(QStringLiteral("http://127.0.0.1:%1/hls/index.m3u8")
+                               .arg(upstream.serverPort()));
+    const QUrl localPlaylist = proxy.proxyUrlFor(playlistUrl, {}, QString(), identity);
+    QVERIFY(localPlaylist.isValid());
+
+    auto fetch = [](const QUrl &local, const QByteArray &range, QByteArray *head,
+                    QByteArray *body) {
+        QTcpSocket socket;
+        socket.connectToHost(local.host(), quint16(local.port()));
+        if (!socket.waitForConnected(3000))
+            return false;
+        QByteArray request = "GET " + local.path().toUtf8() + " HTTP/1.1\r\n"
+                             "Host: 127.0.0.1\r\n";
+        if (!range.isEmpty())
+            request += "Range: " + range + "\r\n";
+        request += "Connection: close\r\n\r\n";
+        socket.write(request);
+        socket.flush();
+        return readProxyResponse(&socket, head, body);
+    };
+
+    QByteArray playlistHead;
+    QByteArray playlistBody;
+    QVERIFY(fetch(localPlaylist, {}, &playlistHead, &playlistBody));
+    QVERIFY2(playlistHead.startsWith("HTTP/1.1 200"), playlistHead.constData());
+    const auto rewritten = HlsPlaylist::parse(playlistBody, localPlaylist);
+    QVERIFY(!rewritten.isNull());
+    QCOMPARE(rewritten->segments.size(), 2);
+
+    QByteArray segmentHead;
+    QByteArray segmentBody;
+    QVERIFY(fetch(rewritten->segments.at(1), QByteArrayLiteral("bytes=200000-399999"),
+                  &segmentHead, &segmentBody));
+    QVERIFY2(segmentHead.startsWith("HTTP/1.1 206"), segmentHead.constData());
+    QVERIFY(segmentHead.contains("Content-Range: bytes 200000-399999/*"));
+    QCOMPARE(segmentBody, upstream.body.mid(200000, 200000));
+    // 预加载索引命中后不能再回源；旧实现会先走 serveFromCache 并返回 416。
+    QCOMPARE(upstream.requestCount, 1);
+    HlsPreloadIndex::instance().openJournal(QString());
+}
+
 void CoreLogicTest::streamProxySkipsSingleFileHlsSegmentCache()
 {
     SingleFileHlsServer upstream;
@@ -4753,9 +4864,21 @@ void CoreLogicTest::hlsPlaylistSharedMediaMetadata()
     QCOMPARE(first.key.iv, QByteArray(15, '\0') + QByteArray::fromHex("07"));
 
     const auto &second = media->segments.at(2);
-    // 省略 @offset 的 BYTERANGE 从上段末尾继续。
-    QCOMPARE(second.range, QByteArray("bytes=1720-2719"));
+    // 省略 @offset 的 BYTERANGE 只有“上一段是同一个资源”时才继承末尾；
+    // seg1.m4s 与 seg2.m4s 是两个资源，第二段必须从 0 开始。
+    QCOMPARE(second.range, QByteArray("bytes=0-999"));
     QCOMPARE(second.key.iv, QByteArray(15, '\0') + QByteArray::fromHex("08"));
+
+    // 同一个 URI 的连续 BYTERANGE 仍应继承上一段末尾，不能把修复变成
+    // “所有省略 offset 都归零”。
+    const QByteArray sameResourceBody = QString::fromLatin1(body)
+                                            .replace(QStringLiteral("seg2.m4s"),
+                                                     QStringLiteral("seg1.m4s"))
+                                            .toUtf8();
+    const auto sameResource = HlsPlaylist::parseMedia(sameResourceBody, playlistUrl,
+                                                      options, &error);
+    QVERIFY2(!sameResource.isNull(), qPrintable(error));
+    QCOMPARE(sameResource->segments.at(2).range, QByteArray("bytes=1720-2719"));
 }
 
 

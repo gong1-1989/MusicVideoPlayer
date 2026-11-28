@@ -51,19 +51,21 @@ QUrl PageMediaExtractor::extractMediaUrl(const QString &html, const QUrl &base)
 
     for (const QString &pattern : patterns) {
         const QRegularExpression re(pattern, QRegularExpression::CaseInsensitiveOption);
-        const QRegularExpressionMatch match = re.match(html);
-        if (!match.hasMatch())
-            continue;
-
-        const QString candidate = decodeCandidate(match.captured(1));
-        if (candidate.isEmpty() || candidate.size() > 2048)
-            continue;
-        const QUrl resolved = base.resolved(QUrl(candidate));
-        // 只接受 http/https 且带明确媒体后缀：og:video 有时给的是播放页，
-        // 把它再当成媒体地址会让播放器继续打开 HTML。
-        if (NetworkAddressPolicy::isHttpMediaUrl(resolved)
-            && MediaExtensions::isDirectLinkSuffix(MediaExtensions::suffixFromUrl(resolved))) {
-            return resolved;
+        // 一个页面可能有多个 <source>/播放器配置；只取第一个匹配会让
+        // “第一个是 blob:/广告地址、第二个才是 m3u8”的页面直接解析失败。
+        QRegularExpressionMatchIterator matches = re.globalMatch(html);
+        while (matches.hasNext()) {
+            const QRegularExpressionMatch match = matches.next();
+            const QString candidate = decodeCandidate(match.captured(1));
+            if (candidate.isEmpty() || candidate.size() > 2048)
+                continue;
+            const QUrl resolved = base.resolved(QUrl(candidate));
+            // 只接受 http/https 且带明确媒体后缀：og:video 有时给的是播放页，
+            // 把它再当成媒体地址会让播放器继续打开 HTML。
+            if (NetworkAddressPolicy::isHttpMediaUrl(resolved)
+                && MediaExtensions::isDirectLinkSuffix(MediaExtensions::suffixFromUrl(resolved))) {
+                return resolved;
+            }
         }
     }
     return QUrl();

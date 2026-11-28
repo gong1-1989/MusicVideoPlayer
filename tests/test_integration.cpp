@@ -237,6 +237,7 @@ private slots:
     void redirectStripsSecretsAcrossHost();
     void getRedirectStripsSecretsAcrossHost();
     void explicitRefererQueryIsStripped();
+    void invalidRefererHeaderIsDropped();
     void redirectKeepsAuthorizationOnSameHost();
     void downloadReportsHttp404WithoutFile();
     void downloadRejectsHtmlMasqueradingAsMedia();
@@ -304,6 +305,7 @@ private slots:
     void downloadLimitSettingClampsAndPersists();
     void videoPositionRestoredAfterSwitch();
     void pageResolutionDoesNotReviveStoppedOrSwitchedPlayback();
+    void pageResolutionCacheInvalidatesOnDemand();
 
 private:
     QTemporaryDir m_tempDir;
@@ -432,6 +434,30 @@ void IntegrationTest::explicitRefererQueryIsStripped()
     QVERIFY(!referer.contains("api_key"));
     QVERIFY(!referer.contains("secret"));
     QVERIFY(referer.contains("/search"));
+}
+
+void IntegrationTest::invalidRefererHeaderIsDropped()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 200, "ok", "text/plain");
+    };
+
+    HttpClient http;
+    QHash<QString, QString> headers;
+    // 相对 Referer 无法压缩成 scheme+host；必须整头丢弃，不能把带签名的
+    // 原始值 fail-open 发出去。
+    headers.insert(QStringLiteral("Referer"),
+                   QStringLiteral("/redirect?token=SECRET&expire=1"));
+    QNetworkReply *reply = http.get(server.url(QStringLiteral("/media")), {}, headers);
+    QSignalSpy finished(reply, &QNetworkReply::finished);
+    QVERIFY(finished.wait(5000));
+    reply->deleteLater();
+
+    QCOMPARE(server.requests.size(), 1);
+    const QByteArray referer = server.requests.first().headers.value("referer");
+    QVERIFY2(referer.isEmpty(), referer.constData());
 }
 
 void IntegrationTest::redirectKeepsAuthorizationOnSameHost()
@@ -4611,6 +4637,59 @@ void IntegrationTest::pageResolutionDoesNotReviveStoppedOrSwitchedPlayback()
     player.playRow(0);
     QCOMPARE(player.currentRow(), 0);
     player.stop();
+}
+
+void IntegrationTest::pageResolutionCacheInvalidatesOnDemand()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    const QUrl mediaUrl = server.url(QStringLiteral("/media.m3u8"));
+    int pageRequests = 0;
+    server.handler = [&](const LocalHttpServer::Request &request, QTcpSocket *socket) {
+        if (request.path.startsWith("/play")) {
+            ++pageRequests;
+            const QString html = QStringLiteral("<script>const vid = '%1';</script>")
+                                     .arg(mediaUrl.toString());
+            LocalHttpServer::respond(socket, 200, html.toUtf8(), "text/html");
+            return;
+        }
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("page-cache");
+    item.url = server.url(QStringLiteral("/play?id=1"));
+    item.sourceOrigin = HeaderPolicy::originOnly(item.url);
+    item.online = true;
+
+    HttpClient http;
+    MediaPageResolver resolver(&http);
+    int callbacks = 0;
+    QUrl resolved;
+    auto callback = [&](const MediaItem &resolvedItem, const QString &error) {
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+        resolved = resolvedItem.url;
+        ++callbacks;
+    };
+
+    resolver.resolve(item, callback);
+    QTRY_COMPARE_WITH_TIMEOUT(callbacks, 1, 3000);
+    QCOMPARE(resolved, mediaUrl);
+    QCOMPARE(pageRequests, 1);
+    QVERIFY(resolver.cachedMediaUrl(item.url));
+
+    // 同一页面第二次解析必须命中缓存，不重复请求。
+    resolver.resolve(item, callback);
+    QCOMPARE(callbacks, 2);
+    QCOMPARE(pageRequests, 1);
+
+    // 播放失败时可以主动失效；下一次必须重新请求播放页，拿到新签名地址。
+    resolver.invalidate(item.url);
+    QVERIFY(!resolver.cachedMediaUrl(item.url));
+    resolver.resolve(item, callback);
+    QTRY_COMPARE_WITH_TIMEOUT(callbacks, 3, 3000);
+    QCOMPARE(pageRequests, 2);
 }
 
 void IntegrationTest::videoPositionRestoredAfterSwitch()

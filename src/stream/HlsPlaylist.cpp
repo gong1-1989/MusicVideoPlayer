@@ -242,6 +242,10 @@ QSharedPointer<HlsPlaylist::MediaInfo> HlsPlaylist::parseMedia(
     info->base = playlistUrl;
     Key currentKey = options.initialKey;
     QByteArray pendingRange;
+    qint64 pendingRangeLength = 0;
+    qint64 pendingRangeOffset = 0;
+    bool pendingRangeImplicit = false;
+    QUrl lastRangeUri;
     qint64 nextRangeOffset = 0;
     bool hasPendingRange = false;
     double pendingDuration = -1.0;
@@ -346,12 +350,13 @@ QSharedPointer<HlsPlaylist::MediaInfo> HlsPlaylist::parseMedia(
                     return fail(QObject::tr("分片字节范围格式无效：%1").arg(value));
                 continue;
             }
-            if (hasOffset)
-                nextRangeOffset = offset;
-            pendingRange = QByteArray("bytes=") + QByteArray::number(offset)
-                + QByteArray("-") + QByteArray::number(offset + length - 1);
+            // 省略 @offset 时不能在这里固定成上一段结束位置：规范要求
+            // “上一段必须是同一资源的子范围”才可继承；真正 URI 要到下一行
+            // 才知道，先记下隐式标记，等解析到分片地址再决定用 offset 还是 0。
+            pendingRangeLength = length;
+            pendingRangeOffset = offset;
+            pendingRangeImplicit = !hasOffset;
             hasPendingRange = true;
-            nextRangeOffset = offset + length;
             continue;
         }
 
@@ -412,6 +417,11 @@ QSharedPointer<HlsPlaylist::MediaInfo> HlsPlaylist::parseMedia(
             pendingDuration = -1.0;
             pendingRange.clear();
             hasPendingRange = false;
+            pendingRangeImplicit = false;
+            pendingRangeLength = 0;
+            pendingRangeOffset = 0;
+            lastRangeUri.clear();
+            nextRangeOffset = 0;
             continue;
         }
 
@@ -427,6 +437,17 @@ QSharedPointer<HlsPlaylist::MediaInfo> HlsPlaylist::parseMedia(
 
         MediaSegment segment;
         segment.url = segmentUrl;
+        qint64 segmentRangeOffset = 0;
+        if (hasPendingRange) {
+            // 隐式 offset 只有“上一段也是同一 URI 的子范围”时才继承；
+            // 换到另一个资源时必须从 0 开始，否则会向新文件请求错误区间。
+            segmentRangeOffset = pendingRangeImplicit
+                ? (lastRangeUri == segmentUrl ? pendingRangeOffset : 0)
+                : pendingRangeOffset;
+            pendingRange = QByteArray("bytes=") + QByteArray::number(segmentRangeOffset)
+                + QByteArray("-")
+                + QByteArray::number(segmentRangeOffset + pendingRangeLength - 1);
+        }
         segment.range = pendingRange;
         segment.startMs = info->totalMs;
         if (pendingDuration > 0.0)
@@ -444,7 +465,14 @@ QSharedPointer<HlsPlaylist::MediaInfo> HlsPlaylist::parseMedia(
         }
         if (hasPendingRange) {
             info->hasByteRange = true;
+            lastRangeUri = segmentUrl;
+            nextRangeOffset = segmentRangeOffset + pendingRangeLength;
             hasPendingRange = false;
+        } else {
+            // 上一段不是 BYTERANGE 子范围时，下一段即使省略 offset 也不能
+            // 继承旧偏移，必须从 0 开始。
+            lastRangeUri.clear();
+            nextRangeOffset = 0;
         }
         info->segments.append(segment);
         if (pendingDuration > 0.0)

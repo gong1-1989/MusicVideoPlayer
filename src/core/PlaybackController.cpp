@@ -136,6 +136,11 @@ PlaybackController::PlaybackController(QObject *parent)
                 const QString text = m_unavailableReason.isEmpty() ? message : m_unavailableReason;
                 m_unavailableReason.clear();
                 const MediaItem failedItem = currentItem();
+                // 网页播放页解析出的签名直链可能已经过期。播放失败时先让
+                // 页面缓存失效；用户重试或自动换线后会重新解析播放页，
+                // 而不是在本次运行内一直复用同一个失效地址。
+                if (m_pageResolver != nullptr)
+                    m_pageResolver->invalidate(failedItem.url);
                 qCWarning(lcPlayer) << "播放出错：" << text << "条目" << failedItem.displayName()
                                     << "源" << failedItem.sourceId << "地址"
                                     << HttpClient::redactUrl(preferredPlaybackUrl(failedItem));

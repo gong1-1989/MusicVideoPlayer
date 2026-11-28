@@ -257,6 +257,12 @@ void ExternalSearchProvider::parseOutput(const QByteArray &output)
         // 远程 webUrl 决定凭据发往哪个 host；webUrl 只用于补全相对地址和展示。
         const QUrl trustedOrigin(m_config.urlTemplate);
         item.sourceOrigin = HeaderPolicy::originOnly(trustedOrigin);
+        // 外部解析器同样不能把歌词请求引到本机/内网；公网源只接受公网
+        // http(s) 歌词地址，本地源才允许本地地址。
+        if (!item.lyricUrl.isEmpty()
+            && !NetworkAddressPolicy::allowsMediaTarget(item.lyricUrl, item.sourceOrigin)) {
+            item.lyricUrl.clear();
+        }
         item.online = true;
         item.headers = m_config.headers;
         if (!m_config.cookie.isEmpty())

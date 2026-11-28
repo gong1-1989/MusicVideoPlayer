@@ -1457,8 +1457,8 @@ void DownloadManager::startJob(const QString &id)
     // 成功提交过（committed）且文件大小与记录一致时才认这个文件；否则可能
     // 是用户后来自建/替换的同名文件，不能当成自己的 TS 去转 MP4 再删掉。
     const qint64 committedSize = QFileInfo(job.filePath).size();
-    if (job.committed && committedSize > 0
-        && (job.bytesReceived <= 0 || committedSize == job.bytesReceived)) {
+    if (job.committed && committedSize > 0 && job.bytesReceived > 0
+        && committedSize == job.bytesReceived) {
         job.bytesReceived = QFileInfo(job.filePath).size();
         if (job.hls && !job.filePath.endsWith(QLatin1String(".mp4"), Qt::CaseInsensitive)) {
             job.status = DownloadJob::Status::Downloading;
@@ -1912,8 +1912,11 @@ void DownloadManager::startStagedCompletion(const QString &id)
         return;
     }
 
-    // 发布已经完成、只是状态没落盘：最终文件存在就按完成处理。
-    if (QFileInfo(job.filePath).size() > 0) {
+    // 发布已经完成、只是状态没落盘：只有本任务记录过最终文件大小，且
+    // 磁盘上的文件与它完全一致时才按完成处理。不能只看“非空文件”，
+    // 否则暂存目录被外部清理后，用户同名旧文件会被误认为下载成品。
+    const qint64 finalSize = QFileInfo(job.filePath).size();
+    if (job.committed && job.bytesReceived > 0 && finalSize == job.bytesReceived) {
         finishJob(id, job.filePath, true, tr("下载完成"));
         return;
     }
@@ -1977,6 +1980,11 @@ bool DownloadManager::publishStagedFile(const QString &id, const QString &source
     }
 
     job.filePath = finalPath;
+    // 记录最终发布的字节数，作为跨启动完成校验的基准。之前 bytesReceived
+    // 可能是转封装前的 TS 长度，不能拿来和最终 MP4 比大小。
+    job.bytesReceived = QFileInfo(finalPath).size();
+    job.bytesTotal = job.bytesReceived;
+    job.committed = true;
     const QString stagingDir = sourceInfo.absolutePath();
     if (!stagingDir.isEmpty() && QFileInfo(stagingDir).fileName() == job.id)
         QDir(stagingDir).removeRecursively();
@@ -2027,6 +2035,10 @@ bool DownloadManager::startPublishCopy(const QString &id, const QString &sourceP
     // 用户在这期间暂停/退出后，下次启动必须重新发布这份已完成的暂存文件，
     // 而不是按 committed=false 重新起一条网络下载（会白拉一遍完整媒体）。
     job.committed = true;
+    // 暂存源大小就是发布完成后的最终大小；先写进记录，发布过程中退出时
+    // 重启才能用“committed + 字节数”确认下载目录里的文件确实是本任务的。
+    job.bytesReceived = sourceInfo.size();
+    job.bytesTotal = job.bytesReceived;
     job.status = DownloadJob::Status::Downloading;
     job.message = tr("正在写入下载目录（%1）")
                       .arg(sourceInfo.size() / (1024.0 * 1024.0), 0, 'f', 1);

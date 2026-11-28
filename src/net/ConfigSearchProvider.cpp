@@ -302,6 +302,13 @@ void ConfigSearchProvider::onReplyFinished()
         // 只保存源站 scheme+host+port；完整搜索 URL 的 query 可能含 API key，
         // 不能进入 playlists.json，也不能被当作后续请求的 Referer。
         base.sourceOrigin = HeaderPolicy::originOnly(m_originUrl);
+        // lyricUrl 也是远程源可控字段。公网源返回 127.0.0.1/内网歌词地址时，
+        // 不能交给 LyricsService 去请求；本地源（sourceOrigin 本身是本机）
+        // 仍允许本地歌词。
+        if (!base.lyricUrl.isEmpty()
+            && !NetworkAddressPolicy::allowsMediaTarget(base.lyricUrl, base.sourceOrigin)) {
+            base.lyricUrl.clear();
+        }
         base.headers = m_config.headers;
         if (!m_config.cookie.isEmpty())
             base.headers.insert(QStringLiteral("Cookie"), m_config.cookie);

@@ -28,16 +28,21 @@ QString statusKey(DownloadJob::Status status)
     return QStringLiteral("paused");
 }
 
-/// @brief 持久化字符串转状态枚举；未知值按暂停处理，避免误触发下载。
+/// @brief 持久化字符串转状态枚举。
+/// @note 未知/缺失状态统一按失败处理，不能落到 Paused：Paused 且
+///       pausedByUser=false 的任务会被 DownloadManager 在下次启动自动续传，
+///       状态文件损坏时反而会误触发下载。
 DownloadJob::Status statusFromKey(const QString &key)
 {
     if (key == QLatin1String("downloading"))
         return DownloadJob::Status::Downloading;
+    if (key == QLatin1String("paused"))
+        return DownloadJob::Status::Paused;
     if (key == QLatin1String("completed"))
         return DownloadJob::Status::Completed;
     if (key == QLatin1String("failed"))
         return DownloadJob::Status::Failed;
-    return DownloadJob::Status::Paused;
+    return DownloadJob::Status::Failed;
 }
 
 } // namespace

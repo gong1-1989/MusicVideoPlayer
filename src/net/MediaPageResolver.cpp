@@ -7,10 +7,13 @@
 #include "util/NetworkAddressPolicy.h"
 #include "util/PageMediaExtractor.h"
 
+#include <QDateTime>
 #include <QLoggingCategory>
 #include <QNetworkReply>
 #include <QPointer>
 #include <QStringList>
+
+#include <limits>
 
 Q_LOGGING_CATEGORY(lcPageResolver, "mvp.net.page")
 
@@ -71,9 +74,45 @@ bool MediaPageResolver::cachedMediaUrl(const QUrl &pageUrl, QUrl *mediaUrl) cons
     const auto it = m_cache.constFind(pageUrl.toString());
     if (it == m_cache.constEnd())
         return false;
+    // 页面签名直链会过期；过期条目不能再参与播放，否则重试也只能拿到
+    // 同一个 403/404，直到整个进程重启。
+    if (it.value().expiresAtMs <= QDateTime::currentMSecsSinceEpoch())
+        return false;
     if (mediaUrl != nullptr)
-        *mediaUrl = it.value();
+        *mediaUrl = it.value().mediaUrl;
     return true;
+}
+
+void MediaPageResolver::invalidate(const QUrl &pageUrl)
+{
+    m_cache.remove(pageUrl.toString());
+}
+
+void MediaPageResolver::rememberResolution(const QUrl &pageUrl, const QUrl &mediaUrl)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // 顺手清掉已过期条目，并限制单次运行内解析页面数量，避免搜索结果
+    // 反复刷新时把每个播放页地址都永久留在内存里。
+    for (auto it = m_cache.begin(); it != m_cache.end();) {
+        if (it.value().expiresAtMs <= now)
+            it = m_cache.erase(it);
+        else
+            ++it;
+    }
+    if (m_cache.size() >= kMaxCacheEntries) {
+        QString oldestKey;
+        qint64 oldestExpiry = std::numeric_limits<qint64>::max();
+        for (auto it = m_cache.cbegin(); it != m_cache.cend(); ++it) {
+            if (it.value().expiresAtMs < oldestExpiry) {
+                oldestExpiry = it.value().expiresAtMs;
+                oldestKey = it.key();
+            }
+        }
+        if (!oldestKey.isEmpty())
+            m_cache.remove(oldestKey);
+    }
+    m_cache.insert(pageUrl.toString(),
+                   CachedResolution{mediaUrl, now + kCacheTtlMs});
 }
 
 void MediaPageResolver::resolve(const MediaItem &item, Callback callback)
@@ -161,7 +200,7 @@ void MediaPageResolver::finishResolve(QNetworkReply *reply, const MediaItem &ori
         return;
     }
 
-    m_cache.insert(pageUrl.toString(), media);
+    rememberResolution(pageUrl, media);
     MediaItem resolved = original;
     resolved.url = media;
     // 原播放页不能留作备用线路：它永远是 HTML，重试只会再失败一次。

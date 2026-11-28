@@ -428,6 +428,35 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
             if (file.open(QIODevice::ReadOnly) && file.seek(slice.offset)) {
                 QByteArray bytes = file.read(slice.size);
                 if (bytes.size() == slice.size) {
+                    // 非零偏移的 BYTERANGE 切片不能塞进通用 CacheEntry：
+                    // serveFromCache 以 data[0] 对应资源第 0 字节，遇到
+                    // bytes=200000-399999 会把 total=200000 判成越界并回 416。
+                    // 这里按切片自身的绝对偏移直接构造 206；总长未知时用 '*'，
+                    // 播放器只读取本次请求的区间，不需要整文件长度。
+                    if (slice.offset > 0) {
+                        QByteArray contentType = slice.contentType;
+                        if (contentType.isEmpty() || contentType.contains('\r')
+                            || contentType.contains('\n')) {
+                            contentType = guessContentType(upstream);
+                        }
+                        const qint64 sliceEnd = slice.offset + slice.size - 1;
+                        QByteArray head = "HTTP/1.1 206 Partial Content\r\n"
+                                          "Content-Type: " + contentType + "\r\n"
+                                          "Content-Range: bytes "
+                                          + QByteArray::number(slice.offset) + "-"
+                                          + QByteArray::number(sliceEnd) + "/*\r\n"
+                                          "Content-Length: "
+                                          + QByteArray::number(slice.size) + "\r\n"
+                                          "Accept-Ranges: bytes\r\n"
+                                          "Connection: close\r\n\r\n";
+                        client->write(head);
+                        client->write(bytes);
+                        client->disconnectFromHost();
+                        qCInfo(lcProxy) << "流转预加载命中，直接读本地分片"
+                                        << HttpClient::redactUrl(upstream)
+                                        << "偏移" << slice.offset << "长度" << slice.size;
+                        return;
+                    }
                     auto cached = QSharedPointer<CacheEntry>::create();
                     cached->data = bytes;
                     cached->dataSize = bytes.size();
@@ -440,7 +469,7 @@ void StreamProxy::handleClient(QTcpSocket *client, const QByteArray &payload)
                     cached->cacheIdentity = cacheIdentity;
                     cached->upstream = upstream;
                     // 索引命中是瞬时响应：插到缓存表让 serveFromCache 统一
-                    // 处理 200/206 头与 Range 切分，客户端断开后按 transient 移除。
+                    // 处理 200/206 头，客户端断开后按 transient 移除。
                     m_cache.insert(cacheKey, cached);
                     if (serveFromCache(client, cached, cacheKey, request.range, hasRange)) {
                         qCInfo(lcProxy) << "流转预加载命中，直接读本地分片"

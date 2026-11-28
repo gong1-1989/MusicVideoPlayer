@@ -935,7 +935,7 @@ bool MainWindow::playSearchItem(const MediaItem &item)
     if (!playable.isValid() || playable.url.isRelative() || !httpUrl) {
         ui->label_status->setText(tr("搜索结果缺少可播放地址，换一个来源或重新搜索试试"));
         qCWarning(lcWindow) << "搜索结果地址无效" << playable.title
-                            << playable.url.toString();
+                            << HttpClient::redactUrl(playable.url);
         return false;
     }
 
