@@ -135,6 +135,9 @@ private:
     {
         bool valid = false;
         bool completed = false;
+        /// 状态文件可解析，但 targetPath 指向了别的轨道/目录；这类状态
+        /// 不能续传，并且要在启动时连同本轨道自己的旧文件一起清掉。
+        bool rejectedTarget = false;
         QString targetPath;
         qint64 bytesWritten = 0;
         int segmentIndex = 0;
@@ -145,6 +148,9 @@ private:
     /// 固定按轨道基名保存（`.video/.audio`），避免扩展名变化后找不到状态。
     QString resumeStatePath(const QString &basePath) const;
     TrackResume loadTrackResume(const QString &basePath) const;
+    /// 续传目标不可信时，清掉该轨道自己的旧成品/半成品/状态文件。
+    /// 只处理 basePath 派生名，不碰 resume.targetPath，避免删到另一条有效轨道。
+    void cleanupRejectedTrackFiles(const QString &basePath);
     void saveTrackResume(const QString &basePath, const TrackResume &resume);
     void removeTrackResume(const QString &basePath);
 

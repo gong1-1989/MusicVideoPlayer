@@ -266,6 +266,7 @@ private slots:
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
     void hlsCacheBuilderRemovesLegacySharedTrackOnStart();
+    void hlsCacheBuilderCleansRejectedTrackFiles();
     void hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList();
     void hlsCacheBuilderResumesAfterExit();
     void hlsCacheBuilderPreservesResumeOnTrackFailure();
@@ -2010,6 +2011,77 @@ void IntegrationTest::hlsCacheBuilderRemovesLegacySharedTrackOnStart()
         QVERIFY(!QFileInfo::exists(legacyPartial));
         QVERIFY(!QFileInfo::exists(legacyResume));
         QVERIFY(QFileInfo::exists(validVideoTs));
+    }
+
+    QVERIFY(MediaCache::removeForItem(item));
+}
+
+void IntegrationTest::hlsCacheBuilderCleansRejectedTrackFiles()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("失效续传轨道清理");
+    item.url = server.url(QStringLiteral("/rejected/index.m3u8"));
+    item.online = true;
+
+    const QString bodyPath = MediaCache::filePathForItem(item);
+    QVERIFY(MediaCache::removeForItem(item));
+    QVERIFY(QDir().mkpath(QFileInfo(bodyPath).absolutePath()));
+    QVERIFY(MediaCache::writePartialIdentity(bodyPath, MediaCache::cacheIdentity(item)));
+
+    const QString videoBase = bodyPath + QStringLiteral(".video");
+    const QString audioBase = bodyPath + QStringLiteral(".audio");
+    const QString videoTs = videoBase + QStringLiteral(".ts");
+    const QString videoPartial = videoTs + QStringLiteral(".mvpdownload");
+    const QString audioTs = audioBase + QStringLiteral(".ts");
+    const auto writeFile = [](const QString &path, const QByteArray &body) {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return false;
+        return file.write(body) == body.size();
+    };
+    const auto writeResume = [&writeFile](const QString &path, const QString &target,
+                                         const QString &fp) {
+        QJsonObject object;
+        object.insert(QStringLiteral("version"), 1);
+        object.insert(QStringLiteral("targetPath"), target);
+        object.insert(QStringLiteral("bytesWritten"), 3);
+        object.insert(QStringLiteral("segmentIndex"), 1);
+        object.insert(QStringLiteral("segmentCount"), 1);
+        object.insert(QStringLiteral("fingerprint"), fp);
+        object.insert(QStringLiteral("completed"), false);
+        return writeFile(path, QJsonDocument(object).toJson(QJsonDocument::Compact));
+    };
+
+    QVERIFY(writeFile(videoBase, "stale-video"));
+    QVERIFY(writeFile(videoTs, "stale-ts"));
+    QVERIFY(writeFile(videoPartial, "stale-partial"));
+    // 视频续传状态被写错成音轨目标：整份状态不可信，视频自己的旧文件必须清掉。
+    QVERIFY(writeResume(videoBase + QStringLiteral(".resume.json"), audioTs,
+                        QStringLiteral("video-fp")));
+    // 音轨状态与文件都正常，不能被视频轨的失效状态连带删除。
+    QVERIFY(writeFile(audioTs, "valid-audio"));
+    QVERIFY(writeResume(audioBase + QStringLiteral(".resume.json"), audioTs,
+                        QStringLiteral("audio-fp")));
+
+    {
+        HttpClient http;
+        HlsCacheBuilder builder(&http);
+        QVERIFY(builder.start(item));
+        QVERIFY(!QFileInfo::exists(videoBase));
+        QVERIFY(!QFileInfo::exists(videoTs));
+        QVERIFY(!QFileInfo::exists(videoPartial));
+        QVERIFY(!QFileInfo::exists(videoBase + QStringLiteral(".resume.json")));
+        // 另一条轨道的合法续传现场原地保留。
+        QVERIFY(QFileInfo::exists(audioTs));
+        QVERIFY(QFileInfo::exists(audioBase + QStringLiteral(".resume.json")));
+        builder.stopForExit();
     }
 
     QVERIFY(MediaCache::removeForItem(item));

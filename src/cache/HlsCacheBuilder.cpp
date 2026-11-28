@@ -186,6 +186,13 @@ bool HlsCacheBuilder::start(const MediaItem &item, const QUrl &sourceUrl)
     // 一次 start 会话只读取一次续传状态，后续启动下载直接复用这份快照。
     m_videoResume = loadTrackResume(m_bodyPath + QStringLiteral(".video"));
     m_audioResume = loadTrackResume(m_bodyPath + QStringLiteral(".audio"));
+    // 目标不可信的状态已经作废，但本轨道自己的旧成品/半成品仍留在目录里；
+    // 不清掉的话，新任务提交时会撞上同名成品，被改选成 " (2)" 或留下孤儿。
+    // 只清 basePath 派生文件，绝不动 resume.targetPath，防止误删另一条有效轨道。
+    if (m_videoResume.rejectedTarget)
+        cleanupRejectedTrackFiles(m_bodyPath + QStringLiteral(".video"));
+    if (m_audioResume.rejectedTarget)
+        cleanupRejectedTrackFiles(m_bodyPath + QStringLiteral(".audio"));
     // 旧版本双轨缺陷会把视频/音轨都写成公共 media.ts，索引日志里可能仍留着
     // 指向 media.ts 的切片。新状态即使已作废，旧日志也不会自动消失；必须先
     // 清掉这条公共目标，否则播放代理会在新轨道下载完成前读到旧的错位字节。
@@ -1367,7 +1374,9 @@ HlsCacheBuilder::TrackResume HlsCacheBuilder::loadTrackResume(const QString &bas
             // 目标路径不可信时不能只清 targetPath 而保留 bytesWritten/序号：
             // startTrack 会拿旧进度去续新基名文件，把另一条轨道或旧缺陷文件
             // 的字节数当成当前轨道前缀。整份状态作废，让本次从头校验下载。
-            return TrackResume();
+            TrackResume rejected;
+            rejected.rejectedTarget = true;
+            return rejected;
         }
     }
     resume.bytesWritten = qMax<qint64>(
@@ -1402,6 +1411,32 @@ void HlsCacheBuilder::saveTrackResume(const QString &basePath, const TrackResume
     const QByteArray body = QJsonDocument(object).toJson(QJsonDocument::Compact);
     if (file.write(body) != body.size() || !file.commit())
         qCWarning(lcHlsCache) << "HLS 续传状态提交失败：" << file.errorString();
+}
+
+/// @brief 续传目标不可信时，清掉该轨道自己的成品、半成品和状态。
+/// @note 只删除 basePath 以及 basePath.ts/.mp4 及其 .mvpdownload；
+///       resume.targetPath 可能是另一条有效轨道，不能按它删除。
+void HlsCacheBuilder::cleanupRejectedTrackFiles(const QString &basePath)
+{
+    if (basePath.isEmpty())
+        return;
+
+    const QStringList paths = {
+        basePath,
+        basePath + QStringLiteral(".ts"),
+        basePath + QStringLiteral(".mp4"),
+        basePath + QStringLiteral(".mvpdownload"),
+        basePath + QStringLiteral(".ts.mvpdownload"),
+        basePath + QStringLiteral(".mp4.mvpdownload"),
+    };
+    for (const QString &path : paths) {
+        // 先作废进程内索引，再删物理文件；否则旧索引还会指到已删除的切片。
+        HlsPreloadIndex::instance().clearTrack(path);
+        if (QFileInfo::exists(path) && !QFile::remove(path))
+            qCWarning(lcHlsCache) << "无法删除失效续传轨道的旧文件：" << path;
+    }
+    removeTrackResume(basePath);
+    qCInfo(lcHlsCache) << "续传目标不匹配，已清理本轨道旧文件：" << basePath;
 }
 
 /// @brief 删除轨道续传状态；完成落盘或用户删除条目后调用。
