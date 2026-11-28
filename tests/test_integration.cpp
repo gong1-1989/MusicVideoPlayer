@@ -261,6 +261,7 @@ private slots:
     void downloadManagerMigratesLegacyStaging();
     void downloadManagerKeepsPendingCleanupRecord();
     void downloadManagerKeepsRecordWhenPendingCacheCleanupFails();
+    void downloadManagerStateTrimKeepsResumableArtifacts();
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
     void hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList();
@@ -1641,6 +1642,100 @@ void IntegrationTest::downloadManagerKeepsRecordWhenPendingCacheCleanupFails()
     }
     QFile::remove(pending.filePath);
     QFile::remove(statePath);
+}
+
+void IntegrationTest::downloadManagerStateTrimKeepsResumableArtifacts()
+{
+    QDir().mkpath(StoragePaths::dataDir());
+    const QString statePath = StoragePaths::dataFile(QStringLiteral("downloads.json"));
+    const QString resumeTarget =
+        m_tempDir.filePath(QStringLiteral("state-trim/resume.mp3"));
+    QVERIFY(QDir().mkpath(QFileInfo(resumeTarget).absolutePath()));
+    QFile partial(resumeTarget + QStringLiteral(".mvpdownload"));
+    QVERIFY(partial.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(partial.write(QByteArray(1024, 'r')), qint64(1024));
+    partial.close();
+
+    QVector<DownloadJob> encodedJobs;
+    const QString firstCompletedId = QStringLiteral("completed-bulk-0");
+    for (int i = 0; i < 99; ++i) {
+        DownloadJob job;
+        job.id = i == 0 ? firstCompletedId : QStringLiteral("completed-bulk-%1").arg(i);
+        job.item.type = MediaType::Music;
+        job.item.title = QStringLiteral("历史完成 %1").arg(i);
+        job.filePath = m_tempDir.filePath(QStringLiteral("state-trim/completed-%1.mp3").arg(i));
+        job.status = DownloadJob::Status::Completed;
+        job.committed = true;
+        job.message = QString(160000, QLatin1Char('x'));
+        encodedJobs.append(job);
+    }
+
+    DownloadJob resuming;
+    resuming.id = QStringLiteral("state-trim-resume");
+    resuming.item.type = MediaType::Music;
+    resuming.item.title = QStringLiteral("大状态续传");
+    resuming.url = QUrl(QStringLiteral("https://example.invalid/state-trim.mp3"));
+    resuming.filePath = resumeTarget;
+    resuming.bytesReceived = 1024;
+    resuming.bytesTotal = 4096;
+    resuming.status = DownloadJob::Status::Downloading;
+    resuming.createdAt = QDateTime::currentDateTimeUtc();
+    encodedJobs.append(resuming);
+
+    // 初始状态必须仍低于 16 MB 才能被 load() 读取；但加载会把 Downloading
+    // 修正成 Paused 并换一条更长的提示，正好越过上限，触发 saveNow() 裁剪。
+    constexpr qint64 kStateLimit = 16LL * 1024 * 1024;
+    auto payloadFor = [&](int firstMessageSize) {
+        encodedJobs[0].message = QString(firstMessageSize, QLatin1Char('x'));
+        QJsonArray jobs;
+        for (const DownloadJob &job : std::as_const(encodedJobs))
+            jobs.append(job.toJson());
+        QJsonObject root;
+        root.insert(QStringLiteral("version"), 1);
+        root.insert(QStringLiteral("jobs"), jobs);
+        return QJsonDocument(root).toJson(QJsonDocument::Indented);
+    };
+
+    int firstMessageSize = 160000;
+    QByteArray payload;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        payload = payloadFor(firstMessageSize);
+        const qint64 target = kStateLimit - 10;
+        const qint64 delta = target - payload.size();
+        if (delta == 0)
+            break;
+        firstMessageSize += int(delta);
+    }
+    QVERIFY(payload.size() < kStateLimit);
+    QVERIFY(kStateLimit - payload.size() < 100);
+
+    QFile state(statePath);
+    QVERIFY(state.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(state.write(payload), qint64(payload.size()));
+    state.close();
+
+    auto containsId = [](const QVector<DownloadJob> &jobs, const QString &id) {
+        for (const DownloadJob &job : jobs) {
+            if (job.id == id)
+                return true;
+        }
+        return false;
+    };
+
+    {
+        HttpClient http;
+        DownloadManager manager(&http);
+        // 加载把 Downloading 变成 Paused，并安排一次保存；保存时状态已超限。
+        QTRY_VERIFY_WITH_TIMEOUT(!containsId(manager.jobs(), firstCompletedId), 5000);
+        // 暂停中的任务还有 .mvpdownload，不能被当作历史裁掉：记录消失后
+        // 文件既无法续传，也没有任何入口能清理它。
+        QVERIFY(containsId(manager.jobs(), resuming.id));
+        QVERIFY(QFileInfo::exists(resumeTarget + QStringLiteral(".mvpdownload")));
+        manager.shutdownForExit();
+    }
+
+    QFile::remove(statePath);
+    QFile::remove(resumeTarget + QStringLiteral(".mvpdownload"));
 }
 
 void IntegrationTest::downloadHlsMergesAndRemuxes()

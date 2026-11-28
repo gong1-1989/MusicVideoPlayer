@@ -769,9 +769,9 @@ void DownloadManager::load()
 
     // 状态数组按加入顺序追加，最新记录在尾部；超过上限时从头部删最早的
     // 已完成记录，而不是保留最早 100 条、把刚完成的反而裁掉。
-    // 带着未完成缓存清理标记的记录不能裁：裁掉后 cleanupPendingCaches 再也
-    // 找不到它，播放缓存/歌词缓存会永久留在磁盘。清理成功后会清除标记，
-    // 下次启动或保存时再按正常上限裁剪。
+    // 只有确实没有落盘产物的记录才能裁：带缓存清理标记的记录裁掉后
+    // cleanupPendingCaches 再也找不到目标；带遗留暂存/半成品的记录裁掉后
+    // 文件也会失去唯一入口。清理成功或暂存被回收后，下次启动再正常裁剪。
     int completed = 0;
     for (const DownloadJob &job : std::as_const(loaded)) {
         if (job.status == DownloadJob::Status::Completed)
@@ -780,8 +780,7 @@ void DownloadManager::load()
     int completedToDrop = completed - kMaxCompletedJobs;
     for (int i = 0; i < loaded.size() && completedToDrop > 0; ) {
         if (loaded.at(i).status == DownloadJob::Status::Completed
-            && loaded.at(i).cleanupCachePath.isEmpty()
-            && !loaded.at(i).cleanupMediaAndLyrics) {
+            && canTrimForStateLimit(loaded.at(i))) {
             loaded.removeAt(i);
             --completedToDrop;
         } else {
@@ -838,6 +837,38 @@ void DownloadManager::load()
     qCInfo(lcDownloadManager) << "已载入" << m_jobs.size() << "条下载记录";
 }
 
+/// @brief 状态文件超限时，这条记录是否可以只丢历史、不留下孤儿文件。
+/// @note 关键不是状态本身，而是记录背后的 `.mvpdownload`、暂存目录或已提交
+///       文件。记录一旦被裁掉，就没有任何入口再续传/清理这些文件，所以宁可
+///       让保存失败，也不能为了缩小 JSON 静默丢弃仍有落盘产物的任务。
+///       已完成记录没有清理标记、没有暂存半成品时可以丢，成品仍在下载目录；
+///       失败记录只有磁盘上确实没有半成品时才允许丢；暂停/排队任务一律保留。
+bool DownloadManager::canTrimForStateLimit(const DownloadJob &job) const
+{
+    if (!job.cleanupCachePath.isEmpty() || job.cleanupMediaAndLyrics)
+        return false;
+    if (job.status != DownloadJob::Status::Completed
+        && job.status != DownloadJob::Status::Failed) {
+        return false;
+    }
+    if (QFileInfo::exists(job.partialPath()))
+        return false;
+    if (!job.stagingPath.isEmpty()) {
+        if (QFileInfo::exists(job.stagingPath)
+            || QFileInfo::exists(job.stagingPath + QStringLiteral(".mvpdownload"))) {
+            return false;
+        }
+        const QString stagingDir = job.stagingDirectory();
+        if (!stagingDir.isEmpty() && QFileInfo::exists(stagingDir))
+            return false;
+    }
+    // 已提交但未完成的失败记录可能只剩最终 TS/MP4 等待重试转码；
+    // 丢掉记录会让这颗文件再没有任务负责。
+    if (job.status == DownloadJob::Status::Failed && job.committed)
+        return false;
+    return true;
+}
+
 /// @brief 立即同步保存任务列表（原子替换，失败保留旧文件）。
 void DownloadManager::saveNow()
 {
@@ -846,9 +877,12 @@ void DownloadManager::saveNow()
 
     QDir().mkpath(QFileInfo(m_statePath).absolutePath());
 
-    auto buildPayload = [this]() {
+    // 先在副本上试裁剪，只有文件成功提交后才替换 m_jobs。否则写盘失败时
+    // 记录已经从内存消失，用户既看不到历史，也失去半成品的续传入口。
+    QVector<DownloadJob> jobs = m_jobs;
+    auto buildPayload = [&jobs]() {
         QJsonArray array;
-        for (const DownloadJob &job : m_jobs)
+        for (const DownloadJob &job : jobs)
             array.append(job.toJson());
         QJsonObject root;
         root.insert(QStringLiteral("version"), 1);
@@ -858,19 +892,23 @@ void DownloadManager::saveNow()
 
     QByteArray payload = buildPayload();
     bool trimmed = false;
-    // 状态文件异常膨胀时先裁掉最老的 Failed/Paused 历史，而不是整份放弃保存；
-    // 否则新任务状态永远写不进去，旧记录还会一直留在磁盘上。
+    // 状态文件异常膨胀时优先丢“只有历史、没有落盘产物”的已完成记录，
+    // 其次才是无半成品的失败记录。暂停/排队任务和带暂存、`.mvpdownload`、
+    // 已提交文件或缓存清理标记的记录一律不裁：否则记录消失后文件会变成
+    // 没有任何入口的孤儿（无法续传，也无法再触发清理）。
     while (payload.size() > kMaxStateFileBytes) {
         int victim = -1;
-        for (int i = 0; i < m_jobs.size(); ++i) {
-            if (m_jobs.at(i).status == DownloadJob::Status::Failed) {
+        for (int i = 0; i < jobs.size(); ++i) {
+            if (jobs.at(i).status == DownloadJob::Status::Completed
+                && canTrimForStateLimit(jobs.at(i))) {
                 victim = i;
                 break;
             }
         }
         if (victim < 0) {
-            for (int i = 0; i < m_jobs.size(); ++i) {
-                if (m_jobs.at(i).status == DownloadJob::Status::Paused) {
+            for (int i = 0; i < jobs.size(); ++i) {
+                if (jobs.at(i).status == DownloadJob::Status::Failed
+                    && canTrimForStateLimit(jobs.at(i))) {
                     victim = i;
                     break;
                 }
@@ -878,13 +916,13 @@ void DownloadManager::saveNow()
         }
         if (victim < 0)
             break;
-        m_jobs.removeAt(victim);
+        jobs.removeAt(victim);
         trimmed = true;
         payload = buildPayload();
     }
 
     if (payload.size() > kMaxStateFileBytes) {
-        qCWarning(lcDownloadManager) << "下载状态超过上限，且没有可裁剪的历史"
+        qCWarning(lcDownloadManager) << "下载状态超过上限，且没有可安全裁剪的历史"
                                      << payload.size() << kMaxStateFileBytes;
         return;
     }
@@ -906,6 +944,9 @@ void DownloadManager::saveNow()
         qCWarning(lcDownloadManager) << "下载状态文件保存失败" << file.errorString();
         return;
     }
+    // 只有新状态成功落盘后才真正丢掉被裁剪的记录。
+    if (trimmed)
+        m_jobs = jobs;
     if (trimmed && !m_shuttingDown)
         emit jobsChanged();
 }
