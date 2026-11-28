@@ -19,6 +19,9 @@ struct LoadResult
     bool fileMissing = false;
     bool recoveredFromBackup = false;
     bool storageBlocked = false;
+    /// 只有“内容确实损坏且已成功备份”时才允许用户确认后清空重建；
+    /// 占用/权限/超限仍可能保住有效数据，不能提供破坏性出口。
+    bool canResetAfterCorruption = false;
     QString message;
     QString corruptBackupPath;
 };
@@ -33,6 +36,11 @@ QVector<MediaItem> load(MediaType type);
 
 /// 一次写入两类列表，避免两次读改写互相覆盖；成功后刷新滚动快照。
 bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video);
+
+/// 用户确认损坏内容不再尝试恢复后，把现有主文件/快照改名备份，
+/// 再写入空列表。任一步失败都不会覆盖尚未备份的文件，返回 false。
+/// @param backedUpPaths 可选，返回本次新生成的备份路径（换行分隔）。
+bool resetAfterCorruption(QString *backedUpPaths = nullptr);
 
 } // namespace PlaylistStore
 

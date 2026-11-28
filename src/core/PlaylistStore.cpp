@@ -315,6 +315,7 @@ LoadResult loadAll()
             // 用空文件覆盖仍可供人工恢复的原始内容。
             const QString corrupt = backupCorrupt(snapshot);
             result.storageBlocked = true;
+            result.canResetAfterCorruption = !corrupt.isEmpty();
             result.message = corrupt.isEmpty()
                 ? QStringLiteral(
                       "播放列表快照内容损坏且无法备份；为避免覆盖最后一份数据，当前禁止保存。"
@@ -337,6 +338,7 @@ LoadResult loadAll()
         // 退出时会把空列表写成新的主文件。备份仍在，但当前会话的修改
         // 会以“成功保存”的方式掩盖问题，所以同样禁止保存。
         result.storageBlocked = true;
+        result.canResetAfterCorruption = true;
         result.message = QStringLiteral(
             "播放列表原文件已备份为 %1，但最近一次成功快照不可用；"
             "当前显示空列表，为避免误写空文件，已禁止保存。")
@@ -380,6 +382,37 @@ bool saveAll(const QVector<MediaItem> &music, const QVector<MediaItem> &video)
 
     qCInfo(lcStore) << "播放列表已保存（音乐" << music.size() << "条、视频" << video.size()
                     << "条）到" << primary;
+    return true;
+}
+
+/// @brief 用户确认损坏内容不再恢复后，备份现有主文件/快照并写入空列表。
+/// @note 任一文件改名失败都立即返回，已经改名的文件保留为备份，不做回滚；
+///       这样最坏情况只是“备份完成但空列表未写入”，不会覆盖最后一份数据。
+bool resetAfterCorruption(QString *backedUpPaths)
+{
+    QStringList moved;
+    const auto preserve = [&moved](const QString &path) {
+        if (!QFileInfo::exists(path))
+            return true;
+        const QString backup = backupCorrupt(path);
+        if (backup.isEmpty())
+            return false;
+        moved.append(backup);
+        return true;
+    };
+
+    // 主文件可能已在 loadAll() 备份过而消失；快照仍可能存在，必须一并保留。
+    if (!preserve(primaryPath()) || !preserve(snapshotPath()))
+        return false;
+
+    if (!saveAll({}, {})) {
+        qCWarning(lcStore) << "重建空播放列表失败，损坏文件备份已保留";
+        return false;
+    }
+
+    if (backedUpPaths != nullptr)
+        *backedUpPaths = moved.join(QLatin1Char('\n'));
+    qCInfo(lcStore) << "用户确认清空损坏播放列表，备份路径：" << moved;
     return true;
 }
 

@@ -64,6 +64,7 @@ private slots:
     void playlistSnapshotRecoversAfterCorruption();
     void playlistSnapshotReadErrorBlocksSave();
     void playlistSnapshotCorruptBlocksSave();
+    void playlistResetAfterCorruptionStartsEmpty();
     void playlistVideoProgressRoundTrip();
     void playlistVideoProgressRemovedWithItem();
     void sourceRegistrySeedsAndPersists();
@@ -222,6 +223,7 @@ void StorageTest::playlistSnapshotReadErrorBlocksSave()
     QVERIFY(result.music.isEmpty());
     QVERIFY(result.video.isEmpty());
     QVERIFY(result.message.contains(QStringLiteral("禁止保存")));
+    QVERIFY(!result.canResetAfterCorruption);
 }
 
 void StorageTest::playlistSnapshotCorruptBlocksSave()
@@ -242,12 +244,45 @@ void StorageTest::playlistSnapshotCorruptBlocksSave()
     QVERIFY(result.music.isEmpty());
     QVERIFY(result.video.isEmpty());
     QVERIFY(result.message.contains(QStringLiteral("禁止保存")));
+    QVERIFY(result.canResetAfterCorruption);
     // 损坏快照必须改名保留，而不是原地覆盖或直接删除。
     QVERIFY(!QFile::exists(snapshot));
     const QFileInfoList backups = QDir(StoragePaths::dataDir())
                                       .entryInfoList({QStringLiteral("playlists.json.bak.corrupt-*")},
                                                      QDir::Files);
     QVERIFY(!backups.isEmpty());
+}
+
+void StorageTest::playlistResetAfterCorruptionStartsEmpty()
+{
+    const QString primary = PlaylistStore::filePath();
+    const QString snapshot = PlaylistStore::backupFilePath();
+    QFile file(primary);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate));
+    QVERIFY(file.write("{ broken playlist") > 0);
+    file.close();
+
+    const PlaylistStore::LoadResult blocked = PlaylistStore::loadAll();
+    QVERIFY(blocked.storageBlocked);
+    QVERIFY(blocked.canResetAfterCorruption);
+    QVERIFY(!blocked.corruptBackupPath.isEmpty());
+    const qint64 backupSize = QFileInfo(blocked.corruptBackupPath).size();
+
+    // 用户确认放弃恢复后，主文件/快照都必须先改名保留，再写入空列表。
+    QString backedUp;
+    QVERIFY(PlaylistStore::resetAfterCorruption(&backedUp));
+    QVERIFY(QFileInfo(blocked.corruptBackupPath).size() == backupSize);
+    QVERIFY(QFile::exists(primary));
+    QVERIFY(QFile::exists(snapshot));
+
+    const PlaylistStore::LoadResult reloaded = PlaylistStore::loadAll();
+    QVERIFY(!reloaded.storageBlocked);
+    QVERIFY(reloaded.music.isEmpty());
+    QVERIFY(reloaded.video.isEmpty());
+
+    // 重建后保存链路必须恢复，否则用户仍然只能只读。
+    QVERIFY(PlaylistStore::saveAll({makeMusic(QStringLiteral("重建后可保存"))}, {}));
+    QCOMPARE(PlaylistStore::load(MediaType::Music).size(), 1);
 }
 
 void StorageTest::playlistVideoProgressRoundTrip()
@@ -712,6 +747,7 @@ void StorageTest::playlistMissingPartitionsIsCorrupt()
     QVERIFY(result.music.isEmpty());
     QVERIFY(result.video.isEmpty());
     QVERIFY(!result.corruptBackupPath.isEmpty());
+    QVERIFY(result.canResetAfterCorruption);
 }
 
 void StorageTest::downloadManagerRejectsStateWithoutJobsArray()

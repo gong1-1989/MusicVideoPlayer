@@ -30,6 +30,7 @@
 #include <QModelIndex>
 #include <QMouseEvent>
 #include <QPoint>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QShortcut>
 #include <QTabWidget>
@@ -262,6 +263,7 @@ void PlaylistController::restore()
     QVector<MediaItem> music = loadResult.music;
     QVector<MediaItem> video = loadResult.video;
     m_storageBlocked = loadResult.storageBlocked;
+    bool resetToEmpty = false;
 
     if (m_storageBlocked) {
         qCCritical(lcPlaylist) << "播放列表未能安全读取，禁止保存：" << loadResult.message;
@@ -272,19 +274,51 @@ void PlaylistController::restore()
                  "Data/playlists.json 后重启。")
             : tr("\n\n当前列表为空，原文件已备份为 %1。请检查备份后重启。")
                   .arg(loadResult.corruptBackupPath);
-        QMessageBox::critical(m_ui.tabs, tr("播放列表未加载"), loadResult.message + detail);
+        QMessageBox box(m_ui.tabs);
+        box.setIcon(QMessageBox::Critical);
+        box.setWindowTitle(tr("播放列表未加载"));
+        box.setText(loadResult.message + detail);
+        QPushButton *readOnlyButton =
+            box.addButton(tr("保持只读，稍后手动处理"), QMessageBox::RejectRole);
+        QPushButton *resetButton = nullptr;
+        // 只有“内容损坏且备份成功”才给破坏性出口；占用/权限/超限下
+        // 原文件仍可能是有效数据，不能引导用户清空。
+        if (loadResult.canResetAfterCorruption)
+            resetButton = box.addButton(tr("备份损坏文件并新建空列表"),
+                                        QMessageBox::DestructiveRole);
+        box.setDefaultButton(readOnlyButton);
+        box.exec();
+
+        if (resetButton != nullptr && box.clickedButton() == resetButton) {
+            QString backups;
+            if (PlaylistStore::resetAfterCorruption(&backups)) {
+                m_storageBlocked = false;
+                music.clear();
+                video.clear();
+                resetToEmpty = true;
+                emit statusMessage(
+                    backups.isEmpty()
+                        ? tr("已新建空播放列表")
+                        : tr("已新建空播放列表；损坏文件已备份：%1").arg(backups));
+            } else {
+                QMessageBox::warning(
+                    m_ui.tabs, tr("无法新建空列表"),
+                    tr("损坏文件无法改名备份，或空列表写入失败；为避免覆盖，"
+                       "当前仍禁止保存。请检查 Data 目录权限后重试。"));
+            }
+        }
     } else if (!loadResult.message.isEmpty()) {
         emit statusMessage(loadResult.message);
     }
 
     // 从成功快照恢复的内容需要写回主文件，因此在退出前标记为未保存。
-    if (loadResult.recoveredFromBackup)
+    if (loadResult.recoveredFromBackup && !resetToEmpty)
         setDirty(true);
 
     // 只迁移一次：旧版 QSettings 里的列表写入 Data/playlists.json 后清键。
     // 迁移标记防止“用户清空列表”后下次启动又被旧键复活。
     // 读取被冻结时不能迁移，否则迁移保存会覆盖读不了的原文件。
-    if (!m_storageBlocked && !AppSettings::playlistsMigrated()) {
+    if (!resetToEmpty && !m_storageBlocked && !AppSettings::playlistsMigrated()) {
         bool canMarkMigrated = true;
         bool imported = false;
         if (music.isEmpty()) {
