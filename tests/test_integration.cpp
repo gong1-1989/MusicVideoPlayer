@@ -265,6 +265,7 @@ private slots:
     void downloadManagerStateTrimKeepsResumableArtifacts();
     void downloadHlsMergesAndRemuxes();
     void hlsCacheBuilderProducesSuffixlessMp4();
+    void hlsCacheBuilderRemovesLegacySharedTrackOnStart();
     void hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList();
     void hlsCacheBuilderResumesAfterExit();
     void hlsCacheBuilderPreservesResumeOnTrackFailure();
@@ -1960,6 +1961,56 @@ void IntegrationTest::hlsCacheBuilderProducesSuffixlessMp4()
 
     QVERIFY(MediaCache::removeForItem(item));
     QVERIFY(!QFileInfo::exists(completedPath));
+}
+
+void IntegrationTest::hlsCacheBuilderRemovesLegacySharedTrackOnStart()
+{
+    LocalHttpServer server;
+    QVERIFY(server.start());
+    server.handler = [](const LocalHttpServer::Request &, QTcpSocket *socket) {
+        LocalHttpServer::respond(socket, 404, {}, "text/plain");
+    };
+
+    MediaItem item;
+    item.type = MediaType::Video;
+    item.title = QStringLiteral("旧公共轨道清理");
+    item.url = server.url(QStringLiteral("/legacy/index.m3u8"));
+    item.online = true;
+
+    const QString bodyPath = MediaCache::filePathForItem(item);
+    QVERIFY(QDir().mkpath(QFileInfo(bodyPath).absolutePath()));
+    // 先写入同一身份标记，否则已有目录会被 resolvedCachePath 当成冲突，
+    // 本次 start 会改选 " (2)"，清理目标就不是这份旧文件了。
+    QVERIFY(MediaCache::writePartialIdentity(bodyPath, MediaCache::cacheIdentity(item)));
+    const QString legacyTs = bodyPath + QStringLiteral(".ts");
+    const QString legacyPartial = legacyTs + QStringLiteral(".mvpdownload");
+    const QString legacyResume = bodyPath + QStringLiteral(".resume.json");
+    // 有效的分轨文件必须保留，不能把 media.video.ts 当成旧公共 media.ts。
+    const QString validVideoTs = bodyPath + QStringLiteral(".video.ts");
+    const auto writeFile = [](const QString &path) {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            return false;
+        return file.write("legacy") > 0;
+    };
+    QVERIFY(writeFile(legacyTs));
+    QVERIFY(writeFile(legacyPartial));
+    QVERIFY(writeFile(legacyResume));
+    QVERIFY(writeFile(validVideoTs));
+
+    {
+        HttpClient http;
+        HlsCacheBuilder builder(&http);
+        QVERIFY(builder.start(item));
+        // 旧版双轨缺陷可能同时留下正文、半成品和公共续传状态；启动时
+        // 必须先清掉这些孤儿，再开始新的分轨下载。
+        QVERIFY(!QFileInfo::exists(legacyTs));
+        QVERIFY(!QFileInfo::exists(legacyPartial));
+        QVERIFY(!QFileInfo::exists(legacyResume));
+        QVERIFY(QFileInfo::exists(validVideoTs));
+    }
+
+    QVERIFY(MediaCache::removeForItem(item));
 }
 
 void IntegrationTest::hlsCacheBuilderDropsPreloadIndexForEncryptedMediaList()

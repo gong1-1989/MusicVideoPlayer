@@ -193,6 +193,20 @@ bool HlsCacheBuilder::start(const MediaItem &item, const QUrl &sourceUrl)
          { m_bodyPath, m_bodyPath + QStringLiteral(".ts"), m_bodyPath + QStringLiteral(".mp4") }) {
         HlsPreloadIndex::instance().clearTrack(legacyTarget);
     }
+    // 旧双轨缺陷留下的公共 media.ts 不会再被任何新轨道引用：视频/音轨的
+    // 续传目标只允许 media.video.* / media.audio.*，旧状态即使通过校验也
+    // 不会指回公共名。索引清掉后物理文件仍是孤儿，必须在本次启动直接删掉，
+    // 否则它会一直占着缓存目录，直到用户手动删除条目。
+    const QString legacySharedTs = m_bodyPath + QStringLiteral(".ts");
+    const QStringList legacySharedFiles = {
+        legacySharedTs, legacySharedTs + QStringLiteral(".mvpdownload"),
+        m_bodyPath + QStringLiteral(".resume.json")};
+    for (const QString &path : legacySharedFiles) {
+        if (!QFileInfo::exists(path))
+            continue;
+        if (!QFile::remove(path))
+            qCWarning(lcHlsCache) << "无法删除旧版公共轨道文件：" << path;
+    }
     const TrackResume &videoIndexResume = m_videoResume;
     const TrackResume &audioIndexResume = m_audioResume;
     if (!(videoIndexResume.bytesWritten > 0 && !videoIndexResume.fingerprint.isEmpty())) {
