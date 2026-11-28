@@ -322,6 +322,13 @@ inline QString identityUrlWithoutVolatileQuery(QUrl url)
 ///   真正区分内容的查询参数（B站等直链带过期签名，每次搜索都不一样）。
 inline QString mediaIdentity(const MediaItem &item)
 {
+    // 下载后的本地条目保留原始 webUrl，用同一网页身份与在线搜索结果对齐；
+    // 否则同一首歌“在线一条、下载后一条”，再次搜索会重复加入且无法刷新标签。
+    if (!item.online && !item.webUrl.isEmpty() && item.webUrl.isValid()
+        && !item.title.isEmpty()) {
+        return QStringLiteral("web:") + item.webUrl.toString() + QLatin1Char('#')
+               + item.title;
+    }
     if (!item.online)
         return QStringLiteral("file:") + item.url.toLocalFile();
 

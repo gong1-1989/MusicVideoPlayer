@@ -154,6 +154,12 @@ bool PlaylistModel::refreshItem(int row, const MediaItem &item)
             merged.streamScope = item.streamScope;
             changed = true;
         }
+    } else if (!merged.streamScope.isEmpty()) {
+        // 本地文件没有“试听/电台”语义。旧条目可能在下载前被标成经历过试听，
+        // 下载后只清了 previewOnly 却把标签留在 streamScope；这里顺手清掉，
+        // 避免同一首歌在播放列表里永久显示“试听”。
+        merged.streamScope.clear();
+        changed = true;
     }
     takeUrl(merged.lyricUrl, item.lyricUrl);
     takeUrl(merged.posterUrl, item.posterUrl);

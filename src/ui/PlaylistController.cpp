@@ -759,13 +759,15 @@ bool PlaylistController::updateDownloadedItem(const MediaItem &source, const QSt
             item.url = localUrl;
             item.online = false;
             item.sourceId.clear();
-            item.webUrl = QUrl();
+            // webUrl 是稳定身份：保留它，才能让同一首歌的在线搜索结果继续
+            // 命中这条本地记录，而不是再次被当成新条目加入。
             item.sourceOrigin = QUrl();
             item.headers.clear();
             item.alternateUrls.clear();
             item.positionMs = 0;
             // 下载完成说明用户明确要保留这条内容，试听标记不再生效。
             item.previewOnly = false;
+            item.streamScope.clear();
             if (model->updateItem(row, item)) {
                 changed = true;
                 qCInfo(lcPlaylist) << "下载完成后列表条目已改为本地来源" << item.title

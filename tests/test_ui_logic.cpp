@@ -407,6 +407,7 @@ void UiLogicTest::downloadedItemSwitchesPlaylistToLocalSource()
     online.webUrl = QUrl(QStringLiteral("https://example.com/detail/1"));
     online.online = true;
     online.sourceId = QStringLiteral("src-1");
+    online.streamScope = QStringLiteral("preview");
     online.headers.insert(QStringLiteral("Referer"), QStringLiteral("https://example.com/"));
     online.alternateUrls.append(QStringLiteral("https://cdn.example.com/episode.mp4"));
 
@@ -423,7 +424,11 @@ void UiLogicTest::downloadedItemSwitchesPlaylistToLocalSource()
     QCOMPARE(updated.url, QUrl::fromLocalFile(localFile));
     QVERIFY(!updated.online);
     QVERIFY(updated.sourceId.isEmpty());
-    QVERIFY(updated.webUrl.isEmpty());
+    // webUrl 是原始网页身份，必须保留：再次搜索同一首歌时才能命中本地条目，
+    // 而不是把它当成另一条内容重复加入。
+    QCOMPARE(updated.webUrl, online.webUrl);
+    QCOMPARE(controller.musicModel()->indexOf(online), 0);
+    QVERIFY(updated.streamScope.isEmpty());
     QVERIFY(updated.headers.isEmpty());
     QVERIFY(updated.alternateUrls.isEmpty());
 

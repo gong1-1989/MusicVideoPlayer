@@ -997,6 +997,7 @@ private slots:
     void searchRankerKeepsBestDuplicate();
     void playlistModelRefreshesSignedUrlWithoutLosingProgress();
     void playlistModelRefreshClearsStaleStreamScope();
+    void playlistModelRefreshClearsLocalStreamScope();
     void playlistModelUpdatesPlaybackPositionSeparately();
     void playbackSeekStepClampsToMediaBounds();
     void sourceConfigJsonRoundTrip();
@@ -1503,6 +1504,40 @@ void CoreLogicTest::playlistModelRefreshClearsStaleStreamScope()
     QVERIFY(model.refreshItem(0, full));
     QVERIFY(model.itemAt(0).streamScope.isEmpty());
     QVERIFY(!model.itemAt(0).previewOnly);
+}
+
+void CoreLogicTest::playlistModelRefreshClearsLocalStreamScope()
+{
+    PlaylistModel model;
+    MediaItem local;
+    local.type = MediaType::Music;
+    local.title = QStringLiteral("已下载的歌");
+    local.artist = QStringLiteral("同一歌手");
+    local.online = false;
+    local.previewOnly = false;
+    local.streamScope = QStringLiteral("preview");
+    local.url = QUrl::fromLocalFile(QStringLiteral("F:/Music/下载的歌.mp3"));
+    local.webUrl = QUrl(QStringLiteral("https://example.com/song/2"));
+    QVERIFY(model.addItem(local));
+
+    // 用户再次搜索到同一首歌并点开试听：搜索结果仍可能带 preview scope，
+    // 但模型里这条已经是本地文件，既不能改回在线地址，也不该继续显示“试听”。
+    MediaItem search = local;
+    search.online = true;
+    search.previewOnly = true;
+    search.streamScope = QStringLiteral("preview");
+    search.url = QUrl(QStringLiteral("https://cdn.example.com/preview.m4a"));
+    QCOMPARE(model.indexOf(search), 0);
+    QVERIFY(model.refreshItem(0, search));
+
+    const MediaItem refreshed = model.itemAt(0);
+    QVERIFY(refreshed.streamScope.isEmpty());
+    QVERIFY(!refreshed.online);
+    QVERIFY(!refreshed.previewOnly);
+    QCOMPARE(refreshed.url, local.url);
+
+    // 已经干净后再次刷新不应产生无意义变更。
+    QVERIFY(!model.refreshItem(0, search));
 }
 
 void CoreLogicTest::playlistModelUpdatesPlaybackPositionSeparately()
