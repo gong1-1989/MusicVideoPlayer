@@ -146,6 +146,8 @@ private:
 
         Key sessionKey;
         bool fragmentedMp4 = false;
+        /// 解析媒体列表时算好的分片结构指纹，供续传与缓存轨道复用共用。
+        QString structureFingerprint;
         QVector<Segment> segments;
         int segmentIndex = 0;
         int resumeSegmentIndex = 0;

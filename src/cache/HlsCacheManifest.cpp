@@ -240,6 +240,45 @@ bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *ou
     return true;
 }
 
+/// @brief 按下载任务的严格规则重算媒体列表分片指纹。
+/// @param body 媒体列表正文。
+/// @param playlistUrl 媒体列表最终地址。
+/// @param sessionKeyLines 主列表 SESSION-KEY 原始行；直接媒体列表时为空。
+/// @param sessionKeyBaseUrl SESSION-KEY 相对地址的解析基准。
+/// @return 与 DownloadTask 相同的指纹；严格解析失败时返回空，调用方不得复用旧轨道。
+QString mediaFingerprint(const QByteArray &body, const QUrl &playlistUrl,
+                                           const QStringList &sessionKeyLines,
+                                           const QUrl &sessionKeyBaseUrl)
+{
+    HlsPlaylist::Key initialKey;
+    for (const QString &line : sessionKeyLines) {
+        const HlsPlaylist::Key parsed = HlsPlaylist::parseKeyLine(line, sessionKeyBaseUrl);
+        if (!parsed.error.isEmpty())
+            return QString();
+        if (parsed.enabled) {
+            // 与 DownloadTask 的主列表处理一致：多个 SESSION-KEY 时取第一个
+            // 可用的 identity AES-128；后面的 KEYFORMAT 不会覆盖它。
+            if (!initialKey.enabled)
+                initialKey = parsed;
+        } else if (!parsed.unsupported.isEmpty() && !initialKey.enabled) {
+            initialKey.unsupported = parsed.unsupported;
+        }
+    }
+
+    HlsPlaylist::MediaParseOptions options;
+    options.strict = true;
+    options.requireExtinf = false;
+    options.initialKey = initialKey;
+    options.keyParser = [](const QString &line, const QUrl &base) {
+        return HlsPlaylist::parseKeyLine(line, base);
+    };
+    QString error;
+    const auto media = HlsPlaylist::parseMedia(body, playlistUrl, options, &error);
+    if (!media)
+        return QString();
+    return HlsPlaylist::fingerprint(media->segments, media->fragmentedMp4);
+}
+
 /// @brief 判断两个 URL 是否指向同一资源。
 /// @note 忽略会轮换的签名查询参数，但保留 id/seq 等稳定参数；协议和 host
 ///       比较时统一小写。用于识别多个 BYTERANGE 分片是否属于同一整段文件。

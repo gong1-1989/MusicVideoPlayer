@@ -104,6 +104,11 @@ public:
                                                 const MediaParseOptions &options,
                                                 QString *error = nullptr);
 
+    /// 计算分片结构指纹：容器类型、分片顺序、分片地址（忽略会轮换的签名
+    /// 查询参数）、BYTERANGE 与每个分片生效的 KEY 都会参与。
+    /// 下载任务的续传校验和缓存完成轨道的复用校验必须使用同一份算法。
+    static QString fingerprint(const QList<MediaSegment> &segments, bool fragmentedMp4);
+
     /// 按起始时间二分定位目标分片；空列表返回 -1。
     static int segmentIndexAt(const Info &info, qint64 positionMs);
 

@@ -13,7 +13,6 @@
 #include "util/NetworkAddressPolicy.h"
 #include "util/PlaylistSniffer.h"
 
-#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
@@ -825,6 +824,7 @@ DownloadTask::HlsDownloadSession::parsePlaylist(const QByteArray &body, const QU
 
     segments.clear();
     fragmentedMp4 = false;
+    structureFingerprint.clear();
     segmentCipher.clear();
 
     HlsPlaylist::MediaParseOptions options;
@@ -841,6 +841,10 @@ DownloadTask::HlsDownloadSession::parsePlaylist(const QByteArray &body, const QU
         result.error = parseError;
         return result;
     }
+
+    // 指纹由共享解析器统一计算：缓存完成轨道复用必须和这里的续传校验
+    // 使用同一份算法，否则同一份列表会在两条链路得到不同指纹。
+    structureFingerprint = HlsPlaylist::fingerprint(media->segments, media->fragmentedMp4);
 
     for (const HlsPlaylist::MediaSegment &parsed : std::as_const(media->segments)) {
         Segment segment;
@@ -891,30 +895,8 @@ QString DownloadTask::computePlaylistFingerprint() const
 
 QString DownloadTask::HlsDownloadSession::fingerprint() const
 {
-    QCryptographicHash hash(QCryptographicHash::Sha1);
-    // 只剔除 token/sign/expire 这类会轮换的查询参数，保留 id/seq 等能区分
-    // 分片的稳定参数；把整个 query 都丢掉会让 `segment.ts?seq=1` 和
-    // `segment.ts?seq=2` 指纹相同，续传时把两份不同分片拼进一个文件。
-    hash.addData(fragmentedMp4 ? "fmp4|" : "ts|");
-    hash.addData(QByteArray::number(segments.size()));
-    hash.addData("|");
-    for (const Segment &segment : segments) {
-        hash.addData(identityUrlWithoutVolatileQuery(segment.url).toUtf8());
-        hash.addData("|");
-        hash.addData(segment.range);
-        hash.addData("|");
-        if (segment.key.enabled) {
-            hash.addData(segment.key.method.toUtf8());
-            hash.addData("|");
-            hash.addData(keyCacheKey(segment.key.url).toUtf8());
-            hash.addData("|");
-            hash.addData(segment.key.iv.toHex());
-        } else {
-            hash.addData("clear");
-        }
-        hash.addData("|");
-    }
-    return QString::fromLatin1(hash.result().toHex());
+    // 具体算法在 HlsPlaylist 中，缓存完成轨道复用使用同一函数校验。
+    return structureFingerprint;
 }
 
 /// @brief 请求下一个分片；全部分片完成则提交文件。

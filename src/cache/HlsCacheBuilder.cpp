@@ -355,6 +355,9 @@ void HlsCacheBuilder::onMasterReady(const QByteArray &body, const QUrl &finalUrl
         finishFailed(trackError.isEmpty() ? tr("不是可识别的 HLS 播放列表") : trackError);
         return;
     }
+    track.fingerprint = HlsCacheManifest::mediaFingerprint(body, finalUrl,
+                                                          m_master.sessionKeyLines,
+                                                          m_masterBaseUrl);
     if (!track.hasEndList && !track.isVod) {
         finishFailed(tr("播放列表没有结束标记，可能是直播流，未生成不完整缓存"));
         return;
@@ -544,6 +547,9 @@ void HlsCacheBuilder::onVideoPlaylistReady(const QByteArray &body, const QUrl &f
         finishFailed(trackError.isEmpty() ? tr("视频播放列表无法解析") : trackError);
         return;
     }
+    track.fingerprint = HlsCacheManifest::mediaFingerprint(body, finalUrl,
+                                                          m_master.sessionKeyLines,
+                                                          m_masterBaseUrl);
     if (!track.hasEndList && !track.isVod) {
         finishFailed(tr("视频播放列表没有结束标记，可能是直播流，未生成不完整缓存"));
         return;
@@ -605,6 +611,9 @@ void HlsCacheBuilder::onAudioPlaylistReady(const QByteArray &body, const QUrl &f
         finishFailed(trackError.isEmpty() ? tr("音轨播放列表无法解析") : trackError);
         return;
     }
+    track.fingerprint = HlsCacheManifest::mediaFingerprint(body, finalUrl,
+                                                          m_master.sessionKeyLines,
+                                                          m_masterBaseUrl);
     if (!track.hasEndList && !track.isVod) {
         finishFailed(tr("音轨播放列表没有结束标记，未生成不完整缓存"));
         return;
@@ -668,11 +677,16 @@ void HlsCacheBuilder::startDownloads()
     const QString videoTarget = m_videoResume.valid && !m_videoResume.targetPath.isEmpty()
                                     ? m_videoResume.targetPath
                                     : videoBase;
-    // 只凭 completed + 文件存在就复用，会把上一次播放列表的成品轨道当成当前
-    // 内容：站点重新切片后分片数变化，旧轨道既不是当前节目，也无法和新音轨
-    // 对齐。分片数不一致时必须回到 DownloadTask，让它按指纹/序号重新校验。
-    const bool videoResumeMatchesTrack =
+    // 只凭 completed + 文件存在 + 分片数 + 文件长度就复用，仍可能把站点
+    // 重新切片但片数/长度恰好相同的旧轨道当成当前节目。必须同时比较
+    // DownloadTask 写入的分片结构指纹；指纹缺失或无法重算时宁可重下。
+    const bool videoSegmentCountMatches =
         m_videoResume.segmentCount == m_videoTrack.segmentCount;
+    const bool videoFingerprintMatches =
+        !m_videoTrack.fingerprint.isEmpty() && !m_videoResume.fingerprint.isEmpty()
+        && m_videoResume.fingerprint == m_videoTrack.fingerprint;
+    const bool videoResumeMatchesTrack =
+        videoSegmentCountMatches && videoFingerprintMatches;
     const QFileInfo videoFile(videoTarget);
     // 文件存在还不够：续传记录写着完整字节数，但文件被截断/清空时同样不能
     // 复用。字节数未知的旧记录只要求非空，避免升级后无谓重下。
@@ -690,9 +704,12 @@ void HlsCacheBuilder::startDownloads()
         m_videoReceived = m_videoTotal;
         qCInfo(lcHlsCache) << "复用上次已下载完成的视频轨：" << videoTarget;
     } else {
-        if (m_videoResume.valid && m_videoResume.completed && !videoResumeMatchesTrack) {
+        if (m_videoResume.valid && m_videoResume.completed && !videoSegmentCountMatches) {
             qCInfo(lcHlsCache) << "已完成视频轨与当前播放列表分片数不一致，重新下载"
                                << m_videoResume.segmentCount << m_videoTrack.segmentCount;
+        } else if (m_videoResume.valid && m_videoResume.completed
+                   && !videoFingerprintMatches) {
+            qCInfo(lcHlsCache) << "已完成视频轨分片结构与当前播放列表不一致，重新下载";
         } else if (m_videoResume.valid && m_videoResume.completed && !videoFileMatches
                    && videoFile.exists()) {
             qCInfo(lcHlsCache) << "已完成视频轨长度与续传记录不一致，重新下载"
@@ -710,8 +727,13 @@ void HlsCacheBuilder::startDownloads()
         const QString audioTarget = m_audioResume.valid && !m_audioResume.targetPath.isEmpty()
                                         ? m_audioResume.targetPath
                                         : audioBase;
-        const bool audioResumeMatchesTrack =
+        const bool audioSegmentCountMatches =
             m_audioResume.segmentCount == m_audioTrack.segmentCount;
+        const bool audioFingerprintMatches =
+            !m_audioTrack.fingerprint.isEmpty() && !m_audioResume.fingerprint.isEmpty()
+            && m_audioResume.fingerprint == m_audioTrack.fingerprint;
+        const bool audioResumeMatchesTrack =
+            audioSegmentCountMatches && audioFingerprintMatches;
         const QFileInfo audioFile(audioTarget);
         const bool audioFileMatches =
             audioFile.exists() && audioFile.size() > 0
@@ -727,10 +749,13 @@ void HlsCacheBuilder::startDownloads()
             qCInfo(lcHlsCache) << "复用上次已下载完成的音轨：" << audioTarget;
         } else {
             if (m_audioResume.valid && m_audioResume.completed
-                && !audioResumeMatchesTrack) {
+                && !audioSegmentCountMatches) {
                 qCInfo(lcHlsCache) << "已完成音轨与当前播放列表分片数不一致，重新下载"
                                    << m_audioResume.segmentCount
                                    << m_audioTrack.segmentCount;
+            } else if (m_audioResume.valid && m_audioResume.completed
+                       && !audioFingerprintMatches) {
+                qCInfo(lcHlsCache) << "已完成音轨分片结构与当前播放列表不一致，重新下载";
             } else if (m_audioResume.valid && m_audioResume.completed && !audioFileMatches
                        && audioFile.exists()) {
                 qCInfo(lcHlsCache) << "已完成音轨长度与续传记录不一致，重新下载"

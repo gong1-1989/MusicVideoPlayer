@@ -2,6 +2,7 @@
 /// @brief 跨模块集成测试：本地 HTTP 服务、HLS 播放列表改写、流代理、下载、
 ///        缓存、歌词与搜索源的真实交互（不依赖外网，除非用例显式联网）。
 #include "cache/HlsCacheBuilder.h"
+#include "cache/HlsCacheManifest.h"
 #include "cache/LyricsCache.h"
 #include "cache/MediaCache.h"
 #include "core/PlaybackController.h"
@@ -2207,9 +2208,19 @@ void IntegrationTest::hlsCacheBuilderRejectsStaleCompletedTrack()
     item.url = server.url(QStringLiteral("/stale-cache/index.m3u8"));
     item.online = true;
 
+    // 用与 HlsCacheBuilder 相同的严格解析重算当前列表指纹，供“指纹匹配但
+    // 长度截断/完整”两个分支使用。
+    const QUrl playlistUrl = item.url;
+    const QString liveFingerprint =
+        HlsCacheManifest::mediaFingerprint(playlist, playlistUrl, QStringList(), playlistUrl);
+    QVERIFY(!liveFingerprint.isEmpty());
+
     const QString base = MediaCache::filePathForItem(item);
     MediaCache::removeForItem(item);
     QDir().mkpath(QFileInfo(base).absolutePath());
+    // 非空目录且没有身份标记会被 builder 改选 " (2)"，伪造状态会落不到
+    // 实际读取的目录；先登记身份，让 start() 命中这里。
+    QVERIFY(MediaCache::writePartialIdentity(base, MediaCache::cacheIdentity(item)));
 
     // 伪造“上次只切了 1 片就标记完成”的轨道和续传状态；当前播放列表是 2 片。
     // 如果只按 completed + 文件存在复用，这段垃圾数据会被直接送去转封装。
@@ -2265,6 +2276,7 @@ void IntegrationTest::hlsCacheBuilderRejectsStaleCompletedTrack()
     const QString truncatedBase = MediaCache::filePathForItem(item);
     const QString truncatedTarget = truncatedBase + QStringLiteral(".video");
     QDir().mkpath(QFileInfo(truncatedBase).absolutePath());
+    QVERIFY(MediaCache::writePartialIdentity(truncatedBase, MediaCache::cacheIdentity(item)));
     QFile truncated(truncatedTarget);
     QVERIFY(truncated.open(QIODevice::WriteOnly));
     QCOMPARE(truncated.write(QByteArray(1024, 'x')), qint64(1024));
@@ -2274,6 +2286,9 @@ void IntegrationTest::hlsCacheBuilderRejectsStaleCompletedTrack()
     truncatedResume.insert(QStringLiteral("bytesWritten"), qint64(4096));
     truncatedResume.insert(QStringLiteral("segmentIndex"), 2);
     truncatedResume.insert(QStringLiteral("segmentCount"), 2);
+    // 指纹与当前列表一致，确保这个分支验证的是“文件长度不一致”，
+    // 而不是被结构指纹检查提前拦下。
+    truncatedResume.insert(QStringLiteral("fingerprint"), liveFingerprint);
     const QByteArray truncatedPayload = QJsonDocument(truncatedResume).toJson();
     QSaveFile truncatedState(truncatedTarget + QStringLiteral(".resume.json"));
     QVERIFY(truncatedState.open(QIODevice::WriteOnly));
@@ -2292,6 +2307,77 @@ void IntegrationTest::hlsCacheBuilderRejectsStaleCompletedTrack()
     QVERIFY(completed);
     QCOMPARE(seg0Requests, 1);
     QCOMPARE(seg1Requests, 1);
+
+    QVERIFY(MediaCache::removeForItem(item));
+
+    // 第三种：分片数和成品文件长度都恰好一致，但指纹来自另一份分片结构。
+    // 只比较分片数 + 文件长度会把这段旧轨道直接送去转封装；结构指纹必须
+    // 让缓存重新请求分片。
+    QDir().mkpath(QFileInfo(truncatedBase).absolutePath());
+    QVERIFY(MediaCache::writePartialIdentity(truncatedBase, MediaCache::cacheIdentity(item)));
+    QFile staleFull(truncatedTarget);
+    QVERIFY(staleFull.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(staleFull.write(tsBytes), qint64(tsBytes.size()));
+    staleFull.close();
+    QJsonObject staleFullResume = resume;
+    staleFullResume.insert(QStringLiteral("targetPath"), truncatedTarget);
+    staleFullResume.insert(QStringLiteral("bytesWritten"), qint64(tsBytes.size()));
+    staleFullResume.insert(QStringLiteral("segmentIndex"), 2);
+    staleFullResume.insert(QStringLiteral("segmentCount"), 2);
+    staleFullResume.insert(QStringLiteral("fingerprint"), QStringLiteral("stale-fingerprint"));
+    const QByteArray staleFullPayload = QJsonDocument(staleFullResume).toJson();
+    QSaveFile staleFullState(truncatedTarget + QStringLiteral(".resume.json"));
+    QVERIFY(staleFullState.open(QIODevice::WriteOnly));
+    QCOMPARE(staleFullState.write(staleFullPayload), qint64(staleFullPayload.size()));
+    QVERIFY(staleFullState.commit());
+
+    seg0Requests = 0;
+    seg1Requests = 0;
+    completed = false;
+    failed = false;
+    completedPath.clear();
+    failureMessage.clear();
+    QVERIFY(builder.start(item));
+    QTRY_VERIFY_WITH_TIMEOUT(completed || failed, 30000);
+    QVERIFY2(!failed, qPrintable(failureMessage));
+    QVERIFY(completed);
+    QCOMPARE(seg0Requests, 1);
+    QCOMPARE(seg1Requests, 1);
+
+    QVERIFY(MediaCache::removeForItem(item));
+
+    // 第四种：分片结构指纹和文件长度都匹配，必须直接复用成品轨道，不能
+    // 再请求分片；否则新校验会把正常续传也误判成过期。
+    QDir().mkpath(QFileInfo(truncatedBase).absolutePath());
+    QVERIFY(MediaCache::writePartialIdentity(truncatedBase, MediaCache::cacheIdentity(item)));
+    QFile currentFull(truncatedTarget);
+    QVERIFY(currentFull.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(currentFull.write(tsBytes), qint64(tsBytes.size()));
+    currentFull.close();
+    QJsonObject currentResume = resume;
+    currentResume.insert(QStringLiteral("targetPath"), truncatedTarget);
+    currentResume.insert(QStringLiteral("bytesWritten"), qint64(tsBytes.size()));
+    currentResume.insert(QStringLiteral("segmentIndex"), 2);
+    currentResume.insert(QStringLiteral("segmentCount"), 2);
+    currentResume.insert(QStringLiteral("fingerprint"), liveFingerprint);
+    const QByteArray currentPayload = QJsonDocument(currentResume).toJson();
+    QSaveFile currentState(truncatedTarget + QStringLiteral(".resume.json"));
+    QVERIFY(currentState.open(QIODevice::WriteOnly));
+    QCOMPARE(currentState.write(currentPayload), qint64(currentPayload.size()));
+    QVERIFY(currentState.commit());
+
+    seg0Requests = 0;
+    seg1Requests = 0;
+    completed = false;
+    failed = false;
+    completedPath.clear();
+    failureMessage.clear();
+    QVERIFY(builder.start(item));
+    QTRY_VERIFY_WITH_TIMEOUT(completed || failed, 30000);
+    QVERIFY2(!failed, qPrintable(failureMessage));
+    QVERIFY(completed);
+    QCOMPARE(seg0Requests, 0);
+    QCOMPARE(seg1Requests, 0);
 
     QVERIFY(MediaCache::removeForItem(item));
 }

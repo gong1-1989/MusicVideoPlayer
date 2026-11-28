@@ -59,11 +59,22 @@ struct MediaTrack
     /// 列表是 fMP4 分片（EXT-X-MAP 或 .m4s/.m4f 分片）。
     /// 分片索引必须按 MP4 类型回给播放器，不能一律标成 MPEG-TS。
     bool fragmentedMp4 = false;
+    /// 与 DownloadTask 续传校验同一算法的分片结构指纹。空表示当前列表
+    /// 无法按严格规则解析，完成轨道不能按“分片数 + 文件长度”直接复用。
+    QString fingerprint;
 };
 
 /// 解析媒体播放列表。不是带 #EXTINF 的媒体列表时 valid=false。
 bool parseMediaTrack(const QByteArray &body, const QUrl &baseUrl, MediaTrack *out,
                      QString *error = nullptr);
+
+/// 按下载任务的严格规则重算媒体列表分片指纹。
+/// @param sessionKeyLines 主列表里的 SESSION-KEY 行，可空。
+/// @param sessionKeyBaseUrl SESSION-KEY 相对地址的解析基准，通常为主列表地址。
+/// @return 与 DownloadTask 同值；严格解析失败或列表不合法时返回空。
+QString mediaFingerprint(const QByteArray &body, const QUrl &playlistUrl,
+                         const QStringList &sessionKeyLines,
+                         const QUrl &sessionKeyBaseUrl);
 
 /// 两个地址只比较协议/host/端口/path，忽略会过期的查询串。
 bool sameUrlIgnoringQuery(const QUrl &a, const QUrl &b);

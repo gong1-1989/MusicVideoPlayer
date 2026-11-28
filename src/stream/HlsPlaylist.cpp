@@ -1,9 +1,11 @@
 /// @file HlsPlaylist.cpp
 /// @brief HLS 播放列表解析、分片时间轴定位与代理地址重写。
 #include "stream/HlsPlaylist.h"
+#include "media/MediaItem.h"
 #include "net/NetLimits.h"
 #include "util/NetworkAddressPolicy.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QHash>
 #include <QObject>
@@ -451,6 +453,38 @@ QSharedPointer<HlsPlaylist::MediaInfo> HlsPlaylist::parseMedia(
         pendingDuration = -1.0;
     }
     return info;
+}
+
+/// @brief 计算分片结构指纹。
+/// @param segments 共享解析出的完整分片列表，包含 fMP4 的初始化段。
+/// @param fragmentedMp4 是否为 fMP4 结构。
+/// @return SHA-1 十六进制指纹；同一份分片结构必须得到同一个值。
+/// @note 分片地址只取稳定身份，忽略 token/sign/expire 这类会轮换的查询参数；
+///       BYTERANGE、KEY 与容器类型必须参与，否则重新切片或换加密方式后
+///       旧前缀会被错误拼接到新时间线。
+QString HlsPlaylist::fingerprint(const QList<MediaSegment> &segments, bool fragmentedMp4)
+{
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+    hash.addData(fragmentedMp4 ? "fmp4|" : "ts|");
+    hash.addData(QByteArray::number(segments.size()));
+    hash.addData("|");
+    for (const MediaSegment &segment : segments) {
+        hash.addData(identityUrlWithoutVolatileQuery(segment.url).toUtf8());
+        hash.addData("|");
+        hash.addData(segment.range);
+        hash.addData("|");
+        if (segment.key.enabled) {
+            hash.addData(segment.key.method.toUtf8());
+            hash.addData("|");
+            hash.addData(segment.key.url.toString(QUrl::FullyEncoded).toUtf8());
+            hash.addData("|");
+            hash.addData(segment.key.iv.toHex());
+        } else {
+            hash.addData("clear");
+        }
+        hash.addData("|");
+    }
+    return QString::fromLatin1(hash.result().toHex());
 }
 
 /// @brief 二分查找给定播放位置所在的分片下标。
